@@ -15,19 +15,16 @@ import { useRuntimeStore } from '@/stores/runtime'
 import StatusDot from '@/components/StatusDot.vue'
 
 const { form } = storeToRefs(useFormStore())
-// 检测用的代理必须能从代理池里挑：以前这页只在代码里读 form.proxy，页面上
-// 连个输入框都没有，主人在代理池换了密码，这里还在用 localStorage 里的旧值，
-// 结果是 curl:(97) 代理鉴权被拒 → 静默降级直连 → 拿真实 IP 打 chatgpt.com。
+// 检测用的代理必须能从代理池里挑
 const { list: proxyList } = storeToRefs(useProxyStore())
 const runtime = useRuntimeStore()
-// dataVersion 要走 storeToRefs 才保持响应（watch 用）；bumpData 是 action，直接从
-// store 实例上取 —— storeToRefs 只转 state/getter，把 action 解构出来会丢 this。
 const { dataVersion } = storeToRefs(runtime)
 
-const PAGE_SIZE = 20
+// 分页与数据
 const rows = ref([])
 const total = ref(0)
 const page = ref(1)
+const pageSize = ref(20)
 const filter = ref('all')
 const selected = ref([])
 const loading = ref(false)
@@ -36,17 +33,12 @@ const checkResult = ref('')
 
 const PLUS_TYPE = {
   plus_eligible: 'success', plus_active: 'primary', free: 'warning',
-  // token_invalid（401 且响应体没有封号措辞）仍与 banned 分开显示——判据不同，
-  // 不能混成一个。但配色从橙改红：AT 未到期却 401 = 被吊销，实测多半就是封号，
-  // 橙色（=号还在）会让主人以为重新登录就能救回来。
   token_invalid: 'danger',
   banned: 'danger', error: 'danger',
 }
 function plusOf(row) { return row.plus_check || null }
 
 // ──────────── OAICS 资格检测 ────────────
-// 对勾选的账号批量打 OpenAI checkout，判断 session id 是 oaics_（可卖资格）还是 cs_。
-// 代理池支持 sticky 代理（user:pass-CC-session-ttl@host:port 格式），轮换会话。
 const oaVisible = ref(false)
 const oaRunning = ref(false)
 const oaTaskId = ref('')
@@ -76,6 +68,7 @@ function loadProxyListToOA() {
   const g = guessProxyCountry(oaForm.proxies)
   if (g) oaForm.proxyCountry = g
 }
+
 // 进度：email -> { status: 'pending'|'running'|'done', result: {...} }
 const oaItems = ref({})
 const oaLogs = ref([])
@@ -266,17 +259,32 @@ function scrollOaLog() {
   if (box) box.scrollTop = box.scrollHeight
 }
 
-async function load(resetPage) {
+async function load(resetPage = false) {
   if (resetPage) page.value = 1
   loading.value = true
   try {
     const { items, total: t } = await listRegistered({
-      limit: PAGE_SIZE, offset: (page.value - 1) * PAGE_SIZE, filter: filter.value,
+      limit: pageSize.value,
+      offset: (page.value - 1) * pageSize.value,
+      filter: filter.value,
     })
-    rows.value = items
-    total.value = t
-  } catch (e) { ElMessage.error(e.message) }
-  finally { loading.value = false }
+    rows.value = items || []
+    total.value = t || 0
+  } catch (e) {
+    ElMessage.error(e.message)
+  } finally {
+    loading.value = false
+  }
+}
+
+function handleSizeChange(val) {
+  pageSize.value = val
+  load(true)
+}
+
+function handleCurrentChange(val) {
+  page.value = val
+  load(false)
 }
 
 function collectEmails(mode) {
@@ -302,12 +310,8 @@ async function doCheck(mode) {
       else if (info.status === 'token_invalid') badToken++
       else if (info.status === 'error') failed++
     }
-    // failed / note 不入库，只是这一次的现场说明：
-    // 以前网络/代理挂了这里只会显示「0 可用Plus, 0 Free, 0 封号」，看不出是没检测成。
-    // badToken 从 2026-08-10 起是**会入库**的结论，措辞也跟着改：
-    // AT 没过期却 401 = 被吊销，大概率就是封号，不该再说得像只是要重新登录。
     const parts = [`完成: ${plus} 可用Plus, ${free} Free, ${banned} 封号`]
-    if (badToken) parts.push(`${badToken} 个凭证失效（AT 被吊销，多半已封）`)
+    if (badToken) parts.push(`${badToken} 个凭证失效`)
     if (failed) parts.push(`${failed} 个没检测成`)
     if (note) parts.push(note)
     checkResult.value = parts.join(' · ')
@@ -317,8 +321,6 @@ async function doCheck(mode) {
   } finally { checking.value = false }
 }
 
-// customClass 里的 pre-line 让消息里的 \n 真的换行。
-// 不用 dangerouslyUseHTMLString：消息里会拼邮箱、文件名这些数据，走 HTML 等于开 XSS 口子。
 async function confirm(msg) {
   try {
     await ElMessageBox.confirm(msg, '确认', {
@@ -326,14 +328,15 @@ async function confirm(msg) {
       customClass: 'confirm-multiline',
     })
     return true
-  }
-  catch (_) { return false }
+  } catch (_) { return false }
 }
+
 async function deleteOne(email) {
   if (!(await confirm(`删除 ${email} 的凭证？`))) return
   try { await deleteRegistered(email); ElMessage.success('已删除'); load() }
   catch (e) { ElMessage.error(e.message) }
 }
+
 async function deleteSelected() {
   const emails = selected.value.map((r) => r.email)
   if (!emails.length) return
@@ -341,6 +344,7 @@ async function deleteSelected() {
   try { const r = await bulkDeleteRegistered({ emails }); ElMessage.success(`已删除 ${r.deleted} 条`); load() }
   catch (e) { ElMessage.error(e.message) }
 }
+
 async function deleteAll() {
   if (!(await confirm('这会清空注册结果表里的所有凭证！邮箱列表不受影响，确定？'))) return
   if (!(await confirm('再次确认：真的要删除全部凭证吗？此操作不可恢复！'))) return
@@ -349,8 +353,6 @@ async function deleteAll() {
 }
 
 // ──────────── 批量导出 ────────────
-// 格式清单来自后端 export_formats.py，下拉菜单是 v-for 出来的：
-// 以后加格式只改后端那一个文件，这里一行都不用动。
 const exportFormats = ref([])
 const exporting = ref(false)
 const exportVisible = ref(false)
@@ -358,11 +360,6 @@ const exportText = ref('')
 const exportCount = ref(0)
 const exportFilename = ref('')
 const exportLabel = ref('')
-// 这一批导出的到底是哪些号 —— 「下载并删除」照着它删，来自后端 r.emails。
-// 为什么要后端给、为什么在导出那一刻就存下来：
-//   · 「导出全部」是跨页的，前端手里只有当前页 20 行，自己凑必漏；
-//   · 弹窗开着的时候主人可能改勾选、翻页，后台自动跑号还会插进新号进来，
-//     那时再去读 selected/表格，删的就不是刚下载的那批了。
 const exportedEmails = ref([])
 const deletingExported = ref(false)
 
@@ -380,13 +377,11 @@ async function loadExportFormats() {
 
 async function doExport(fmt) {
   const emails = selected.value.map((r) => r.email)
-  // 没勾选 = 导出全部（跨页，不只当前页）
   const payload = emails.length ? { format: fmt.id, emails } : { format: fmt.id, all: true }
   exporting.value = true
   try {
     const r = await exportRegistered(payload)
     exportedEmails.value = (r.emails || []).filter(Boolean)
-    // download 模式（CPA zip / SUB2API json）：不弹预览，直接落盘
     if (r.mode === 'download') {
       saveBlob(b64ToBytes(r.b64), r.filename, r.mime)
       ElMessage.success(`已下载 ${r.filename}（${r.count} 个号）`)
@@ -424,23 +419,13 @@ function downloadExport() {
   saveBlob(exportText.value, exportFilename.value, 'text/plain;charset=utf-8')
 }
 
-// ──────────── 下载并删除 ────────────
-// 主人的原话：「不然分不清楚越堆越多」。导出的 txt 里邮箱/密码/2FA/取件url 都齐了，
-// 这两张表就没有留存价值了，一起清掉。
-//
-// ⚠️ 顺序**必须**是「先下载、再确认、最后删」：
-//    删库是不可恢复的，而浏览器下载可能被拦（弹窗拦截 / 用户点了取消 / 磁盘满）。
-//    先把文件落盘再问，主人是在**手里已经有 txt** 的前提下点的确认。
-//    确认框里再报一遍将要删的两张表各多少条，删完之前还有最后一次反悔机会。
 async function downloadAndDelete() {
   downloadExport()
-
   const emails = exportedEmails.value
   if (!emails.length) {
     ElMessage.warning('这批导出没有拿到 email 列表，只下载不删除')
     return
   }
-
   const ok = await confirm(
     `已下载 ${exportFilename.value}。\n\n` +
     `现在删除这 ${emails.length} 个号：\n` +
@@ -452,24 +437,20 @@ async function downloadAndDelete() {
 
   deletingExported.value = true
   try {
-    // 两张表分别删。先删注册结果：它是主人真正在看的那张表，
-    // 万一号池那边报错（比如这批号根本不是号池导入的、压根没有对应行），
-    // 至少结果表已经清干净了，不会出现"删了一半还看得见"。
     const r1 = await bulkDeleteRegistered({ emails })
     let poolDeleted = 0
     try {
       const r2 = await bulkDeleteAccounts({ emails })
       poolDeleted = r2.deleted || 0
     } catch (e) {
-      // 号池删失败不算整体失败：凭证已经清掉了，主人该知道的是号池还剩着
       ElMessage.warning('注册结果已删，但邮箱列表删除失败: ' + e.message)
     }
     ElMessage.success(`已删除：注册结果 ${r1.deleted} 条 / 邮箱列表 ${poolDeleted} 条`)
     exportVisible.value = false
     exportedEmails.value = []
     selected.value = []
-    load(true)          // 回第一页：这一批没了，停在旧页码多半是空页
-    runtime.bumpData()  // 通知「邮箱列表」那一页也刷新，否则主人切过去还看得到已删的号
+    load(true)
+    runtime.bumpData()
   } catch (e) {
     ElMessage.error('删除失败: ' + e.message)
   } finally {
@@ -481,12 +462,12 @@ async function downloadAndDelete() {
 const credVisible = ref(false)
 const credEmail = ref('')
 const credData = ref(null)
-// totp_secret 放最前：它是唯一「服务端取不回」的字段，弹窗一打开就要能看到
 const CRED_KEYS = ['totp_secret', 'totp_factor_id', 'access_token', 'session_token', 'refresh_token', 'id_token', 'device_id', 'csrf_token', 'cookie_header', 'password']
 const credRows = computed(() => {
   if (!credData.value) return []
   return CRED_KEYS.filter((k) => credData.value[k]).map((k) => ({ key: k, val: credData.value[k] }))
 })
+
 async function viewCred(email) {
   try {
     const { data } = await getRegistered(email)
@@ -495,6 +476,7 @@ async function viewCred(email) {
     credVisible.value = true
   } catch (e) { ElMessage.error('加载凭证失败: ' + e.message) }
 }
+
 async function copyCell(email, field) {
   try {
     const { data } = await getRegistered(email)
@@ -503,19 +485,17 @@ async function copyCell(email, field) {
     await copyText(val)
   } catch (e) { ElMessage.error('加载凭证失败: ' + e.message) }
 }
+
 function copyAllJson() {
   if (credData.value) copyText(JSON.stringify(credData.value, null, 2))
 }
 
-// ── 手动编辑凭证 ──
-// 只改本地库，不同步 OpenAI。改完的值会被登录流程直接用上
-// （registrar 的 account_callback 走 db.get_registered，不区分数据来源）。
+// 手动编辑凭证
 const editVisible = ref(false)
 const editSaving = ref(false)
 const editEmail = ref('')
 const editPassword = ref('')
 const editSecret = ref('')
-// 打开弹窗时的原值，用来判断哪些字段真被改过（没改的不传，后端就不碰）
 const editOrigPassword = ref('')
 const editOrigSecret = ref('')
 
@@ -532,7 +512,6 @@ async function saveEdit() {
   const pw = editPassword.value
   const sec = editSecret.value.trim()
   const payload = { email: editEmail.value }
-  // 只把真正改动过的字段传给后端 —— 没动的字段不传，后端就不会碰它
   if (pw !== editOrigPassword.value) payload.password = pw
   if (sec !== editOrigSecret.value) payload.totp_secret = sec
   if (payload.password === undefined && payload.totp_secret === undefined) {
@@ -540,8 +519,6 @@ async function saveEdit() {
     editVisible.value = false
     return
   }
-  // secret 是唯一「服务端取不回」的凭证：覆盖掉原值 = 该号 2FA 永久锁死。
-  // 只在「原本就有 secret」且「确实要改」时拦一道，新填不打扰。
   if (payload.totp_secret !== undefined && editOrigSecret.value) {
     try {
       await ElMessageBox.confirm(
@@ -560,480 +537,779 @@ async function saveEdit() {
     editVisible.value = false
     await load()
   } catch (e) {
-    // 后端 400 会带具体原因（如「TOTP secret 含非法字符」），原样透出
     ElMessage.error('保存失败: ' + (e.response?.data?.detail || e.message))
   } finally { editSaving.value = false }
 }
 
-watch(page, () => load())
 watch(dataVersion, () => load())
 onActivated(() => load())
 </script>
+
 <template>
-  <div class="page">
-    <el-card shadow="never">
-      <template #header><span class="section-title" style="margin: 0">注册结果</span></template>
+  <div class="registered-page">
+    <div class="macos-window-panel">
+      <!-- 顶部 macOS 风格工具栏 -->
+      <div class="macos-toolbar">
+        <div class="toolbar-left">
+          <div class="page-title-badge">
+            <span class="dot-live"></span>
+            <span class="title">注册结果</span>
+            <span class="badge-total">{{ total }} 条</span>
+          </div>
 
-      <el-space wrap style="margin-bottom: 12px">
-        <el-button @click="load(false)"><el-icon><Refresh /></el-icon>刷新</el-button>
-        <el-select v-model="filter" style="width: 130px" @change="load(true)">
-          <el-option label="全部" value="all" />
-          <el-option label="有 RT" value="has_rt" />
-          <el-option label="无 RT" value="no_rt" />
-          <el-option label="未检测" value="unchecked" />
-          <el-option label="Free" value="free" />
-          <el-option label="可领Plus" value="plus" />
-          <el-option label="已封号" value="banned" />
-          <el-option label="凭证失效" value="token_invalid" />
-          <el-option label="OA未检" value="oa_unchecked" />
-          <el-option label="OA命中" value="oa_hit" />
-          <el-option label="OA未中" value="oa_miss" />
-        </el-select>
-        <el-select
-          v-model="form.proxy" filterable clearable allow-create default-first-option
-          :reserve-keyword="false" placeholder="检测代理（留空直连）"
-          style="width: 260px"
-        >
-          <el-option v-for="p in proxyList" :key="p" :label="p" :value="p" />
-        </el-select>
-        <el-button :loading="checking" @click="doCheck('unchecked')">检查未检测</el-button>
-        <el-button :loading="checking" @click="doCheck('all')">重新检查</el-button>
-        <el-button :loading="checking" :disabled="!selected.length" @click="doCheck('selected')">
-          检测选中 ({{ selected.length }})
-        </el-button>
-        <el-button type="primary" :disabled="!selected.length" @click="openOA">
-          资格检测 ({{ selected.length }})
-        </el-button>
-        <el-divider direction="vertical" />
-        <el-dropdown trigger="click" @command="doExport" @visible-change="(v) => v && loadExportFormats()">
-          <el-button :loading="exporting">
-            <el-icon><Download /></el-icon>{{ exportBtnText }}
-            <el-icon class="el-icon--right"><ArrowDown /></el-icon>
+          <el-button class="macos-btn" @click="load(false)">
+            <el-icon><Refresh /></el-icon>刷新
           </el-button>
-          <template #dropdown>
-            <el-dropdown-menu>
-              <el-dropdown-item v-for="f in exportFormats" :key="f.id" :command="f" :divided="f.mode === 'download' && f.id === 'cpa'">
-                {{ f.label }}
-                <span v-if="f.note" class="hint" style="margin-left: 6px">{{ f.note }}</span>
-              </el-dropdown-item>
-              <el-dropdown-item v-if="!exportFormats.length" disabled>加载中...</el-dropdown-item>
-            </el-dropdown-menu>
-          </template>
-        </el-dropdown>
-        <el-divider direction="vertical" />
-        <el-button type="danger" plain :disabled="!selected.length" @click="deleteSelected">
-          删除选中 ({{ selected.length }})
-        </el-button>
-        <el-button type="danger" plain @click="deleteAll">清空全部</el-button>
-        <span class="hint">{{ checkResult }}</span>
-      </el-space>
 
-      <el-skeleton v-if="loading && !rows.length" :rows="6" animated style="padding: 8px 0" />
-      <el-table
-        v-else
-        v-loading="loading" :data="rows" size="small" stripe
-        @selection-change="(v) => (selected = v)"
-      >
-        <el-table-column type="selection" width="44" />
-        <el-table-column prop="email" label="邮箱" min-width="200" show-overflow-tooltip />
-        <!-- 密码直接明文列出：随机 16 位，是登录账号的必需品，
-             藏进「查看凭证」弹窗每次都要多点两下。列表接口本来就在返回它。
-             图标放在文字**后面**：放前面会把值整体右推 27px（见 .cell-copy 注释）。 -->
-        <el-table-column label="密码" min-width="170">
-          <template #default="{ row }">
-            <el-button
-              v-if="row.password" size="small" text type="primary"
-              class="cell-copy mono" @click="copyText(row.password)"
-            >
-              {{ row.password }}<el-icon class="ico"><CopyDocument /></el-icon>
+          <el-select v-model="filter" class="macos-select filter-select" @change="load(true)">
+            <el-option label="全部" value="all" />
+            <el-option label="有 RT" value="has_rt" />
+            <el-option label="无 RT" value="no_rt" />
+            <el-option label="未检测" value="unchecked" />
+            <el-option label="Free" value="free" />
+            <el-option label="可领Plus" value="plus" />
+            <el-option label="已封号" value="banned" />
+            <el-option label="凭证失效" value="token_invalid" />
+            <el-option label="OA未检" value="oa_unchecked" />
+            <el-option label="OA命中" value="oa_hit" />
+            <el-option label="OA未中" value="oa_miss" />
+          </el-select>
+
+          <el-select
+            v-model="form.proxy" filterable clearable allow-create default-first-option
+            :reserve-keyword="false" placeholder="检测代理（留空直连）"
+            class="macos-select proxy-select"
+          >
+            <el-option v-for="p in proxyList" :key="p" :label="p" :value="p" />
+          </el-select>
+        </div>
+
+        <div class="toolbar-right">
+          <!-- Plus 检测操作组 -->
+          <div class="macos-btn-group">
+            <el-button size="small" :loading="checking" @click="doCheck('unchecked')">检查未检</el-button>
+            <el-button size="small" :loading="checking" @click="doCheck('all')">全重检</el-button>
+            <el-button size="small" :loading="checking" :disabled="!selected.length" @click="doCheck('selected')">
+              检选中 ({{ selected.length }})
             </el-button>
-            <span v-else class="hint">—</span>
-          </template>
-        </el-table-column>
-        <!-- 2FA secret 同样明文列出：它是唯一「服务端取不回」的凭证，
-             丢了这个号就永久锁死，必须一眼看见、一点就能复制。
-             min-width 必须装得下 32 位 base32：.cell 带 overflow:hidden，
-             宽度不够会**无声截断**，肉眼核对时看到的是残缺值。实测需 ~250px。 -->
-        <el-table-column label="2FA" min-width="260">
-          <template #default="{ row }">
-            <el-button
-              v-if="row.totp_secret" size="small" text type="warning"
-              class="cell-copy mono" @click="copyText(row.totp_secret)"
-            >
-              {{ row.totp_secret }}<el-icon class="ico"><CopyDocument /></el-icon>
+          </div>
+
+          <!-- 核心高亮：资格检测 -->
+          <el-button
+            type="primary" class="oa-action-btn" :disabled="!selected.length"
+            @click="openOA"
+          >
+            <el-icon><Compass /></el-icon>资格检测 ({{ selected.length }})
+          </el-button>
+
+          <!-- 导出下拉 -->
+          <el-dropdown trigger="click" @command="doExport" @visible-change="(v) => v && loadExportFormats()">
+            <el-button class="macos-btn" :loading="exporting">
+              <el-icon><Download /></el-icon>{{ exportBtnText }}
+              <el-icon class="el-icon--right"><ArrowDown /></el-icon>
             </el-button>
-            <span v-else class="hint">—</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="Plus状态" width="120">
-          <template #default="{ row }">
-            <StatusDot v-if="plusOf(row)" :type="PLUS_TYPE[plusOf(row).status] || 'info'" :text="plusOf(row).label" />
-            <span v-else class="hint">—</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="OA资格" width="120">
-          <template #default="{ row }">
-            <el-tooltip
-              v-if="row.oa_check && oaMeta(row)"
-              :content="row.oa_check.error || `${row.oa_check.state} · ${row.oa_check.elapsed_ms || 0}ms · ${row.oa_check.session_id_masked || '无 sid'}`"
-              placement="top"
-            >
-              <el-tag :type="oaMeta(row).type" size="small" effect="light">{{ oaMeta(row).label }}</el-tag>
-            </el-tooltip>
-            <span v-else class="hint">—</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="access" width="100" align="center">
-          <template #default="{ row }">
-            <el-button v-if="row.at_len > 0" size="small" text type="primary" @click="copyCell(row.email, 'access_token')">
-              <el-icon><CopyDocument /></el-icon>{{ row.at_len }}
+            <template #dropdown>
+              <el-dropdown-menu class="macos-dropdown-menu">
+                <el-dropdown-item v-for="f in exportFormats" :key="f.id" :command="f" :divided="f.mode === 'download' && f.id === 'cpa'">
+                  {{ f.label }}
+                  <span v-if="f.note" class="hint" style="margin-left: 6px">{{ f.note }}</span>
+                </el-dropdown-item>
+                <el-dropdown-item v-if="!exportFormats.length" disabled>加载中...</el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
+
+          <!-- 删除操作 -->
+          <div class="macos-btn-group danger-group">
+            <el-button size="small" type="danger" plain :disabled="!selected.length" @click="deleteSelected">
+              删除 ({{ selected.length }})
             </el-button>
-            <span v-else class="hint">—</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="session" width="100" align="center">
-          <template #default="{ row }">
-            <el-button v-if="row.st_len > 0" size="small" text type="primary" @click="copyCell(row.email, 'session_token')">
-              <el-icon><CopyDocument /></el-icon>{{ row.st_len }}
-            </el-button>
-            <span v-else class="hint">—</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="refresh" width="100" align="center">
-          <template #default="{ row }">
-            <el-button v-if="row.rt_len > 0" size="small" text type="primary" @click="copyCell(row.email, 'refresh_token')">
-              <el-icon><CopyDocument /></el-icon>{{ row.rt_len }}
-            </el-button>
-            <span v-else class="hint">—</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="时间" width="160">
-          <template #default="{ row }">{{ fmtTime(row.created_at) }}</template>
-        </el-table-column>
-        <el-table-column label="操作" width="200" fixed="right">
-          <template #default="{ row }">
-            <el-button size="small" text @click="viewCred(row.email)">查看凭证</el-button>
-            <el-button size="small" text type="warning" @click="openEdit(row)">编辑</el-button>
-            <el-button size="small" text type="danger" @click="deleteOne(row.email)">删除</el-button>
-          </template>
-        </el-table-column>
-        <template #empty>
-          <el-empty description="暂无注册结果，去「单次注册」或「全自动批量」跑号" :image-size="70" />
-        </template>
-      </el-table>
-      <div style="display: flex; justify-content: center; margin-top: 14px">
-        <el-pagination
-          v-model:current-page="page" :page-size="PAGE_SIZE" :total="total"
-          layout="prev, pager, next, total" background
-        />
+            <el-button size="small" type="danger" plain @click="deleteAll">清空</el-button>
+          </div>
+        </div>
       </div>
 
-      <el-dialog v-model="exportVisible" width="720px" top="8vh">
-        <template #header>
-          <div style="display: flex; align-items: center; gap: 12px">
-            <span style="font-weight: 600">导出 · {{ exportLabel }}</span>
-            <el-tag size="small" type="info">共 {{ exportCount }} 行</el-tag>
-          </div>
-        </template>
-        <el-input
-          :model-value="exportText" type="textarea" :rows="14" readonly
-          class="mono export-area"
-        />
-        <template #footer>
-          <el-button @click="copyText(exportText)">
-            <el-icon><CopyDocument /></el-icon>复制全部
-          </el-button>
-          <el-button type="primary" @click="downloadExport">
-            <el-icon><Download /></el-icon>下载 {{ exportFilename }}
-          </el-button>
-          <!-- 危险动作放最右、danger 色，和左边的纯下载拉开距离，避免手滑。
-               先下载文件、再弹二次确认，确认框里会报清楚要删哪两张表各多少条。 -->
-          <el-button
-            type="danger" plain
-            :loading="deletingExported"
-            :disabled="!exportedEmails.length"
-            @click="downloadAndDelete"
-          >
-            <el-icon><Delete /></el-icon>下载并删除这 {{ exportedEmails.length }} 个号
-          </el-button>
-        </template>
-      </el-dialog>
+      <!-- 实时检测提示小条 -->
+      <div v-if="checkResult" class="check-result-bar">
+        <el-icon><InfoFilled /></el-icon>
+        <span>{{ checkResult }}</span>
+      </div>
 
-      <el-dialog v-model="credVisible" :title="credEmail" width="760px" top="6vh">
-        <template #header>
-          <div style="display: flex; align-items: center; gap: 12px">
-            <span class="mono" style="font-weight: 600">{{ credEmail }}</span>
-            <el-button size="small" @click="copyAllJson">复制全部 JSON</el-button>
-          </div>
-        </template>
+      <!-- 中间主体表格区域：height="100%" 自适应弹性伸缩，绝无外部整页滚动条 -->
+      <div class="macos-table-container">
+        <el-skeleton v-if="loading && !rows.length" :rows="8" animated style="padding: 16px" />
+        <el-table
+          v-else
+          v-loading="loading"
+          :data="rows"
+          height="100%"
+          size="small"
+          stripe
+          class="macos-table"
+          @selection-change="(v) => (selected = v)"
+        >
+          <el-table-column type="selection" width="42" align="center" />
+          <el-table-column prop="email" label="邮箱" min-width="190" show-overflow-tooltip />
+
+          <el-table-column label="密码" min-width="160">
+            <template #default="{ row }">
+              <button
+                v-if="row.password"
+                class="macos-tag-btn copy-btn"
+                title="点击复制密码"
+                @click="copyText(row.password)"
+              >
+                <span class="mono">{{ row.password }}</span>
+                <el-icon class="copy-ico"><CopyDocument /></el-icon>
+              </button>
+              <span v-else class="hint">—</span>
+            </template>
+          </el-table-column>
+
+          <el-table-column label="2FA Secret" min-width="220">
+            <template #default="{ row }">
+              <button
+                v-if="row.totp_secret"
+                class="macos-tag-btn copy-btn secret-btn"
+                title="点击复制 2FA Secret"
+                @click="copyText(row.totp_secret)"
+              >
+                <span class="mono">{{ row.totp_secret }}</span>
+                <el-icon class="copy-ico"><CopyDocument /></el-icon>
+              </button>
+              <span v-else class="hint">—</span>
+            </template>
+          </el-table-column>
+
+          <el-table-column label="Plus状态" width="115" align="center">
+            <template #default="{ row }">
+              <StatusDot v-if="plusOf(row)" :type="PLUS_TYPE[plusOf(row).status] || 'info'" :text="plusOf(row).label" />
+              <span v-else class="hint">—</span>
+            </template>
+          </el-table-column>
+
+          <el-table-column label="OA资格" width="115" align="center">
+            <template #default="{ row }">
+              <el-tooltip
+                v-if="row.oa_check && oaMeta(row)"
+                :content="row.oa_check.error || `${row.oa_check.state} · ${row.oa_check.elapsed_ms || 0}ms · ${row.oa_check.session_id_masked || '无 sid'}`"
+                placement="top"
+              >
+                <el-tag :type="oaMeta(row).type" size="small" effect="light" class="macos-tag">
+                  {{ oaMeta(row).label }}
+                </el-tag>
+              </el-tooltip>
+              <span v-else class="hint">—</span>
+            </template>
+          </el-table-column>
+
+          <el-table-column label="AT" width="85" align="center">
+            <template #default="{ row }">
+              <el-button v-if="row.at_len > 0" size="small" text type="primary" class="mono token-btn" @click="copyCell(row.email, 'access_token')">
+                <el-icon><DocumentCopy /></el-icon>{{ row.at_len }}
+              </el-button>
+              <span v-else class="hint">—</span>
+            </template>
+          </el-table-column>
+
+          <el-table-column label="ST" width="85" align="center">
+            <template #default="{ row }">
+              <el-button v-if="row.st_len > 0" size="small" text type="primary" class="mono token-btn" @click="copyCell(row.email, 'session_token')">
+                <el-icon><DocumentCopy /></el-icon>{{ row.st_len }}
+              </el-button>
+              <span v-else class="hint">—</span>
+            </template>
+          </el-table-column>
+
+          <el-table-column label="RT" width="85" align="center">
+            <template #default="{ row }">
+              <el-button v-if="row.rt_len > 0" size="small" text type="primary" class="mono token-btn" @click="copyCell(row.email, 'refresh_token')">
+                <el-icon><DocumentCopy /></el-icon>{{ row.rt_len }}
+              </el-button>
+              <span v-else class="hint">—</span>
+            </template>
+          </el-table-column>
+
+          <el-table-column label="注册时间" width="150" show-overflow-tooltip>
+            <template #default="{ row }">
+              <span class="mono-date">{{ fmtTime(row.created_at) }}</span>
+            </template>
+          </el-table-column>
+
+          <el-table-column label="操作" width="170" fixed="right" align="center">
+            <template #default="{ row }">
+              <div class="row-actions">
+                <el-button size="small" text @click="viewCred(row.email)">凭证</el-button>
+                <el-button size="small" text type="primary" @click="openEdit(row)">编辑</el-button>
+                <el-button size="small" text type="danger" @click="deleteOne(row.email)">删除</el-button>
+              </div>
+            </template>
+          </el-table-column>
+
+          <template #empty>
+            <el-empty description="暂无注册结果，去「单次注册」或「全自动批量」跑号" :image-size="60" />
+          </template>
+        </el-table>
+      </div>
+
+      <!-- 底部固定 macOS 风格状态与全能分页栏 (10, 20, 30, 50, 100) -->
+      <div class="macos-footer-bar">
+        <div class="footer-status-left">
+          <span v-if="selected.length" class="selected-badge">已勾选 <b>{{ selected.length }}</b> 项</span>
+          <span v-else class="total-badge">当前页共 {{ rows.length }} 条记录</span>
+        </div>
+
+        <div class="footer-pagination-right">
+          <el-pagination
+            v-model:current-page="page"
+            v-model:page-size="pageSize"
+            :page-sizes="[10, 20, 30, 50, 100]"
+            :total="total"
+            layout="total, sizes, prev, pager, next, jumper"
+            size="small"
+            background
+            class="macos-pagination"
+            @size-change="handleSizeChange"
+            @current-change="handleCurrentChange"
+          />
+        </div>
+      </div>
+    </div>
+
+    <!-- ──────────────── 各种弹窗 ──────────────── -->
+
+    <!-- 批量导出弹窗 -->
+    <el-dialog v-model="exportVisible" width="720px" top="8vh" class="macos-custom-dialog">
+      <template #header>
+        <div style="display: flex; align-items: center; gap: 12px">
+          <span style="font-weight: 600">导出 · {{ exportLabel }}</span>
+          <el-tag size="small" type="info">共 {{ exportCount }} 行</el-tag>
+        </div>
+      </template>
+      <el-input
+        :model-value="exportText" type="textarea" :rows="14" readonly
+        class="mono export-area"
+      />
+      <template #footer>
+        <el-button @click="copyText(exportText)">
+          <el-icon><CopyDocument /></el-icon>复制全部
+        </el-button>
+        <el-button type="primary" @click="downloadExport">
+          <el-icon><Download /></el-icon>下载 {{ exportFilename }}
+        </el-button>
+        <el-button
+          type="danger" plain
+          :loading="deletingExported"
+          :disabled="!exportedEmails.length"
+          @click="downloadAndDelete"
+        >
+          <el-icon><Delete /></el-icon>下载并删除这 {{ exportedEmails.length }} 个号
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 查看凭证弹窗 -->
+    <el-dialog v-model="credVisible" :title="credEmail" width="740px" top="6vh" class="macos-custom-dialog">
+      <template #header>
+        <div style="display: flex; align-items: center; gap: 12px">
+          <span class="mono" style="font-weight: 600">{{ credEmail }}</span>
+          <el-button size="small" @click="copyAllJson">复制全部 JSON</el-button>
+        </div>
+      </template>
+      <div class="cred-scroll-wrap">
         <div v-for="r in credRows" :key="r.key" style="margin-bottom: 12px">
           <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 4px">
-            <span class="mono" style="font-weight: 600; color: var(--dango-pink-dark)">{{ r.key }}</span>
+            <span class="mono" style="font-weight: 600; color: var(--el-color-primary)">{{ r.key }}</span>
             <el-tag size="small" type="info">len={{ r.val.length }}</el-tag>
-            <el-button size="small" @click="copyText(r.val)">复制</el-button>
+            <el-button size="small" text type="primary" @click="copyText(r.val)">复制</el-button>
           </div>
           <el-input :model-value="r.val" type="textarea" :rows="2" readonly class="mono" />
         </div>
         <el-empty v-if="!credRows.length" description="无凭证字段" />
-      </el-dialog>
+      </div>
+    </el-dialog>
 
-      <!-- 手动编辑凭证：把外部已知的密码/2FA 补进来，或修正记录错误 -->
-      <el-dialog v-model="editVisible" title="编辑凭证" width="560px" top="10vh">
-        <el-alert
-          type="warning" :closable="false" show-icon style="margin-bottom: 16px"
-          title="仅修改本地记录，不会同步到 OpenAI"
-          description="这里改密码不等于改了账号密码。填入的值会被登录流程直接使用。"
-        />
-        <el-form label-position="top">
-          <el-form-item label="邮箱">
-            <el-input :model-value="editEmail" class="mono" disabled />
-          </el-form-item>
-          <el-form-item label="密码">
-            <el-input v-model="editPassword" class="mono" placeholder="留空表示该号无密码" />
-          </el-form-item>
-          <el-form-item label="2FA Secret">
-            <el-input
-              v-model="editSecret" class="mono"
-              placeholder="base32，支持带空格/小写/otpauth:// 链接，会自动规范化"
-            />
-            <div class="hint" style="margin-top: 6px; line-height: 1.6">
-              服务端取不回此值，覆盖后原 secret 永久丢失。清空则该号按无 2FA 处理。
-            </div>
-          </el-form-item>
-        </el-form>
-        <template #footer>
-          <el-button @click="editVisible = false">取消</el-button>
-          <el-button type="primary" :loading="editSaving" @click="saveEdit">保存</el-button>
-        </template>
-      </el-dialog>
-
-      <!-- OAICS 资格检测：紧凑弹窗 + 左右分栏实时看板 -->
-      <el-dialog
-        v-model="oaVisible" width="980px" top="3vh"
-        class="oa-custom-dialog"
-        :close-on-click-modal="false" @closed="closeOA"
-      >
-        <template #header>
-          <div class="oa-header">
-            <div class="oa-header-title">
-              <span class="oa-title-badge">OAICS</span>
-              <span class="oa-title-text">资格检测控制台</span>
-              <el-tag size="small" type="info" round effect="plain">{{ selected.length }} 个账号</el-tag>
-            </div>
-            <div v-if="oaTaskId" class="oa-header-extra">
-              <el-button size="small" text @click="oaConfigCollapsed = !oaConfigCollapsed">
-                <el-icon><Setting /></el-icon>{{ oaConfigCollapsed ? '展开参数配置' : '收起参数配置' }}
-              </el-button>
-            </div>
+    <!-- 编辑凭证弹窗 -->
+    <el-dialog v-model="editVisible" title="编辑凭证" width="540px" top="10vh" class="macos-custom-dialog">
+      <el-alert
+        type="warning" :closable="false" show-icon style="margin-bottom: 16px"
+        title="仅修改本地记录，不会同步到 OpenAI"
+        description="这里改密码不等于改了账号密码。填入的值会被登录流程直接使用。"
+      />
+      <el-form label-position="top" size="small">
+        <el-form-item label="邮箱">
+          <el-input :model-value="editEmail" class="mono" disabled />
+        </el-form-item>
+        <el-form-item label="密码">
+          <el-input v-model="editPassword" class="mono" placeholder="留空表示该号无密码" />
+        </el-form-item>
+        <el-form-item label="2FA Secret">
+          <el-input
+            v-model="editSecret" class="mono"
+            placeholder="base32，支持带空格/小写/otpauth:// 链接，会自动规范化"
+          />
+          <div class="hint" style="margin-top: 6px; line-height: 1.6">
+            服务端取不回此值，覆盖后原 secret 永久丢失。清空则该号按无 2FA 处理。
           </div>
-        </template>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="editVisible = false">取消</el-button>
+        <el-button type="primary" :loading="editSaving" @click="saveEdit">保存</el-button>
+      </template>
+    </el-dialog>
 
-        <div class="oa-dialog-container">
-          <!-- 配置区域（开始后可折叠收起） -->
-          <el-collapse-transition>
-            <div v-show="!oaTaskId || !oaConfigCollapsed" class="oa-config-card">
-              <el-form label-position="top" :disabled="oaRunning" size="small">
-                <el-row :gutter="12">
-                  <el-col :span="11">
-                    <el-form-item label="接码/检测代理池 (每行一条，支持 sticky 格式)">
-                      <el-input
-                        v-model="oaForm.proxies" type="textarea" :rows="3" class="mono oa-proxy-input"
-                        placeholder="socks5h://user-region-JP-sid-xxx@host:port&#10;user:pass-BR-session-5m@host:port"
-                      />
-                      <div class="oa-proxy-actions">
-                        <el-button size="small" text type="primary" @click="loadProxyListToOA">
-                          载入代理池 ({{ proxyList.length }})
-                        </el-button>
-                        <el-button size="small" text @click="oaForm.proxies = ''">清空</el-button>
-                      </div>
-                    </el-form-item>
-                  </el-col>
-                  <el-col :span="13">
-                    <el-row :gutter="8">
-                      <el-col :span="8">
-                        <el-form-item label="并发数">
-                          <el-input-number v-model="oaForm.workers" :min="1" :max="20" style="width: 100%" />
-                        </el-form-item>
-                      </el-col>
-                      <el-col :span="8">
-                        <el-form-item label="每号轮数">
-                          <el-input-number v-model="oaForm.rounds" :min="1" :max="20" style="width: 100%" />
-                        </el-form-item>
-                      </el-col>
-                      <el-col :span="8">
-                        <el-form-item label="超时(秒)">
-                          <el-input-number v-model="oaForm.timeout" :min="5" :max="120" style="width: 100%" />
-                        </el-form-item>
-                      </el-col>
-                      <el-col :span="8">
-                        <el-form-item label="出口国家">
-                          <el-input v-model="oaForm.proxyCountry" class="mono" />
-                        </el-form-item>
-                      </el-col>
-                      <el-col :span="8">
-                        <el-form-item label="账单国家">
-                          <el-input v-model="oaForm.billingCountry" class="mono" />
-                        </el-form-item>
-                      </el-col>
-                      <el-col :span="8">
-                        <el-form-item label="币种">
-                          <el-input v-model="oaForm.currency" class="mono" />
-                        </el-form-item>
-                      </el-col>
-                    </el-row>
-                    <div class="oa-options-row">
-                      <el-checkbox v-model="oaForm.skipProxyCheck">跳过出口校验 (更快)</el-checkbox>
-                      <el-checkbox v-model="oaForm.withPromo">带促销 (1个月免费)</el-checkbox>
-                    </div>
-                  </el-col>
-                </el-row>
-              </el-form>
-            </div>
-          </el-collapse-transition>
-
-          <!-- 运行状态看板（任务开始后显示） -->
-          <template v-if="oaTaskId">
-            <!-- 统计指标行 KPI Cards + Progress Bar -->
-            <div class="oa-kpi-bar">
-              <div class="oa-kpi-item">
-                <div class="kpi-label">总体进度</div>
-                <div class="kpi-val">{{ oaStats.done }} / {{ oaStats.total }}</div>
-              </div>
-              <div class="oa-kpi-item kpi-hit">
-                <div class="kpi-label">OAICS 命中</div>
-                <div class="kpi-val highlight">{{ oaStats.hit }}</div>
-              </div>
-              <div class="oa-kpi-item">
-                <div class="kpi-label">普通 CS</div>
-                <div class="kpi-val">{{ oaStats.cs }}</div>
-              </div>
-              <div class="oa-kpi-item" :class="{ 'kpi-warn': oaStats.err > 0 }">
-                <div class="kpi-label">出错/无AT</div>
-                <div class="kpi-val">{{ oaStats.err }}</div>
-              </div>
-              <div class="oa-progress-wrap">
-                <el-progress
-                  :percentage="oaStats.percent"
-                  :status="oaStats.done === oaStats.total ? 'success' : ''"
-                  :stroke-width="10"
-                  striped
-                  :striped-flow="oaRunning"
-                />
-              </div>
-            </div>
-
-            <!-- 核心监控分栏：左侧账号列表 + 右侧实时日志终端 -->
-            <div class="oa-monitor-split">
-              <!-- 左侧：账号状态明细表格 -->
-              <div class="oa-table-box">
-                <el-table :data="oaRows" size="small" stripe height="100%" :highlight-current-row="false">
-                  <el-table-column prop="email" label="邮箱" min-width="170" show-overflow-tooltip />
-                  <el-table-column label="状态" width="75" align="center">
-                    <template #default="{ row }">
-                      <el-tag v-if="row.status === 'done'" type="success" size="small">完成</el-tag>
-                      <el-tag v-else-if="row.status === 'running'" type="warning" size="small" effect="dark">检测中</el-tag>
-                      <el-tag v-else-if="row.status === 'cancelled'" type="info" size="small">已取消</el-tag>
-                      <el-tag v-else type="info" size="small" effect="plain">排队</el-tag>
-                    </template>
-                  </el-table-column>
-                  <el-table-column label="结果" min-width="155">
-                    <template #default="{ row }">
-                      <template v-if="row.result">
-                        <el-tag
-                          :type="(OA_STATE_META[row.result.state] || {}).type || 'info'"
-                          size="small"
-                          :effect="row.result.state === 'OAICS' ? 'dark' : 'light'"
-                        >
-                          {{ (OA_STATE_META[row.result.state] || { label: row.result.state }).label }}
-                        </el-tag>
-                        <span v-if="row.result.session_id_masked" class="hint mono" style="margin-left: 4px; font-size: 11px">
-                          {{ row.result.session_id_masked }}
-                        </span>
-                        <el-tooltip v-if="row.result.error" :content="row.result.error" placement="top">
-                          <span class="hint error-hint" style="margin-left: 4px; color: var(--el-color-danger); cursor: help">⚠</span>
-                        </el-tooltip>
-                      </template>
-                      <span v-else class="hint">—</span>
-                    </template>
-                  </el-table-column>
-                  <el-table-column label="耗时" width="75" align="right">
-                    <template #default="{ row }">
-                      <span class="mono" style="font-size: 11px">{{ row.result && row.result.elapsed_ms ? row.result.elapsed_ms + 'ms' : '—' }}</span>
-                    </template>
-                  </el-table-column>
-                </el-table>
-              </div>
-
-              <!-- 右侧：黑色终端风格日志 -->
-              <div class="oa-terminal-box">
-                <div class="oa-terminal-header">
-                  <span class="terminal-dot red"></span>
-                  <span class="terminal-dot yellow"></span>
-                  <span class="terminal-dot green"></span>
-                  <span class="terminal-title">实时探测日志 ({{ oaLogs.length }} 行)</span>
-                  <el-button size="small" text class="terminal-clear-btn" @click="oaLogs = []">清屏</el-button>
-                </div>
-                <div id="oa-log-box" class="oa-terminal-body">
-                  <div v-for="(log, idx) in oaLogs" :key="idx" class="terminal-line" :class="getLogClass(log)">
-                    {{ log }}
-                  </div>
-                  <div v-if="!oaLogs.length" class="terminal-empty">等待日志输出...</div>
-                </div>
-              </div>
-            </div>
-          </template>
+    <!-- OAICS 资格检测控制台弹窗 -->
+    <el-dialog
+      v-model="oaVisible" width="980px" top="3vh"
+      class="oa-custom-dialog"
+      :close-on-click-modal="false" @closed="closeOA"
+    >
+      <template #header>
+        <div class="oa-header">
+          <div class="oa-header-title">
+            <span class="oa-title-badge">OAICS</span>
+            <span class="oa-title-text">资格检测控制台</span>
+            <el-tag size="small" type="info" round effect="plain">{{ selected.length }} 个账号</el-tag>
+          </div>
+          <div v-if="oaTaskId" class="oa-header-extra">
+            <el-button size="small" text @click="oaConfigCollapsed = !oaConfigCollapsed">
+              <el-icon><Setting /></el-icon>{{ oaConfigCollapsed ? '展开参数配置' : '收起参数配置' }}
+            </el-button>
+          </div>
         </div>
+      </template>
 
-        <template #footer>
-          <div class="oa-dialog-footer">
-            <div class="footer-tip">
-              <span v-if="oaRunning" class="running-indicator">
-                <span class="pulse-dot"></span> 检测进行中 (并发: {{ oaForm.workers }})...
-              </span>
-              <span v-else-if="oaTaskId" class="finished-indicator">
-                检测完毕，结果已自动保存至数据库
-              </span>
+      <div class="oa-dialog-container">
+        <!-- 配置卡片 -->
+        <el-collapse-transition>
+          <div v-show="!oaTaskId || !oaConfigCollapsed" class="oa-config-card">
+            <el-form label-position="top" :disabled="oaRunning" size="small">
+              <el-row :gutter="12">
+                <el-col :span="11">
+                  <el-form-item label="接码/检测代理池 (每行一条，支持 sticky 格式)">
+                    <el-input
+                      v-model="oaForm.proxies" type="textarea" :rows="3" class="mono oa-proxy-input"
+                      placeholder="socks5h://user-region-JP-sid-xxx@host:port&#10;user:pass-BR-session-5m@host:port"
+                    />
+                    <div class="oa-proxy-actions">
+                      <el-button size="small" text type="primary" @click="loadProxyListToOA">
+                        载入代理池 ({{ proxyList.length }})
+                      </el-button>
+                      <el-button size="small" text @click="oaForm.proxies = ''">清空</el-button>
+                    </div>
+                  </el-form-item>
+                </el-col>
+                <el-col :span="13">
+                  <el-row :gutter="8">
+                    <el-col :span="8">
+                      <el-form-item label="并发数">
+                        <el-input-number v-model="oaForm.workers" :min="1" :max="20" style="width: 100%" />
+                      </el-form-item>
+                    </el-col>
+                    <el-col :span="8">
+                      <el-form-item label="每号轮数">
+                        <el-input-number v-model="oaForm.rounds" :min="1" :max="20" style="width: 100%" />
+                      </el-form-item>
+                    </el-col>
+                    <el-col :span="8">
+                      <el-form-item label="超时(秒)">
+                        <el-input-number v-model="oaForm.timeout" :min="5" :max="120" style="width: 100%" />
+                      </el-form-item>
+                    </el-col>
+                    <el-col :span="8">
+                      <el-form-item label="出口国家">
+                        <el-input v-model="oaForm.proxyCountry" class="mono" />
+                      </el-form-item>
+                    </el-col>
+                    <el-col :span="8">
+                      <el-form-item label="账单国家">
+                        <el-input v-model="oaForm.billingCountry" class="mono" />
+                      </el-form-item>
+                    </el-col>
+                    <el-col :span="8">
+                      <el-form-item label="币种">
+                        <el-input v-model="oaForm.currency" class="mono" />
+                      </el-form-item>
+                    </el-col>
+                  </el-row>
+                  <div class="oa-options-row">
+                    <el-checkbox v-model="oaForm.skipProxyCheck">跳过出口校验 (更快)</el-checkbox>
+                    <el-checkbox v-model="oaForm.withPromo">带促销 (1个月免费)</el-checkbox>
+                  </div>
+                </el-col>
+              </el-row>
+            </el-form>
+          </div>
+        </el-collapse-transition>
+
+        <!-- 运行监控面板 -->
+        <template v-if="oaTaskId">
+          <!-- KPI 栏目 -->
+          <div class="oa-kpi-bar">
+            <div class="oa-kpi-item">
+              <div class="kpi-label">总体进度</div>
+              <div class="kpi-val">{{ oaStats.done }} / {{ oaStats.total }}</div>
             </div>
-            <div class="footer-btns">
-              <el-button @click="closeOA">关闭</el-button>
-              <el-button v-if="oaRunning" type="danger" plain @click="stopOA">
-                停止检测
-              </el-button>
-              <el-button v-else type="primary" :loading="oaRunning" @click="startOA">
-                {{ oaTaskId ? '重新检测' : '开始检测' }}
-              </el-button>
+            <div class="oa-kpi-item kpi-hit">
+              <div class="kpi-label">OAICS 命中</div>
+              <div class="kpi-val highlight">{{ oaStats.hit }}</div>
+            </div>
+            <div class="oa-kpi-item">
+              <div class="kpi-label">普通 CS</div>
+              <div class="kpi-val">{{ oaStats.cs }}</div>
+            </div>
+            <div class="oa-kpi-item" :class="{ 'kpi-warn': oaStats.err > 0 }">
+              <div class="kpi-label">出错/无AT</div>
+              <div class="kpi-val">{{ oaStats.err }}</div>
+            </div>
+            <div class="oa-progress-wrap">
+              <el-progress
+                :percentage="oaStats.percent"
+                :status="oaStats.done === oaStats.total ? 'success' : ''"
+                :stroke-width="10"
+                striped
+                :striped-flow="oaRunning"
+              />
+            </div>
+          </div>
+
+          <!-- 双栏监控 -->
+          <div class="oa-monitor-split">
+            <!-- 左侧表格 -->
+            <div class="oa-table-box">
+              <el-table :data="oaRows" size="small" stripe height="100%" :highlight-current-row="false">
+                <el-table-column prop="email" label="邮箱" min-width="170" show-overflow-tooltip />
+                <el-table-column label="状态" width="75" align="center">
+                  <template #default="{ row }">
+                    <el-tag v-if="row.status === 'done'" type="success" size="small">完成</el-tag>
+                    <el-tag v-else-if="row.status === 'running'" type="warning" size="small" effect="dark">检测中</el-tag>
+                    <el-tag v-else-if="row.status === 'cancelled'" type="info" size="small">已取消</el-tag>
+                    <el-tag v-else type="info" size="small" effect="plain">排队</el-tag>
+                  </template>
+                </el-table-column>
+                <el-table-column label="结果" min-width="155">
+                  <template #default="{ row }">
+                    <template v-if="row.result">
+                      <el-tag
+                        :type="(OA_STATE_META[row.result.state] || {}).type || 'info'"
+                        size="small"
+                        :effect="row.result.state === 'OAICS' ? 'dark' : 'light'"
+                      >
+                        {{ (OA_STATE_META[row.result.state] || { label: row.result.state }).label }}
+                      </el-tag>
+                      <span v-if="row.result.session_id_masked" class="hint mono" style="margin-left: 4px; font-size: 11px">
+                        {{ row.result.session_id_masked }}
+                      </span>
+                      <el-tooltip v-if="row.result.error" :content="row.result.error" placement="top">
+                        <span class="hint error-hint" style="margin-left: 4px; color: var(--el-color-danger); cursor: help">⚠</span>
+                      </el-tooltip>
+                    </template>
+                    <span v-else class="hint">—</span>
+                  </template>
+                </el-table-column>
+                <el-table-column label="耗时" width="75" align="right">
+                  <template #default="{ row }">
+                    <span class="mono" style="font-size: 11px">{{ row.result && row.result.elapsed_ms ? row.result.elapsed_ms + 'ms' : '—' }}</span>
+                  </template>
+                </el-table-column>
+              </el-table>
+            </div>
+
+            <!-- 右侧终端 -->
+            <div class="oa-terminal-box">
+              <div class="oa-terminal-header">
+                <span class="terminal-dot red"></span>
+                <span class="terminal-dot yellow"></span>
+                <span class="terminal-dot green"></span>
+                <span class="terminal-title">实时探测日志 ({{ oaLogs.length }} 行)</span>
+                <el-button size="small" text class="terminal-clear-btn" @click="oaLogs = []">清屏</el-button>
+              </div>
+              <div id="oa-log-box" class="oa-terminal-body">
+                <div v-for="(log, idx) in oaLogs" :key="idx" class="terminal-line" :class="getLogClass(log)">
+                  {{ log }}
+                </div>
+                <div v-if="!oaLogs.length" class="terminal-empty">等待日志输出...</div>
+              </div>
             </div>
           </div>
         </template>
-      </el-dialog>
-    </el-card>
+      </div>
+
+      <template #footer>
+        <div class="oa-dialog-footer">
+          <div class="footer-tip">
+            <span v-if="oaRunning" class="running-indicator">
+              <span class="pulse-dot"></span> 检测进行中 (并发: {{ oaForm.workers }})...
+            </span>
+            <span v-else-if="oaTaskId" class="finished-indicator">
+              检测完毕，结果已自动保存至数据库
+            </span>
+          </div>
+          <div class="footer-btns">
+            <el-button @click="closeOA">关闭</el-button>
+            <el-button v-if="oaRunning" type="danger" plain @click="stopOA">
+              停止检测
+            </el-button>
+            <el-button v-else type="primary" :loading="oaRunning" @click="startOA">
+              {{ oaTaskId ? '重新检测' : '开始检测' }}
+            </el-button>
+          </div>
+        </div>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <style scoped>
-/* 表格里「点一下就复制」的明文单元格（密码 / 2FA secret）。
-   :deep 是必需的：.el-button 由 Element Plus 渲染，scoped 的属性选择器打不到它。
+/* ──────────── 页面整体布局：100% 高度 + 绝无外层滚动条 ──────────── */
+.registered-page {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
 
-   为什么要重置 padding —— Element Plus 有两个长得很像的类：
-     .el-button--text  （旧版 type="text"）  padding 左右为 0
-     .el-button.is-text（新版 text 属性）    继承 --small 的 5px 11px
-   我们用的是后者，于是 11px padding + 12px 图标 + 4px 间隙 = 值被整体右推 27px，
-   同列的表头和空值「—」都贴着 cell 左沿，一眼就看出错位。 */
-:deep(.el-button.cell-copy.el-button--small) {
-  padding: 0 6px 0 0;
-  height: 20px;
+/* macOS 风格主面板卡片 */
+.macos-window-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--el-bg-color);
+  border: 1px solid var(--el-border-color-light);
+  border-radius: 10px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.04);
+  overflow: hidden;
+}
+
+/* ──────────── macOS 风格顶部工具栏 ──────────── */
+.macos-toolbar {
+  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  background: var(--el-fill-color-blank);
+  border-bottom: 1px solid var(--el-border-color-lighter);
+  flex-shrink: 0;
+}
+
+.toolbar-left, .toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.page-title-badge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: 4px;
+}
+.page-title-badge .dot-live {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--el-color-primary);
+}
+.page-title-badge .title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+}
+.page-title-badge .badge-total {
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+  background: var(--el-fill-color-light);
+  padding: 1px 6px;
+  border-radius: 10px;
+}
+
+.macos-btn {
+  border-radius: 6px;
   font-size: 12px;
 }
-/* 图标默认透明但**保留占位**：用 opacity 而不是 display:none，
-   否则 hover 时图标撑开宽度会把文字挤得左右抖。 */
-:deep(.cell-copy .ico) {
-  margin-left: 5px;
-  opacity: 0;
-  transition: opacity 0.12s;
-}
-:deep(.cell-copy:hover .ico) { opacity: 0.65; }
 
-/* ──────────── 资格检测控制台精致样式 ──────────── */
+.macos-select.filter-select {
+  width: 120px;
+}
+.macos-select.proxy-select {
+  width: 210px;
+}
+
+:deep(.macos-select .el-input__wrapper) {
+  border-radius: 6px;
+}
+
+/* 分组按钮 (macOS Segmented control 风格) */
+.macos-btn-group {
+  display: inline-flex;
+  background: var(--el-fill-color-light);
+  padding: 2px;
+  border-radius: 6px;
+  border: 1px solid var(--el-border-color-lighter);
+}
+.macos-btn-group :deep(.el-button) {
+  margin: 0;
+  border: none;
+  background: transparent;
+  padding: 5px 8px;
+  height: 24px;
+  font-size: 11.5px;
+  border-radius: 4px;
+}
+.macos-btn-group :deep(.el-button:hover:not(:disabled)) {
+  background: var(--el-bg-color);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+.macos-btn-group.danger-group :deep(.el-button) {
+  color: var(--el-color-danger);
+}
+
+/* 资格检测高亮按钮 */
+.oa-action-btn {
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  background: linear-gradient(135deg, #10b981, #059669);
+  border: none;
+  box-shadow: 0 2px 6px rgba(16, 185, 129, 0.25);
+}
+.oa-action-btn:hover {
+  background: linear-gradient(135deg, #059669, #047857);
+}
+
+.check-result-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 14px;
+  background: var(--el-color-primary-light-9);
+  color: var(--el-color-primary);
+  font-size: 12px;
+  border-bottom: 1px solid var(--el-color-primary-light-8);
+  flex-shrink: 0;
+}
+
+/* ──────────── 表格容器与单元格 ──────────── */
+.macos-table-container {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+:deep(.macos-table) {
+  font-size: 12.5px;
+}
+:deep(.macos-table th.el-table__cell) {
+  background: var(--el-fill-color-lighter);
+  color: var(--el-text-color-secondary);
+  font-weight: 600;
+  font-size: 12px;
+}
+
+/* 密码与 2FA 复制胶囊按钮 */
+.macos-tag-btn.copy-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--el-fill-color-light);
+  border: 1px solid var(--el-border-color-lighter);
+  padding: 1px 6px;
+  border-radius: 4px;
+  color: var(--el-text-color-primary);
+  cursor: pointer;
+  outline: none;
+  font-size: 12px;
+  transition: all 0.15s ease;
+  max-width: 100%;
+}
+.macos-tag-btn.copy-btn:hover {
+  background: var(--el-color-primary-light-9);
+  border-color: var(--el-color-primary-light-7);
+  color: var(--el-color-primary);
+}
+.macos-tag-btn.secret-btn {
+  color: var(--el-color-warning-dark-2);
+}
+.macos-tag-btn.secret-btn:hover {
+  background: var(--el-color-warning-light-9);
+  border-color: var(--el-color-warning-light-7);
+  color: var(--el-color-warning);
+}
+.copy-btn .copy-ico {
+  font-size: 11px;
+  opacity: 0.5;
+  transition: opacity 0.15s;
+}
+.copy-btn:hover .copy-ico {
+  opacity: 1;
+}
+
+.token-btn {
+  font-size: 11.5px;
+  padding: 0 4px;
+}
+.mono-date {
+  font-family: var(--el-font-family-monospace, monospace);
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+}
+.row-actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+}
+.row-actions :deep(.el-button) {
+  padding: 2px 4px;
+  font-size: 11.5px;
+}
+
+/* ──────────── 底部状态与全能分页栏 ──────────── */
+.macos-footer-bar {
+  padding: 6px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--el-fill-color-blank);
+  border-top: 1px solid var(--el-border-color-lighter);
+  flex-shrink: 0;
+}
+
+.footer-status-left {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+.selected-badge {
+  color: var(--el-color-primary);
+  font-weight: 500;
+}
+
+:deep(.macos-pagination) {
+  --el-pagination-button-bg-color: var(--el-fill-color-light);
+  --el-pagination-hover-color: var(--el-color-primary);
+}
+:deep(.macos-pagination .el-select .el-input) {
+  width: 95px;
+}
+
+/* ──────────── 弹窗通用样式 ──────────── */
+:deep(.macos-custom-dialog) {
+  border-radius: 10px;
+  overflow: hidden;
+}
+.cred-scroll-wrap {
+  max-height: 480px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+/* ──────────── OA 资格检测控制台弹窗 ──────────── */
 :deep(.oa-custom-dialog) {
   border-radius: 12px;
   overflow: hidden;
@@ -1242,8 +1518,6 @@ onActivated(() => load())
 }
 </style>
 
-<!-- 非 scoped：ElMessageBox 是挂到 body 上的，不在本组件的 scope 属性范围内，
-     scoped 样式打不到它。只作用在自家 customClass 上，不会污染别处的确认框。 -->
 <style>
 .confirm-multiline .el-message-box__message { white-space: pre-line; }
 </style>

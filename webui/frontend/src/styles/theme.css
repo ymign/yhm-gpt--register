@@ -109,3 +109,26 @@ body {
 /* 路由进度条配色（品牌蓝） */
 #nprogress .bar { background: var(--brand); height: 2px; }
 #nprogress .peg { box-shadow: 0 0 10px var(--brand), 0 0 5px var(--brand); }
+
+/* ──────────── 全局 macOS 极简悬浮滚动条 ──────────── */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(150, 150, 160, 0.25);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(150, 150, 160, 0.45);
+}
+html.dark ::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.18);
+}
+html.dark ::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.35);
+}
+

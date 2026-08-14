@@ -146,7 +146,10 @@ onMounted(() => {
 </template>
 
 <style scoped>
-.admin { height: 100vh; }
+.admin {
+  height: 100vh;
+  overflow: hidden;
+}
 .sidebar {
   background: var(--app-sidebar-bg);
   border-right: 1px solid var(--app-border);
@@ -187,6 +190,7 @@ onMounted(() => {
   background: var(--app-header-bg);
   border-bottom: 1px solid var(--app-border);
   padding: 0 16px;
+  height: 56px;
 }
 .topbar .left { display: flex; align-items: center; gap: 12px; }
 .topbar .right { display: flex; align-items: center; gap: 14px; }
@@ -196,19 +200,28 @@ onMounted(() => {
 .avatar { display: flex; align-items: center; gap: 6px; cursor: pointer; outline: none; }
 .avatar-img { background: var(--el-fill-color-darker); color: var(--el-text-color-regular); }
 .avatar-name { font-size: 13px; color: var(--el-text-color-regular); }
-.content { background: var(--app-content-bg); padding: 16px; }
-.circuit-banner { margin-bottom: 14px; }
+.content {
+  background: var(--app-content-bg);
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.circuit-banner { margin-bottom: 10px; flex-shrink: 0; }
 .ad-banner {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 14px;
-  margin-bottom: 14px;
+  padding: 6px 12px;
+  margin-bottom: 10px;
   border-radius: 6px;
   background: linear-gradient(135deg, #fff7e6 0%, #fff1d6 100%);
   border: 1px solid #ffd88a;
-  font-size: 13px;
+  font-size: 12px;
   color: #6b5900;
+  flex-shrink: 0;
 }
 :root.dark .ad-banner {
   background: linear-gradient(135deg, #2a2517 0%, #302818 100%);
