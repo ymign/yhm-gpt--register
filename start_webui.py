@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
-"""WebUI 一键启动脚本：装依赖 → 跑 uvicorn。
+"""WebUI 一键启动与关闭管理脚本：装依赖 → 跑 uvicorn / 查杀残留。
 
 用法：
     python start_webui.py             # 默认 127.0.0.1:8765
     python start_webui.py --port 9000 # 自定义端口
-    python start_webui.py --host 0.0.0.0 --port 8765  # 内网监听
+    python start_webui.py --stop      # 关闭 8765 端口服务
 """
 from __future__ import annotations
 
 import argparse
 import os
+import subprocess
 import sys
 import webbrowser
 from pathlib import Path
@@ -26,13 +27,70 @@ if sys.platform.startswith("win"):
 ROOT = Path(__file__).resolve().parent
 
 
+def stop_webui(port: int = 8765) -> bool:
+    """彻底查杀指定端口的服务进程。"""
+    print(f"\n[*] 正在检查并关闭 WebUI 服务 (端口 {port})...")
+    killed = 0
+    try:
+        out = subprocess.run(
+            ["netstat", "-ano"],
+            capture_output=True,
+            text=True,
+            errors="ignore",
+        ).stdout
+        target_token = f":{port}"
+        for line in out.splitlines():
+            if target_token in line and "LISTENING" in line:
+                parts = line.strip().split()
+                if len(parts) >= 5:
+                    pid = parts[-1]
+                    if pid.isdigit() and int(pid) > 0:
+                        subprocess.run(
+                            ["taskkill", "/F", "/T", "/PID", pid],
+                            capture_output=True,
+                        )
+                        killed += 1
+                        print(f"  [-] 已终结监听进程 PID: {pid}")
+    except Exception as exc:
+        print(f"  [!] netstat 检查异常: {exc}")
+
+    pid_file = ROOT / "webui.pid"
+    if pid_file.exists():
+        try:
+            pid = pid_file.read_text(encoding="utf-8").strip()
+            if pid.isdigit():
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", pid],
+                    capture_output=True,
+                )
+                killed += 1
+            pid_file.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    if killed > 0:
+        print(f"  [OK] WebUI 服务已成功关闭！\n")
+        return True
+    else:
+        print(f"  [i] 未检测到运行中的 WebUI 服务（端口 {port} 未被占用）。\n")
+        return False
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--host", default="127.0.0.1", help="监听地址 (默认 127.0.0.1)")
     ap.add_argument("--port", type=int, default=8765, help="监听端口 (默认 8765)")
     ap.add_argument("--no-browser", action="store_true", help="不自动打开浏览器")
     ap.add_argument("--reload", action="store_true", help="开发模式 (代码改动自动重启)")
+    ap.add_argument("--stop", action="store_true", help="关闭当前运行的 WebUI 服务")
     args = ap.parse_args()
+
+    if args.stop:
+        stop_webui(args.port)
+        return
+
+    # 启动前先清理一次可能残留的同端口旧服务
+    stop_webui(args.port)
 
     # 确保依赖装了
     try:
@@ -40,7 +98,6 @@ def main():
         import uvicorn  # noqa: F401
     except ImportError:
         print("[!] 缺少依赖，正在安装 fastapi / uvicorn ...")
-        import subprocess
         subprocess.check_call([
             sys.executable, "-m", "pip", "install",
             "fastapi", "uvicorn[standard]", "pydantic>=2",
@@ -52,8 +109,10 @@ def main():
     import uvicorn
 
     url = f"http://{args.host if args.host != '0.0.0.0' else '127.0.0.1'}:{args.port}/"
-    print(f"\n🔔 团子喵 WebUI 启动中...")
-    print(f"   访问: {url}\n")
+    print(f"===================================================")
+    print(f"  [*] 团子喵 WebUI 控制台已启动")
+    print(f"  [*] 浏览器访问: {url}")
+    print(f"===================================================\n")
 
     if not args.no_browser:
         try:
