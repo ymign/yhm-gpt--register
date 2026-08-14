@@ -15,7 +15,6 @@ const { stats } = storeToRefs(statsStore)
 const { banner } = storeToRefs(runtime)
 
 const collapse = ref(false)
-const adDismissed = ref(false)
 
 const GROUP_ORDER = ['概览', '注册', '数据', '配置']
 const groups = computed(() => {
@@ -59,10 +58,6 @@ onMounted(() => {
 <template>
   <el-container class="admin">
     <el-aside :width="collapse ? '64px' : '220px'" class="sidebar">
-      <div class="brand" :class="{ mini: collapse }">
-        <span class="logo"><el-icon :size="18"><Platform /></el-icon></span>
-        <span v-if="!collapse" class="brand-name">Outlook Register</span>
-      </div>
       <el-scrollbar>
         <el-menu :default-active="activeMenu" router :collapse="collapse" class="side-menu">
           <el-menu-item-group v-for="grp in groups" :key="grp.name" :title="collapse ? '' : grp.name">
@@ -105,7 +100,7 @@ onMounted(() => {
           <el-dropdown>
             <span class="avatar">
               <el-avatar :size="28" class="avatar-img"><el-icon><User /></el-icon></el-avatar>
-              <span class="avatar-name">管理员</span>
+              <span class="avatar-name">少司命</span>
               <el-icon :size="12"><ArrowDown /></el-icon>
             </span>
             <template #dropdown>
@@ -120,17 +115,6 @@ onMounted(() => {
       </el-header>
 
       <el-main class="content">
-        <div v-if="!adDismissed" class="ad-banner">
-          <div class="ad-content">
-            <el-icon :size="16" style="color: #e6a23c; flex-shrink: 0"><Bell /></el-icon>
-            <span>交流QQ群：<b>259844673</b></span>
-            <span class="ad-sep">|</span>
-            <span>推荐服务器：<a href="http://www.ransuyun.com" target="_blank" rel="noopener">燃速云</a></span>
-          </div>
-          <el-button text size="small" class="ad-close" @click="adDismissed = true">
-            <el-icon :size="14"><Close /></el-icon>
-          </el-button>
-        </div>
         <el-alert
           v-if="banner" :title="banner" type="error" show-icon
           class="circuit-banner" @close="runtime.dismissBanner"
@@ -156,32 +140,8 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   transition: width 0.2s;
+  padding-top: 8px;
 }
-.brand {
-  height: 56px;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 0 18px;
-  font-size: 16px;
-  font-weight: 600;
-  color: var(--app-title);
-  border-bottom: 1px solid var(--app-border);
-  white-space: nowrap;
-  overflow: hidden;
-}
-.brand .logo {
-  width: 30px;
-  height: 30px;
-  border-radius: 6px;
-  background: var(--brand);
-  color: #fff;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-.brand.mini { justify-content: center; padding: 0; }
 .side-menu { border-right: none; }
 .topbar {
   display: flex;
@@ -210,38 +170,6 @@ onMounted(() => {
   overflow: hidden;
 }
 .circuit-banner { margin-bottom: 10px; flex-shrink: 0; }
-.ad-banner {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 6px 12px;
-  margin-bottom: 10px;
-  border-radius: 6px;
-  background: linear-gradient(135deg, #fff7e6 0%, #fff1d6 100%);
-  border: 1px solid #ffd88a;
-  font-size: 12px;
-  color: #6b5900;
-  flex-shrink: 0;
-}
-:root.dark .ad-banner {
-  background: linear-gradient(135deg, #2a2517 0%, #302818 100%);
-  border-color: #5c4a1e;
-  color: #d4b96a;
-}
-.ad-content {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-.ad-content a {
-  color: var(--brand);
-  text-decoration: none;
-  font-weight: 600;
-}
-.ad-content a:hover { text-decoration: underline; }
-.ad-sep { color: #c0a050; margin: 0 2px; }
-.ad-close { flex-shrink: 0; color: #a08040; }
 @media (max-width: 768px) {
   .pills, .search-box, .avatar-name { display: none; }
 }
