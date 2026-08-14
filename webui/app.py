@@ -991,6 +991,124 @@ def api_check_plus(req: CheckPlusReq):
     return {"ok": True, "results": results, "note": note}
 
 
+# ──────────────────────── OAICS 资格检测 ────────────────────────
+
+
+class StartOACheckReq(BaseModel):
+    emails: list[str] = Field(..., description="要检测的账号邮箱列表")
+    proxies: str = Field("", description="接码代理池（每行一个；支持 sticky 代理）")
+    workers: int = Field(1, ge=1, le=20, description="并发 worker 数")
+    rounds: int = Field(1, ge=1, le=20, description="每号探测轮数（命中 oaics_ 提前结束）")
+    billing_country: str = Field("DE", description="账单国家")
+    currency: str = Field("EUR", description="币种")
+    proxy_country: str = Field("BR", description="代理出口国家")
+    with_promo: bool = Field(False, description="创建 checkout 时附加 plus-1-month-free 促销")
+    skip_proxy_check: bool = Field(False, description="跳过 Cloudflare trace 出口国家校验（更快）")
+    timeout: float = Field(30.0, description="单次请求超时秒数")
+
+
+def _safe_get_oa(q, timeout: float = 2.0):
+    try:
+        return q.get(timeout=timeout)
+    except Exception as e:
+        if type(e).__name__ == "Empty":
+            return "__TIMEOUT__"
+        return None
+
+
+@app.post("/api/registered/oa_check/start")
+def api_oa_check_start(req: StartOACheckReq):
+    """对勾选的账号启动 OAICS 资格检测，返回 task_id（订阅 SSE 看进度）。"""
+    from . import oa_check
+
+    emails = [e.strip().lower() for e in (req.emails or []) if e and e.strip()]
+    if not emails:
+        raise HTTPException(400, "请先勾选要检测的账号")
+
+    proxies = []
+    for line in str(req.proxies or "").splitlines():
+        line = line.strip()
+        if line and not line.startswith("#"):
+            proxies.append(line)
+    if not proxies:
+        raise HTTPException(400, "请先粘贴接码代理池（每行一个代理）")
+
+    config = {
+        "proxies": proxies,
+        "workers": max(1, min(20, req.workers)),
+        "rounds": max(1, min(20, req.rounds)),
+        "billing_country": (req.billing_country or "DE").upper().strip(),
+        "currency": (req.currency or "EUR").upper().strip(),
+        "proxy_country": (req.proxy_country or "BR").upper().strip(),
+        "with_promo": req.with_promo,
+        "skip_proxy_check": req.skip_proxy_check,
+        "timeout": float(req.timeout or 30.0),
+    }
+    try:
+        task_id = oa_check.start(emails, config)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    logger.info(f"[oa_check] 任务 {task_id} 启动: {len(emails)} 个账号, "
+                f"workers={config['workers']}, rounds={config['rounds']}")
+    return {"ok": True, "task_id": task_id, "taskId": task_id, "total": len(emails)}
+
+
+@app.post("/api/registered/oa_check/{task_id}/stop")
+def api_oa_check_stop(task_id: str):
+    """停止指定的 OAICS 资格检测任务。"""
+    from . import oa_check
+
+    active = oa_check.stop(task_id)
+    return {"ok": True, "task_id": task_id, "active": active}
+
+
+@app.get("/api/registered/oa_check/{task_id}/stream")
+async def api_oa_check_stream(task_id: str, request: Request):
+    """SSE：先推全量快照，再实时推 progress / log / end 事件。"""
+    from . import oa_check
+
+    snap = oa_check.snapshot(task_id)
+    if snap is None:
+        raise HTTPException(404, "task_id 不存在或已结束")
+
+    q = oa_check.get_queue(task_id)
+
+    async def gen():
+        loop = asyncio.get_event_loop()
+        try:
+            # 断线重连 / 迟到订阅：先把当前全量状态推一次
+            yield f"event: init\ndata: {json.dumps(snap, ensure_ascii=False)}\n\n"
+            while True:
+                if await request.is_disconnected():
+                    break
+                msg = await loop.run_in_executor(None, _safe_get_oa, q, 2.0)
+                if msg is None:
+                    yield "event: end\ndata: {}\n\n"
+                    break
+                if msg == "__TIMEOUT__":
+                    yield ": ping\n\n"
+                    continue
+                if msg.get("kind") == "end":
+                    yield "event: end\ndata: {}\n\n"
+                    break
+                if msg.get("kind") == "log":
+                    yield f"event: log\ndata: {json.dumps({'line': msg.get('line', '')}, ensure_ascii=False)}\n\n"
+                else:
+                    yield f"event: progress\ndata: {json.dumps(msg, ensure_ascii=False)}\n\n"
+        finally:
+            pass
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
 # ──────────────────────── auto-loop ────────────────────────
 
 

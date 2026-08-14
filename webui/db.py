@@ -83,6 +83,7 @@ def init_db():
             totp_secret     TEXT,
             totp_factor_id  TEXT,
             extra_json      TEXT,
+            oa_check        TEXT,
             created_at      REAL
         );
 
@@ -133,6 +134,9 @@ def init_db():
         con.commit()
     if "totp_factor_id" not in reg_cols:
         con.execute("ALTER TABLE registered ADD COLUMN totp_factor_id TEXT")
+        con.commit()
+    if "oa_check" not in reg_cols:
+        con.execute("ALTER TABLE registered ADD COLUMN oa_check TEXT")
         con.commit()
 
 
@@ -695,6 +699,20 @@ def update_plus_check(email: str, plus_info: dict) -> None:
         con.commit()
 
 
+def update_oa_check(email: str, oa_info: dict) -> None:
+    """把 OAICS 资格检测结果写入 registered.oa_check 列（JSON）。"""
+    email = (email or "").strip().lower()
+    if not email:
+        return
+    with _lock:
+        con = _conn()
+        con.execute(
+            "UPDATE registered SET oa_check=? WHERE email=?",
+            (json.dumps(oa_info, ensure_ascii=False), email),
+        )
+        con.commit()
+
+
 def _registered_where(filt: str) -> str:
     if filt == "has_rt":
         return "WHERE length(refresh_token) > 0"
@@ -712,6 +730,14 @@ def _registered_where(filt: str) -> str:
         # token_invalid 从 2026-08-10 起会写库，得能筛出来，否则等于埋了：
         # 它既不在 unchecked 里（已有结论），又不在 free/plus/banned 里。
         return "WHERE extra_json LIKE '%\"token_invalid\"%'"
+    # ── OAICS 资格检测筛选 ──
+    if filt == "oa_unchecked":
+        return "WHERE (oa_check IS NULL OR oa_check = '')"
+    if filt == "oa_hit":
+        return "WHERE oa_check LIKE '%\"state\":\"OAICS\"%'"
+    if filt == "oa_miss":
+        return ("WHERE oa_check IS NOT NULL AND oa_check != '' "
+                "AND oa_check NOT LIKE '%\"state\":\"OAICS\"%'")
     return ""
 
 
@@ -727,8 +753,8 @@ def list_registered(limit: int = 20, offset: int = 0, filter_rt: str = "all") ->
     cur = con.execute(
         f"SELECT email, password, totp_secret, "
         f"length(access_token) AS at_len, length(session_token) AS st_len, "
-        f"length(refresh_token) AS rt_len, extra_json, created_at FROM registered "
-        f"{where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
+        f"length(refresh_token) AS rt_len, extra_json, oa_check, created_at "
+        f"FROM registered {where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
         (limit, offset),
     )
     rows = []
@@ -743,6 +769,13 @@ def list_registered(limit: int = 20, offset: int = 0, filter_rt: str = "all") ->
                 pass
         d["plus_check"] = plus
         d.pop("extra_json", None)
+        oa = None
+        if d.get("oa_check"):
+            try:
+                oa = json.loads(d["oa_check"])
+            except Exception:
+                pass
+        d["oa_check"] = oa
         rows.append(d)
     return rows
 
@@ -827,6 +860,11 @@ def get_registered(email: str) -> Optional[dict]:
         except Exception:
             out["extra"] = {}
     out.pop("extra_json", None)
+    if out.get("oa_check"):
+        try:
+            out["oa_check"] = json.loads(out["oa_check"])
+        except Exception:
+            pass
     return out
 
 

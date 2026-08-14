@@ -1,13 +1,14 @@
 <script setup>
-import { computed, onActivated, ref, watch } from 'vue'
+import { computed, nextTick, onActivated, reactive, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   listRegistered, getRegistered, deleteRegistered,
   bulkDeleteRegistered, bulkDeleteAccounts, checkPlus,
   listExportFormats, exportRegistered, updateCredentials,
+  startOACheck, stopOACheck, oaCheckStreamUrl,
 } from '@/api/register'
-import { copyText, fmtTime } from '@/api/request'
+import { copyText, fmtTime, createSSE } from '@/api/request'
 import { useFormStore, proxyText } from '@/stores/form'
 import { useProxyStore } from '@/stores/proxy'
 import { useRuntimeStore } from '@/stores/runtime'
@@ -42,6 +43,228 @@ const PLUS_TYPE = {
   banned: 'danger', error: 'danger',
 }
 function plusOf(row) { return row.plus_check || null }
+
+// ──────────── OAICS 资格检测 ────────────
+// 对勾选的账号批量打 OpenAI checkout，判断 session id 是 oaics_（可卖资格）还是 cs_。
+// 代理池支持 sticky 代理（user:pass-CC-session-ttl@host:port 格式），轮换会话。
+const oaVisible = ref(false)
+const oaRunning = ref(false)
+const oaTaskId = ref('')
+const oaEs = ref(null)
+// 弹窗配置
+const oaForm = reactive({
+  proxies: '',
+  workers: 2,
+  rounds: 1,
+  billingCountry: 'DE',
+  currency: 'EUR',
+  proxyCountry: 'BR',
+  withPromo: false,
+  skipProxyCheck: true,
+  timeout: 30,
+})
+
+function guessProxyCountry(text) {
+  if (!text) return ''
+  const m = text.match(/(?:-region-|-country-|_country-)([a-zA-Z]{2})/i) || text.match(/-([a-zA-Z]{2})-\d+-\d+/i)
+  if (m && m[1]) return m[1].toUpperCase()
+  return ''
+}
+
+function loadProxyListToOA() {
+  oaForm.proxies = proxyList.value.join('\n')
+  const g = guessProxyCountry(oaForm.proxies)
+  if (g) oaForm.proxyCountry = g
+}
+// 进度：email -> { status: 'pending'|'running'|'done', result: {...} }
+const oaItems = ref({})
+const oaLogs = ref([])
+const oaSummary = ref('')
+const oaConfigCollapsed = ref(false)
+const oaRows = computed(() =>
+  Object.entries(oaItems.value).map(([email, item]) => ({ email, ...item })),
+)
+
+const oaStats = computed(() => {
+  const items = Object.values(oaItems.value)
+  const total = items.length || selected.value.length || 0
+  const done = items.filter((i) => i.status === 'done').length
+  const running = items.filter((i) => i.status === 'running').length
+  const pending = items.filter((i) => i.status === 'pending').length
+  const hit = items.filter((i) => i.result && i.result.state === 'OAICS').length
+  const cs = items.filter((i) => i.result && i.result.state === 'CS').length
+  const err = items.filter((i) => i.result && (i.result.state === 'ERROR' || i.result.state === 'NO_AT')).length
+  const percent = total > 0 ? Math.round((done / total) * 100) : 0
+  return { total, done, running, pending, hit, cs, err, percent }
+})
+
+function getLogClass(line) {
+  if (!line) return ''
+  if (line.includes('HIT') || line.includes('oaics_')) return 'log-hit'
+  if (line.includes('MISS') || line.includes('state=CS')) return 'log-miss'
+  if (line.includes('err=') || line.includes('ERROR') || line.includes('失败')) return 'log-err'
+  if (line.includes('[task]')) return 'log-task'
+  return ''
+}
+
+const OA_STATE_META = {
+  OAICS:     { type: 'success', label: 'OAICS 命中' },
+  CS:        { type: 'warning', label: 'CS (普通)' },
+  OAIC:      { type: 'primary', label: 'OAIC' },
+  NONE:      { type: 'info',    label: 'NONE' },
+  ERROR:     { type: 'danger',  label: '出错' },
+  NO_AT:     { type: 'danger',  label: '无AT' },
+  CANCELLED: { type: 'info',    label: '已取消' },
+  UNKNOWN:   { type: 'info',    label: '未知' },
+}
+
+function oaMeta(row) {
+  if (!row || !row.oa_check) return null
+  return OA_STATE_META[row.oa_check.state] || { type: 'info', label: row.oa_check.state || '未知' }
+}
+
+function openOA() {
+  if (!selected.value.length) { ElMessage.info('请先勾选要检测的账号'); return }
+  if (!oaForm.proxies && proxyList.value.length) {
+    oaForm.proxies = proxyList.value.join('\n')
+  }
+  const g = guessProxyCountry(oaForm.proxies)
+  if (g && (!oaForm.proxyCountry || oaForm.proxyCountry === 'BR')) {
+    oaForm.proxyCountry = g
+  }
+  if (!oaRunning.value) {
+    oaTaskId.value = ''
+    oaItems.value = {}
+    oaLogs.value = []
+    oaSummary.value = ''
+    oaConfigCollapsed.value = false
+  }
+  oaVisible.value = true
+}
+
+function closeOA() {
+  if (oaRunning.value) {
+    ElMessage.info('检测任务在后台继续运行，可随时重新打开查看进度')
+  }
+  if (oaEs.value && !oaRunning.value) {
+    oaEs.value.close()
+    oaEs.value = null
+  }
+  oaVisible.value = false
+}
+
+async function stopOA() {
+  if (!oaTaskId.value) {
+    oaRunning.value = false
+    return
+  }
+  try {
+    await stopOACheck(oaTaskId.value)
+    ElMessage.success('已发送停止指令')
+  } catch (e) {
+    ElMessage.info('任务已结束')
+  } finally {
+    oaRunning.value = false
+  }
+}
+
+function oaCount() {
+  const items = Object.values(oaItems.value)
+  return {
+    total: items.length,
+    done: items.filter((i) => i.status === 'done').length,
+    running: items.filter((i) => i.status === 'running').length,
+    pending: items.filter((i) => i.status === 'pending').length,
+    cancelled: items.filter((i) => i.status === 'cancelled').length,
+    hit: items.filter((i) => i.result && i.result.state === 'OAICS').length,
+  }
+}
+
+async function startOA() {
+  const emails = selected.value.map((r) => r.email)
+  if (!emails.length) { ElMessage.info('请先勾选要检测的账号'); return }
+  if (!oaForm.proxies.trim()) { ElMessage.warning('请先粘贴接码代理池（每行一个代理）'); return }
+  if (oaEs.value) {
+    oaEs.value.close()
+    oaEs.value = null
+  }
+  oaRunning.value = true
+  oaItems.value = {}
+  oaLogs.value = []
+  oaConfigCollapsed.value = true
+  oaSummary.value = `任务启动中... (${emails.length} 个账号)`
+  try {
+    const res = await startOACheck({
+      emails,
+      proxies: oaForm.proxies,
+      workers: oaForm.workers || 1,
+      rounds: oaForm.rounds || 1,
+      billing_country: oaForm.billingCountry || 'DE',
+      currency: oaForm.currency || 'EUR',
+      proxy_country: oaForm.proxyCountry || 'BR',
+      with_promo: oaForm.withPromo,
+      skip_proxy_check: oaForm.skipProxyCheck,
+      timeout: oaForm.timeout || 30,
+    })
+    const taskId = res.taskId || res.task_id
+    if (!taskId) throw new Error('未获取到任务 ID')
+    oaTaskId.value = taskId
+    oaSummary.value = `正在检测 0/${emails.length} 个账号...`
+    oaEs.value = createSSE(oaCheckStreamUrl(taskId), {
+      init: (ev) => {
+        try {
+          const snap = JSON.parse(ev.data)
+          if (snap.items) oaItems.value = snap.items
+        } catch (_) { /* ignore */ }
+      },
+      progress: (ev) => {
+        try {
+          const msg = JSON.parse(ev.data)
+          if (msg.email) {
+            oaItems.value[msg.email] = { status: msg.status, result: msg.result || null }
+            const c = oaCount()
+            oaSummary.value = `正在检测：已完成 ${c.done}/${c.total} (命中 ${c.hit} 个 OAICS)`
+          }
+        } catch (_) { /* ignore */ }
+      },
+      log: (ev) => {
+        try {
+          const msg = JSON.parse(ev.data)
+          if (msg.line) {
+            oaLogs.value.push(msg.line)
+            if (oaLogs.value.length > 500) oaLogs.value.splice(0, oaLogs.value.length - 500)
+            nextTick(scrollOaLog)
+          }
+        } catch (_) { /* ignore */ }
+      },
+      end: () => {
+        const c = oaCount()
+        oaSummary.value = `检测完成！共 ${c.total} 个账号，完成 ${c.done} 个，命中 ${c.hit} 个 OAICS`
+        oaRunning.value = false
+        if (oaEs.value) {
+          oaEs.value.close()
+          oaEs.value = null
+        }
+        load(false) // 刷新表格里的 OA资格 列
+      },
+    }, () => {
+      if (!oaRunning.value && oaEs.value) {
+        oaEs.value.close()
+        oaEs.value = null
+      }
+    })
+  } catch (e) {
+    oaRunning.value = false
+    oaSummary.value = ''
+    oaConfigCollapsed.value = false
+    ElMessage.error('启动资格检测失败: ' + (e.response?.data?.detail || e.message))
+  }
+}
+
+function scrollOaLog() {
+  const box = document.getElementById('oa-log-box')
+  if (box) box.scrollTop = box.scrollHeight
+}
 
 async function load(resetPage) {
   if (resetPage) page.value = 1
@@ -362,6 +585,9 @@ onActivated(() => load())
           <el-option label="可领Plus" value="plus" />
           <el-option label="已封号" value="banned" />
           <el-option label="凭证失效" value="token_invalid" />
+          <el-option label="OA未检" value="oa_unchecked" />
+          <el-option label="OA命中" value="oa_hit" />
+          <el-option label="OA未中" value="oa_miss" />
         </el-select>
         <el-select
           v-model="form.proxy" filterable clearable allow-create default-first-option
@@ -374,6 +600,9 @@ onActivated(() => load())
         <el-button :loading="checking" @click="doCheck('all')">重新检查</el-button>
         <el-button :loading="checking" :disabled="!selected.length" @click="doCheck('selected')">
           检测选中 ({{ selected.length }})
+        </el-button>
+        <el-button type="primary" :disabled="!selected.length" @click="openOA">
+          资格检测 ({{ selected.length }})
         </el-button>
         <el-divider direction="vertical" />
         <el-dropdown trigger="click" @command="doExport" @visible-change="(v) => v && loadExportFormats()">
@@ -439,6 +668,18 @@ onActivated(() => load())
         <el-table-column label="Plus状态" width="120">
           <template #default="{ row }">
             <StatusDot v-if="plusOf(row)" :type="PLUS_TYPE[plusOf(row).status] || 'info'" :text="plusOf(row).label" />
+            <span v-else class="hint">—</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="OA资格" width="120">
+          <template #default="{ row }">
+            <el-tooltip
+              v-if="row.oa_check && oaMeta(row)"
+              :content="row.oa_check.error || `${row.oa_check.state} · ${row.oa_check.elapsed_ms || 0}ms · ${row.oa_check.session_id_masked || '无 sid'}`"
+              placement="top"
+            >
+              <el-tag :type="oaMeta(row).type" size="small" effect="light">{{ oaMeta(row).label }}</el-tag>
+            </el-tooltip>
             <span v-else class="hint">—</span>
           </template>
         </el-table-column>
@@ -565,6 +806,206 @@ onActivated(() => load())
           <el-button type="primary" :loading="editSaving" @click="saveEdit">保存</el-button>
         </template>
       </el-dialog>
+
+      <!-- OAICS 资格检测：紧凑弹窗 + 左右分栏实时看板 -->
+      <el-dialog
+        v-model="oaVisible" width="980px" top="3vh"
+        class="oa-custom-dialog"
+        :close-on-click-modal="false" @closed="closeOA"
+      >
+        <template #header>
+          <div class="oa-header">
+            <div class="oa-header-title">
+              <span class="oa-title-badge">OAICS</span>
+              <span class="oa-title-text">资格检测控制台</span>
+              <el-tag size="small" type="info" round effect="plain">{{ selected.length }} 个账号</el-tag>
+            </div>
+            <div v-if="oaTaskId" class="oa-header-extra">
+              <el-button size="small" text @click="oaConfigCollapsed = !oaConfigCollapsed">
+                <el-icon><Setting /></el-icon>{{ oaConfigCollapsed ? '展开参数配置' : '收起参数配置' }}
+              </el-button>
+            </div>
+          </div>
+        </template>
+
+        <div class="oa-dialog-container">
+          <!-- 配置区域（开始后可折叠收起） -->
+          <el-collapse-transition>
+            <div v-show="!oaTaskId || !oaConfigCollapsed" class="oa-config-card">
+              <el-form label-position="top" :disabled="oaRunning" size="small">
+                <el-row :gutter="12">
+                  <el-col :span="11">
+                    <el-form-item label="接码/检测代理池 (每行一条，支持 sticky 格式)">
+                      <el-input
+                        v-model="oaForm.proxies" type="textarea" :rows="3" class="mono oa-proxy-input"
+                        placeholder="socks5h://user-region-JP-sid-xxx@host:port&#10;user:pass-BR-session-5m@host:port"
+                      />
+                      <div class="oa-proxy-actions">
+                        <el-button size="small" text type="primary" @click="loadProxyListToOA">
+                          载入代理池 ({{ proxyList.length }})
+                        </el-button>
+                        <el-button size="small" text @click="oaForm.proxies = ''">清空</el-button>
+                      </div>
+                    </el-form-item>
+                  </el-col>
+                  <el-col :span="13">
+                    <el-row :gutter="8">
+                      <el-col :span="8">
+                        <el-form-item label="并发数">
+                          <el-input-number v-model="oaForm.workers" :min="1" :max="20" style="width: 100%" />
+                        </el-form-item>
+                      </el-col>
+                      <el-col :span="8">
+                        <el-form-item label="每号轮数">
+                          <el-input-number v-model="oaForm.rounds" :min="1" :max="20" style="width: 100%" />
+                        </el-form-item>
+                      </el-col>
+                      <el-col :span="8">
+                        <el-form-item label="超时(秒)">
+                          <el-input-number v-model="oaForm.timeout" :min="5" :max="120" style="width: 100%" />
+                        </el-form-item>
+                      </el-col>
+                      <el-col :span="8">
+                        <el-form-item label="出口国家">
+                          <el-input v-model="oaForm.proxyCountry" class="mono" />
+                        </el-form-item>
+                      </el-col>
+                      <el-col :span="8">
+                        <el-form-item label="账单国家">
+                          <el-input v-model="oaForm.billingCountry" class="mono" />
+                        </el-form-item>
+                      </el-col>
+                      <el-col :span="8">
+                        <el-form-item label="币种">
+                          <el-input v-model="oaForm.currency" class="mono" />
+                        </el-form-item>
+                      </el-col>
+                    </el-row>
+                    <div class="oa-options-row">
+                      <el-checkbox v-model="oaForm.skipProxyCheck">跳过出口校验 (更快)</el-checkbox>
+                      <el-checkbox v-model="oaForm.withPromo">带促销 (1个月免费)</el-checkbox>
+                    </div>
+                  </el-col>
+                </el-row>
+              </el-form>
+            </div>
+          </el-collapse-transition>
+
+          <!-- 运行状态看板（任务开始后显示） -->
+          <template v-if="oaTaskId">
+            <!-- 统计指标行 KPI Cards + Progress Bar -->
+            <div class="oa-kpi-bar">
+              <div class="oa-kpi-item">
+                <div class="kpi-label">总体进度</div>
+                <div class="kpi-val">{{ oaStats.done }} / {{ oaStats.total }}</div>
+              </div>
+              <div class="oa-kpi-item kpi-hit">
+                <div class="kpi-label">OAICS 命中</div>
+                <div class="kpi-val highlight">{{ oaStats.hit }}</div>
+              </div>
+              <div class="oa-kpi-item">
+                <div class="kpi-label">普通 CS</div>
+                <div class="kpi-val">{{ oaStats.cs }}</div>
+              </div>
+              <div class="oa-kpi-item" :class="{ 'kpi-warn': oaStats.err > 0 }">
+                <div class="kpi-label">出错/无AT</div>
+                <div class="kpi-val">{{ oaStats.err }}</div>
+              </div>
+              <div class="oa-progress-wrap">
+                <el-progress
+                  :percentage="oaStats.percent"
+                  :status="oaStats.done === oaStats.total ? 'success' : ''"
+                  :stroke-width="10"
+                  striped
+                  :striped-flow="oaRunning"
+                />
+              </div>
+            </div>
+
+            <!-- 核心监控分栏：左侧账号列表 + 右侧实时日志终端 -->
+            <div class="oa-monitor-split">
+              <!-- 左侧：账号状态明细表格 -->
+              <div class="oa-table-box">
+                <el-table :data="oaRows" size="small" stripe height="100%" :highlight-current-row="false">
+                  <el-table-column prop="email" label="邮箱" min-width="170" show-overflow-tooltip />
+                  <el-table-column label="状态" width="75" align="center">
+                    <template #default="{ row }">
+                      <el-tag v-if="row.status === 'done'" type="success" size="small">完成</el-tag>
+                      <el-tag v-else-if="row.status === 'running'" type="warning" size="small" effect="dark">检测中</el-tag>
+                      <el-tag v-else-if="row.status === 'cancelled'" type="info" size="small">已取消</el-tag>
+                      <el-tag v-else type="info" size="small" effect="plain">排队</el-tag>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="结果" min-width="155">
+                    <template #default="{ row }">
+                      <template v-if="row.result">
+                        <el-tag
+                          :type="(OA_STATE_META[row.result.state] || {}).type || 'info'"
+                          size="small"
+                          :effect="row.result.state === 'OAICS' ? 'dark' : 'light'"
+                        >
+                          {{ (OA_STATE_META[row.result.state] || { label: row.result.state }).label }}
+                        </el-tag>
+                        <span v-if="row.result.session_id_masked" class="hint mono" style="margin-left: 4px; font-size: 11px">
+                          {{ row.result.session_id_masked }}
+                        </span>
+                        <el-tooltip v-if="row.result.error" :content="row.result.error" placement="top">
+                          <span class="hint error-hint" style="margin-left: 4px; color: var(--el-color-danger); cursor: help">⚠</span>
+                        </el-tooltip>
+                      </template>
+                      <span v-else class="hint">—</span>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="耗时" width="75" align="right">
+                    <template #default="{ row }">
+                      <span class="mono" style="font-size: 11px">{{ row.result && row.result.elapsed_ms ? row.result.elapsed_ms + 'ms' : '—' }}</span>
+                    </template>
+                  </el-table-column>
+                </el-table>
+              </div>
+
+              <!-- 右侧：黑色终端风格日志 -->
+              <div class="oa-terminal-box">
+                <div class="oa-terminal-header">
+                  <span class="terminal-dot red"></span>
+                  <span class="terminal-dot yellow"></span>
+                  <span class="terminal-dot green"></span>
+                  <span class="terminal-title">实时探测日志 ({{ oaLogs.length }} 行)</span>
+                  <el-button size="small" text class="terminal-clear-btn" @click="oaLogs = []">清屏</el-button>
+                </div>
+                <div id="oa-log-box" class="oa-terminal-body">
+                  <div v-for="(log, idx) in oaLogs" :key="idx" class="terminal-line" :class="getLogClass(log)">
+                    {{ log }}
+                  </div>
+                  <div v-if="!oaLogs.length" class="terminal-empty">等待日志输出...</div>
+                </div>
+              </div>
+            </div>
+          </template>
+        </div>
+
+        <template #footer>
+          <div class="oa-dialog-footer">
+            <div class="footer-tip">
+              <span v-if="oaRunning" class="running-indicator">
+                <span class="pulse-dot"></span> 检测进行中 (并发: {{ oaForm.workers }})...
+              </span>
+              <span v-else-if="oaTaskId" class="finished-indicator">
+                检测完毕，结果已自动保存至数据库
+              </span>
+            </div>
+            <div class="footer-btns">
+              <el-button @click="closeOA">关闭</el-button>
+              <el-button v-if="oaRunning" type="danger" plain @click="stopOA">
+                停止检测
+              </el-button>
+              <el-button v-else type="primary" :loading="oaRunning" @click="startOA">
+                {{ oaTaskId ? '重新检测' : '开始检测' }}
+              </el-button>
+            </div>
+          </div>
+        </template>
+      </el-dialog>
     </el-card>
   </div>
 </template>
@@ -591,6 +1032,214 @@ onActivated(() => load())
   transition: opacity 0.12s;
 }
 :deep(.cell-copy:hover .ico) { opacity: 0.65; }
+
+/* ──────────── 资格检测控制台精致样式 ──────────── */
+:deep(.oa-custom-dialog) {
+  border-radius: 12px;
+  overflow: hidden;
+}
+:deep(.oa-custom-dialog .el-dialog__header) {
+  padding: 14px 20px 10px;
+  margin-right: 0;
+  border-bottom: 1px solid var(--el-border-color-lighter);
+}
+:deep(.oa-custom-dialog .el-dialog__body) {
+  padding: 12px 20px;
+}
+:deep(.oa-custom-dialog .el-dialog__footer) {
+  padding: 10px 20px 14px;
+  border-top: 1px solid var(--el-border-color-lighter);
+}
+
+.oa-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.oa-header-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.oa-title-badge {
+  background: linear-gradient(135deg, #10b981, #059669);
+  color: #fff;
+  font-weight: 700;
+  font-size: 12px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  letter-spacing: 0.5px;
+}
+.oa-title-text {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+}
+
+.oa-dialog-container {
+  height: 520px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow: hidden;
+}
+.oa-config-card {
+  padding: 10px 14px;
+  background: var(--el-fill-color-light);
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 8px;
+  flex-shrink: 0;
+}
+.oa-proxy-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 2px;
+}
+.oa-options-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-top: 4px;
+}
+.oa-kpi-bar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 8px 14px;
+  background: var(--el-fill-color-lighter);
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 8px;
+  flex-shrink: 0;
+}
+.oa-kpi-item {
+  display: flex;
+  flex-direction: column;
+  min-width: 65px;
+}
+.oa-kpi-item .kpi-label {
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+}
+.oa-kpi-item .kpi-val {
+  font-size: 15px;
+  font-weight: 700;
+  font-family: var(--el-font-family-monospace, monospace);
+  color: var(--el-text-color-primary);
+}
+.oa-kpi-item.kpi-hit .kpi-val {
+  color: #10b981;
+}
+.oa-kpi-item.kpi-warn .kpi-val {
+  color: var(--el-color-danger);
+}
+.oa-progress-wrap {
+  flex: 1;
+  margin-left: 10px;
+}
+.oa-monitor-split {
+  flex: 1;
+  display: flex;
+  gap: 12px;
+  min-height: 0;
+  overflow: hidden;
+}
+.oa-table-box {
+  flex: 1.15;
+  height: 100%;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.oa-terminal-box {
+  flex: 0.85;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: #141418;
+  border: 1px solid #272730;
+  border-radius: 8px;
+  overflow: hidden;
+}
+.oa-terminal-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: #1e1e24;
+  border-bottom: 1px solid #2a2a34;
+  flex-shrink: 0;
+}
+.terminal-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+}
+.terminal-dot.red { background: #ff5f56; }
+.terminal-dot.yellow { background: #ffbd2e; }
+.terminal-dot.green { background: #27c93f; }
+.terminal-title {
+  font-size: 11px;
+  color: #94a3b8;
+  margin-left: 4px;
+  flex: 1;
+}
+.terminal-clear-btn {
+  font-size: 11px;
+  color: #94a3b8;
+  padding: 0 4px;
+  height: 20px;
+}
+.oa-terminal-body {
+  flex: 1;
+  padding: 8px 10px;
+  overflow-y: auto;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, Courier, monospace;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: #d1d5db;
+  word-break: break-all;
+  white-space: pre-wrap;
+}
+.terminal-line.log-hit { color: #4ade80; font-weight: 600; }
+.terminal-line.log-miss { color: #9ca3af; }
+.terminal-line.log-err { color: #f87171; }
+.terminal-line.log-task { color: #60a5fa; }
+.terminal-empty {
+  color: #64748b;
+  text-align: center;
+  margin-top: 40px;
+  font-size: 12px;
+}
+.oa-dialog-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.footer-tip {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+.running-indicator {
+  display: flex;
+  align-items: center;
+  color: var(--el-color-primary);
+  font-weight: 500;
+}
+.pulse-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--el-color-primary);
+  margin-right: 6px;
+  animation: oa-pulse 1.4s infinite;
+}
+@keyframes oa-pulse {
+  0% { transform: scale(0.85); opacity: 0.6; }
+  50% { transform: scale(1.3); opacity: 1; }
+  100% { transform: scale(0.85); opacity: 0.6; }
+}
 </style>
 
 <!-- 非 scoped：ElMessageBox 是挂到 body 上的，不在本组件的 scope 属性范围内，

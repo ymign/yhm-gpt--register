@@ -34,6 +34,16 @@ export const exportRegistered = (payload) => http.post('/api/registered/export',
 export const checkPlus = (emails, proxy = '') =>
   http.post('/api/registered/check_plus', { emails, proxy })
 
+// ──────────────── OAICS 资格检测 ────────────────
+export const startOACheck = (payload) =>
+  http.post('/api/registered/oa_check/start', payload) // { emails, proxies, workers, ... }
+
+export const stopOACheck = (taskId) =>
+  http.post(`/api/registered/oa_check/${encodeURIComponent(taskId)}/stop`)
+
+export const oaCheckStreamUrl = (taskId) =>
+  `/api/registered/oa_check/${encodeURIComponent(taskId)}/stream`
+
 export const exportToPanel = (email, targets) =>
   http.post('/api/registered/export_to_panel', { email, targets })
 
