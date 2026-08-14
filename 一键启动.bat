@@ -1,8 +1,6 @@
 @echo off
 cd /d "%~dp0"
+title Outlook Register WebUI
 python start_webui.py
 echo.
-echo ===================================================
-echo   [!] 服务已停止运行。
-echo ===================================================
 pause
