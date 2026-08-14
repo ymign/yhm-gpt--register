@@ -651,30 +651,25 @@ onActivated(() => load())
           <el-table-column type="selection" width="42" align="center" />
           <el-table-column prop="email" label="邮箱" min-width="190" show-overflow-tooltip />
 
-          <el-table-column label="密码" min-width="160">
+          <el-table-column label="出口地区" min-width="150" show-overflow-tooltip>
             <template #default="{ row }">
-              <button
-                v-if="row.password"
-                class="macos-tag-btn copy-btn"
-                title="点击复制密码"
-                @click="copyText(row.password)"
-              >
-                <span class="mono">{{ row.password }}</span>
-                <el-icon class="copy-ico"><CopyDocument /></el-icon>
-              </button>
+              <span v-if="row.reg_country || row.reg_city" class="geo-badge">
+                <span class="geo-country">{{ row.reg_country || '未知' }}</span>
+                <span v-if="row.reg_city" class="geo-city"> · {{ row.reg_city }}</span>
+              </span>
               <span v-else class="hint">—</span>
             </template>
           </el-table-column>
 
-          <el-table-column label="2FA Secret" min-width="220">
+          <el-table-column label="出口 IP" min-width="150">
             <template #default="{ row }">
               <button
-                v-if="row.totp_secret"
-                class="macos-tag-btn copy-btn secret-btn"
-                title="点击复制 2FA Secret"
-                @click="copyText(row.totp_secret)"
+                v-if="row.reg_ip"
+                class="macos-tag-btn copy-btn ip-btn"
+                title="点击复制出口 IP"
+                @click="copyText(row.reg_ip)"
               >
-                <span class="mono">{{ row.totp_secret }}</span>
+                <span class="mono">{{ row.reg_ip }}</span>
                 <el-icon class="copy-ico"><CopyDocument /></el-icon>
               </button>
               <span v-else class="hint">—</span>
@@ -1212,7 +1207,25 @@ onActivated(() => load())
   font-size: 12px;
 }
 
-/* 密码与 2FA 复制胶囊按钮 */
+/* 出口地区徽章与 IP 复制胶囊按钮 */
+.geo-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  background: var(--el-fill-color-light);
+  border: 1px solid var(--el-border-color-lighter);
+  padding: 1px 7px;
+  border-radius: 4px;
+  font-size: 11.5px;
+}
+.geo-country {
+  font-weight: 600;
+  color: var(--el-color-primary);
+}
+.geo-city {
+  color: var(--el-text-color-regular);
+}
+
 .macos-tag-btn.copy-btn {
   display: inline-flex;
   align-items: center;
@@ -1232,6 +1245,10 @@ onActivated(() => load())
   background: var(--el-color-primary-light-9);
   border-color: var(--el-color-primary-light-7);
   color: var(--el-color-primary);
+}
+.macos-tag-btn.ip-btn {
+  font-family: var(--el-font-family-monospace, monospace);
+  font-size: 11.5px;
 }
 .macos-tag-btn.secret-btn {
   color: var(--el-color-warning-dark-2);

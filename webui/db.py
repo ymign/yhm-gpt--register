@@ -82,6 +82,9 @@ def init_db():
             cookie_header   TEXT,
             totp_secret     TEXT,
             totp_factor_id  TEXT,
+            reg_country     TEXT,
+            reg_city        TEXT,
+            reg_ip          TEXT,
             extra_json      TEXT,
             oa_check        TEXT,
             created_at      REAL
@@ -137,6 +140,15 @@ def init_db():
         con.commit()
     if "oa_check" not in reg_cols:
         con.execute("ALTER TABLE registered ADD COLUMN oa_check TEXT")
+        con.commit()
+    if "reg_country" not in reg_cols:
+        con.execute("ALTER TABLE registered ADD COLUMN reg_country TEXT")
+        con.commit()
+    if "reg_city" not in reg_cols:
+        con.execute("ALTER TABLE registered ADD COLUMN reg_city TEXT")
+        con.commit()
+    if "reg_ip" not in reg_cols:
+        con.execute("ALTER TABLE registered ADD COLUMN reg_ip TEXT")
         con.commit()
 
 
@@ -495,6 +507,7 @@ def save_registered(d: dict) -> None:
     """保存注册成功（或部分成功）的凭证。覆盖同邮箱旧记录。
 
     凭证三件套（access_token / session_token / refresh_token）单独存列；
+    注册出口（reg_country / reg_city / reg_ip）单独存列；
     其余字段（如 device_id / cookie_header / id_token / 自定义元数据）打包进 extra_json。
     """
     email = (d.get("email") or "").lower()
@@ -504,27 +517,20 @@ def save_registered(d: dict) -> None:
     extra = {k: v for k, v in d.items() if k not in {
         "email", "password", "access_token", "session_token", "refresh_token",
         "id_token", "device_id", "csrf_token", "cookie_header",
-        "totp_secret", "totp_factor_id",
+        "totp_secret", "totp_factor_id", "reg_country", "reg_city", "reg_ip",
     }}
     with _lock:
         con = _conn()
-        # ⚠️ INSERT OR REPLACE 是**整行替换**，不是按字段合并 —— 没写的列会被清空。
-        #    重跑同一个邮箱时这会咬人：第一轮 register_password 设了密码但 OTP 超时，
-        #    save_password_early 把密码存下了；第二轮 OpenAI 已经认识这个邮箱了，
-        #    走 passwordless_login 分支根本不调 register_password，
-        #    这一轮的 d["password"] 是空的 —— 直接 REPLACE 就把上一轮的密码冲没了。
-        #    密码是 OpenAI 侧的**持久状态**，"这一轮没设" ≠ "这个号没有密码"，
-        #    所以空值不覆盖非空旧值。
-        #    token 三件套正相反：每轮跑都是全新的，旧的可能已失效，照常整列覆盖。
-        # totp_secret 和密码同理，甚至更严：secret【一次性下发、服务端取不回】，
-        #    丢了 = 该号 2FA 永久锁死。重跑同邮箱（已绑过 2FA）时这一轮不会再绑，
-        #    d 里没有 secret —— 绝不能拿空值把库里已存的 secret 冲没。
-        #    与密码合成一次 SELECT，顺带把两列旧值一起兜住。
         totp_secret = (d.get("totp_secret") or "").strip()
         totp_factor_id = (d.get("totp_factor_id") or "").strip()
-        if not password or not totp_secret:
+        reg_country = (d.get("reg_country") or "").strip()
+        reg_city = (d.get("reg_city") or "").strip()
+        reg_ip = (d.get("reg_ip") or "").strip()
+
+        if not password or not totp_secret or not reg_ip:
             row = con.execute(
-                "SELECT password, totp_secret, totp_factor_id FROM registered WHERE email=?",
+                "SELECT password, totp_secret, totp_factor_id, reg_country, reg_city, reg_ip "
+                "FROM registered WHERE email=?",
                 (email,),
             ).fetchone()
             if row:
@@ -532,14 +538,18 @@ def save_registered(d: dict) -> None:
                     password = row["password"]
                 if not totp_secret and (row["totp_secret"] or "").strip():
                     totp_secret = row["totp_secret"]
-                    # factor_id 跟着 secret 走：本轮没绑就沿用旧的
                     totp_factor_id = totp_factor_id or (row["totp_factor_id"] or "")
+                if not reg_ip and (row["reg_ip"] or "").strip():
+                    reg_ip = row["reg_ip"]
+                    reg_country = reg_country or (row["reg_country"] or "")
+                    reg_city = reg_city or (row["reg_city"] or "")
+
         con.execute(
             "INSERT OR REPLACE INTO registered "
             "(email, password, access_token, session_token, refresh_token, "
             "id_token, device_id, csrf_token, cookie_header, "
-            "totp_secret, totp_factor_id, extra_json, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "totp_secret, totp_factor_id, reg_country, reg_city, reg_ip, extra_json, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 email,
                 password,
@@ -552,6 +562,9 @@ def save_registered(d: dict) -> None:
                 d.get("cookie_header", ""),
                 totp_secret,
                 totp_factor_id,
+                reg_country,
+                reg_city,
+                reg_ip,
                 json.dumps(extra, ensure_ascii=False) if extra else None,
                 time.time(),
             ),
@@ -751,7 +764,7 @@ def list_registered(limit: int = 20, offset: int = 0, filter_rt: str = "all") ->
     con = _conn()
     where = _registered_where(filter_rt)
     cur = con.execute(
-        f"SELECT email, password, totp_secret, "
+        f"SELECT email, password, totp_secret, reg_country, reg_city, reg_ip, "
         f"length(access_token) AS at_len, length(session_token) AS st_len, "
         f"length(refresh_token) AS rt_len, extra_json, oa_check, created_at "
         f"FROM registered {where} ORDER BY created_at DESC LIMIT ? OFFSET ?",

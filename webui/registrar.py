@@ -48,6 +48,55 @@ LOG_DIR = Path(__file__).resolve().parent / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def probe_proxy_geo(proxy: str, timeout: float = 4.0) -> dict:
+    """通过当前代理探测真实的出口 IP、国家代码和城市。"""
+    proxy = (proxy or "").strip()
+    if not proxy:
+        return {"ip": "直连", "country": "本地", "city": ""}
+
+    if "://" not in proxy and "@" in proxy:
+        proxy = f"http://{proxy}"
+
+    # 1. 尝试 ip-api.com (免费、支持 http/socks5，含精准城市与国家代码)
+    try:
+        from curl_cffi.requests import Session as CurlSession
+        s = CurlSession(impersonate="chrome136")
+        if hasattr(s, "trust_env"):
+            s.trust_env = False
+        s.proxies = {"http": proxy, "https": proxy}
+        resp = s.get("http://ip-api.com/json?fields=status,country,countryCode,city,query", timeout=timeout)
+        if getattr(resp, "status_code", 0) == 200:
+            data = resp.json() or {}
+            if data.get("status") == "success":
+                return {
+                    "ip": str(data.get("query") or "").strip(),
+                    "country": str(data.get("countryCode") or data.get("country") or "").strip().upper(),
+                    "city": str(data.get("city") or "").strip(),
+                }
+    except Exception:
+        pass
+
+    # 2. 备用尝试 cloudflare trace
+    try:
+        from curl_cffi.requests import Session as CurlSession
+        s = CurlSession(impersonate="chrome136")
+        if hasattr(s, "trust_env"):
+            s.trust_env = False
+        s.proxies = {"http": proxy, "https": proxy}
+        resp = s.get("https://www.cloudflare.com/cdn-cgi/trace", timeout=timeout)
+        if getattr(resp, "status_code", 0) == 200:
+            fields = dict(line.split("=", 1) for line in str(getattr(resp, "text", "") or "").splitlines() if "=" in line)
+            return {
+                "ip": str(fields.get("ip") or "").strip(),
+                "country": str(fields.get("loc") or "").strip().upper(),
+                "city": "",
+            }
+    except Exception:
+        pass
+
+    return {"ip": "", "country": "", "city": ""}
+
+
 class QueueLogHandler(logging.Handler):
     """把 logging 记录扔进 run queue + 写 log 文件。
 
@@ -387,6 +436,21 @@ def _do_register(
                 logging.getLogger("registrar").warning(
                     f"[register] 2FA 绑定异常（账号仍有效）: {e}"
                 )
+        # ─ 探测本次注册出口网络（国家、城市、IP） ─
+        try:
+            geo = probe_proxy_geo(options.get("proxy") or getattr(cfg, "proxy", "") or "")
+            d["reg_country"] = geo.get("country", "")
+            d["reg_city"] = geo.get("city", "")
+            d["reg_ip"] = geo.get("ip", "")
+            if d.get("reg_ip"):
+                logging.getLogger("registrar").info(
+                    f"[register] 注册出口网络: IP={d['reg_ip']} "
+                    f"地区={d['reg_country'] or '-'}"
+                    + (f"/{d['reg_city']}" if d['reg_city'] else "")
+                )
+        except Exception:
+            pass
+
         # 落库（密码已在 2FA 之前回读补齐，这里 d 里该有的都有了）
         db.save_registered(d)
         # 非池化 provider 的 email 是虚拟占位（xxx_placeholder_N@placeholder.local），
