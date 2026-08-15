@@ -68,7 +68,7 @@ const plusVisible = ref(false)
 const plusRunning = ref(false)
 const plusTaskId = ref('')
 const plusEs = ref(null)
-const plusConfigCollapsed = ref(false)
+const plusConfigCollapsed = ref(true) // 默认收起参数配置
 const plusTargetEmails = ref([])
 const plusItems = ref({})
 const plusLogs = ref([])
@@ -179,7 +179,7 @@ async function openPlusCheck(mode) {
   if (!plusRunning.value) {
     plusTaskId.value = ''
     plusLogs.value = []
-    plusConfigCollapsed.value = false
+    plusConfigCollapsed.value = true
     const initMap = {}
     for (const em of emails) {
       initMap[em] = { email: em, status: 'pending', result: null, elapsed: 0 }
@@ -1038,8 +1038,8 @@ onUnmounted(() => {
 
     <!-- ──────────────── Plus 状态并发检测控制台弹窗 (macOS 架构) ──────────────── -->
     <el-dialog
-      v-model="plusVisible" width="980px" top="3vh"
-      class="oa-custom-dialog"
+      v-model="plusVisible" width="880px" top="5vh"
+      class="oa-custom-dialog plus-dialog"
       :close-on-click-modal="false" @closed="closePlusCheck"
     >
       <template #header>
@@ -1049,7 +1049,7 @@ onUnmounted(() => {
             <span class="oa-title-text">Plus 状态与封号并发检测控制台</span>
             <el-tag size="small" type="info" round effect="plain">{{ plusTargetEmails.length }} 个账号</el-tag>
           </div>
-          <div v-if="plusTaskId" class="oa-header-extra">
+          <div class="oa-header-extra">
             <el-button size="small" text @click="plusConfigCollapsed = !plusConfigCollapsed">
               <el-icon><Setting /></el-icon>{{ plusConfigCollapsed ? '展开参数配置' : '收起参数配置' }}
             </el-button>
@@ -1058,9 +1058,9 @@ onUnmounted(() => {
       </template>
 
       <div class="oa-dialog-container">
-        <!-- 参数配置卡片 -->
+        <!-- 参数配置卡片 (默认折叠收起) -->
         <el-collapse-transition>
-          <div v-show="!plusTaskId || !plusConfigCollapsed" class="oa-config-card">
+          <div v-show="!plusConfigCollapsed" class="oa-config-card">
             <el-form label-position="top" :disabled="plusRunning" size="small">
               <el-row :gutter="12">
                 <el-col :span="13">
@@ -1080,7 +1080,7 @@ onUnmounted(() => {
                 <el-col :span="11">
                   <el-row :gutter="12">
                     <el-col :span="12">
-                      <el-form-item label="并发 Worker 线程数">
+                      <el-form-item label="并发 Worker 数">
                         <el-input-number v-model="plusForm.workers" :min="1" :max="20" style="width: 100%" />
                       </el-form-item>
                     </el-col>
@@ -1132,78 +1132,68 @@ onUnmounted(() => {
           </div>
         </div>
 
-        <!-- 核心双栏监控：左侧每个账号一行表格，右侧实时检测日志 -->
-        <div class="oa-monitor-split">
-          <!-- 左侧账号监控表格 -->
-          <div class="oa-table-box">
-            <el-table :data="plusRows" size="small" stripe height="100%" :highlight-current-row="false">
-              <el-table-column prop="email" label="账号邮箱" min-width="190" show-overflow-tooltip>
-                <template #default="{ row }">
-                  <span class="mono" style="font-size: 11.5px">{{ row.email }}</span>
-                </template>
-              </el-table-column>
+        <!-- 核心表格：每个账号一行全宽监控列表 (单栏无右侧流水，纯净自适应) -->
+        <div class="plus-table-box">
+          <el-table :data="plusRows" size="small" stripe height="340" class="macos-table" :highlight-current-row="false">
+            <el-table-column prop="email" label="账号邮箱" min-width="240" show-overflow-tooltip>
+              <template #default="{ row }">
+                <button
+                  class="macos-tag-btn copy-btn"
+                  title="点击复制邮箱"
+                  @click="copyText(row.email)"
+                >
+                  <span class="mono">{{ row.email }}</span>
+                  <el-icon class="copy-ico"><CopyDocument /></el-icon>
+                </button>
+              </template>
+            </el-table-column>
 
-              <el-table-column label="检测状态" width="105" align="center">
-                <template #default="{ row }">
-                  <div v-if="row.status === 'running'" class="running-pill">
-                    <span class="pulse-dot"></span> 检测中...
-                  </div>
-                  <el-tag v-else-if="row.status === 'done'" type="success" size="small" effect="light">已完成</el-tag>
-                  <el-tag v-else-if="row.status === 'cancelled'" type="info" size="small">已取消</el-tag>
-                  <el-tag v-else type="info" size="small" effect="plain">排队中</el-tag>
-                </template>
-              </el-table-column>
+            <el-table-column label="检测状态" width="130" align="center">
+              <template #default="{ row }">
+                <div v-if="row.status === 'running'" class="running-pill">
+                  <span class="pulse-dot"></span> 检测中...
+                </div>
+                <el-tag v-else-if="row.status === 'done'" type="success" size="small" effect="light">已完成</el-tag>
+                <el-tag v-else-if="row.status === 'cancelled'" type="info" size="small">已取消</el-tag>
+                <el-tag v-else type="info" size="small" effect="plain">排队中</el-tag>
+              </template>
+            </el-table-column>
 
-              <el-table-column label="Plus 结论" min-width="150">
-                <template #default="{ row }">
-                  <template v-if="row.result">
-                    <el-tag
-                      :type="(PLUS_STATE_META[row.result.status] || {}).type || 'info'"
-                      size="small"
-                      :effect="row.result.status === 'plus_eligible' || row.result.status === 'plus_active' ? 'dark' : 'light'"
-                    >
-                      {{ (PLUS_STATE_META[row.result.status] || { label: row.result.status }).label }}
-                    </el-tag>
-                    <el-tooltip v-if="row.result.error" :content="row.result.error" placement="top">
-                      <span class="hint error-hint" style="margin-left: 4px; color: var(--el-color-danger); cursor: help">⚠</span>
-                    </el-tooltip>
-                  </template>
-                  <span v-else class="hint">—</span>
+            <el-table-column label="Plus 结论" min-width="180">
+              <template #default="{ row }">
+                <template v-if="row.result">
+                  <el-tag
+                    :type="(PLUS_STATE_META[row.result.status] || {}).type || 'info'"
+                    size="small"
+                    :effect="row.result.status === 'plus_eligible' || row.result.status === 'plus_active' ? 'dark' : 'light'"
+                  >
+                    {{ (PLUS_STATE_META[row.result.status] || { label: row.result.status }).label }}
+                  </el-tag>
+                  <span v-if="row.result.plan" class="hint" style="margin-left: 6px; font-size: 11px">
+                    plan: {{ row.result.plan }}
+                  </span>
+                  <el-tooltip v-if="row.result.error" :content="row.result.error" placement="top">
+                    <span class="hint error-hint" style="margin-left: 6px; color: var(--el-color-danger); cursor: help">⚠</span>
+                  </el-tooltip>
                 </template>
-              </el-table-column>
+                <span v-else class="hint">—</span>
+              </template>
+            </el-table-column>
 
-              <el-table-column label="耗时" width="70" align="right">
-                <template #default="{ row }">
-                  <span class="mono" style="font-size: 11px">{{ row.elapsed ? row.elapsed + 's' : '—' }}</span>
-                </template>
-              </el-table-column>
+            <el-table-column label="耗时" width="85" align="right">
+              <template #default="{ row }">
+                <span class="mono" style="font-size: 11.5px">{{ row.elapsed ? row.elapsed + 's' : (row.status === 'running' ? '计时中' : '—') }}</span>
+              </template>
+            </el-table-column>
 
-              <el-table-column label="操作" width="75" align="center" fixed="right">
-                <template #default="{ row }">
-                  <el-button size="small" text type="primary" @click="openPlusItemLog(row)">
-                    <el-icon><Document /></el-icon>日志
-                  </el-button>
-                </template>
-              </el-table-column>
-            </el-table>
-          </div>
-
-          <!-- 右侧实时流水日志 -->
-          <div class="oa-terminal-box">
-            <div class="oa-terminal-header">
-              <span class="terminal-dot red"></span>
-              <span class="terminal-dot yellow"></span>
-              <span class="terminal-dot green"></span>
-              <span class="terminal-title">实时检测流水 ({{ plusLogs.length }} 行)</span>
-              <el-button size="small" text class="terminal-clear-btn" @click="plusLogs = []">清屏</el-button>
-            </div>
-            <div id="plus-log-box" class="oa-terminal-body">
-              <div v-for="(log, idx) in plusLogs" :key="idx" class="terminal-line" :class="getLogClass(log)">
-                {{ log }}
-              </div>
-              <div v-if="!plusLogs.length" class="terminal-empty">点击下方「开始检测」发起任务...</div>
-            </div>
-          </div>
+            <el-table-column label="操作" width="85" align="center" fixed="right">
+              <template #default="{ row }">
+                <el-button size="small" text type="primary" @click="openPlusItemLog(row)">
+                  <el-icon><Document /></el-icon>日志
+                </el-button>
+              </template>
+            </el-table-column>
+          </el-table>
         </div>
       </div>
 
@@ -2072,6 +2062,18 @@ onUnmounted(() => {
 }
 .start-gradient-btn:hover:not(:disabled) {
   background: linear-gradient(135deg, #059669, #047857);
+}
+
+.plus-table-box {
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 8px;
+  overflow: hidden;
+  height: 340px;
+}
+
+:deep(.plus-dialog) {
+  border-radius: 12px;
+  overflow: hidden;
 }
 
 /* ──────────── 单账号详细日志终端弹窗 ──────────── */
