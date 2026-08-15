@@ -303,6 +303,7 @@ def api_register(req: RegisterReq):
         "otp_timeout": int(req.otp_timeout),
         "allow_existing_login": req.allow_existing_login,
         "want_2fa": req.want_2fa,
+        "want_password": req.want_password,
     }
     run_id = registrar.start_registration(account, options)
     logger.info(f"[run] {run_id} -> {account['email']} (mail_source={mail_source})")
@@ -418,6 +419,13 @@ def api_bulk_delete_registered(req: BulkDeleteRegisteredReq):
         n = db.delete_registered_by_emails(req.emails)
         return {"ok": True, "deleted": n, "by": "emails"}
     raise HTTPException(400, "需要 emails 或 all=true")
+
+
+@app.post("/api/registered/clean_invalid")
+def api_clean_invalid_registered():
+    """清理没有任何有效凭证（AT/ST/RT 全为空）的未完成废号。"""
+    n = db.clean_empty_token_accounts()
+    return {"ok": True, "deleted": n}
 
 
 # ──────────────────────── 批量导出（文本） ────────────────────────

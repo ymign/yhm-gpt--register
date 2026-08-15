@@ -528,35 +528,17 @@ onUnmounted(() => {
             </template>
           </el-table-column>
 
-          <!-- 出口地区 -->
-          <el-table-column label="出口地区" width="140" show-overflow-tooltip>
+          <!-- 出口国家 -->
+          <el-table-column label="出口国家" width="130" align="center" show-overflow-tooltip>
             <template #default="{ row }">
               <span
-                v-if="row.reg_country || row.reg_city"
+                v-if="row.reg_country"
                 class="geo-badge"
                 :class="{ 'geo-hot': ['BR', 'DE', 'GB', 'PL', 'ES', 'AR'].includes(row.reg_country) }"
               >
-                <span class="geo-country">{{ row.reg_country || '未知' }}</span>
-                <span v-if="row.reg_city" class="geo-city"> · {{ row.reg_city }}</span>
+                <span class="geo-country">{{ row.reg_country }}</span>
               </span>
-              <span v-else-if="row.status === 'running'" class="hint">探测中...</span>
-              <span v-else class="hint">—</span>
-            </template>
-          </el-table-column>
-
-          <!-- 出口 IP -->
-          <el-table-column label="出口 IP" width="150" show-overflow-tooltip>
-            <template #default="{ row }">
-              <button
-                v-if="row.reg_ip"
-                class="macos-tag-btn copy-btn ip-btn"
-                title="点击复制出口 IP"
-                @click="copyText(row.reg_ip)"
-              >
-                <span class="mono">{{ row.reg_ip }}</span>
-                <el-icon class="copy-ico"><CopyDocument /></el-icon>
-              </button>
-              <span v-else-if="row.status === 'running'" class="hint">获取中...</span>
+              <span v-else-if="row.status === 'running'" class="hint">匹配中...</span>
               <span v-else class="hint">—</span>
             </template>
           </el-table-column>

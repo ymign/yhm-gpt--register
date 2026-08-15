@@ -23,6 +23,7 @@ import {
   getRegistered,
   deleteRegistered,
   bulkDeleteRegistered,
+  cleanInvalidRegistered,
   bulkDeleteAccounts,
   listExportFormats,
   exportRegistered,
@@ -617,6 +618,17 @@ async function deleteSelected() {
   catch (e) { ElMessage.error(e.message) }
 }
 
+async function cleanInvalid() {
+  if (!(await confirm('将自动清理所有没有有效 Token 凭证（AT/ST/RT 全为空）的未完成废号，确定？'))) return
+  try {
+    const r = await cleanInvalidRegistered()
+    ElMessage.success(`已清理 ${r.deleted} 个无凭证空号`)
+    load()
+  } catch (e) {
+    ElMessage.error(e.message)
+  }
+}
+
 async function deleteAll() {
   if (!(await confirm('这会清空注册结果表里的所有凭证！邮箱列表不受影响，确定？'))) return
   if (!(await confirm('再次确认：真的要删除全部凭证吗？此操作不可恢复！'))) return
@@ -915,6 +927,7 @@ onUnmounted(() => {
             <el-button size="small" type="danger" plain :disabled="!selected.length" @click="deleteSelected">
               删除 ({{ selected.length }})
             </el-button>
+            <el-button size="small" type="warning" plain @click="cleanInvalid">清理空号</el-button>
             <el-button size="small" type="danger" plain @click="deleteAll">清空</el-button>
           </div>
         </div>
@@ -948,16 +961,15 @@ onUnmounted(() => {
             </template>
           </el-table-column>
 
-          <!-- 出口地区 -->
-          <el-table-column label="出口地区" width="140" show-overflow-tooltip>
+          <!-- 出口国家 -->
+          <el-table-column label="出口国家" width="120" align="center" show-overflow-tooltip>
             <template #default="{ row }">
               <span
-                v-if="row.reg_country || row.reg_city"
+                v-if="row.reg_country"
                 class="geo-badge"
                 :class="{ 'geo-hot': ['BR', 'DE', 'GB', 'PL', 'ES', 'AR'].includes(row.reg_country) }"
               >
-                <span class="geo-country">{{ row.reg_country || '未知' }}</span>
-                <span v-if="row.reg_city" class="geo-city"> · {{ row.reg_city }}</span>
+                <span class="geo-country">{{ row.reg_country }}</span>
               </span>
               <span v-else class="hint">—</span>
             </template>

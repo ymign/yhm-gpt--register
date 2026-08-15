@@ -99,113 +99,29 @@ LOG_DIR = Path(__file__).resolve().parent / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def probe_proxy_geo(proxy: str, timeout: float = 6.0) -> dict:
-    """通过当前代理高可用探测真实的出口 IP、国家代码和城市，带智能 Fallback。"""
+def extract_proxy_country(proxy: str, target_country: str = "") -> str:
+    """提取注册目标或代理所属的国家代码（如 BR、DE、GB 等），不再发起外部 IP 探针请求。"""
     import re
-    from urllib.parse import unquote, urlsplit
-
+    if target_country and target_country.strip():
+        return target_country.strip().upper()
     proxy = (proxy or "").strip()
     if not proxy:
-        return {"ip": "直连", "country": "本地", "city": ""}
-
-    # 1. 代理字符串智能识别保底国家
-    fallback_country = ""
+        return ""
     try:
         m = re.search(r"(?:-region-|-country-|_country-)([a-zA-Z]{2})", proxy, re.I) or re.search(
             r"-([a-zA-Z]{2})-\d+-\d+", proxy, re.I
         )
         if m and m.group(1):
-            fallback_country = m.group(1).upper()
+            return m.group(1).upper()
     except Exception:
         pass
+    return ""
 
-    if "://" not in proxy and "@" in proxy:
-        proxy = f"http://{proxy}"
 
-    parsed = urlsplit(proxy) if "://" in proxy else None
-    fallback_host = parsed.hostname if parsed and parsed.hostname else ""
-
-    from curl_cffi.requests import Session as CurlSession
-
-    def _get_session():
-        s = CurlSession(impersonate="chrome136")
-        if hasattr(s, "trust_env"):
-            s.trust_env = False
-        s.proxies = {"http": proxy, "https": proxy}
-        return s
-
-    # 2. 依次尝试多个独立的高可用 IP Geo 探针
-    # 通道 1: ipwho.is (高可用、含城市和国家代码)
-    try:
-        s = _get_session()
-        resp = s.get("http://ipwho.is/", timeout=timeout)
-        if getattr(resp, "status_code", 0) == 200:
-            data = resp.json() or {}
-            if data.get("success") is not False and data.get("ip"):
-                return {
-                    "ip": str(data.get("ip") or "").strip(),
-                    "country": str(data.get("country_code") or data.get("country") or "").strip().upper(),
-                    "city": str(data.get("city") or "").strip(),
-                }
-    except Exception:
-        pass
-
-    # 通道 2: ip-api.com
-    try:
-        s = _get_session()
-        resp = s.get("http://ip-api.com/json?fields=status,country,countryCode,city,query", timeout=timeout)
-        if getattr(resp, "status_code", 0) == 200:
-            data = resp.json() or {}
-            if data.get("status") == "success" and data.get("query"):
-                return {
-                    "ip": str(data.get("query") or "").strip(),
-                    "country": str(data.get("countryCode") or data.get("country") or "").strip().upper(),
-                    "city": str(data.get("city") or "").strip(),
-                }
-    except Exception:
-        pass
-
-    # 通道 3: cloudflare trace
-    try:
-        s = _get_session()
-        resp = s.get("https://www.cloudflare.com/cdn-cgi/trace", timeout=timeout)
-        if getattr(resp, "status_code", 0) == 200:
-            fields = dict(line.split("=", 1) for line in str(getattr(resp, "text", "") or "").splitlines() if "=" in line)
-            ip_val = str(fields.get("ip") or "").strip()
-            loc_val = str(fields.get("loc") or "").strip().upper()
-            if ip_val or loc_val:
-                return {
-                    "ip": ip_val,
-                    "country": loc_val or fallback_country,
-                    "city": "",
-                }
-    except Exception:
-        pass
-
-    # 通道 4: api.ip.sb
-    try:
-        s = _get_session()
-        resp = s.get("https://api.ip.sb/geoip", timeout=timeout)
-        if getattr(resp, "status_code", 0) == 200:
-            data = resp.json() or {}
-            if data.get("ip"):
-                return {
-                    "ip": str(data.get("ip") or "").strip(),
-                    "country": str(data.get("country_code") or data.get("country") or "").strip().upper(),
-                    "city": str(data.get("city") or "").strip(),
-                }
-    except Exception:
-        pass
-
-    # 兜底返回保底数据
-    if fallback_country or fallback_host:
-        return {
-            "ip": fallback_host or "代理已连接",
-            "country": fallback_country,
-            "city": "",
-        }
-
-    return {"ip": "", "country": "", "city": ""}
+# 兼容历史调用别名
+def probe_proxy_geo(proxy: str, timeout: float = 6.0) -> dict:
+    country = extract_proxy_country(proxy)
+    return {"ip": "", "country": country, "city": ""}
 
 
 class QueueLogHandler(logging.Handler):
@@ -577,21 +493,15 @@ def _do_register(
                 logging.getLogger("registrar").warning(
                     f"[register] 2FA 绑定异常（账号仍有效）: {e}"
                 )
-        # ─ 探测本次注册出口网络（国家、城市、IP） ─
-        try:
-            used_proxy_str = getattr(cfg, "proxy", "") or options.get("proxy") or ""
-            geo = probe_proxy_geo(used_proxy_str)
-            d["reg_country"] = geo.get("country", "")
-            d["reg_city"] = geo.get("city", "")
-            d["reg_ip"] = geo.get("ip", "")
-            if d.get("reg_ip"):
-                logging.getLogger("registrar").info(
-                    f"[register] 注册出口网络: IP={d['reg_ip']} "
-                    f"地区={d['reg_country'] or '-'}"
-                    + (f"/{d['reg_city']}" if d['reg_city'] else "")
-                )
-        except Exception:
-            pass
+        # ─ 记录本次注册出口国家（不再发起外部网络探针，直接使用目标国家或代理地区） ─
+        used_proxy_str = getattr(cfg, "proxy", "") or options.get("proxy") or ""
+        d["reg_country"] = extract_proxy_country(used_proxy_str, target_country)
+        d["reg_city"] = ""
+        d["reg_ip"] = ""
+        if d.get("reg_country"):
+            logging.getLogger("registrar").info(
+                f"[register] 注册出口国家: {d['reg_country']}"
+            )
 
         if target_country:
             d["target_country"] = target_country
@@ -635,6 +545,11 @@ def _do_register(
         err = str(e)
         category = classify_error(err, mail_source)
         logging.getLogger("registrar").error(f"[register] 失败 (category={category}): {err}")
+        # 清理可能残留的未完成无凭证脏数据，避免污染注册结果列表
+        try:
+            db.cleanup_pending_registered(email)
+        except Exception:
+            pass
         # ⚠️ 密码是在 register_password 里现生成的，只活在内存里。
         #    走到这里说明 save_registered 没执行过 —— 但 POST user/register 可能**已经成功**，
         #    OpenAI 那边账号连同这个密码已经建好了，只是后续步骤（发码/验证/建账户）挂了。

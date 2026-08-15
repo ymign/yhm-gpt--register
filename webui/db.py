@@ -151,6 +151,15 @@ def init_db():
         con.execute("ALTER TABLE registered ADD COLUMN reg_ip TEXT")
         con.commit()
 
+    # 自动清理历史中没有任何凭证（AT/ST/RT 全为空）的未完成半成品脏数据
+    con.execute("""
+        DELETE FROM registered
+        WHERE (access_token IS NULL OR access_token = '')
+          AND (session_token IS NULL OR session_token = '')
+          AND (refresh_token IS NULL OR refresh_token = '')
+    """)
+    con.commit()
+
 
 # ──────────────────────── outlook 号池 ────────────────────────
 
@@ -513,6 +522,16 @@ def save_registered(d: dict) -> None:
     email = (d.get("email") or "").lower()
     if not email:
         return
+    # 必须至少有 access_token / session_token / refresh_token 之一才落库
+    has_token = bool(
+        (d.get("access_token") or "").strip()
+        or (d.get("session_token") or "").strip()
+        or (d.get("refresh_token") or "").strip()
+    )
+    if not has_token:
+        logging.getLogger("db").warning(f"[save_registered] {email} 没有任何有效 Token 凭证，放弃落盘")
+        return
+
     password = d.get("password", "") or ""
     extra = {k: v for k, v in d.items() if k not in {
         "email", "password", "access_token", "session_token", "refresh_token",
@@ -527,7 +546,7 @@ def save_registered(d: dict) -> None:
         reg_city = (d.get("reg_city") or "").strip()
         reg_ip = (d.get("reg_ip") or "").strip()
 
-        if not password or not totp_secret or not reg_ip:
+        if not password or not totp_secret:
             row = con.execute(
                 "SELECT password, totp_secret, totp_factor_id, reg_country, reg_city, reg_ip "
                 "FROM registered WHERE email=?",
@@ -539,10 +558,8 @@ def save_registered(d: dict) -> None:
                 if not totp_secret and (row["totp_secret"] or "").strip():
                     totp_secret = row["totp_secret"]
                     totp_factor_id = totp_factor_id or (row["totp_factor_id"] or "")
-                if not reg_ip and (row["reg_ip"] or "").strip():
-                    reg_ip = row["reg_ip"]
-                    reg_country = reg_country or (row["reg_country"] or "")
-                    reg_city = reg_city or (row["reg_city"] or "")
+                if not reg_country and (row["reg_country"] or "").strip():
+                    reg_country = row["reg_country"]
 
         con.execute(
             "INSERT OR REPLACE INTO registered "
@@ -573,20 +590,7 @@ def save_registered(d: dict) -> None:
 
 
 def save_password_early(email: str, password: str) -> None:
-    """密码一在 OpenAI 侧生效就落盘，不等整个注册流程跑完。
-
-    由 AuthFlow 的 on_password 回调触发（register_password 里 POST 200 之后）。
-    此刻账号+密码在 OpenAI 那边已经建好，但本地还要过发码/验证/建账户三关，
-    挂在任何一关都走不到 save_registered ——
-    密码只活在内存里，进程一退号就成了谁也登不进去的孤儿。
-
-    只写 email + password；token 三件套留空，等流程跑通后 save_registered
-    用同一个 email 主键覆盖同一行补上。extra_json 打 pending 标记，
-    方便一眼认出"有密码没凭证"的半成品行（跑通后会被 save_registered 清掉）。
-
-    ⚠️ 行已存在时**只 UPDATE password**，绝不动已有的 token：
-       重跑一个之前跑通过的邮箱时，不能把人家的凭证清空。
-    """
+    """密码一在 OpenAI 侧生效就落盘，不等整个注册流程跑完。"""
     email = (email or "").strip().lower()
     password = (password or "").strip()
     if not email or not password:
@@ -605,6 +609,23 @@ def save_password_early(email: str, password: str) -> None:
                 json.dumps({"pending": True}, ensure_ascii=False),
                 time.time(),
             ),
+        )
+        con.commit()
+
+
+def cleanup_pending_registered(email: str) -> None:
+    """清理未完成注册且无有效凭证的半成品账号记录。"""
+    email = (email or "").strip().lower()
+    if not email:
+        return
+    with _lock:
+        con = _conn()
+        con.execute(
+            "DELETE FROM registered WHERE email=? AND "
+            "(access_token IS NULL OR access_token = '') AND "
+            "(session_token IS NULL OR session_token = '') AND "
+            "(refresh_token IS NULL OR refresh_token = '')",
+            (email,)
         )
         con.commit()
 
@@ -647,6 +668,20 @@ def normalize_totp_secret(raw: str) -> str:
     if len(decoded) < 10:
         raise ValueError(f"TOTP secret 太短（解出 {len(decoded)} 字节，通常应为 20 字节）")
     return s
+
+
+def clean_empty_token_accounts() -> int:
+    """清理没有任何有效凭证（AT/ST/RT 全为空）的未完成半成品账号。"""
+    with _lock:
+        con = _conn()
+        cur = con.execute("""
+            DELETE FROM registered
+            WHERE (access_token IS NULL OR access_token = '')
+              AND (session_token IS NULL OR session_token = '')
+              AND (refresh_token IS NULL OR refresh_token = '')
+        """)
+        con.commit()
+        return cur.rowcount
 
 
 def update_registered_manual(email: str, password: Optional[str] = None,
