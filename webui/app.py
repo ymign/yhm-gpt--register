@@ -978,30 +978,13 @@ def api_check_plus(req: CheckPlusReq):
             results[email] = {"status": "error", "label": f"HTTP {resp.status_code}"}
             continue
         try:
-            data = resp.json()
+            data = resp.json() or {}
         except Exception:  # noqa: BLE001
             results[email] = {"status": "error", "label": "响应非 JSON"}
             continue
-        accts = data.get("accounts", {})
-        if not accts:
-            results[email] = {"status": "error", "label": "无账户数据"}
-            continue
-        info = next(iter(accts.values()))
-        acct = info.get("account", {})
-        ent = info.get("entitlement", {})
-        promo = info.get("eligible_promo_campaigns", {})
-        if acct.get("is_deactivated", False):
-            results[email] = {"status": "banned", "label": "封号"}
-            continue
-        plan = acct.get("plan_type", "free")
-        has_sub = ent.get("has_active_subscription", False)
-        has_plus_promo = "plus" in promo and promo["plus"].get("id") == "plus-1-month-free"
-        if plan == "plus" or has_sub:
-            results[email] = {"status": "plus_active", "label": "Plus生效中"}
-        elif has_plus_promo:
-            results[email] = {"status": "plus_eligible", "label": "可领Plus试用"}
-        else:
-            results[email] = {"status": "free", "label": "Free"}
+
+        from .plus_check import parse_account_plan
+        results[email] = parse_account_plan(data, resp.text or "")
 
     try:
         sess.close()

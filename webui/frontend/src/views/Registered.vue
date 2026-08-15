@@ -59,13 +59,21 @@ const selected = ref([])
 const loading = ref(false)
 
 const PLUS_TYPE = {
-  plus_eligible: 'success', plus_active: 'primary', free: 'warning',
+  pro_20x: 'danger',
+  pro_5x: 'warning',
+  pro_active: 'danger',
+  pro_eligible: 'success',
+  team_active: 'primary',
+  plus_eligible: 'success',
+  plus_active: 'primary',
+  free: 'info',
   token_invalid: 'danger',
-  banned: 'danger', error: 'danger',
+  banned: 'danger',
+  error: 'danger',
 }
 function plusOf(row) { return row.plus_check || null }
 
-// ════════════════════════ Plus 状态检测控制台 ════════════════════════
+// ════════════════════════ Plus / Pro 状态检测控制台 ════════════════════════
 const plusVisible = ref(false)
 const plusRunning = ref(false)
 const plusTaskId = ref('')
@@ -108,24 +116,36 @@ const plusStats = computed(() => {
   const done = items.filter((i) => i.status === 'done').length
   const running = items.filter((i) => i.status === 'running').length
   const pending = items.filter((i) => i.status === 'pending').length
+  const pro_20x = items.filter((i) => i.result && i.result.status === 'pro_20x').length
+  const pro_5x = items.filter((i) => i.result && i.result.status === 'pro_5x').length
+  const pro_active = items.filter((i) => i.result && i.result.status === 'pro_active').length
+  const pro_eligible = items.filter((i) => i.result && i.result.status === 'pro_eligible').length
+  const team_active = items.filter((i) => i.result && i.result.status === 'team_active').length
   const plus_active = items.filter((i) => i.result && i.result.status === 'plus_active').length
   const plus_eligible = items.filter((i) => i.result && i.result.status === 'plus_eligible').length
   const free = items.filter((i) => i.result && i.result.status === 'free').length
   const banned = items.filter((i) => i.result && i.result.status === 'banned').length
   const token_invalid = items.filter((i) => i.result && i.result.status === 'token_invalid').length
   const error = items.filter((i) => i.result && (i.result.status === 'error' || i.result.status === 'no_at' || i.result.status === 'not_found')).length
+  const total_pro = pro_20x + pro_5x + pro_active + pro_eligible
   const percent = tot > 0 ? Math.round((done / tot) * 100) : 0
   return {
     total: tot, done, running, pending,
+    pro_20x, pro_5x, pro_active, pro_eligible, total_pro, team_active,
     plus_active, plus_eligible, free, banned, token_invalid, error,
     percent,
   }
 })
 
 const PLUS_STATE_META = {
+  pro_20x:       { type: 'danger',  label: '👑 Pro 20x', icon: 'Check' },
+  pro_5x:        { type: 'warning', label: '👑 Pro 5x', icon: 'Check' },
+  pro_active:    { type: 'danger',  label: '👑 Pro', icon: 'Check' },
+  pro_eligible:  { type: 'success', label: '◆ 可领Pro试用', icon: 'Check' },
+  team_active:   { type: 'primary', label: '💎 Team', icon: 'Check' },
   plus_active:   { type: 'primary', label: 'Plus生效中', icon: 'Check' },
   plus_eligible: { type: 'success', label: '可领Plus试用', icon: 'Check' },
-  free:          { type: 'warning', label: 'Free', icon: '' },
+  free:          { type: 'info',    label: 'Free', icon: '' },
   banned:        { type: 'danger',  label: '已封号', icon: 'Close' },
   token_invalid: { type: 'danger',  label: '凭证失效', icon: 'Close' },
   no_at:         { type: 'info',    label: '无AT', icon: '' },
@@ -877,11 +897,13 @@ onUnmounted(() => {
 
           <el-select v-model="filter" class="macos-select filter-select" @change="load(true)">
             <el-option label="全部" value="all" />
+            <el-option label="👑 Pro 账号 (含20x/5x)" value="pro" />
+            <el-option label="💎 Team 团队号" value="team" />
+            <el-option label="★ Plus / 试用" value="plus" />
+            <el-option label="Free 普通号" value="free" />
             <el-option label="有 RT" value="has_rt" />
             <el-option label="无 RT" value="no_rt" />
             <el-option label="未检测" value="unchecked" />
-            <el-option label="Free" value="free" />
-            <el-option label="可领Plus" value="plus" />
             <el-option label="已封号" value="banned" />
             <el-option label="凭证失效" value="token_invalid" />
             <el-option label="OA未检" value="oa_unchecked" />
@@ -1168,6 +1190,14 @@ onUnmounted(() => {
           <div class="plus-kpi-card">
             <span class="kpi-label">已检测 / 总数</span>
             <span class="kpi-num">{{ plusStats.done }} / {{ plusStats.total }}</span>
+          </div>
+          <div v-if="plusStats.total_pro > 0" class="plus-kpi-card hit-pro">
+            <span class="kpi-label">👑 Pro (20x:{{ plusStats.pro_20x }} / 5x:{{ plusStats.pro_5x }})</span>
+            <span class="kpi-num text-pro">{{ plusStats.total_pro }}</span>
+          </div>
+          <div v-if="plusStats.team_active > 0" class="plus-kpi-card hit-team">
+            <span class="kpi-label">💎 Team 团队版</span>
+            <span class="kpi-num text-team">{{ plusStats.team_active }}</span>
           </div>
           <div class="plus-kpi-card hit-active">
             <span class="kpi-label">★ Plus 生效中</span>
@@ -2077,6 +2107,22 @@ onUnmounted(() => {
 .plus-kpi-card.hit-active {
   border-color: var(--el-color-primary-light-5);
   background: var(--el-color-primary-light-9);
+}
+.plus-kpi-card.hit-pro {
+  border-color: rgba(244, 63, 94, 0.45);
+  background: linear-gradient(135deg, rgba(244, 63, 94, 0.12), rgba(245, 158, 11, 0.08));
+}
+.plus-kpi-card.hit-team {
+  border-color: rgba(99, 102, 241, 0.45);
+  background: rgba(99, 102, 241, 0.08);
+}
+.text-pro {
+  color: #f43f5e;
+  font-weight: 700;
+}
+.text-team {
+  color: #6366f1;
+  font-weight: 700;
 }
 .plus-kpi-card.hit-promo {
   border-color: rgba(16, 185, 129, 0.4);

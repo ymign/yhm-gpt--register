@@ -768,10 +768,14 @@ def _registered_where(filt: str) -> str:
         return "WHERE coalesce(length(refresh_token),0) = 0"
     if filt == "unchecked":
         return "WHERE (extra_json IS NULL OR extra_json NOT LIKE '%\"plus_check\"%')"
-    if filt == "free":
-        return "WHERE extra_json LIKE '%\"free\"%'"
+    if filt == "pro":
+        return "WHERE (extra_json LIKE '%\"pro_20x\"%' OR extra_json LIKE '%\"pro_5x\"%' OR extra_json LIKE '%\"pro_active\"%' OR extra_json LIKE '%\"pro_eligible\"%')"
+    if filt == "team":
+        return "WHERE extra_json LIKE '%\"team_active\"%'"
     if filt == "plus":
         return "WHERE (extra_json LIKE '%\"plus_eligible\"%' OR extra_json LIKE '%\"plus_active\"%')"
+    if filt == "free":
+        return "WHERE extra_json LIKE '%\"free\"%'"
     if filt == "banned":
         return "WHERE extra_json LIKE '%\"banned\"%'"
     if filt == "token_invalid":

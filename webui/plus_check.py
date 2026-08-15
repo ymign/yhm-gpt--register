@@ -71,6 +71,114 @@ def _get_auth(claims: dict) -> dict:
     return claims
 
 
+def parse_account_plan(data: dict, body: str = "") -> dict:
+    """深度解析 OpenAI accounts/check 返回的账号计划、Pro 倍率 (Pro 20x / Pro 5x / Team / Plus / Free / 试用)。"""
+    accts = data.get("accounts", {})
+    if not accts:
+        return {"status": "error", "label": "无账户数据", "error": "响应 JSON 缺少 accounts 字段"}
+
+    info = next(iter(accts.values()))
+    acct = info.get("account", {})
+    ent = info.get("entitlement", {})
+    promo = info.get("eligible_promo_campaigns", {})
+
+    plan = str(acct.get("plan_type") or "free").lower().strip()
+    structure = str(acct.get("structure") or "").lower().strip()
+    sub_plan = str(ent.get("subscription_plan") or "").lower().strip()
+    has_sub = bool(ent.get("has_active_subscription", False))
+
+    # 汇总所有 features
+    features_list = []
+    if isinstance(acct.get("features"), list):
+        features_list.extend(acct["features"])
+    if isinstance(ent.get("features"), list):
+        features_list.extend(ent["features"])
+    features_str = " ".join(str(f) for f in features_list).lower() + " " + body.lower()
+
+    if acct.get("is_deactivated", False):
+        return {"status": "banned", "label": "封号", "plan": plan, "error": "is_deactivated=True"}
+
+    # 1. 判定 ChatGPT Pro 计划及 20x / 5x 倍率
+    is_pro = (
+        plan == "pro"
+        or "proplan" in sub_plan
+        or "chatgpt_pro" in features_str
+        or "o1_pro" in features_str
+    )
+    if is_pro:
+        # 判定具体倍率 (20x vs 5x)
+        if any(x in features_str for x in ("20x", "limit_20x", "limits_20x", "model_limits_20x", "rate_limit_20x")):
+            return {
+                "status": "pro_20x",
+                "label": "👑 Pro 20x",
+                "plan": "pro",
+                "tier": "20x",
+                "has_sub": has_sub,
+                "note": "ChatGPT Pro 顶配 20 倍算力配额",
+            }
+        if any(x in features_str for x in ("5x", "limit_5x", "limits_5x", "model_limits_5x", "rate_limit_5x")):
+            return {
+                "status": "pro_5x",
+                "label": "👑 Pro 5x",
+                "plan": "pro",
+                "tier": "5x",
+                "has_sub": has_sub,
+                "note": "ChatGPT Pro 5 倍算力配额",
+            }
+        return {
+            "status": "pro_active",
+            "label": "👑 Pro",
+            "plan": "pro",
+            "has_sub": has_sub,
+            "note": "ChatGPT Pro 订阅生效中",
+        }
+
+    # 2. 判定 Team 团队版
+    is_team = plan == "team" or "teamplan" in sub_plan or structure == "workspace"
+    if is_team:
+        return {
+            "status": "team_active",
+            "label": "💎 Team",
+            "plan": "team",
+            "has_sub": has_sub,
+        }
+
+    # 3. 判定可领试用活动 (Pro Trial / Plus Trial)
+    has_pro_promo = "pro" in promo or any("pro" in str(v.get("id", "")).lower() for v in promo.values() if isinstance(v, dict))
+    if has_pro_promo:
+        return {
+            "status": "pro_eligible",
+            "label": "◆ 可领Pro试用",
+            "plan": plan,
+            "promo": "pro-trial",
+        }
+
+    has_plus_promo = "plus" in promo and promo["plus"].get("id") == "plus-1-month-free"
+    if has_plus_promo:
+        return {
+            "status": "plus_eligible",
+            "label": "可领Plus试用",
+            "plan": plan,
+            "promo": "plus-1-month-free",
+        }
+
+    # 4. 判定 Plus 订阅生效
+    if plan == "plus" or "plusplan" in sub_plan or has_sub:
+        return {
+            "status": "plus_active",
+            "label": "Plus生效中",
+            "plan": "plus",
+            "has_sub": has_sub,
+        }
+
+    # 5. Free 普通账号
+    return {
+        "status": "free",
+        "label": "Free",
+        "plan": plan,
+    }
+
+
 def _looks_deactivated(body: str) -> bool:
     b_lower = body.lower()
     return any(m in b_lower for m in _DEACTIVATED_MARKERS)
@@ -145,6 +253,11 @@ class PlusCheckTask:
         self.cancelled = False
         self.done_count = 0
         self.stats = {
+            "pro_20x": 0,
+            "pro_5x": 0,
+            "pro_active": 0,
+            "pro_eligible": 0,
+            "team_active": 0,
             "plus_active": 0,
             "plus_eligible": 0,
             "free": 0,
@@ -317,31 +430,11 @@ def _check_one_account(task: PlusCheckTask, email: str) -> None:
             except Exception:
                 data = {}
 
-            accts = data.get("accounts", {})
-            if not accts:
-                result = {"status": "error", "label": "无账户数据", "error": "响应 JSON 缺少 accounts 字段"}
-                task.add_email_log(email, "检测警告: 响应成功但无 accounts 账户数据")
-            else:
-                info = next(iter(accts.values()))
-                acct = info.get("account", {})
-                ent = info.get("entitlement", {})
-                promo = info.get("eligible_promo_campaigns", {})
-                plan = acct.get("plan_type", "free")
-                has_sub = ent.get("has_active_subscription", False)
-                has_plus_promo = "plus" in promo and promo["plus"].get("id") == "plus-1-month-free"
-
-                if acct.get("is_deactivated", False):
-                    result = {"status": "banned", "label": "封号", "plan": plan, "error": "is_deactivated=True"}
-                    task.add_email_log(email, "检测结论: 封号 (is_deactivated=True)")
-                elif plan == "plus" or has_sub:
-                    result = {"status": "plus_active", "label": "Plus生效中", "plan": plan, "has_sub": has_sub}
-                    task.add_email_log(email, f"检测结论: ★ Plus生效中 (plan={plan}, subscription={has_sub})")
-                elif has_plus_promo:
-                    result = {"status": "plus_eligible", "label": "可领Plus试用", "plan": plan, "promo": "plus-1-month-free"}
-                    task.add_email_log(email, "检测结论: ◆ 可领 1 个月 Plus 免费试用 (plus_eligible)")
-                else:
-                    result = {"status": "free", "label": "Free", "plan": plan}
-                    task.add_email_log(email, f"检测结论: Free 普通账号 (plan={plan})")
+            result = parse_account_plan(data, body)
+            log_desc = f"检测结论: {result.get('label', result['status'])}"
+            if result.get("note"):
+                log_desc += f" ({result['note']})"
+            task.add_email_log(email, log_desc)
         else:
             result = {"status": "error", "label": f"HTTP {status_code}", "error": f"服务器返回 HTTP {status_code}"}
             task.add_email_log(email, f"请求异常: HTTP {status_code} -> {body[:150]}")
