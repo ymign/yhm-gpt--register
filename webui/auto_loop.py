@@ -181,12 +181,19 @@ class AutoLoopController:
                 }
                 for wid, info in sorted(self._worker_status.items())
             ]
-            # 计算 tasks 的动态耗时
+            # 计算 tasks 的动态耗时与实时步骤
             tasks_copy = []
             for t in self._tasks:
                 item = dict(t)
-                if item.get("status") == "running" and item.get("started_at"):
-                    item["elapsed"] = round(now - item["started_at"], 1)
+                rid = item.get("run_id")
+                if item.get("status") == "running":
+                    if item.get("started_at"):
+                        item["elapsed"] = round(now - item["started_at"], 1)
+                    if rid:
+                        p_info = registrar.get_run_phase(rid)
+                        item["phase"] = p_info.get("phase", item.get("phase", "running"))
+                        item["phase_text"] = p_info.get("phase_text", item.get("phase_text", "正在注册..."))
+                        item["percent"] = p_info.get("percent", 15)
                 tasks_copy.append(item)
 
             return {
@@ -482,6 +489,7 @@ class AutoLoopController:
     def _wait_run_finish(self, run_id: str, timeout: int = 1800) -> tuple[bool, str]:
         """轮询 runs 表，等 run 跑完。"""
         deadline = time.time() + timeout
+        last_broadcast = 0.0
         while time.time() < deadline:
             if self._stop_event.is_set():
                 return False, ""
@@ -496,6 +504,10 @@ class AutoLoopController:
                     return True, ""
                 if st == "failed":
                     return False, (row["error_category"] or "")
+            now = time.time()
+            if now - last_broadcast >= 1.0:
+                self._broadcast("state", self._snapshot())
+                last_broadcast = now
             time.sleep(1)
         logger.warning(f"run {run_id} 等了 {timeout}s 没结束，超时放弃")
         return False, ""

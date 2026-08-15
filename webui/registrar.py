@@ -31,7 +31,57 @@ from . import db  # noqa: E402
 
 # run_id -> queue of log strings; sentinel = None 表示流结束
 _run_queues: dict[str, queue.Queue] = {}
+_run_phases: dict[str, dict] = {}
 _lock = threading.Lock()
+
+
+def set_run_phase(run_id: str, phase: str, text: str, percent: int = 0):
+    with _lock:
+        _run_phases[run_id] = {
+            "phase": phase,
+            "phase_text": text,
+            "percent": percent,
+            "updated_at": time.time(),
+        }
+    _emit_status(run_id, "phase", {"phase": phase, "phase_text": text, "percent": percent})
+
+
+def get_run_phase(run_id: str) -> dict:
+    with _lock:
+        return _run_phases.get(
+            run_id, {"phase": "starting", "phase_text": "正在注册...", "percent": 10}
+        )
+
+
+def _detect_phase_from_log(msg: str) -> tuple[str, str, int] | None:
+    """根据日志特征自动提取细粒度注册步骤与进度百分比。"""
+    if not msg:
+        return None
+    if "网络预检" in msg or "检查网络连通性" in msg or "[1/10]" in msg:
+        return "network", "网络连通性预检", 15
+    if "[2/10]" in msg or "获取 OpenAI 授权地址" in msg:
+        return "auth_url", "获取授权地址", 25
+    if "[3/10]" in msg or "OAuth 初始化" in msg:
+        return "oauth_init", "OAuth 授权初始化", 35
+    if "[4/10]" in msg or "Sentinel Token" in msg:
+        return "sentinel", "计算人机风控 Token", 45
+    if "[5/10]" in msg or "密码注册" in msg:
+        return "register_pw", "提交注册密码", 55
+    if "[6/10]" in msg or "发送 OTP" in msg or "passwordless OTP" in msg:
+        return "otp_sent", "已发送邮箱验证码", 65
+    if "[7/10]" in msg or "接收并验证 OTP" in msg or "等待邮件验证码" in msg:
+        return "otp_verify", "正在接收并验证 OTP", 75
+    if "[8/10]" in msg or "创建账户" in msg or "create_account" in msg:
+        return "creating", "创建 ChatGPT 账户", 85
+    if "2FA" in msg or "two_factor" in msg:
+        if "成功" in msg or "2fa_bound" in msg:
+            return "2fa_done", "2FA 绑定成功", 95
+        return "binding_2fa", "绑定 TOTP 二步验证", 90
+    if "[register] 完成" in msg or "注册完成" in msg:
+        return "done", "注册完成", 100
+    if "[register] 失败" in msg or "ERROR" in msg:
+        return "failed", "注册失败", 100
+    return None
 
 # 当前线程正在跑哪个 run。
 # ⚠️ 为什么需要这个：QueueLogHandler 是挂在 **root logger** 上的，而 root logger
@@ -185,6 +235,19 @@ class QueueLogHandler(logging.Handler):
             msg = self.format(record)
             self._fh.write(msg + "\n")
             self._fh.flush()
+
+            # 语义识别细分步骤
+            detected = _detect_phase_from_log(record.getMessage())
+            if detected and rid:
+                p_code, p_text, p_pct = detected
+                with _lock:
+                    _run_phases[rid] = {
+                        "phase": p_code,
+                        "phase_text": p_text,
+                        "percent": p_pct,
+                        "updated_at": time.time(),
+                    }
+
             q = _run_queues.get(self.run_id)
             if q is not None:
                 q.put(msg)

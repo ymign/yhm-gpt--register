@@ -3,7 +3,25 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import { ElMessage } from 'element-plus'
-import { autoStart, autoPause, autoResume, autoStop, getRunLog } from '@/api/register'
+import {
+  VideoPlay,
+  VideoPause,
+  RefreshRight,
+  SwitchButton,
+  QuestionFilled,
+  CopyDocument,
+  Document,
+  Check,
+  Close,
+} from '@element-plus/icons-vue'
+import {
+  autoStart,
+  autoPause,
+  autoResume,
+  autoStop,
+  autoStatus as getAutoStatus,
+  getRunLog,
+} from '@/api/register'
 import { copyText, fmtTime } from '@/api/request'
 import { useFormStore, proxyText } from '@/stores/form'
 import { useProxyStore } from '@/stores/proxy'
@@ -43,6 +61,33 @@ const successRate = computed(() => {
 const taskList = computed(() => {
   return Array.isArray(autoStatus.value.tasks) ? autoStatus.value.tasks : []
 })
+
+// ──────────── 本地实时走秒与状态同步 ────────────
+const nowTs = ref(Math.floor(Date.now() / 1000))
+let tickerTimer = null
+let statusPollTimer = null
+
+function formatElapsed(row) {
+  if (!row) return '—'
+  if (row.status === 'running') {
+    if (!row.started_at) return '计时中'
+    const secs = Math.max(0, Math.floor(nowTs.value - row.started_at))
+    return `${secs}s`
+  }
+  if (row.elapsed !== undefined && row.elapsed !== null) {
+    return `${row.elapsed}s`
+  }
+  return '—'
+}
+
+async function syncAutoStatus() {
+  try {
+    const res = await getAutoStatus()
+    if (res && res.ok) {
+      autoStatus.value = res
+    }
+  } catch (_) {}
+}
 
 // ──────────── 单账号独立日志弹窗 ────────────
 const logModalVisible = ref(false)
@@ -147,6 +192,7 @@ async function start() {
       want_2fa: form.value.autoWant2fa,
     })
     ElMessage.success('全自动批量跑号已启动')
+    syncAutoStatus()
   } catch (e) {
     ElMessage.error('启动失败: ' + e.message)
   }
@@ -156,13 +202,36 @@ async function call(fn, name) {
   try {
     await fn()
     ElMessage.success(name + ' 成功')
+    syncAutoStatus()
   } catch (e) {
     ElMessage.error(name + ' 失败: ' + e.message)
   }
 }
 
+onMounted(() => {
+  tickerTimer = setInterval(() => {
+    nowTs.value = Math.floor(Date.now() / 1000)
+  }, 1000)
+
+  statusPollTimer = setInterval(() => {
+    if (st.value === 'running' || st.value === 'paused') {
+      syncAutoStatus()
+    }
+  }, 3000)
+
+  syncAutoStatus()
+})
+
 onUnmounted(() => {
   stopLogPolling()
+  if (tickerTimer) {
+    clearInterval(tickerTimer)
+    tickerTimer = null
+  }
+  if (statusPollTimer) {
+    clearInterval(statusPollTimer)
+    statusPollTimer = null
+  }
 })
 </script>
 
@@ -337,19 +406,27 @@ onUnmounted(() => {
             </template>
           </el-table-column>
 
-          <!-- 注册进度与状态 -->
-          <el-table-column label="注册进度 / 状态" min-width="160">
+          <!-- 注册进度与步骤 -->
+          <el-table-column label="注册进度 / 步骤" min-width="200">
             <template #default="{ row }">
-              <div v-if="row.status === 'running'" class="status-running-badge">
-                <span class="pulse-dot"></span>
-                <span>{{ row.phase_text || '正在注册...' }}</span>
+              <div v-if="row.status === 'running'" class="running-step-cell">
+                <div class="step-label-row">
+                  <span class="pulse-dot"></span>
+                  <span class="step-text">{{ row.phase_text || '正在注册...' }}</span>
+                </div>
+                <div class="step-bar-wrap">
+                  <div
+                    class="step-bar-fill"
+                    :style="{ width: (row.percent || 20) + '%' }"
+                  ></div>
+                </div>
               </div>
               <el-tag v-else-if="row.status === 'done'" type="success" size="small" effect="light" class="macos-tag">
-                注册完成
+                <el-icon class="status-ico"><Check /></el-icon>注册完成
               </el-tag>
               <el-tooltip v-else-if="row.status === 'failed'" :content="row.error || '未知错误'" placement="top">
                 <el-tag type="danger" size="small" effect="light" class="macos-tag cursor-help">
-                  {{ row.phase_text || '注册失败' }} ⚠
+                  <el-icon class="status-ico"><Close /></el-icon>{{ row.phase_text || '注册失败' }}
                 </el-tag>
               </el-tooltip>
               <el-tag v-else type="info" size="small" effect="plain" class="macos-tag">
@@ -388,10 +465,10 @@ onUnmounted(() => {
           </el-table-column>
 
           <!-- 耗时 -->
-          <el-table-column label="耗时" width="80" align="right">
+          <el-table-column label="耗时" width="85" align="right">
             <template #default="{ row }">
-              <span class="mono" style="font-size: 11.5px">
-                {{ row.elapsed ? row.elapsed + 's' : (row.status === 'running' ? '计时中' : '—') }}
+              <span class="mono elapsed-badge" :class="{ 'elapsed-running': row.status === 'running' }">
+                {{ formatElapsed(row) }}
               </span>
             </template>
           </el-table-column>
@@ -813,14 +890,40 @@ onUnmounted(() => {
   animation: pulse-ring 1.3s infinite;
 }
 
-.status-running-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  color: #d97706;
-  font-size: 11.5px;
-  font-weight: 500;
+/* 运行中步骤单元格 */
+.running-step-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 220px;
 }
+.step-label-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.step-text {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #d97706;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.step-bar-wrap {
+  width: 100%;
+  height: 4px;
+  background: var(--el-fill-color-darker, #e2e8f0);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.step-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #f59e0b, #10b981);
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+
 .pulse-dot {
   display: inline-block;
   width: 7px;
@@ -828,6 +931,12 @@ onUnmounted(() => {
   border-radius: 50%;
   background: #f59e0b;
   animation: pulse-ring 1.3s infinite;
+  flex-shrink: 0;
+}
+
+.status-ico {
+  margin-right: 3px;
+  font-size: 11px;
 }
 
 .geo-badge {
@@ -847,6 +956,16 @@ onUnmounted(() => {
   font-family: var(--el-font-family-monospace, monospace);
   font-size: 11.5px;
 }
+.elapsed-badge {
+  font-size: 11.5px;
+  font-family: var(--el-font-family-monospace, monospace);
+  color: var(--el-text-color-regular);
+}
+.elapsed-running {
+  color: #10b981;
+  font-weight: 700;
+}
+
 .mono-date {
   font-family: var(--el-font-family-monospace, monospace);
   font-size: 11px;
@@ -948,12 +1067,11 @@ onUnmounted(() => {
 .terminal-line.line-err { color: #f87171; }
 .terminal-line.line-warn { color: #fbbf24; }
 .terminal-line.line-info { color: #60a5fa; }
-
 .terminal-empty {
+  color: #6b7280;
+  font-style: italic;
+  padding: 20px 0;
   text-align: center;
-  color: #64748b;
-  margin-top: 160px;
-  font-size: 12px;
 }
 
 .modal-footer {
@@ -962,12 +1080,11 @@ onUnmounted(() => {
   justify-content: space-between;
 }
 .log-count-tip {
-  font-size: 11.5px;
+  font-size: 11px;
   color: #94a3b8;
 }
 .modal-footer-btns {
   display: flex;
-  align-items: center;
   gap: 8px;
 }
 </style>
