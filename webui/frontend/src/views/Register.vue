@@ -5,7 +5,7 @@ import { storeToRefs } from 'pinia'
 import { ElMessage } from 'element-plus'
 import { startRegister, getRegistered } from '@/api/register'
 import { copyText } from '@/api/request'
-import { useFormStore, proxyText } from '@/stores/form'
+import { useFormStore, proxyText, COUNTRY_OPTIONS } from '@/stores/form'
 import { useProxyStore } from '@/stores/proxy'
 import { useRuntimeStore } from '@/stores/runtime'
 import LogPanel from '@/components/LogPanel.vue'
@@ -35,6 +35,7 @@ async function run() {
     const r = await startRegister({
       email: regEmail.value.trim() || null,
       proxy: proxyText(form.value),
+      proxy_country: form.value.proxyCountry || '',
       otp_timeout: parseInt(form.value.otpTimeout, 10) || 10,
       want_access_token: true,
       want_session_token: true,
@@ -83,6 +84,14 @@ async function copyField(email, field) {
               </el-select>
               <div class="hint" style="margin-top: 4px">
                 Plus 检测、自动批量的兜底代理都复用这里；批量并发轮换请到「代理池」页管理。
+              </div>
+            </el-form-item>
+            <el-form-item label="代理目标国家（自动重写代理、生成独立会话并对齐指纹）">
+              <el-select v-model="form.proxyCountry" filterable allow-create placeholder="选择或输入国家代码" style="width: 100%">
+                <el-option v-for="c in COUNTRY_OPTIONS" :key="c.value" :label="c.label" :value="c.value" />
+              </el-select>
+              <div class="hint" style="margin-top: 4px">
+                推荐巴西 (BR) 或欧洲 (DE/GB/PL)，将动态代理重写至高爆区以大幅提升 Plus 试用资格率。
               </div>
             </el-form-item>
             <el-form-item label="OTP 等待秒数">

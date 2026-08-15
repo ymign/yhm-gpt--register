@@ -102,8 +102,9 @@ class AuthFlow:
         #    现在覆盖值只挂在实例上，进程全局环境一个字节都不动。
         self._env_overrides = dict(env_overrides or {})
         self.config = config
-        self._country_code = ""  # IP 地理国家码，check_proxy() 时填充
-        self._fingerprint = generate_fingerprint()  # 先生成默认指纹
+        target_country = (self._env_overrides.get("TARGET_COUNTRY") or "").strip().upper()
+        self._country_code = target_country  # IP 地理国家码（如指定了目标国家则直接对齐）
+        self._fingerprint = generate_fingerprint(country_code=target_country if target_country else None)
         self._ua = self._fingerprint["user_agent"]
         self._impersonate_candidates = self._fingerprint.get(
             "fallback_impersonates",

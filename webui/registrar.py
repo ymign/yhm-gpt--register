@@ -28,6 +28,7 @@ from mail_providers import (  # noqa: E402
 from sms_provider import PhoneCallbackController  # noqa: E402
 
 from . import db  # noqa: E402
+from .proxy_util import new_proxy_session_id, route_proxy_country  # noqa: E402
 
 # run_id -> queue of log strings; sentinel = None 表示流结束
 _run_queues: dict[str, queue.Queue] = {}
@@ -379,10 +380,24 @@ def _do_register(
             env_overrides["SKIP_OAUTH_TOKEN_EXCHANGE"] = "1"
             env_overrides["OAUTH_CODEX_RT_EXCHANGE"] = "0"
             env_overrides["OAUTH_CODEX_RT_BEFORE_CALLBACK"] = "0"
-        # PROXY 走 cfg.proxy，无需 env
+
+        # ─ 目标代理国家与动态 Session 路由 ─
+        target_country = (options.get("proxy_country") or options.get("target_country") or "").strip().upper()
+        if target_country:
+            env_overrides["TARGET_COUNTRY"] = target_country
+
+        raw_proxy = (options.get("proxy") or "").strip()
+        final_proxy = raw_proxy
+        if raw_proxy and target_country:
+            routed = route_proxy_country(raw_proxy, target_country, new_proxy_session_id())
+            if routed != raw_proxy:
+                logging.getLogger("registrar").info(
+                    f"[register] 目标注册国家: {target_country}，已自动重写代理并生成独立会话"
+                )
+            final_proxy = routed
 
         cfg = Config()
-        cfg.proxy = (options.get("proxy") or "").strip() or None
+        cfg.proxy = final_proxy or None
 
         # ─ 邮箱来源路由 ─
         # 原来是 if cf_temp / else outlook 的写死分支，加一种邮箱就得回来改。
@@ -561,7 +576,8 @@ def _do_register(
                 )
         # ─ 探测本次注册出口网络（国家、城市、IP） ─
         try:
-            geo = probe_proxy_geo(options.get("proxy") or getattr(cfg, "proxy", "") or "")
+            used_proxy_str = getattr(cfg, "proxy", "") or options.get("proxy") or ""
+            geo = probe_proxy_geo(used_proxy_str)
             d["reg_country"] = geo.get("country", "")
             d["reg_city"] = geo.get("city", "")
             d["reg_ip"] = geo.get("ip", "")
@@ -573,6 +589,9 @@ def _do_register(
                 )
         except Exception:
             pass
+
+        if target_country:
+            d["target_country"] = target_country
 
         # 落库（密码已在 2FA 之前回读补齐，这里 d 里该有的都有了）
         db.save_registered(d)

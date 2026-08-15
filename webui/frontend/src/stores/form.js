@@ -3,18 +3,29 @@ import { reactive, watch } from 'vue'
 
 const KEY = 'gpt_outlook_register_form_v2'
 
+export const COUNTRY_OPTIONS = [
+  { value: 'BR', label: '🇧🇷 巴西 (BR · Plus试用高爆推荐 ★★★★★)' },
+  { value: 'DE', label: '🇩🇪 德国 (DE · 欧洲高爆推荐 ★★★★)' },
+  { value: 'GB', label: '🇬🇧 英国 (GB · 欧洲推荐 ★★★★)' },
+  { value: 'PL', label: '🇵🇱 波兰 (PL · 欧洲推荐 ★★★★)' },
+  { value: 'ES', label: '🇪🇸 西班牙 (ES · 欧洲推荐 ★★★★)' },
+  { value: 'AR', label: '🇦🇷 阿根廷 (AR · 拉美推荐 ★★★★)' },
+  { value: 'US', label: '🇺🇸 美国 (US · 经典通用 ★★★)' },
+  { value: 'JP', label: '🇯🇵 日本 (JP · 亚太通用 ★★)' },
+  { value: '',   label: '🌐 自动 / 保持代理原样' },
+]
+
 // 跨页面共享 + localStorage 持久化的表单字段
 // （proxy 在 注册 / 自动跑号 / Plus 检测 三处共用）
 const defaults = {
   proxy: '',
+  proxyCountry: 'BR',      // 单次注册代理目标国家 (默认高爆巴西)
+  autoProxyCountry: 'BR',  // 全自动批量代理目标国家
   otpTimeout: 10,
   autoConcurrency: 1,
   autoCoolDown: 3,
   autoTargetCount: 0,
   // 注册后自动绑 2FA。单次 / 批量都**默认 true**：每个号都要 2FA。
-  // 仍然拆成两个字段（而不是共用一个）：单次页是验 bug / 试流程的测试台，
-  // 共用的话在那边临时关掉，回头批量跑几百个号就全裸奔了。
-  // localStorage 只记住主人上次的选择，不改变默认值：清缓存后两边都回到 true。
   want2fa: true,
   autoWant2fa: true,
 }

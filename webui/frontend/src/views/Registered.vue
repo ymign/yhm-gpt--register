@@ -951,7 +951,11 @@ onUnmounted(() => {
           <!-- 出口地区 -->
           <el-table-column label="出口地区" width="140" show-overflow-tooltip>
             <template #default="{ row }">
-              <span v-if="row.reg_country || row.reg_city" class="geo-badge">
+              <span
+                v-if="row.reg_country || row.reg_city"
+                class="geo-badge"
+                :class="{ 'geo-hot': ['BR', 'DE', 'GB', 'PL', 'ES', 'AR'].includes(row.reg_country) }"
+              >
                 <span class="geo-country">{{ row.reg_country || '未知' }}</span>
                 <span v-if="row.reg_city" class="geo-city"> · {{ row.reg_city }}</span>
               </span>
@@ -1867,6 +1871,13 @@ onUnmounted(() => {
   padding: 1px 6px;
   border-radius: 4px;
   font-size: 11px;
+}
+.geo-badge.geo-hot {
+  border-color: rgba(16, 185, 129, 0.4);
+  background: rgba(16, 185, 129, 0.08);
+}
+.geo-badge.geo-hot .geo-country {
+  color: #10b981;
 }
 .geo-country { font-weight: 600; color: var(--el-color-primary); }
 .geo-city { color: var(--el-text-color-regular); }

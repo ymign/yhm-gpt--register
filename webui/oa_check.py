@@ -32,6 +32,12 @@ except ImportError:  # pragma: no cover
     CurlSession = None  # type: ignore[assignment]
 
 from . import db  # noqa: E402
+from .proxy_util import (  # noqa: E402
+    new_proxy_session_id,
+    normalize_proxy_url,
+    proxy_url_with_credentials,
+    route_proxy_country,
+)
 
 CHECKOUT_URL = "https://chatgpt.com/backend-api/payments/checkout"
 TRACE_URL = "https://www.cloudflare.com/cdn-cgi/trace"

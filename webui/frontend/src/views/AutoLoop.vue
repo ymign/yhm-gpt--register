@@ -23,7 +23,7 @@ import {
   getRunLog,
 } from '@/api/register'
 import { copyText, fmtTime } from '@/api/request'
-import { useFormStore, proxyText } from '@/stores/form'
+import { useFormStore, proxyText, COUNTRY_OPTIONS } from '@/stores/form'
 import { useProxyStore } from '@/stores/proxy'
 import { useRuntimeStore } from '@/stores/runtime'
 
@@ -182,6 +182,7 @@ async function start() {
     await autoStart({
       proxy: proxyText(form.value),
       proxy_pool: proxyStore.text,
+      proxy_country: form.value.autoProxyCountry || '',
       concurrency: parseInt(form.value.autoConcurrency, 10) || 1,
       otp_timeout: parseInt(form.value.otpTimeout, 10) || 10,
       want_access_token: true,
@@ -332,22 +333,35 @@ onUnmounted(() => {
                 <el-input-number v-model="form.autoCoolDown" :min="0" :max="120" class="macos-num-input" />
               </el-form-item>
             </el-col>
-            <el-col :xs="12" :sm="6" :md="4">
+            <el-col :xs="24" :sm="12" :md="6">
+              <el-form-item label="代理目标国家 (自动重写代理与时区)">
+                <el-select
+                  v-model="form.autoProxyCountry" filterable allow-create
+                  placeholder="选择或输入国家代码" class="macos-country-select"
+                >
+                  <el-option
+                    v-for="c in COUNTRY_OPTIONS" :key="c.value"
+                    :label="c.label" :value="c.value"
+                  />
+                </el-select>
+              </el-form-item>
+            </el-col>
+            <el-col :xs="12" :sm="6" :md="3">
               <el-form-item label="目标数量 (0=不限)">
                 <el-input-number v-model="form.autoTargetCount" :min="0" :max="100000" class="macos-num-input" />
               </el-form-item>
             </el-col>
-            <el-col :xs="12" :sm="6" :md="4">
+            <el-col :xs="12" :sm="6" :md="3">
               <el-form-item label="OTP 超时 (秒)">
                 <el-input-number v-model="form.otpTimeout" :min="10" :max="600" class="macos-num-input" />
               </el-form-item>
             </el-col>
-            <el-col :xs="24" :sm="12" :md="8">
+            <el-col :xs="24" :sm="12" :md="4">
               <el-form-item label="自动化附加功能">
                 <div class="feature-switches">
                   <div class="switch-item">
                     <el-switch v-model="form.autoWant2fa" size="small" />
-                    <span class="switch-label">自动绑定 2FA (TOTP)</span>
+                    <span class="switch-label">自动绑定 2FA</span>
                     <el-tooltip content="每个账号注册成功后自动绑定 2FA 并将 secret 备份至数据库" placement="top">
                       <el-icon class="info-ico"><QuestionFilled /></el-icon>
                     </el-tooltip>
@@ -438,7 +452,11 @@ onUnmounted(() => {
           <!-- 出口地区 -->
           <el-table-column label="出口地区" width="140" show-overflow-tooltip>
             <template #default="{ row }">
-              <span v-if="row.reg_country || row.reg_city" class="geo-badge">
+              <span
+                v-if="row.reg_country || row.reg_city"
+                class="geo-badge"
+                :class="{ 'geo-hot': ['BR', 'DE', 'GB', 'PL', 'ES', 'AR'].includes(row.reg_country) }"
+              >
                 <span class="geo-country">{{ row.reg_country || '未知' }}</span>
                 <span v-if="row.reg_city" class="geo-city"> · {{ row.reg_city }}</span>
               </span>
@@ -949,8 +967,22 @@ onUnmounted(() => {
   border-radius: 4px;
   font-size: 11px;
 }
+.geo-badge.geo-hot {
+  border-color: rgba(16, 185, 129, 0.4);
+  background: rgba(16, 185, 129, 0.08);
+}
+.geo-badge.geo-hot .geo-country {
+  color: #10b981;
+}
 .geo-country { font-weight: 600; color: var(--el-color-primary); }
 .geo-city { color: var(--el-text-color-regular); }
+
+.macos-country-select {
+  width: 100%;
+}
+:deep(.macos-country-select .el-input__wrapper) {
+  border-radius: 6px;
+}
 
 .macos-tag-btn.ip-btn {
   font-family: var(--el-font-family-monospace, monospace);

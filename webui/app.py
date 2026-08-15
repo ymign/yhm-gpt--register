@@ -75,6 +75,7 @@ class RegisterReq(BaseModel):
     want_session_token: bool = True
     want_refresh_token: bool = True
     proxy: str = ""
+    proxy_country: str = ""  # 目标代理国家，如 BR, DE, GB 等
     otp_timeout: int = 10
     allow_existing_login: bool = True
     # 注册成功后自动绑定 TOTP 2FA。前端两个页面都**默认开**（主人要求每个号都绑）。
@@ -297,6 +298,7 @@ def api_register(req: RegisterReq):
         "want_session_token": req.want_session_token,
         "want_refresh_token": req.want_refresh_token,
         "proxy": req.proxy,
+        "proxy_country": req.proxy_country,
         "otp_timeout": int(req.otp_timeout),
         "allow_existing_login": req.allow_existing_login,
         "want_2fa": req.want_2fa,
@@ -1272,6 +1274,7 @@ class AutoLoopStartReq(BaseModel):
     want_refresh_token: bool = True
     proxy: str = ""              # 单代理（concurrency=1 + 无代理池时用）
     proxy_pool: str = ""         # 多代理池（每行一个）；优先于 proxy
+    proxy_country: str = ""      # 目标代理国家，如 BR, DE, GB 等
     concurrency: int = 1         # 并发 worker 数（1-20）
     otp_timeout: int = 10
     allow_existing_login: bool = True
