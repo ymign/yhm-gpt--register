@@ -95,7 +95,6 @@ export const useRuntimeStore = defineStore('runtime', () => {
         try {
           const d = JSON.parse(e.data)
           addLog(`[auto] 开始注册 ${d.email} (run=${d.run_id})`, 'evt')
-          streamRun(d.run_id) // 复用单跑 SSE，接管日志
         } catch (_) {}
       },
       run_finished: (e) => {

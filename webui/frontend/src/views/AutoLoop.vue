@@ -62,6 +62,38 @@ const taskList = computed(() => {
   return Array.isArray(autoStatus.value.tasks) ? autoStatus.value.tasks : []
 })
 
+// ──────────── 状态筛选与分页控制（彻底消除卡顿） ────────────
+const filterStatus = ref('all') // 'all' | 'running' | 'done' | 'failed'
+const currentPage = ref(1)
+const pageSize = ref(20)
+
+const runningCount = computed(() => taskList.value.filter((t) => t.status === 'running').length)
+const doneCount = computed(() => taskList.value.filter((t) => t.status === 'done').length)
+const failedCount = computed(() => taskList.value.filter((t) => t.status === 'failed').length)
+
+const filteredTasks = computed(() => {
+  if (filterStatus.value === 'running') {
+    return taskList.value.filter((t) => t.status === 'running')
+  }
+  if (filterStatus.value === 'done') {
+    return taskList.value.filter((t) => t.status === 'done')
+  }
+  if (filterStatus.value === 'failed') {
+    return taskList.value.filter((t) => t.status === 'failed')
+  }
+  return taskList.value
+})
+
+const paginatedTasks = computed(() => {
+  const start = (currentPage.value - 1) * pageSize.value
+  return filteredTasks.value.slice(start, start + pageSize.value)
+})
+
+// 筛选变更时自动重置回第 1 页
+watch(filterStatus, () => {
+  currentPage.value = 1
+})
+
 // ──────────── 本地实时走秒与状态同步 ────────────
 const nowTs = ref(Math.floor(Date.now() / 1000))
 let tickerTimer = null
@@ -385,11 +417,49 @@ onUnmounted(() => {
     <!-- 核心主区域：每个账号一行的实时注册表格列表 (苹果风格 + 内部自适应滚动) -->
     <div class="macos-panel table-panel">
       <div class="table-panel-header">
-        <div class="panel-header-title">
-          <span class="dot-live"></span>
-          <span class="title">账号注册实时监控列表</span>
-          <span class="badge-total">{{ taskList.length }} 个任务</span>
+        <div class="header-left">
+          <div class="panel-header-title">
+            <span class="dot-live"></span>
+            <span class="title">账号注册实时监控列表</span>
+            <span class="badge-total">{{ taskList.length }} 个任务</span>
+          </div>
+
+          <!-- 状态筛选胶囊 -->
+          <div class="filter-capsules">
+            <button
+              class="filter-pill"
+              :class="{ active: filterStatus === 'all' }"
+              @click="filterStatus = 'all'"
+            >
+              全部 <span class="pill-cnt">{{ taskList.length }}</span>
+            </button>
+            <button
+              class="filter-pill pill-running"
+              :class="{ active: filterStatus === 'running' }"
+              @click="filterStatus = 'running'"
+            >
+              <span class="dot-pill dot-running"></span>
+              进行中 <span class="pill-cnt">{{ runningCount }}</span>
+            </button>
+            <button
+              class="filter-pill pill-done"
+              :class="{ active: filterStatus === 'done' }"
+              @click="filterStatus = 'done'"
+            >
+              <span class="dot-pill dot-done"></span>
+              成功 <span class="pill-cnt">{{ doneCount }}</span>
+            </button>
+            <button
+              class="filter-pill pill-failed"
+              :class="{ active: filterStatus === 'failed' }"
+              @click="filterStatus = 'failed'"
+            >
+              <span class="dot-pill dot-failed"></span>
+              失败 <span class="pill-cnt">{{ failedCount }}</span>
+            </button>
+          </div>
         </div>
+
         <div v-if="autoStatus.last_message" class="last-msg-hint">
           {{ autoStatus.last_message }}
         </div>
@@ -397,7 +467,8 @@ onUnmounted(() => {
 
       <div class="table-container">
         <el-table
-          :data="taskList"
+          :data="paginatedTasks"
+          row-key="run_id"
           height="100%"
           size="small"
           stripe
@@ -525,6 +596,22 @@ onUnmounted(() => {
             <el-empty description="点击上方「开始自动运行」启动全自动注册任务" :image-size="60" />
           </template>
         </el-table>
+      </div>
+
+      <!-- 紧凑底部分页栏 -->
+      <div v-if="filteredTasks.length > 0" class="table-pagination-bar">
+        <div class="page-tip">
+          显示第 {{ (currentPage - 1) * pageSize + 1 }} ~ {{ Math.min(currentPage * pageSize, filteredTasks.length) }} 条，共 {{ filteredTasks.length }} 条
+        </div>
+        <el-pagination
+          v-model:current-page="currentPage"
+          v-model:page-size="pageSize"
+          :page-sizes="[20, 50, 100]"
+          :total="filteredTasks.length"
+          layout="sizes, prev, pager, next"
+          size="small"
+          background
+        />
       </div>
     </div>
 
@@ -829,6 +916,18 @@ onUnmounted(() => {
   background: var(--el-fill-color-blank);
   border-bottom: 1px solid var(--el-border-color-lighter);
   flex-shrink: 0;
+  gap: 12px;
+}
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.panel-header-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 .dot-live {
   width: 7px;
@@ -843,6 +942,61 @@ onUnmounted(() => {
   padding: 1px 6px;
   border-radius: 10px;
 }
+
+/* ──────────── 状态筛选胶囊 ──────────── */
+.filter-capsules {
+  display: inline-flex;
+  align-items: center;
+  background: var(--el-fill-color-light);
+  padding: 2px;
+  border-radius: 6px;
+  border: 1px solid var(--el-border-color-lighter);
+  gap: 2px;
+}
+.filter-pill {
+  border: none;
+  background: transparent;
+  padding: 2px 8px;
+  font-size: 11px;
+  border-radius: 4px;
+  color: var(--el-text-color-secondary);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  transition: all 0.15s ease;
+  line-height: 18px;
+}
+.filter-pill:hover {
+  color: var(--el-text-color-primary);
+  background: rgba(0, 0, 0, 0.04);
+}
+.filter-pill.active {
+  background: var(--el-bg-color);
+  color: var(--el-text-color-primary);
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+.pill-cnt {
+  font-size: 10px;
+  opacity: 0.8;
+  background: var(--el-fill-color);
+  padding: 0 4px;
+  border-radius: 8px;
+}
+.filter-pill.active .pill-cnt {
+  background: var(--el-color-primary-light-9);
+  color: var(--el-color-primary);
+}
+.dot-pill {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+}
+.dot-running { background: #3b82f6; }
+.dot-done { background: #10b981; }
+.dot-failed { background: #ef4444; }
+
 .last-msg-hint {
   font-size: 11.5px;
   color: var(--el-text-color-secondary);
@@ -850,6 +1004,32 @@ onUnmounted(() => {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* ──────────── 底部分页栏 ──────────── */
+.table-pagination-bar {
+  padding: 6px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--el-fill-color-blank);
+  border-top: 1px solid var(--el-border-color-lighter);
+  flex-shrink: 0;
+}
+.page-tip {
+  font-size: 11.5px;
+  color: var(--el-text-color-secondary);
+}
+:deep(.table-pagination-bar .el-pagination) {
+  margin: 0;
+  font-weight: normal;
+}
+:deep(.table-pagination-bar .el-pagination button),
+:deep(.table-pagination-bar .el-pagination .el-pager li) {
+  min-width: 24px;
+  height: 24px;
+  line-height: 24px;
+  font-size: 11.5px;
 }
 
 .table-container {

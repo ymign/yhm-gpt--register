@@ -285,6 +285,17 @@ class AutoLoopController:
 
     def _manage_loop(self):
         """主控线程：启动 worker，等所有 worker 结束，更新最终状态。"""
+        heartbeat_stop = threading.Event()
+
+        def _heartbeat():
+            while not heartbeat_stop.is_set():
+                if self._state in (AutoLoopState.RUNNING, AutoLoopState.PAUSED):
+                    self._broadcast("state", self._snapshot())
+                heartbeat_stop.wait(1.2)
+
+        hb_thread = threading.Thread(target=_heartbeat, daemon=True, name="auto-loop-heartbeat")
+        hb_thread.start()
+
         try:
             workers = []
             for wid in range(self._concurrency):
@@ -303,6 +314,7 @@ class AutoLoopController:
         except Exception as e:
             logger.exception(f"manage_loop 异常: {e}")
         finally:
+            heartbeat_stop.set()
             with self._lock:
                 self._state = AutoLoopState.STOPPED
                 self._worker_status.clear()
@@ -489,7 +501,6 @@ class AutoLoopController:
     def _wait_run_finish(self, run_id: str, timeout: int = 1800) -> tuple[bool, str]:
         """轮询 runs 表，等 run 跑完。"""
         deadline = time.time() + timeout
-        last_broadcast = 0.0
         while time.time() < deadline:
             if self._stop_event.is_set():
                 return False, ""
@@ -504,11 +515,7 @@ class AutoLoopController:
                     return True, ""
                 if st == "failed":
                     return False, (row["error_category"] or "")
-            now = time.time()
-            if now - last_broadcast >= 1.0:
-                self._broadcast("state", self._snapshot())
-                last_broadcast = now
-            time.sleep(1)
+            time.sleep(0.8)
         logger.warning(f"run {run_id} 等了 {timeout}s 没结束，超时放弃")
         return False, ""
 
