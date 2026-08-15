@@ -76,6 +76,9 @@ class AutoLoopController:
         self._concurrency: int = 1
         # 目标成功数：0 = 不限量（保持旧行为）；>0 时累计成功达标即自动停止
         self._target_count: int = 0
+        # 任务流水列表（最新 200 条，用于前端表格展示每一个号的进度与日志）
+        self._tasks: list[dict] = []
+        self._tasks_map: dict[str, dict] = {}
 
     # ──────────────────────── 公共 API ────────────────────────
 
@@ -167,6 +170,7 @@ class AutoLoopController:
     def _snapshot(self) -> dict:
         with self._lock:
             stats = db.stats()
+            now = time.time()
             workers_info = [
                 {
                     "id": wid,
@@ -177,10 +181,18 @@ class AutoLoopController:
                 }
                 for wid, info in sorted(self._worker_status.items())
             ]
+            # 计算 tasks 的动态耗时
+            tasks_copy = []
+            for t in self._tasks:
+                item = dict(t)
+                if item.get("status") == "running" and item.get("started_at"):
+                    item["elapsed"] = round(now - item["started_at"], 1)
+                tasks_copy.append(item)
+
             return {
                 "state": self._state,
                 "started_at": self._started_at,
-                "elapsed": (time.time() - self._started_at) if self._started_at else 0,
+                "elapsed": (now - self._started_at) if self._started_at else 0,
                 "registered_ok": self._registered_ok,
                 "registered_fail": self._registered_fail,
                 "target_count": self._target_count,
@@ -191,6 +203,7 @@ class AutoLoopController:
                 "concurrency": self._concurrency,
                 "proxy_pool_size": len(self._proxy_pool),
                 "workers": workers_info,
+                "tasks": tasks_copy,
                 "last_message": self._last_message,
                 "pool_stats": stats,
             }
@@ -372,13 +385,37 @@ class AutoLoopController:
                 time.sleep(2)
                 continue
 
+            now_ts = time.time()
+            task_item = {
+                "run_id": run_id,
+                "email": account["email"],
+                "worker_id": worker_id,
+                "proxy": proxy,
+                "status": "running",
+                "phase": "starting",
+                "phase_text": "正在注册...",
+                "started_at": now_ts,
+                "finished_at": None,
+                "elapsed": 0,
+                "error": "",
+                "reg_country": "",
+                "reg_city": "",
+                "reg_ip": "",
+            }
+
             with self._lock:
                 self._worker_status[worker_id] = {
                     "email": account["email"],
                     "run_id": run_id,
                     "proxy": proxy,
-                    "started_at": time.time(),
+                    "started_at": now_ts,
                 }
+                self._tasks_map[run_id] = task_item
+                self._tasks.insert(0, task_item)
+                if len(self._tasks) > 200:
+                    old_task = self._tasks.pop()
+                    self._tasks_map.pop(old_task.get("run_id", ""), None)
+
             self._broadcast("state", self._snapshot())
             self._broadcast("run_started", {
                 "worker_id": worker_id,
@@ -390,8 +427,40 @@ class AutoLoopController:
             # 等当前 run 跑完
             ok, category = self._wait_run_finish(run_id)
 
+            finish_ts = time.time()
             with self._lock:
                 self._worker_status.pop(worker_id, None)
+                if run_id in self._tasks_map:
+                    t = self._tasks_map[run_id]
+                    t["status"] = "done" if ok else "failed"
+                    t["finished_at"] = finish_ts
+                    t["elapsed"] = round(finish_ts - t["started_at"], 1)
+                    if ok:
+                        t["phase"] = "done"
+                        t["phase_text"] = "注册完成"
+                        # 从 db 获取出口信息
+                        try:
+                            reg = db.get_registered(account["email"])
+                            if reg:
+                                t["reg_country"] = reg.get("reg_country", "")
+                                t["reg_city"] = reg.get("reg_city", "")
+                                t["reg_ip"] = reg.get("reg_ip", "")
+                        except Exception:
+                            pass
+                    else:
+                        t["phase"] = "failed"
+                        # 查 error 详情
+                        err_msg = ""
+                        try:
+                            cur = db._conn().execute("SELECT error FROM runs WHERE run_id=?", (run_id,))
+                            row_err = cur.fetchone()
+                            if row_err and row_err["error"]:
+                                err_msg = str(row_err["error"])
+                        except Exception:
+                            pass
+                        t["error"] = err_msg or category or "注册失败"
+                        t["phase_text"] = f"失败: {t['error'][:40]}"
+
             self._record_finish(ok, category)
             self._broadcast("state", self._snapshot())
             self._broadcast("run_finished", {

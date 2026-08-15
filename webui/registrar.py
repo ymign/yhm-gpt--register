@@ -48,26 +48,64 @@ LOG_DIR = Path(__file__).resolve().parent / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def probe_proxy_geo(proxy: str, timeout: float = 4.0) -> dict:
-    """通过当前代理探测真实的出口 IP、国家代码和城市。"""
+def probe_proxy_geo(proxy: str, timeout: float = 6.0) -> dict:
+    """通过当前代理高可用探测真实的出口 IP、国家代码和城市，带智能 Fallback。"""
+    import re
+    from urllib.parse import unquote, urlsplit
+
     proxy = (proxy or "").strip()
     if not proxy:
         return {"ip": "直连", "country": "本地", "city": ""}
 
+    # 1. 代理字符串智能识别保底国家
+    fallback_country = ""
+    try:
+        m = re.search(r"(?:-region-|-country-|_country-)([a-zA-Z]{2})", proxy, re.I) or re.search(
+            r"-([a-zA-Z]{2})-\d+-\d+", proxy, re.I
+        )
+        if m and m.group(1):
+            fallback_country = m.group(1).upper()
+    except Exception:
+        pass
+
     if "://" not in proxy and "@" in proxy:
         proxy = f"http://{proxy}"
 
-    # 1. 尝试 ip-api.com (免费、支持 http/socks5，含精准城市与国家代码)
-    try:
-        from curl_cffi.requests import Session as CurlSession
+    parsed = urlsplit(proxy) if "://" in proxy else None
+    fallback_host = parsed.hostname if parsed and parsed.hostname else ""
+
+    from curl_cffi.requests import Session as CurlSession
+
+    def _get_session():
         s = CurlSession(impersonate="chrome136")
         if hasattr(s, "trust_env"):
             s.trust_env = False
         s.proxies = {"http": proxy, "https": proxy}
+        return s
+
+    # 2. 依次尝试多个独立的高可用 IP Geo 探针
+    # 通道 1: ipwho.is (高可用、含城市和国家代码)
+    try:
+        s = _get_session()
+        resp = s.get("http://ipwho.is/", timeout=timeout)
+        if getattr(resp, "status_code", 0) == 200:
+            data = resp.json() or {}
+            if data.get("success") is not False and data.get("ip"):
+                return {
+                    "ip": str(data.get("ip") or "").strip(),
+                    "country": str(data.get("country_code") or data.get("country") or "").strip().upper(),
+                    "city": str(data.get("city") or "").strip(),
+                }
+    except Exception:
+        pass
+
+    # 通道 2: ip-api.com
+    try:
+        s = _get_session()
         resp = s.get("http://ip-api.com/json?fields=status,country,countryCode,city,query", timeout=timeout)
         if getattr(resp, "status_code", 0) == 200:
             data = resp.json() or {}
-            if data.get("status") == "success":
+            if data.get("status") == "success" and data.get("query"):
                 return {
                     "ip": str(data.get("query") or "").strip(),
                     "country": str(data.get("countryCode") or data.get("country") or "").strip().upper(),
@@ -76,23 +114,45 @@ def probe_proxy_geo(proxy: str, timeout: float = 4.0) -> dict:
     except Exception:
         pass
 
-    # 2. 备用尝试 cloudflare trace
+    # 通道 3: cloudflare trace
     try:
-        from curl_cffi.requests import Session as CurlSession
-        s = CurlSession(impersonate="chrome136")
-        if hasattr(s, "trust_env"):
-            s.trust_env = False
-        s.proxies = {"http": proxy, "https": proxy}
+        s = _get_session()
         resp = s.get("https://www.cloudflare.com/cdn-cgi/trace", timeout=timeout)
         if getattr(resp, "status_code", 0) == 200:
             fields = dict(line.split("=", 1) for line in str(getattr(resp, "text", "") or "").splitlines() if "=" in line)
-            return {
-                "ip": str(fields.get("ip") or "").strip(),
-                "country": str(fields.get("loc") or "").strip().upper(),
-                "city": "",
-            }
+            ip_val = str(fields.get("ip") or "").strip()
+            loc_val = str(fields.get("loc") or "").strip().upper()
+            if ip_val or loc_val:
+                return {
+                    "ip": ip_val,
+                    "country": loc_val or fallback_country,
+                    "city": "",
+                }
     except Exception:
         pass
+
+    # 通道 4: api.ip.sb
+    try:
+        s = _get_session()
+        resp = s.get("https://api.ip.sb/geoip", timeout=timeout)
+        if getattr(resp, "status_code", 0) == 200:
+            data = resp.json() or {}
+            if data.get("ip"):
+                return {
+                    "ip": str(data.get("ip") or "").strip(),
+                    "country": str(data.get("country_code") or data.get("country") or "").strip().upper(),
+                    "city": str(data.get("city") or "").strip(),
+                }
+    except Exception:
+        pass
+
+    # 兜底返回保底数据
+    if fallback_country or fallback_host:
+        return {
+            "ip": fallback_host or "代理已连接",
+            "country": fallback_country,
+            "city": "",
+        }
 
     return {"ip": "", "country": "", "city": ""}
 

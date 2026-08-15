@@ -355,6 +355,22 @@ def api_runs(limit: int = 50):
     return {"ok": True, "items": db.list_runs(limit=limit)}
 
 
+@app.get("/api/runs/{run_id}/log")
+def api_run_log(run_id: str):
+    """读取指定 run_id 的完整日志文件内容。"""
+    from . import registrar
+
+    log_file = registrar.LOG_DIR / f"{run_id}.log"
+    if not log_file.exists():
+        return {"ok": True, "run_id": run_id, "text": "暂无日志文件或日志已被清理", "lines": []}
+    try:
+        text = log_file.read_text(encoding="utf-8", errors="replace")
+        lines = text.splitlines()
+        return {"ok": True, "run_id": run_id, "text": text, "lines": lines}
+    except Exception as e:
+        raise HTTPException(500, f"读取日志异常: {e}")
+
+
 @app.get("/api/registered")
 def api_registered(limit: int = 20, offset: int = 0, filter: str = "all"):
     items = db.list_registered(limit=limit, offset=offset, filter_rt=filter)
