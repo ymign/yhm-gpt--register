@@ -28,7 +28,7 @@ from mail_providers import (  # noqa: E402
 from sms_provider import PhoneCallbackController  # noqa: E402
 
 from . import db  # noqa: E402
-from .proxy_util import new_proxy_session_id, route_proxy_country  # noqa: E402
+from .proxy_util import new_proxy_session_id, resolve_target_country, route_proxy_country  # noqa: E402
 
 # run_id -> queue of log strings; sentinel = None 表示流结束
 _run_queues: dict[str, queue.Queue] = {}
@@ -301,7 +301,8 @@ def _do_register(
             env_overrides["OAUTH_CODEX_RT_BEFORE_CALLBACK"] = "0"
 
         # ─ 目标代理国家与动态 Session 路由 ─
-        target_country = (options.get("proxy_country") or options.get("target_country") or "").strip().upper()
+        raw_target_country = (options.get("proxy_country") or options.get("target_country") or "").strip().upper()
+        target_country = resolve_target_country(raw_target_country)
         if target_country:
             env_overrides["TARGET_COUNTRY"] = target_country
 
@@ -310,8 +311,9 @@ def _do_register(
         if raw_proxy and target_country:
             routed = route_proxy_country(raw_proxy, target_country, new_proxy_session_id())
             if routed != raw_proxy:
+                rotate_tag = f" (智能轮换自 {raw_target_country})" if raw_target_country != target_country else ""
                 logging.getLogger("registrar").info(
-                    f"[register] 目标注册国家: {target_country}，已自动重写代理并生成独立会话"
+                    f"[register] 目标注册国家: {target_country}{rotate_tag}，已自动重写代理并生成独立会话"
                 )
             final_proxy = routed
 

@@ -4,13 +4,15 @@ import { reactive, watch } from 'vue'
 const KEY = 'gpt_outlook_register_form_v2'
 
 export const COUNTRY_OPTIONS = [
+  { value: 'RANDOM_HOT', label: '🎲 高爆国家智能轮换 (BR/VN/AR/ES/PL/DE 随机 ★★★★★)' },
+  { value: 'RANDOM_ALL', label: '🌍 全球可用国家随机轮换 (多国混合 ★★★★)' },
   { value: 'BR', label: '🇧🇷 巴西 (BR · Plus试用高爆推荐 ★★★★★)' },
   { value: 'VN', label: '🇻🇳 越南 (VN · 东南亚高爆推荐 ★★★★★)' },
+  { value: 'AR', label: '🇦🇷 阿根廷 (AR · 拉美推荐 ★★★★)' },
+  { value: 'ES', label: '🇪🇸 西班牙 (ES · 欧洲推荐 ★★★★)' },
+  { value: 'PL', label: '🇵🇱 波兰 (PL · 欧洲推荐 ★★★★)' },
   { value: 'DE', label: '🇩🇪 德国 (DE · 欧洲高爆推荐 ★★★★)' },
   { value: 'GB', label: '🇬🇧 英国 (GB · 欧洲推荐 ★★★★)' },
-  { value: 'PL', label: '🇵🇱 波兰 (PL · 欧洲推荐 ★★★★)' },
-  { value: 'ES', label: '🇪🇸 西班牙 (ES · 欧洲推荐 ★★★★)' },
-  { value: 'AR', label: '🇦🇷 阿根廷 (AR · 拉美推荐 ★★★★)' },
   { value: 'US', label: '🇺🇸 美国 (US · 经典通用 ★★★)' },
   { value: 'JP', label: '🇯🇵 日本 (JP · 亚太通用 ★★)' },
   { value: '',   label: '🌐 自动 / 保持代理原样' },
@@ -20,8 +22,8 @@ export const COUNTRY_OPTIONS = [
 // （proxy 在 注册 / 自动跑号 / Plus 检测 三处共用）
 const defaults = {
   proxy: '',
-  proxyCountry: 'BR',      // 单次注册代理目标国家 (默认高爆巴西)
-  autoProxyCountry: 'BR',  // 全自动批量代理目标国家
+  proxyCountry: 'RANDOM_HOT',      // 单次注册代理目标国家 (默认高爆智能轮换)
+  autoProxyCountry: 'RANDOM_HOT',  // 全自动批量代理目标国家
   otpTimeout: 10,
   autoConcurrency: 1,
   autoCoolDown: 3,

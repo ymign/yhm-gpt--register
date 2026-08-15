@@ -36,6 +36,7 @@ from .proxy_util import (  # noqa: E402
     new_proxy_session_id,
     normalize_proxy_url,
     proxy_url_with_credentials,
+    resolve_target_country,
     route_proxy_country,
 )
 
@@ -388,10 +389,11 @@ def probe_once(
     account_email: str = "",
 ) -> ProbeResult:
     started = time.time()
+    resolved_country = resolve_target_country(proxy_country)
     if rotate_session:
-        routed = route_proxy_country(proxy, proxy_country, new_proxy_session_id())
+        routed = route_proxy_country(proxy, resolved_country, new_proxy_session_id())
     else:
-        routed = route_proxy_country(proxy, proxy_country)
+        routed = route_proxy_country(proxy, resolved_country)
     if not routed:
         routed = normalize_proxy_url(proxy)
 
@@ -400,7 +402,7 @@ def probe_once(
         state="ERROR",
         billing_country=billing_country,
         currency=currency,
-        proxy_country=proxy_country,
+        proxy_country=resolved_country or proxy_country,
         proxy=proxy_endpoint_label(routed),
         attempt=attempt,
         account_email=account_email,

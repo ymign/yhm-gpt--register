@@ -29,7 +29,7 @@ except ImportError:  # pragma: no cover
     CurlSession = None
 
 from . import db
-from .proxy_util import COUNTRY_LANG_MAP, new_proxy_session_id, route_proxy_country
+from .proxy_util import COUNTRY_LANG_MAP, new_proxy_session_id, resolve_target_country, route_proxy_country
 
 CHECK_URL = "https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27"
 DEFAULT_UA = (
@@ -368,7 +368,8 @@ def _check_one_account(task: PlusCheckTask, email: str) -> None:
     )
 
     proxy = task.next_proxy()
-    target_country = (task.config.get("proxy_country") or "").strip().upper()
+    raw_country = (task.config.get("proxy_country") or "").strip().upper()
+    target_country = resolve_target_country(raw_country)
     if proxy and target_country:
         proxy = route_proxy_country(proxy, target_country, new_proxy_session_id())
 

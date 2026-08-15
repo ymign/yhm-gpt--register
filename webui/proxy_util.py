@@ -13,20 +13,40 @@ from typing import Any, Optional
 from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
 # 热门高爆与主流国家列表
+HOT_COUNTRIES = ["BR", "VN", "AR", "ES", "PL", "DE", "GB"]
+ALL_AVAILABLE_COUNTRIES = ["BR", "VN", "AR", "ES", "PL", "DE", "GB", "US", "JP"]
+
 COUNTRY_OPTIONS = [
     {"code": "", "name": "自动 / 保持原样", "rate": "默认"},
+    {"code": "RANDOM_HOT", "name": "🎲 高爆国家智能轮换 (BR/VN/AR/ES/PL/DE 随机)", "rate": "Plus试用高爆推荐 ★★★★★"},
+    {"code": "RANDOM_ALL", "name": "🌍 全球可用国家随机轮换", "rate": "多国家混合 ★★★★"},
     {"code": "BR", "name": "巴西 (Brazil)", "rate": "Plus试用高爆推荐 ★★★★★", "lang": "pt-BR,pt;q=0.9,en-US;q=0.8"},
     {"code": "VN", "name": "越南 (Vietnam)", "rate": "东南亚高爆推荐 ★★★★★", "lang": "vi-VN,vi;q=0.9,en-US;q=0.8"},
+    {"code": "AR", "name": "阿根廷 (Argentina)", "rate": "拉美推荐 ★★★★", "lang": "es-AR,es;q=0.9,en-US;q=0.8"},
+    {"code": "ES", "name": "西班牙 (Spain)", "rate": "欧洲推荐 ★★★★", "lang": "es-ES,es;q=0.9,en-US;q=0.8"},
+    {"code": "PL", "name": "波兰 (Poland)", "rate": "欧洲推荐 ★★★★", "lang": "pl-PL,pl;q=0.9,en-US;q=0.8"},
     {"code": "DE", "name": "德国 (Germany)", "rate": "欧洲高爆推荐 ★★★★", "lang": "de-DE,de;q=0.9,en-US;q=0.8"},
     {"code": "GB", "name": "英国 (United Kingdom)", "rate": "欧洲高爆推荐 ★★★★", "lang": "en-GB,en;q=0.9,en-US;q=0.8"},
-    {"code": "PL", "name": "波兰 (Poland)", "rate": "欧洲推荐 ★★★★", "lang": "pl-PL,pl;q=0.9,en-US;q=0.8"},
-    {"code": "ES", "name": "西班牙 (Spain)", "rate": "欧洲推荐 ★★★★", "lang": "es-ES,es;q=0.9,en-US;q=0.8"},
-    {"code": "AR", "name": "阿根廷 (Argentina)", "rate": "拉美推荐 ★★★★", "lang": "es-AR,es;q=0.9,en-US;q=0.8"},
     {"code": "US", "name": "美国 (United States)", "rate": "经典通用 ★★★", "lang": "en-US,en;q=0.9"},
     {"code": "JP", "name": "日本 (Japan)", "rate": "亚太通用 ★★", "lang": "ja-JP,ja;q=0.9,en-US;q=0.8"},
 ]
 
 COUNTRY_LANG_MAP = {c["code"]: c.get("lang", "en-US,en;q=0.9") for c in COUNTRY_OPTIONS if c["code"]}
+
+
+def resolve_target_country(country_opt: str) -> str:
+    """解析目标国家配置：支持单一国家代码、RANDOM_HOT 随机高爆、RANDOM_ALL 随机全部，以及逗号分隔的多国列表。"""
+    c = str(country_opt or "").strip().upper()
+    if not c:
+        return ""
+    if c in ("RANDOM_HOT", "HOT", "RANDOM"):
+        return random.choice(HOT_COUNTRIES)
+    if c in ("RANDOM_ALL", "ALL"):
+        return random.choice(ALL_AVAILABLE_COUNTRIES)
+    if "," in c:
+        candidates = [item.strip().upper() for item in c.split(",") if item.strip()]
+        return random.choice(candidates) if candidates else "BR"
+    return c
 
 
 def new_proxy_session_id(length: int = 8) -> str:
