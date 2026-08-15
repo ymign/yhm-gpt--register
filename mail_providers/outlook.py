@@ -523,13 +523,30 @@ class OutlookMailProvider(MailProvider):
     import_hint = "每行一个：email----password----client_id----refresh_token"
     import_placeholder = "xxx@hotmail.com----Pass123----9e5f94bc-xxxx----M.C5xx_xxx"
 
-    config_fields: list[ConfigField] = []   # 凭证来自号池，无全局配置
+    config_fields: list[ConfigField] = [
+        ConfigField(
+            "outlook_protocol",
+            "取件协议",
+            type="text",
+            required=False,
+            placeholder="imap（默认推荐）或 graph",
+            help="微软邮箱取件协议：默认 imap（速度更快且兼容绝大多数号池）；可选 graph",
+        )
+    ]
 
-    def __init__(self, email: str, password: str, client_id: str, refresh_token: str):
+    def __init__(
+        self,
+        email: str,
+        password: str,
+        client_id: str,
+        refresh_token: str,
+        protocol: str = "imap",
+    ):
         self.email = email
         self.password = password
         self.client_id = client_id
         self.refresh_token = refresh_token
+        self.protocol = (protocol or "imap").strip().lower()
         self.last_persona = None
         self.catch_all_domain = email.split("@", 1)[1]
         self._dead = False
@@ -540,11 +557,13 @@ class OutlookMailProvider(MailProvider):
     def from_config(cls, settings: dict, account: Optional[dict] = None):
         if not account:
             raise ValueError("outlook provider 需要从号池 claim 到的 account")
+        protocol = (settings.get("outlook_protocol") or "imap").strip().lower()
         return cls(
             email=account["email"],
             password=account.get("password", ""),
             client_id=account["client_id"],
             refresh_token=account["refresh_token"],
+            protocol=protocol,
         )
 
     @classmethod
@@ -601,9 +620,10 @@ class OutlookMailProvider(MailProvider):
 
         has_oauth = bool(self.client_id and self.refresh_token)
         has_password = bool(self.password)
-        graph_error: Exception | None = None
 
-        if has_oauth:
+        # ── 显式指定 graph 模式：先 Graph API，失败再切 IMAP ──
+        if self.protocol == "graph" and has_oauth:
+            graph_error: Exception | None = None
             try:
                 logger.info(
                     f"[mail] Graph API 取 OTP -> {email_addr} "
@@ -624,11 +644,38 @@ class OutlookMailProvider(MailProvider):
                     f"切换 IMAP (timeout={method_timeout}s)"
                 )
 
+            logger.info(
+                f"[mail] IMAP 取 OTP -> {email_addr} "
+                f"(timeout={method_timeout}s, "
+                f"xoauth2={'Y' if has_oauth else 'N'} "
+                f"password={'Y' if has_password else 'N'})"
+            )
+            try:
+                return fetch_otp_via_imap(
+                    self.email,
+                    self.refresh_token,
+                    self.client_id,
+                    password=self.password if has_password else "",
+                    timeout=method_timeout,
+                    threshold_ts=strict_threshold,
+                    target_email=email_addr,
+                )
+            except Exception as e:
+                if graph_error is not None:
+                    logger.warning(
+                        f"[mail] IMAP 也失败 ({type(e).__name__}: {e})；"
+                        f"Graph 先前错误: {type(graph_error).__name__}: {graph_error}"
+                    )
+                raise
+
+        # ── 默认 imap 模式：优先 IMAP（秒取 OTP），失败再尝试 Graph API 兜底 ──
+        imap_error: Exception | None = None
         logger.info(
             f"[mail] IMAP 取 OTP -> {email_addr} "
             f"(timeout={method_timeout}s, "
             f"xoauth2={'Y' if has_oauth else 'N'} "
-            f"password={'Y' if has_password else 'N'})"
+            f"password={'Y' if has_password else 'N'}, "
+            f"Graph兜底={'Y' if has_oauth else 'N'})"
         )
         try:
             return fetch_otp_via_imap(
@@ -641,10 +688,28 @@ class OutlookMailProvider(MailProvider):
                 target_email=email_addr,
             )
         except Exception as e:
-            if graph_error is not None:
+            imap_error = e
+            if not has_oauth:
+                raise
+            logger.warning(
+                f"[mail] IMAP 失败 ({type(e).__name__}: {e})，"
+                f"尝试 Graph API 兜底 (timeout={method_timeout}s)"
+            )
+
+        try:
+            return fetch_otp_via_graph(
+                self.email,
+                self.refresh_token,
+                self.client_id,
+                deadline=time.time() + method_timeout,
+                threshold_ts=strict_threshold,
+                target_email=email_addr,
+            )
+        except Exception as e:
+            if imap_error is not None:
                 logger.warning(
-                    f"[mail] IMAP 也失败 ({type(e).__name__}: {e})；"
-                    f"Graph 先前错误: {type(graph_error).__name__}: {graph_error}"
+                    f"[mail] Graph API 兜底也失败 ({type(e).__name__}: {e})；"
+                    f"IMAP 先前错误: {type(imap_error).__name__}: {imap_error}"
                 )
             raise
 
