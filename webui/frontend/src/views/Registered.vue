@@ -1,12 +1,39 @@
 <script setup>
-import { computed, nextTick, onActivated, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onActivated, onUnmounted, reactive, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
-  listRegistered, getRegistered, deleteRegistered,
-  bulkDeleteRegistered, bulkDeleteAccounts, checkPlus,
-  listExportFormats, exportRegistered, updateCredentials,
-  startOACheck, stopOACheck, oaCheckStreamUrl,
+  Refresh,
+  Download,
+  Delete,
+  CopyDocument,
+  Setting,
+  Compass,
+  Document,
+  Check,
+  Close,
+  VideoPlay,
+  SwitchButton,
+  Warning,
+  CircleCheck,
+} from '@element-plus/icons-vue'
+import {
+  listRegistered,
+  listRegisteredEmails,
+  getRegistered,
+  deleteRegistered,
+  bulkDeleteRegistered,
+  bulkDeleteAccounts,
+  listExportFormats,
+  exportRegistered,
+  updateCredentials,
+  startPlusCheck,
+  stopPlusCheck,
+  plusCheckStreamUrl,
+  getPlusCheckLog,
+  startOACheck,
+  stopOACheck,
+  oaCheckStreamUrl,
 } from '@/api/register'
 import { copyText, fmtTime, createSSE } from '@/api/request'
 import { useFormStore, proxyText } from '@/stores/form'
@@ -28,8 +55,6 @@ const pageSize = ref(20)
 const filter = ref('all')
 const selected = ref([])
 const loading = ref(false)
-const checking = ref(false)
-const checkResult = ref('')
 
 const PLUS_TYPE = {
   plus_eligible: 'success', plus_active: 'primary', free: 'warning',
@@ -38,12 +63,274 @@ const PLUS_TYPE = {
 }
 function plusOf(row) { return row.plus_check || null }
 
-// ──────────── OAICS 资格检测 ────────────
+// ════════════════════════ Plus 状态检测控制台 ════════════════════════
+const plusVisible = ref(false)
+const plusRunning = ref(false)
+const plusTaskId = ref('')
+const plusEs = ref(null)
+const plusConfigCollapsed = ref(false)
+const plusTargetEmails = ref([])
+const plusItems = ref({})
+const plusLogs = ref([])
+const plusForm = reactive({
+  proxies: '',
+  workers: 5,
+  timeout: 20,
+})
+
+// 弹窗内单账号日志终端
+const plusLogModalVisible = ref(false)
+const currentPlusLogItem = ref(null)
+const plusLogLines = ref([])
+const plusLogLoading = ref(false)
+
+function guessProxyCountry(text) {
+  if (!text) return ''
+  const m = text.match(/(?:-region-|-country-|_country-)([a-zA-Z]{2})/i) || text.match(/-([a-zA-Z]{2})-\d+-\d+/i)
+  if (m && m[1]) return m[1].toUpperCase()
+  return ''
+}
+
+function loadProxyListToPlus() {
+  plusForm.proxies = proxyList.value.join('\n')
+}
+
+const plusRows = computed(() =>
+  Object.values(plusItems.value).map((item) => ({ ...item })),
+)
+
+const plusStats = computed(() => {
+  const items = Object.values(plusItems.value)
+  const tot = items.length || plusTargetEmails.value.length || 0
+  const done = items.filter((i) => i.status === 'done').length
+  const running = items.filter((i) => i.status === 'running').length
+  const pending = items.filter((i) => i.status === 'pending').length
+  const plus_active = items.filter((i) => i.result && i.result.status === 'plus_active').length
+  const plus_eligible = items.filter((i) => i.result && i.result.status === 'plus_eligible').length
+  const free = items.filter((i) => i.result && i.result.status === 'free').length
+  const banned = items.filter((i) => i.result && i.result.status === 'banned').length
+  const token_invalid = items.filter((i) => i.result && i.result.status === 'token_invalid').length
+  const error = items.filter((i) => i.result && (i.result.status === 'error' || i.result.status === 'no_at' || i.result.status === 'not_found')).length
+  const percent = tot > 0 ? Math.round((done / tot) * 100) : 0
+  return {
+    total: tot, done, running, pending,
+    plus_active, plus_eligible, free, banned, token_invalid, error,
+    percent,
+  }
+})
+
+const PLUS_STATE_META = {
+  plus_active:   { type: 'primary', label: 'Plus生效中', icon: 'Check' },
+  plus_eligible: { type: 'success', label: '可领Plus试用', icon: 'Check' },
+  free:          { type: 'warning', label: 'Free', icon: '' },
+  banned:        { type: 'danger',  label: '已封号', icon: 'Close' },
+  token_invalid: { type: 'danger',  label: '凭证失效', icon: 'Close' },
+  no_at:         { type: 'info',    label: '无AT', icon: '' },
+  not_found:     { type: 'info',    label: '未找到', icon: '' },
+  error:         { type: 'danger',  label: '错误/异常', icon: 'Close' },
+  cancelled:     { type: 'info',    label: '已取消', icon: '' },
+}
+
+async function openPlusCheck(mode) {
+  let emails = []
+  if (mode === 'selected') {
+    if (!selected.value.length) {
+      ElMessage.warning('请先在表格中勾选要检测的账号')
+      return
+    }
+    emails = selected.value.map((r) => r.email)
+  } else if (mode === 'unchecked') {
+    loading.value = true
+    try {
+      const res = await listRegisteredEmails('unchecked')
+      emails = res.emails || []
+    } catch (e) {
+      ElMessage.error('获取未检测账号失败: ' + e.message)
+      return
+    } finally {
+      loading.value = false
+    }
+    if (!emails.length) {
+      ElMessage.info('当前没有未检测 Plus 状态的账号')
+      return
+    }
+  } else if (mode === 'all') {
+    loading.value = true
+    try {
+      const res = await listRegisteredEmails('all')
+      emails = res.emails || []
+    } catch (e) {
+      ElMessage.error('获取全量账号失败: ' + e.message)
+      return
+    } finally {
+      loading.value = false
+    }
+    if (!emails.length) {
+      ElMessage.info('当前号池为空，无账号可检测')
+      return
+    }
+  }
+
+  plusTargetEmails.value = emails
+  if (!plusForm.proxies && proxyList.value.length) {
+    plusForm.proxies = proxyList.value.join('\n')
+  }
+
+  if (!plusRunning.value) {
+    plusTaskId.value = ''
+    plusLogs.value = []
+    plusConfigCollapsed.value = false
+    const initMap = {}
+    for (const em of emails) {
+      initMap[em] = { email: em, status: 'pending', result: null, elapsed: 0 }
+    }
+    plusItems.value = initMap
+  }
+
+  plusVisible.value = true
+}
+
+function closePlusCheck() {
+  if (plusRunning.value) {
+    ElMessage.info('检测任务在后台继续运行，可随时重新打开查看进度')
+  }
+  if (plusEs.value && !plusRunning.value) {
+    plusEs.value.close()
+    plusEs.value = null
+  }
+  plusVisible.value = false
+}
+
+async function stopPlusCheckTask() {
+  if (!plusTaskId.value) {
+    plusRunning.value = false
+    return
+  }
+  try {
+    await stopPlusCheck(plusTaskId.value)
+    ElMessage.success('已发送停止指令')
+  } catch (_) {
+    ElMessage.info('任务已结束')
+  } finally {
+    plusRunning.value = false
+  }
+}
+
+async function startPlusCheckTask() {
+  const emails = plusTargetEmails.value
+  if (!emails.length) {
+    ElMessage.warning('没有待检测的账号列表')
+    return
+  }
+
+  if (plusEs.value) {
+    plusEs.value.close()
+    plusEs.value = null
+  }
+
+  plusRunning.value = true
+  plusLogs.value = []
+  plusConfigCollapsed.value = true
+
+  const initMap = {}
+  for (const em of emails) {
+    initMap[em] = { email: em, status: 'pending', result: null, elapsed: 0 }
+  }
+  plusItems.value = initMap
+
+  try {
+    const res = await startPlusCheck({
+      emails,
+      proxies: plusForm.proxies,
+      workers: plusForm.workers || 5,
+      timeout: plusForm.timeout || 20,
+    })
+    const taskId = res.taskId || res.task_id
+    if (!taskId) throw new Error('未获取到任务 ID')
+    plusTaskId.value = taskId
+
+    plusEs.value = createSSE(plusCheckStreamUrl(taskId), {
+      init: (ev) => {
+        try {
+          const snap = JSON.parse(ev.data)
+          if (snap.items) plusItems.value = snap.items
+        } catch (_) {}
+      },
+      progress: (ev) => {
+        try {
+          const msg = JSON.parse(ev.data)
+          if (msg.email) {
+            if (!plusItems.value[msg.email]) {
+              plusItems.value[msg.email] = { email: msg.email }
+            }
+            plusItems.value[msg.email].status = msg.status
+            if (msg.result !== undefined) plusItems.value[msg.email].result = msg.result
+            if (msg.elapsed !== undefined) plusItems.value[msg.email].elapsed = msg.elapsed
+          }
+        } catch (_) {}
+      },
+      log: (ev) => {
+        try {
+          const msg = JSON.parse(ev.data)
+          if (msg.line) {
+            plusLogs.value.push(msg.line)
+            if (plusLogs.value.length > 500) plusLogs.value.splice(0, plusLogs.value.length - 500)
+            nextTick(scrollPlusLog)
+          }
+        } catch (_) {}
+      },
+      end: () => {
+        plusRunning.value = false
+        if (plusEs.value) {
+          plusEs.value.close()
+          plusEs.value = null
+        }
+        ElMessage.success('Plus 状态检测已全部完成！')
+        load(false) // 刷新主表格
+      },
+    }, () => {
+      if (!plusRunning.value && plusEs.value) {
+        plusEs.value.close()
+        plusEs.value = null
+      }
+    })
+  } catch (e) {
+    plusRunning.value = false
+    plusConfigCollapsed.value = false
+    ElMessage.error('启动检测失败: ' + (e.response?.data?.detail || e.message))
+  }
+}
+
+function scrollPlusLog() {
+  const box = document.getElementById('plus-log-box')
+  if (box) box.scrollTop = box.scrollHeight
+}
+
+async function openPlusItemLog(row) {
+  currentPlusLogItem.value = row
+  plusLogLines.value = []
+  plusLogModalVisible.value = true
+  plusLogLoading.value = true
+
+  try {
+    if (plusTaskId.value) {
+      const res = await getPlusCheckLog(plusTaskId.value, row.email)
+      plusLogLines.value = res.lines || []
+    } else {
+      plusLogLines.value = row.logs || ['暂无日志']
+    }
+  } catch (e) {
+    plusLogLines.value = ['读取日志失败: ' + (e.response?.data?.detail || e.message)]
+  } finally {
+    plusLogLoading.value = false
+  }
+}
+
+// ════════════════════════ OAICS 资格检测 ════════════════════════
 const oaVisible = ref(false)
 const oaRunning = ref(false)
 const oaTaskId = ref('')
 const oaEs = ref(null)
-// 弹窗配置
 const oaForm = reactive({
   proxies: '',
   workers: 2,
@@ -56,20 +343,12 @@ const oaForm = reactive({
   timeout: 30,
 })
 
-function guessProxyCountry(text) {
-  if (!text) return ''
-  const m = text.match(/(?:-region-|-country-|_country-)([a-zA-Z]{2})/i) || text.match(/-([a-zA-Z]{2})-\d+-\d+/i)
-  if (m && m[1]) return m[1].toUpperCase()
-  return ''
-}
-
 function loadProxyListToOA() {
   oaForm.proxies = proxyList.value.join('\n')
   const g = guessProxyCountry(oaForm.proxies)
   if (g) oaForm.proxyCountry = g
 }
 
-// 进度：email -> { status: 'pending'|'running'|'done', result: {...} }
 const oaItems = ref({})
 const oaLogs = ref([])
 const oaSummary = ref('')
@@ -93,10 +372,10 @@ const oaStats = computed(() => {
 
 function getLogClass(line) {
   if (!line) return ''
-  if (line.includes('HIT') || line.includes('oaics_')) return 'log-hit'
-  if (line.includes('MISS') || line.includes('state=CS')) return 'log-miss'
-  if (line.includes('err=') || line.includes('ERROR') || line.includes('失败')) return 'log-err'
-  if (line.includes('[task]')) return 'log-task'
+  if (line.includes('HIT') || line.includes('oaics_') || line.includes('★') || line.includes('◆')) return 'log-hit'
+  if (line.includes('MISS') || line.includes('state=CS') || line.includes('Free')) return 'log-miss'
+  if (line.includes('err=') || line.includes('ERROR') || line.includes('失败') || line.includes('封号') || line.includes('失效')) return 'log-err'
+  if (line.includes('[task]') || line.includes('HTTP')) return 'log-task'
   return ''
 }
 
@@ -154,7 +433,7 @@ async function stopOA() {
   try {
     await stopOACheck(oaTaskId.value)
     ElMessage.success('已发送停止指令')
-  } catch (e) {
+  } catch (_) {
     ElMessage.info('任务已结束')
   } finally {
     oaRunning.value = false
@@ -208,7 +487,7 @@ async function startOA() {
         try {
           const snap = JSON.parse(ev.data)
           if (snap.items) oaItems.value = snap.items
-        } catch (_) { /* ignore */ }
+        } catch (_) {}
       },
       progress: (ev) => {
         try {
@@ -218,7 +497,7 @@ async function startOA() {
             const c = oaCount()
             oaSummary.value = `正在检测：已完成 ${c.done}/${c.total} (命中 ${c.hit} 个 OAICS)`
           }
-        } catch (_) { /* ignore */ }
+        } catch (_) {}
       },
       log: (ev) => {
         try {
@@ -228,7 +507,7 @@ async function startOA() {
             if (oaLogs.value.length > 500) oaLogs.value.splice(0, oaLogs.value.length - 500)
             nextTick(scrollOaLog)
           }
-        } catch (_) { /* ignore */ }
+        } catch (_) {}
       },
       end: () => {
         const c = oaCount()
@@ -238,7 +517,7 @@ async function startOA() {
           oaEs.value.close()
           oaEs.value = null
         }
-        load(false) // 刷新表格里的 OA资格 列
+        load(false)
       },
     }, () => {
       if (!oaRunning.value && oaEs.value) {
@@ -259,6 +538,7 @@ function scrollOaLog() {
   if (box) box.scrollTop = box.scrollHeight
 }
 
+// ════════════════════════ 数据加载与分页 ════════════════════════
 async function load(resetPage = false) {
   if (resetPage) page.value = 1
   loading.value = true
@@ -285,40 +565,6 @@ function handleSizeChange(val) {
 function handleCurrentChange(val) {
   page.value = val
   load(false)
-}
-
-function collectEmails(mode) {
-  if (mode === 'selected') return selected.value.map((r) => r.email)
-  if (mode === 'unchecked') return rows.value.filter((r) => !plusOf(r)).map((r) => r.email)
-  return rows.value.map((r) => r.email) // all（当前页）
-}
-
-async function doCheck(mode) {
-  const emails = collectEmails(mode)
-  if (!emails.length) { ElMessage.info('当前页没有可检测的号'); return }
-  checking.value = true
-  checkResult.value = `检查中... (${emails.length} 个)`
-  try {
-    const { results, note } = await checkPlus(emails, proxyText(form.value))
-    let plus = 0, free = 0, banned = 0, failed = 0, badToken = 0
-    for (const [email, info] of Object.entries(results)) {
-      const row = rows.value.find((r) => r.email === email)
-      if (row) row.plus_check = info
-      if (info.status === 'plus_eligible' || info.status === 'plus_active') plus++
-      else if (info.status === 'banned') banned++
-      else if (info.status === 'free') free++
-      else if (info.status === 'token_invalid') badToken++
-      else if (info.status === 'error') failed++
-    }
-    const parts = [`完成: ${plus} 可用Plus, ${free} Free, ${banned} 封号`]
-    if (badToken) parts.push(`${badToken} 个凭证失效`)
-    if (failed) parts.push(`${failed} 个没检测成`)
-    if (note) parts.push(note)
-    checkResult.value = parts.join(' · ')
-  } catch (e) {
-    checkResult.value = ''
-    ElMessage.error('检查失败: ' + e.message)
-  } finally { checking.value = false }
 }
 
 async function confirm(msg) {
@@ -477,15 +723,6 @@ async function viewCred(email) {
   } catch (e) { ElMessage.error('加载凭证失败: ' + e.message) }
 }
 
-async function copyCell(email, field) {
-  try {
-    const { data } = await getRegistered(email)
-    const val = data[field] || ''
-    if (!val) { ElMessage.warning(`${field} 为空`); return }
-    await copyText(val)
-  } catch (e) { ElMessage.error('加载凭证失败: ' + e.message) }
-}
-
 function copyAllJson() {
   if (credData.value) copyText(JSON.stringify(credData.value, null, 2))
 }
@@ -543,6 +780,17 @@ async function saveEdit() {
 
 watch(dataVersion, () => load())
 onActivated(() => load())
+
+onUnmounted(() => {
+  if (plusEs.value) {
+    plusEs.value.close()
+    plusEs.value = null
+  }
+  if (oaEs.value) {
+    oaEs.value.close()
+    oaEs.value = null
+  }
+})
 </script>
 
 <template>
@@ -585,11 +833,11 @@ onActivated(() => load())
         </div>
 
         <div class="toolbar-right">
-          <!-- Plus 检测操作组 -->
-          <div class="macos-btn-group">
-            <el-button size="small" :loading="checking" @click="doCheck('unchecked')">检查未检</el-button>
-            <el-button size="small" :loading="checking" @click="doCheck('all')">全重检</el-button>
-            <el-button size="small" :loading="checking" :disabled="!selected.length" @click="doCheck('selected')">
+          <!-- 升级后的 Plus 检测操作组（全部采用现代化弹窗架构） -->
+          <div class="macos-btn-group highlight-group">
+            <el-button size="small" @click="openPlusCheck('unchecked')">检查未检</el-button>
+            <el-button size="small" @click="openPlusCheck('all')">全重检</el-button>
+            <el-button size="small" :disabled="!selected.length" @click="openPlusCheck('selected')">
               检选中 ({{ selected.length }})
             </el-button>
           </div>
@@ -629,12 +877,6 @@ onActivated(() => load())
         </div>
       </div>
 
-      <!-- 实时检测提示小条 -->
-      <div v-if="checkResult" class="check-result-bar">
-        <el-icon><InfoFilled /></el-icon>
-        <span>{{ checkResult }}</span>
-      </div>
-
       <!-- 中间主体表格区域：height="100%" 自适应弹性伸缩，绝无外部整页滚动条 -->
       <div class="macos-table-container">
         <el-skeleton v-if="loading && !rows.length" :rows="8" animated style="padding: 16px" />
@@ -648,10 +890,23 @@ onActivated(() => load())
           class="macos-table"
           @selection-change="(v) => (selected = v)"
         >
-          <el-table-column type="selection" width="42" align="center" />
-          <el-table-column prop="email" label="邮箱" min-width="190" show-overflow-tooltip />
+          <el-table-column type="selection" width="40" align="center" />
 
-          <el-table-column label="出口地区" min-width="150" show-overflow-tooltip>
+          <el-table-column prop="email" label="邮箱" min-width="190" show-overflow-tooltip>
+            <template #default="{ row }">
+              <button
+                class="macos-tag-btn copy-btn"
+                title="点击复制邮箱"
+                @click="copyText(row.email)"
+              >
+                <span class="mono">{{ row.email }}</span>
+                <el-icon class="copy-ico"><CopyDocument /></el-icon>
+              </button>
+            </template>
+          </el-table-column>
+
+          <!-- 出口地区 -->
+          <el-table-column label="出口地区" width="130" show-overflow-tooltip>
             <template #default="{ row }">
               <span v-if="row.reg_country || row.reg_city" class="geo-badge">
                 <span class="geo-country">{{ row.reg_country || '未知' }}</span>
@@ -661,7 +916,8 @@ onActivated(() => load())
             </template>
           </el-table-column>
 
-          <el-table-column label="出口 IP" min-width="150">
+          <!-- 出口 IP -->
+          <el-table-column label="出口 IP" width="140" show-overflow-tooltip>
             <template #default="{ row }">
               <button
                 v-if="row.reg_ip"
@@ -676,56 +932,65 @@ onActivated(() => load())
             </template>
           </el-table-column>
 
-          <el-table-column label="Plus状态" width="115" align="center">
+          <el-table-column label="Plus状态" width="130" align="center">
             <template #default="{ row }">
-              <StatusDot v-if="plusOf(row)" :type="PLUS_TYPE[plusOf(row).status] || 'info'" :text="plusOf(row).label" />
-              <span v-else class="hint">—</span>
-            </template>
-          </el-table-column>
-
-          <el-table-column label="OA资格" width="115" align="center">
-            <template #default="{ row }">
-              <el-tooltip
-                v-if="row.oa_check && oaMeta(row)"
-                :content="row.oa_check.error || `${row.oa_check.state} · ${row.oa_check.elapsed_ms || 0}ms · ${row.oa_check.session_id_masked || '无 sid'}`"
-                placement="top"
+              <el-tag
+                v-if="plusOf(row)"
+                :type="PLUS_TYPE[plusOf(row).status] || 'info'"
+                size="small"
+                effect="light"
+                class="macos-tag"
               >
-                <el-tag :type="oaMeta(row).type" size="small" effect="light" class="macos-tag">
-                  {{ oaMeta(row).label }}
-                </el-tag>
-              </el-tooltip>
+                <StatusDot :status="plusOf(row).status" />
+                {{ plusOf(row).label }}
+              </el-tag>
               <span v-else class="hint">—</span>
             </template>
           </el-table-column>
 
-          <el-table-column label="AT" width="85" align="center">
+          <el-table-column label="OA资格" width="120" align="center">
             <template #default="{ row }">
-              <el-button v-if="row.at_len > 0" size="small" text type="primary" class="mono token-btn" @click="copyCell(row.email, 'access_token')">
-                <el-icon><DocumentCopy /></el-icon>{{ row.at_len }}
-              </el-button>
+              <el-tag
+                v-if="oaMeta(row)"
+                :type="oaMeta(row).type"
+                size="small"
+                :effect="oaMeta(row).type === 'success' ? 'dark' : 'light'"
+                class="macos-tag"
+              >
+                {{ oaMeta(row).label }}
+              </el-tag>
               <span v-else class="hint">—</span>
             </template>
           </el-table-column>
 
-          <el-table-column label="ST" width="85" align="center">
+          <el-table-column label="AT" width="75" align="center">
             <template #default="{ row }">
-              <el-button v-if="row.st_len > 0" size="small" text type="primary" class="mono token-btn" @click="copyCell(row.email, 'session_token')">
-                <el-icon><DocumentCopy /></el-icon>{{ row.st_len }}
-              </el-button>
+              <span v-if="row.at_len" class="mono token-len-cell link" title="点击复制 AT" @click="copyCell(row.email, 'access_token')">
+                {{ row.at_len }}
+              </span>
               <span v-else class="hint">—</span>
             </template>
           </el-table-column>
 
-          <el-table-column label="RT" width="85" align="center">
+          <el-table-column label="ST" width="75" align="center">
             <template #default="{ row }">
-              <el-button v-if="row.rt_len > 0" size="small" text type="primary" class="mono token-btn" @click="copyCell(row.email, 'refresh_token')">
-                <el-icon><DocumentCopy /></el-icon>{{ row.rt_len }}
-              </el-button>
+              <span v-if="row.st_len" class="mono token-len-cell link" title="点击复制 ST" @click="copyCell(row.email, 'session_token')">
+                {{ row.st_len }}
+              </span>
               <span v-else class="hint">—</span>
             </template>
           </el-table-column>
 
-          <el-table-column label="注册时间" width="150" show-overflow-tooltip>
+          <el-table-column label="RT" width="75" align="center">
+            <template #default="{ row }">
+              <span v-if="row.rt_len" class="mono token-len-cell link" title="点击复制 RT" @click="copyCell(row.email, 'refresh_token')">
+                {{ row.rt_len }}
+              </span>
+              <span v-else class="hint">—</span>
+            </template>
+          </el-table-column>
+
+          <el-table-column label="注册时间" width="135" align="center">
             <template #default="{ row }">
               <span class="mono-date">{{ fmtTime(row.created_at) }}</span>
             </template>
@@ -771,90 +1036,256 @@ onActivated(() => load())
       </div>
     </div>
 
-    <!-- ──────────────── 各种弹窗 ──────────────── -->
-
-    <!-- 批量导出弹窗 -->
-    <el-dialog v-model="exportVisible" width="720px" top="8vh" class="macos-custom-dialog">
+    <!-- ──────────────── Plus 状态并发检测控制台弹窗 (macOS 架构) ──────────────── -->
+    <el-dialog
+      v-model="plusVisible" width="980px" top="3vh"
+      class="oa-custom-dialog"
+      :close-on-click-modal="false" @closed="closePlusCheck"
+    >
       <template #header>
-        <div style="display: flex; align-items: center; gap: 12px">
-          <span style="font-weight: 600">导出 · {{ exportLabel }}</span>
-          <el-tag size="small" type="info">共 {{ exportCount }} 行</el-tag>
-        </div>
-      </template>
-      <el-input
-        :model-value="exportText" type="textarea" :rows="14" readonly
-        class="mono export-area"
-      />
-      <template #footer>
-        <el-button @click="copyText(exportText)">
-          <el-icon><CopyDocument /></el-icon>复制全部
-        </el-button>
-        <el-button type="primary" @click="downloadExport">
-          <el-icon><Download /></el-icon>下载 {{ exportFilename }}
-        </el-button>
-        <el-button
-          type="danger" plain
-          :loading="deletingExported"
-          :disabled="!exportedEmails.length"
-          @click="downloadAndDelete"
-        >
-          <el-icon><Delete /></el-icon>下载并删除这 {{ exportedEmails.length }} 个号
-        </el-button>
-      </template>
-    </el-dialog>
-
-    <!-- 查看凭证弹窗 -->
-    <el-dialog v-model="credVisible" :title="credEmail" width="740px" top="6vh" class="macos-custom-dialog">
-      <template #header>
-        <div style="display: flex; align-items: center; gap: 12px">
-          <span class="mono" style="font-weight: 600">{{ credEmail }}</span>
-          <el-button size="small" @click="copyAllJson">复制全部 JSON</el-button>
-        </div>
-      </template>
-      <div class="cred-scroll-wrap">
-        <div v-for="r in credRows" :key="r.key" style="margin-bottom: 12px">
-          <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 4px">
-            <span class="mono" style="font-weight: 600; color: var(--el-color-primary)">{{ r.key }}</span>
-            <el-tag size="small" type="info">len={{ r.val.length }}</el-tag>
-            <el-button size="small" text type="primary" @click="copyText(r.val)">复制</el-button>
+        <div class="oa-header">
+          <div class="oa-header-title">
+            <span class="oa-title-badge plus-badge">PLUS</span>
+            <span class="oa-title-text">Plus 状态与封号并发检测控制台</span>
+            <el-tag size="small" type="info" round effect="plain">{{ plusTargetEmails.length }} 个账号</el-tag>
           </div>
-          <el-input :model-value="r.val" type="textarea" :rows="2" readonly class="mono" />
+          <div v-if="plusTaskId" class="oa-header-extra">
+            <el-button size="small" text @click="plusConfigCollapsed = !plusConfigCollapsed">
+              <el-icon><Setting /></el-icon>{{ plusConfigCollapsed ? '展开参数配置' : '收起参数配置' }}
+            </el-button>
+          </div>
         </div>
-        <el-empty v-if="!credRows.length" description="无凭证字段" />
+      </template>
+
+      <div class="oa-dialog-container">
+        <!-- 参数配置卡片 -->
+        <el-collapse-transition>
+          <div v-show="!plusTaskId || !plusConfigCollapsed" class="oa-config-card">
+            <el-form label-position="top" :disabled="plusRunning" size="small">
+              <el-row :gutter="12">
+                <el-col :span="13">
+                  <el-form-item label="检测代理池 (每行一条；留空直连)">
+                    <el-input
+                      v-model="plusForm.proxies" type="textarea" :rows="3" class="mono oa-proxy-input"
+                      placeholder="socks5h://user:pass@host:port&#10;http://user:pass@host:port"
+                    />
+                    <div class="oa-proxy-actions">
+                      <el-button size="small" text type="primary" @click="loadProxyListToPlus">
+                        载入全局代理池 ({{ proxyList.length }})
+                      </el-button>
+                      <el-button size="small" text @click="plusForm.proxies = ''">清空直连</el-button>
+                    </div>
+                  </el-form-item>
+                </el-col>
+                <el-col :span="11">
+                  <el-row :gutter="12">
+                    <el-col :span="12">
+                      <el-form-item label="并发 Worker 线程数">
+                        <el-input-number v-model="plusForm.workers" :min="1" :max="20" style="width: 100%" />
+                      </el-form-item>
+                    </el-col>
+                    <el-col :span="12">
+                      <el-form-item label="单请求超时 (秒)">
+                        <el-input-number v-model="plusForm.timeout" :min="5" :max="60" style="width: 100%" />
+                      </el-form-item>
+                    </el-col>
+                  </el-row>
+                  <div class="plus-config-desc">
+                    通过并发请求 ChatGPT 官方账号鉴权接口，实时探测每个账号的 Plus 订阅、试用资格、封号状态并保存至数据库。
+                  </div>
+                </el-col>
+              </el-row>
+            </el-form>
+          </div>
+        </el-collapse-transition>
+
+        <!-- KPI 统计看板 -->
+        <div class="plus-kpi-grid">
+          <div class="plus-kpi-card">
+            <span class="kpi-label">已检测 / 总数</span>
+            <span class="kpi-num">{{ plusStats.done }} / {{ plusStats.total }}</span>
+          </div>
+          <div class="plus-kpi-card hit-active">
+            <span class="kpi-label">★ Plus 生效中</span>
+            <span class="kpi-num text-primary">{{ plusStats.plus_active }}</span>
+          </div>
+          <div class="plus-kpi-card hit-promo">
+            <span class="kpi-label">◆ 可领 Plus 试用</span>
+            <span class="kpi-num text-success">{{ plusStats.plus_eligible }}</span>
+          </div>
+          <div class="plus-kpi-card">
+            <span class="kpi-label">Free 普通号</span>
+            <span class="kpi-num">{{ plusStats.free }}</span>
+          </div>
+          <div class="plus-kpi-card" :class="{ 'card-warn': plusStats.banned > 0 || plusStats.token_invalid > 0 }">
+            <span class="kpi-label">封号 / 凭证失效</span>
+            <span class="kpi-num text-danger">{{ plusStats.banned + plusStats.token_invalid }}</span>
+          </div>
+          <div class="plus-progress-cell">
+            <el-progress
+              :percentage="plusStats.percent"
+              :status="plusStats.done === plusStats.total && plusStats.total > 0 ? 'success' : ''"
+              :stroke-width="8"
+              striped
+              :striped-flow="plusRunning"
+            />
+          </div>
+        </div>
+
+        <!-- 核心双栏监控：左侧每个账号一行表格，右侧实时检测日志 -->
+        <div class="oa-monitor-split">
+          <!-- 左侧账号监控表格 -->
+          <div class="oa-table-box">
+            <el-table :data="plusRows" size="small" stripe height="100%" :highlight-current-row="false">
+              <el-table-column prop="email" label="账号邮箱" min-width="190" show-overflow-tooltip>
+                <template #default="{ row }">
+                  <span class="mono" style="font-size: 11.5px">{{ row.email }}</span>
+                </template>
+              </el-table-column>
+
+              <el-table-column label="检测状态" width="105" align="center">
+                <template #default="{ row }">
+                  <div v-if="row.status === 'running'" class="running-pill">
+                    <span class="pulse-dot"></span> 检测中...
+                  </div>
+                  <el-tag v-else-if="row.status === 'done'" type="success" size="small" effect="light">已完成</el-tag>
+                  <el-tag v-else-if="row.status === 'cancelled'" type="info" size="small">已取消</el-tag>
+                  <el-tag v-else type="info" size="small" effect="plain">排队中</el-tag>
+                </template>
+              </el-table-column>
+
+              <el-table-column label="Plus 结论" min-width="150">
+                <template #default="{ row }">
+                  <template v-if="row.result">
+                    <el-tag
+                      :type="(PLUS_STATE_META[row.result.status] || {}).type || 'info'"
+                      size="small"
+                      :effect="row.result.status === 'plus_eligible' || row.result.status === 'plus_active' ? 'dark' : 'light'"
+                    >
+                      {{ (PLUS_STATE_META[row.result.status] || { label: row.result.status }).label }}
+                    </el-tag>
+                    <el-tooltip v-if="row.result.error" :content="row.result.error" placement="top">
+                      <span class="hint error-hint" style="margin-left: 4px; color: var(--el-color-danger); cursor: help">⚠</span>
+                    </el-tooltip>
+                  </template>
+                  <span v-else class="hint">—</span>
+                </template>
+              </el-table-column>
+
+              <el-table-column label="耗时" width="70" align="right">
+                <template #default="{ row }">
+                  <span class="mono" style="font-size: 11px">{{ row.elapsed ? row.elapsed + 's' : '—' }}</span>
+                </template>
+              </el-table-column>
+
+              <el-table-column label="操作" width="75" align="center" fixed="right">
+                <template #default="{ row }">
+                  <el-button size="small" text type="primary" @click="openPlusItemLog(row)">
+                    <el-icon><Document /></el-icon>日志
+                  </el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+          </div>
+
+          <!-- 右侧实时流水日志 -->
+          <div class="oa-terminal-box">
+            <div class="oa-terminal-header">
+              <span class="terminal-dot red"></span>
+              <span class="terminal-dot yellow"></span>
+              <span class="terminal-dot green"></span>
+              <span class="terminal-title">实时检测流水 ({{ plusLogs.length }} 行)</span>
+              <el-button size="small" text class="terminal-clear-btn" @click="plusLogs = []">清屏</el-button>
+            </div>
+            <div id="plus-log-box" class="oa-terminal-body">
+              <div v-for="(log, idx) in plusLogs" :key="idx" class="terminal-line" :class="getLogClass(log)">
+                {{ log }}
+              </div>
+              <div v-if="!plusLogs.length" class="terminal-empty">点击下方「开始检测」发起任务...</div>
+            </div>
+          </div>
+        </div>
       </div>
-    </el-dialog>
 
-    <!-- 编辑凭证弹窗 -->
-    <el-dialog v-model="editVisible" title="编辑凭证" width="540px" top="10vh" class="macos-custom-dialog">
-      <el-alert
-        type="warning" :closable="false" show-icon style="margin-bottom: 16px"
-        title="仅修改本地记录，不会同步到 OpenAI"
-        description="这里改密码不等于改了账号密码。填入的值会被登录流程直接使用。"
-      />
-      <el-form label-position="top" size="small">
-        <el-form-item label="邮箱">
-          <el-input :model-value="editEmail" class="mono" disabled />
-        </el-form-item>
-        <el-form-item label="密码">
-          <el-input v-model="editPassword" class="mono" placeholder="留空表示该号无密码" />
-        </el-form-item>
-        <el-form-item label="2FA Secret">
-          <el-input
-            v-model="editSecret" class="mono"
-            placeholder="base32，支持带空格/小写/otpauth:// 链接，会自动规范化"
-          />
-          <div class="hint" style="margin-top: 6px; line-height: 1.6">
-            服务端取不回此值，覆盖后原 secret 永久丢失。清空则该号按无 2FA 处理。
-          </div>
-        </el-form-item>
-      </el-form>
       <template #footer>
-        <el-button @click="editVisible = false">取消</el-button>
-        <el-button type="primary" :loading="editSaving" @click="saveEdit">保存</el-button>
+        <div class="oa-dialog-footer">
+          <div class="footer-tip">
+            <span v-if="plusRunning" class="running-indicator">
+              <span class="pulse-dot"></span> 正在并发检测 (Workers: {{ plusForm.workers }})...
+            </span>
+            <span v-else-if="plusTaskId" class="finished-indicator">
+              检测已完成，结果已实时写回注册结果数据库
+            </span>
+          </div>
+          <div class="footer-btns">
+            <el-button @click="closePlusCheck">关闭</el-button>
+            <el-button v-if="plusRunning" type="danger" plain @click="stopPlusCheckTask">
+              <el-icon><SwitchButton /></el-icon>停止检测
+            </el-button>
+            <el-button v-else type="primary" class="start-gradient-btn" :loading="plusRunning" @click="startPlusCheckTask">
+              <el-icon><VideoPlay /></el-icon>{{ plusTaskId ? '重新检测' : '开始检测' }}
+            </el-button>
+          </div>
+        </div>
       </template>
     </el-dialog>
 
-    <!-- OAICS 资格检测控制台弹窗 -->
+    <!-- ──────────────── 单账号详细检测日志终端弹窗 ──────────────── -->
+    <el-dialog
+      v-model="plusLogModalVisible"
+      width="780px"
+      top="8vh"
+      class="macos-terminal-dialog"
+      :close-on-click-modal="false"
+    >
+      <template #header>
+        <div class="modal-header">
+          <div class="window-dots">
+            <span class="dot red"></span>
+            <span class="dot yellow"></span>
+            <span class="dot green"></span>
+          </div>
+          <div class="modal-title-info">
+            <span class="modal-email">{{ currentPlusLogItem?.email }}</span>
+            <el-tag size="small" type="info" effect="plain" class="modal-run-tag">
+              Plus 检测日志
+            </el-tag>
+          </div>
+        </div>
+      </template>
+
+      <div class="modal-terminal-wrap">
+        <div class="modal-terminal-body">
+          <div
+            v-for="(line, idx) in plusLogLines"
+            :key="idx"
+            class="terminal-line"
+            :class="getLogClass(line)"
+          >
+            {{ line }}
+          </div>
+          <div v-if="!plusLogLines.length" class="terminal-empty">
+            {{ plusLogLoading ? '正在加载日志...' : '暂无详细日志' }}
+          </div>
+        </div>
+      </div>
+
+      <template #footer>
+        <div class="modal-footer">
+          <span class="log-count-tip">共 {{ plusLogLines.length }} 行日志</span>
+          <div class="modal-footer-btns">
+            <el-button size="small" @click="copyText(plusLogLines.join('\n'))">
+              <el-icon><CopyDocument /></el-icon>复制全部日志
+            </el-button>
+            <el-button size="small" type="primary" @click="plusLogModalVisible = false">
+              关闭
+            </el-button>
+          </div>
+        </div>
+      </template>
+    </el-dialog>
+
+    <!-- ──────────────── OAICS 资格检测控制台弹窗 ──────────────── -->
     <el-dialog
       v-model="oaVisible" width="980px" top="3vh"
       class="oa-custom-dialog"
@@ -1053,6 +1484,87 @@ onActivated(() => load())
         </div>
       </template>
     </el-dialog>
+
+    <!-- 批量导出弹窗 -->
+    <el-dialog v-model="exportVisible" width="720px" top="8vh" class="macos-custom-dialog">
+      <template #header>
+        <div style="display: flex; align-items: center; gap: 12px">
+          <span style="font-weight: 600">导出 · {{ exportLabel }}</span>
+          <el-tag size="small" type="info">共 {{ exportCount }} 行</el-tag>
+        </div>
+      </template>
+      <el-input
+        :model-value="exportText" type="textarea" :rows="14" readonly
+        class="mono export-area"
+      />
+      <template #footer>
+        <el-button @click="copyText(exportText)">
+          <el-icon><CopyDocument /></el-icon>复制全部
+        </el-button>
+        <el-button type="primary" @click="downloadExport">
+          <el-icon><Download /></el-icon>下载 {{ exportFilename }}
+        </el-button>
+        <el-button
+          type="danger" plain
+          :loading="deletingExported"
+          :disabled="!exportedEmails.length"
+          @click="downloadAndDelete"
+        >
+          <el-icon><Delete /></el-icon>下载并删除这 {{ exportedEmails.length }} 个号
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 查看凭证弹窗 -->
+    <el-dialog v-model="credVisible" :title="credEmail" width="740px" top="6vh" class="macos-custom-dialog">
+      <template #header>
+        <div style="display: flex; align-items: center; gap: 12px">
+          <span class="mono" style="font-weight: 600">{{ credEmail }}</span>
+          <el-button size="small" @click="copyAllJson">复制全部 JSON</el-button>
+        </div>
+      </template>
+      <div class="cred-scroll-wrap">
+        <div v-for="r in credRows" :key="r.key" style="margin-bottom: 12px">
+          <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 4px">
+            <span class="mono" style="font-weight: 600; color: var(--el-color-primary)">{{ r.key }}</span>
+            <el-tag size="small" type="info">len={{ r.val.length }}</el-tag>
+            <el-button size="small" text type="primary" @click="copyText(r.val)">复制</el-button>
+          </div>
+          <el-input :model-value="r.val" type="textarea" :rows="2" readonly class="mono" />
+        </div>
+        <el-empty v-if="!credRows.length" description="无凭证字段" />
+      </div>
+    </el-dialog>
+
+    <!-- 编辑凭证弹窗 -->
+    <el-dialog v-model="editVisible" title="编辑凭证" width="540px" top="10vh" class="macos-custom-dialog">
+      <el-alert
+        type="warning" :closable="false" show-icon style="margin-bottom: 16px"
+        title="仅修改本地记录，不会同步到 OpenAI"
+        description="这里改密码不等于改了账号密码。填入的值会被登录流程直接使用。"
+      />
+      <el-form label-position="top" size="small">
+        <el-form-item label="邮箱">
+          <el-input :model-value="editEmail" class="mono" disabled />
+        </el-form-item>
+        <el-form-item label="密码">
+          <el-input v-model="editPassword" class="mono" placeholder="留空表示该号无密码" />
+        </el-form-item>
+        <el-form-item label="2FA Secret">
+          <el-input
+            v-model="editSecret" class="mono"
+            placeholder="base32，支持带空格/小写/otpauth:// 链接，会自动规范化"
+          />
+          <div class="hint" style="margin-top: 6px; line-height: 1.6">
+            服务端取不回此值，覆盖后原 secret 永久丢失。清空则该号按无 2FA 处理。
+          </div>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="editVisible = false">取消</el-button>
+        <el-button type="primary" :loading="editSaving" @click="saveEdit">保存</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -1127,20 +1639,17 @@ onActivated(() => load())
 .macos-btn {
   border-radius: 6px;
   font-size: 12px;
+  padding: 6px 10px;
 }
 
 .macos-select.filter-select {
-  width: 120px;
+  width: 115px;
 }
 .macos-select.proxy-select {
-  width: 210px;
+  width: 175px;
 }
 
-:deep(.macos-select .el-input__wrapper) {
-  border-radius: 6px;
-}
-
-/* 分组按钮 (macOS Segmented control 风格) */
+/* 按钮组 */
 .macos-btn-group {
   display: inline-flex;
   background: var(--el-fill-color-light);
@@ -1152,20 +1661,22 @@ onActivated(() => load())
   margin: 0;
   border: none;
   background: transparent;
-  padding: 5px 8px;
-  height: 24px;
-  font-size: 11.5px;
+  padding: 5px 10px;
+  height: 26px;
+  font-size: 12px;
   border-radius: 4px;
 }
 .macos-btn-group :deep(.el-button:hover:not(:disabled)) {
   background: var(--el-bg-color);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
 }
-.macos-btn-group.danger-group :deep(.el-button) {
+.macos-btn-group.highlight-group :deep(.el-button:hover:not(:disabled)) {
+  color: var(--el-color-primary);
+}
+.macos-btn-group.danger-group :deep(.el-button:hover:not(:disabled)) {
   color: var(--el-color-danger);
 }
 
-/* 资格检测高亮按钮 */
 .oa-action-btn {
   border-radius: 6px;
   font-size: 12px;
@@ -1174,23 +1685,11 @@ onActivated(() => load())
   border: none;
   box-shadow: 0 2px 6px rgba(16, 185, 129, 0.25);
 }
-.oa-action-btn:hover {
+.oa-action-btn:hover:not(:disabled) {
   background: linear-gradient(135deg, #059669, #047857);
 }
 
-.check-result-bar {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 14px;
-  background: var(--el-color-primary-light-9);
-  color: var(--el-color-primary);
-  font-size: 12px;
-  border-bottom: 1px solid var(--el-color-primary-light-8);
-  flex-shrink: 0;
-}
-
-/* ──────────── 表格容器与单元格 ──────────── */
+/* ──────────── 中间表格区域 ──────────── */
 .macos-table-container {
   flex: 1;
   min-height: 0;
@@ -1207,25 +1706,7 @@ onActivated(() => load())
   font-size: 12px;
 }
 
-/* 出口地区徽章与 IP 复制胶囊按钮 */
-.geo-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  background: var(--el-fill-color-light);
-  border: 1px solid var(--el-border-color-lighter);
-  padding: 1px 7px;
-  border-radius: 4px;
-  font-size: 11.5px;
-}
-.geo-country {
-  font-weight: 600;
-  color: var(--el-color-primary);
-}
-.geo-city {
-  color: var(--el-text-color-regular);
-}
-
+/* 邮箱复制胶囊 */
 .macos-tag-btn.copy-btn {
   display: inline-flex;
   align-items: center;
@@ -1246,36 +1727,53 @@ onActivated(() => load())
   border-color: var(--el-color-primary-light-7);
   color: var(--el-color-primary);
 }
-.macos-tag-btn.ip-btn {
-  font-family: var(--el-font-family-monospace, monospace);
-  font-size: 11.5px;
-}
-.macos-tag-btn.secret-btn {
-  color: var(--el-color-warning-dark-2);
-}
-.macos-tag-btn.secret-btn:hover {
-  background: var(--el-color-warning-light-9);
-  border-color: var(--el-color-warning-light-7);
-  color: var(--el-color-warning);
-}
 .copy-btn .copy-ico {
   font-size: 11px;
   opacity: 0.5;
   transition: opacity 0.15s;
 }
-.copy-btn:hover .copy-ico {
-  opacity: 1;
+.copy-btn:hover .copy-ico { opacity: 1; }
+
+.geo-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  background: var(--el-fill-color-light);
+  border: 1px solid var(--el-border-color-lighter);
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+}
+.geo-country { font-weight: 600; color: var(--el-color-primary); }
+.geo-city { color: var(--el-text-color-regular); }
+
+.macos-tag-btn.ip-btn {
+  font-family: var(--el-font-family-monospace, monospace);
+  font-size: 11.5px;
 }
 
-.token-btn {
+.macos-tag {
   font-size: 11.5px;
-  padding: 0 4px;
+  border-radius: 4px;
 }
+
+.token-len-cell {
+  font-size: 12px;
+}
+.token-len-cell.link {
+  color: var(--el-color-primary);
+  cursor: pointer;
+}
+.token-len-cell.link:hover {
+  text-decoration: underline;
+}
+
 .mono-date {
   font-family: var(--el-font-family-monospace, monospace);
   font-size: 11px;
   color: var(--el-text-color-secondary);
 }
+
 .row-actions {
   display: flex;
   align-items: center;
@@ -1283,21 +1781,20 @@ onActivated(() => load())
   gap: 2px;
 }
 .row-actions :deep(.el-button) {
-  padding: 2px 4px;
-  font-size: 11.5px;
+  padding: 4px 6px;
+  font-size: 12px;
 }
 
-/* ──────────── 底部状态与全能分页栏 ──────────── */
+/* ──────────── 底部状态与分页栏 ──────────── */
 .macos-footer-bar {
-  padding: 6px 14px;
+  padding: 8px 16px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  background: var(--el-fill-color-blank);
   border-top: 1px solid var(--el-border-color-lighter);
+  background: var(--el-fill-color-blank);
   flex-shrink: 0;
 }
-
 .footer-status-left {
   font-size: 12px;
   color: var(--el-text-color-secondary);
@@ -1307,41 +1804,24 @@ onActivated(() => load())
   font-weight: 500;
 }
 
-:deep(.macos-pagination) {
-  --el-pagination-button-bg-color: var(--el-fill-color-light);
-  --el-pagination-hover-color: var(--el-color-primary);
-}
-:deep(.macos-pagination .el-select .el-input) {
-  width: 95px;
-}
-
-/* ──────────── 弹窗通用样式 ──────────── */
-:deep(.macos-custom-dialog) {
-  border-radius: 10px;
-  overflow: hidden;
-}
-.cred-scroll-wrap {
-  max-height: 480px;
-  overflow-y: auto;
-  padding-right: 4px;
-}
-
-/* ──────────── OA 资格检测控制台弹窗 ──────────── */
+/* ──────────── OAICS / Plus 控制台弹窗样式 ──────────── */
 :deep(.oa-custom-dialog) {
   border-radius: 12px;
   overflow: hidden;
 }
 :deep(.oa-custom-dialog .el-dialog__header) {
-  padding: 14px 20px 10px;
+  padding: 12px 18px;
   margin-right: 0;
   border-bottom: 1px solid var(--el-border-color-lighter);
+  background: var(--el-fill-color-light);
 }
 :deep(.oa-custom-dialog .el-dialog__body) {
-  padding: 12px 20px;
+  padding: 14px 18px;
 }
 :deep(.oa-custom-dialog .el-dialog__footer) {
-  padding: 10px 20px 14px;
+  padding: 10px 18px;
   border-top: 1px solid var(--el-border-color-lighter);
+  background: var(--el-fill-color-light);
 }
 
 .oa-header {
@@ -1357,115 +1837,157 @@ onActivated(() => load())
 .oa-title-badge {
   background: linear-gradient(135deg, #10b981, #059669);
   color: #fff;
+  font-size: 11px;
   font-weight: 700;
-  font-size: 12px;
-  padding: 2px 7px;
+  padding: 1px 7px;
   border-radius: 4px;
   letter-spacing: 0.5px;
 }
+.oa-title-badge.plus-badge {
+  background: linear-gradient(135deg, #3b82f6, #1d4ed8);
+}
 .oa-title-text {
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 600;
-  color: var(--el-text-color-primary);
 }
 
 .oa-dialog-container {
-  height: 520px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  overflow: hidden;
+  gap: 12px;
 }
+
+/* 配置卡片 */
 .oa-config-card {
-  padding: 10px 14px;
   background: var(--el-fill-color-light);
   border: 1px solid var(--el-border-color-lighter);
   border-radius: 8px;
-  flex-shrink: 0;
+  padding: 12px;
+}
+.oa-proxy-input {
+  font-size: 11px;
 }
 .oa-proxy-actions {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
-  margin-top: 2px;
-}
-.oa-options-row {
-  display: flex;
-  align-items: center;
-  gap: 16px;
   margin-top: 4px;
 }
-.oa-kpi-bar {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  padding: 8px 14px;
-  background: var(--el-fill-color-lighter);
-  border: 1px solid var(--el-border-color-lighter);
-  border-radius: 8px;
-  flex-shrink: 0;
+.plus-config-desc {
+  font-size: 11.5px;
+  color: var(--el-text-color-secondary);
+  line-height: 1.5;
+  margin-top: 8px;
 }
-.oa-kpi-item {
+
+/* Plus KPI 看板 */
+.plus-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr) 2fr;
+  gap: 8px;
+  align-items: center;
+}
+.plus-kpi-card {
+  background: var(--el-fill-color-light);
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 6px;
+  padding: 6px 10px;
   display: flex;
   flex-direction: column;
-  min-width: 65px;
+}
+.plus-kpi-card .kpi-label {
+  font-size: 10.5px;
+  color: var(--el-text-color-secondary);
+  margin-bottom: 2px;
+}
+.plus-kpi-card .kpi-num {
+  font-size: 15px;
+  font-weight: 700;
+  font-family: var(--el-font-family-monospace, monospace);
+  line-height: 1.1;
+}
+.plus-kpi-card.hit-active {
+  border-color: var(--el-color-primary-light-5);
+  background: var(--el-color-primary-light-9);
+}
+.plus-kpi-card.hit-promo {
+  border-color: rgba(16, 185, 129, 0.4);
+  background: rgba(16, 185, 129, 0.08);
+}
+.plus-kpi-card.card-warn {
+  border-color: rgba(239, 68, 68, 0.4);
+  background: rgba(239, 68, 68, 0.08);
+}
+.plus-progress-cell {
+  padding-left: 6px;
+}
+
+/* OA KPI 栏目 */
+.oa-kpi-bar {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr) 2fr;
+  gap: 8px;
+  align-items: center;
+}
+.oa-kpi-item {
+  background: var(--el-fill-color-light);
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 6px;
+  padding: 6px 10px;
+  display: flex;
+  flex-direction: column;
 }
 .oa-kpi-item .kpi-label {
-  font-size: 11px;
+  font-size: 10.5px;
   color: var(--el-text-color-secondary);
+  margin-bottom: 2px;
 }
 .oa-kpi-item .kpi-val {
   font-size: 15px;
   font-weight: 700;
   font-family: var(--el-font-family-monospace, monospace);
-  color: var(--el-text-color-primary);
 }
-.oa-kpi-item.kpi-hit .kpi-val {
-  color: #10b981;
+.oa-kpi-item.kpi-hit {
+  border-color: rgba(16, 185, 129, 0.4);
+  background: rgba(16, 185, 129, 0.08);
 }
-.oa-kpi-item.kpi-warn .kpi-val {
-  color: var(--el-color-danger);
+.oa-kpi-item.kpi-hit .highlight { color: #10b981; }
+.oa-kpi-item.kpi-warn {
+  border-color: rgba(239, 68, 68, 0.4);
+  background: rgba(239, 68, 68, 0.08);
 }
-.oa-progress-wrap {
-  flex: 1;
-  margin-left: 10px;
-}
+
+/* 核心双栏监控 */
 .oa-monitor-split {
-  flex: 1;
-  display: flex;
-  gap: 12px;
-  min-height: 0;
-  overflow: hidden;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  height: 380px;
 }
 .oa-table-box {
-  flex: 1.15;
-  height: 100%;
   border: 1px solid var(--el-border-color-lighter);
   border-radius: 8px;
   overflow: hidden;
+  height: 100%;
 }
 .oa-terminal-box {
-  flex: 0.85;
-  height: 100%;
+  background: #141418;
+  border-radius: 8px;
   display: flex;
   flex-direction: column;
-  background: #141418;
-  border: 1px solid #272730;
-  border-radius: 8px;
   overflow: hidden;
 }
 .oa-terminal-header {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 10px;
+  padding: 6px 12px;
   background: #1e1e24;
   border-bottom: 1px solid #2a2a34;
-  flex-shrink: 0;
 }
 .terminal-dot {
-  width: 9px;
-  height: 9px;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
 }
 .terminal-dot.red { background: #ff5f56; }
@@ -1474,18 +1996,19 @@ onActivated(() => load())
 .terminal-title {
   font-size: 11px;
   color: #94a3b8;
-  margin-left: 4px;
   flex: 1;
+  margin-left: 4px;
 }
 .terminal-clear-btn {
+  padding: 0;
+  height: auto;
   font-size: 11px;
   color: #94a3b8;
-  padding: 0 4px;
-  height: 20px;
 }
+
 .oa-terminal-body {
   flex: 1;
-  padding: 8px 10px;
+  padding: 10px 12px;
   overflow-y: auto;
   font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, Courier, monospace;
   font-size: 11.5px;
@@ -1494,16 +2017,36 @@ onActivated(() => load())
   word-break: break-all;
   white-space: pre-wrap;
 }
-.terminal-line.log-hit { color: #4ade80; font-weight: 600; }
-.terminal-line.log-miss { color: #9ca3af; }
+
+.terminal-line { margin-bottom: 2px; }
+.terminal-line.log-hit { color: #4ade80; font-weight: 500; }
+.terminal-line.log-miss { color: #94a3b8; }
 .terminal-line.log-err { color: #f87171; }
 .terminal-line.log-task { color: #60a5fa; }
 .terminal-empty {
   color: #64748b;
+  font-style: italic;
+  padding: 30px 0;
   text-align: center;
-  margin-top: 40px;
-  font-size: 12px;
 }
+
+.pulse-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #f59e0b;
+  animation: pulse-ring 1.3s infinite;
+  flex-shrink: 0;
+}
+.running-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: #d97706;
+}
+
 .oa-dialog-footer {
   display: flex;
   align-items: center;
@@ -1511,30 +2054,116 @@ onActivated(() => load())
 }
 .footer-tip {
   font-size: 12px;
-  color: var(--el-text-color-secondary);
 }
 .running-indicator {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  color: var(--el-color-primary);
+  gap: 6px;
+  color: #d97706;
   font-weight: 500;
 }
-.pulse-dot {
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--el-color-primary);
-  margin-right: 6px;
-  animation: oa-pulse 1.4s infinite;
+.finished-indicator {
+  color: #10b981;
 }
-@keyframes oa-pulse {
-  0% { transform: scale(0.85); opacity: 0.6; }
-  50% { transform: scale(1.3); opacity: 1; }
-  100% { transform: scale(0.85); opacity: 0.6; }
-}
-</style>
 
-<style>
-.confirm-multiline .el-message-box__message { white-space: pre-line; }
+.start-gradient-btn {
+  background: linear-gradient(135deg, #10b981, #059669);
+  border: none;
+}
+.start-gradient-btn:hover:not(:disabled) {
+  background: linear-gradient(135deg, #059669, #047857);
+}
+
+/* ──────────── 单账号详细日志终端弹窗 ──────────── */
+:deep(.macos-terminal-dialog) {
+  border-radius: 12px;
+  overflow: hidden;
+  background: #141418;
+}
+:deep(.macos-terminal-dialog .el-dialog__header) {
+  padding: 10px 16px;
+  margin-right: 0;
+  background: #1e1e24;
+  border-bottom: 1px solid #2a2a34;
+}
+:deep(.macos-terminal-dialog .el-dialog__body) {
+  padding: 0;
+}
+:deep(.macos-terminal-dialog .el-dialog__footer) {
+  padding: 10px 16px;
+  background: #1e1e24;
+  border-top: 1px solid #2a2a34;
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.window-dots {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+}
+.dot.red { background: #ff5f56; }
+.dot.yellow { background: #ffbd2e; }
+.dot.green { background: #27c93f; }
+
+.modal-title-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+}
+.modal-email {
+  font-size: 13px;
+  font-weight: 600;
+  color: #f1f5f9;
+  font-family: var(--el-font-family-monospace, monospace);
+}
+.modal-run-tag {
+  font-size: 10.5px;
+}
+
+.modal-terminal-wrap {
+  height: 400px;
+  display: flex;
+  flex-direction: column;
+}
+.modal-terminal-body {
+  flex: 1;
+  padding: 12px 16px;
+  overflow-y: auto;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, Courier, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #d1d5db;
+  word-break: break-all;
+  white-space: pre-wrap;
+  background: #141418;
+}
+
+.modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.log-count-tip {
+  font-size: 11px;
+  color: #94a3b8;
+}
+.modal-footer-btns {
+  display: flex;
+  gap: 8px;
+}
+
+.cred-scroll-wrap {
+  max-height: 60vh;
+  overflow-y: auto;
+}
 </style>

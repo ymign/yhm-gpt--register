@@ -378,6 +378,13 @@ def api_registered(limit: int = 20, offset: int = 0, filter: str = "all"):
     return {"ok": True, "items": items, "total": total}
 
 
+@app.get("/api/registered_emails")
+def api_registered_emails(filter: str = "all"):
+    """返回当前过滤条件下的所有账号邮箱列表（用于批量检测未检/全检）。"""
+    emails = db.list_registered_emails(filter_rt=filter)
+    return {"ok": True, "emails": emails, "total": len(emails)}
+
+
 @app.get("/api/registered/{email}")
 def api_registered_one(email: str):
     row = db.get_registered(email)
@@ -1005,6 +1012,121 @@ def api_check_plus(req: CheckPlusReq):
             db.update_plus_check(email, {**info, "checked_at": checked_at})
 
     return {"ok": True, "results": results, "note": note}
+
+
+# ──────────────────────── Plus 状态检测 (异步多 Worker 任务流) ────────────────────────
+
+
+class StartPlusCheckReq(BaseModel):
+    emails: list[str] = Field(..., description="要检测的账号邮箱列表")
+    proxies: str = Field("", description="检测代理池（每行一个代理；留空则直连）")
+    workers: int = Field(5, ge=1, le=20, description="并发 worker 线程数")
+    timeout: float = Field(20.0, description="单账号请求超时秒数")
+
+
+def _safe_get_plus(q, timeout: float = 2.0):
+    try:
+        return q.get(timeout=timeout)
+    except Exception as e:
+        if type(e).__name__ == "Empty":
+            return "__TIMEOUT__"
+        return None
+
+
+@app.post("/api/registered/plus_check/start")
+def api_plus_check_start(req: StartPlusCheckReq):
+    """启动 Plus 状态多 Worker 并发检测任务，返回 task_id 用于订阅 SSE。"""
+    from . import plus_check
+
+    emails = [e.strip().lower() for e in (req.emails or []) if e and e.strip()]
+    if not emails:
+        raise HTTPException(400, "请提供要检测的账号邮箱列表")
+
+    proxies = []
+    for line in str(req.proxies or "").splitlines():
+        line = line.strip()
+        if line and not line.startswith("#"):
+            proxies.append(line)
+
+    config = {
+        "proxies": proxies,
+        "workers": max(1, min(20, req.workers)),
+        "timeout": float(req.timeout or 20.0),
+    }
+    try:
+        task_id = plus_check.start(emails, config)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    logger.info(f"[plus_check] 任务 {task_id} 启动: {len(emails)} 个账号, workers={config['workers']}")
+    return {"ok": True, "task_id": task_id, "taskId": task_id, "total": len(emails)}
+
+
+@app.post("/api/registered/plus_check/{task_id}/stop")
+def api_plus_check_stop(task_id: str):
+    """停止指定的 Plus 状态检测任务。"""
+    from . import plus_check
+
+    active = plus_check.stop(task_id)
+    return {"ok": True, "task_id": task_id, "active": active}
+
+
+@app.get("/api/registered/plus_check/{task_id}/stream")
+async def api_plus_check_stream(task_id: str, request: Request):
+    """SSE：实时推流 Plus 状态检测进度、快照与日志。"""
+    from . import plus_check
+
+    snap = plus_check.snapshot(task_id)
+    if snap is None:
+        raise HTTPException(404, "task_id 不存在或已结束")
+
+    q = plus_check.get_queue(task_id)
+
+    async def gen():
+        loop = asyncio.get_event_loop()
+        try:
+            yield f"event: init\ndata: {json.dumps(snap, ensure_ascii=False)}\n\n"
+            while True:
+                if await request.is_disconnected():
+                    break
+                msg = await loop.run_in_executor(None, _safe_get_plus, q, 2.0)
+                if msg is None:
+                    yield "event: end\ndata: {}\n\n"
+                    break
+                if msg == "__TIMEOUT__":
+                    yield ": ping\n\n"
+                    continue
+                if msg.get("kind") == "end":
+                    yield "event: end\ndata: {}\n\n"
+                    break
+                kind = msg.get("kind", "progress")
+                yield f"event: {kind}\ndata: {json.dumps(msg, ensure_ascii=False)}\n\n"
+        finally:
+            pass
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
+@app.get("/api/registered/plus_check/{task_id}/log")
+def api_plus_check_log(task_id: str, email: str = ""):
+    """获取指定任务中特定账号的详细检测日志。"""
+    from . import plus_check
+
+    task = plus_check.get_task(task_id)
+    if not task:
+        raise HTTPException(404, "任务未找到")
+    email = email.strip().lower()
+    item = task.items.get(email)
+    if not item:
+        return {"ok": True, "email": email, "lines": ["未找到该账号的检测日志"]}
+    return {"ok": True, "email": email, "lines": item.get("logs", []), "status": item.get("status")}
 
 
 # ──────────────────────── OAICS 资格检测 ────────────────────────

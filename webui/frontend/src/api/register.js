@@ -35,6 +35,22 @@ export const exportRegistered = (payload) => http.post('/api/registered/export',
 export const checkPlus = (emails, proxy = '') =>
   http.post('/api/registered/check_plus', { emails, proxy })
 
+export const listRegisteredEmails = (filter = 'all') =>
+  http.get('/api/registered_emails', { params: { filter } })
+
+// ──────────────── Plus 状态并发检测任务 ────────────────
+export const startPlusCheck = (payload) =>
+  http.post('/api/registered/plus_check/start', payload) // { emails, proxies, workers, timeout }
+
+export const stopPlusCheck = (taskId) =>
+  http.post(`/api/registered/plus_check/${encodeURIComponent(taskId)}/stop`)
+
+export const plusCheckStreamUrl = (taskId) =>
+  `/api/registered/plus_check/${encodeURIComponent(taskId)}/stream`
+
+export const getPlusCheckLog = (taskId, email) =>
+  http.get(`/api/registered/plus_check/${encodeURIComponent(taskId)}/log`, { params: { email } })
+
 // ──────────────── OAICS 资格检测 ────────────────
 export const startOACheck = (payload) =>
   http.post('/api/registered/oa_check/start', payload) // { emails, proxies, workers, ... }

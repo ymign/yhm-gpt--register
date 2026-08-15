@@ -760,6 +760,14 @@ def count_registered(filter_rt: str = "all") -> int:
     return cur.fetchone()[0]
 
 
+def list_registered_emails(filter_rt: str = "all", limit: int = 100000) -> list[str]:
+    """返回符合过滤条件的所有注册邮箱列表。"""
+    con = _conn()
+    where = _registered_where(filter_rt)
+    cur = con.execute(f"SELECT email FROM registered {where} ORDER BY created_at DESC LIMIT ?", (limit,))
+    return [r[0] for r in cur.fetchall()]
+
+
 def list_registered(limit: int = 20, offset: int = 0, filter_rt: str = "all") -> list[dict]:
     con = _conn()
     where = _registered_where(filter_rt)
