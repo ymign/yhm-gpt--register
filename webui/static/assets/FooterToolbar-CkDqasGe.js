@@ -1,0 +1,1 @@
+import{_ as s,o as a,k as r,l as o,t}from"./index-BP0Re5g9.js";const c={class:"footer-toolbar"},_={class:"ft-left"},l={class:"ft-right"},n={__name:"FooterToolbar",setup(d){return(e,f)=>(a(),r("div",c,[o("div",_,[t(e.$slots,"left",{},void 0,!0)]),o("div",l,[t(e.$slots,"default",{},void 0,!0)])]))}},p=s(n,[["__scopeId","data-v-8ae152c4"]]);export{p as F};

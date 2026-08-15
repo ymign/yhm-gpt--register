@@ -469,8 +469,20 @@ class OACheckTask:
         self.proxies: list[str] = config.get("proxies") or []
         self._proxy_idx = 0
         self._idx_lock = threading.Lock()
-        # email -> {status: pending/running/done/cancelled, result: dict|None}
-        self.items: dict[str, dict] = {e: {"status": "pending", "result": None} for e in emails}
+        self.started_at = time.time()
+        # email -> {status: pending/running/done/cancelled, result: dict|None, logs: list, started_at: float, elapsed: float}
+        self.items: dict[str, dict] = {
+            e: {
+                "email": e,
+                "status": "pending",
+                "result": None,
+                "logs": [],
+                "started_at": 0.0,
+                "finished_at": 0.0,
+                "elapsed": 0.0,
+            }
+            for e in emails
+        }
         self.queue: queue.Queue = queue.Queue()
         self.done_count = 0
         self.hit_count = 0
@@ -486,25 +498,49 @@ class OACheckTask:
             self._proxy_idx += 1
             return proxy
 
+    def add_email_log(self, email: str, line: str) -> None:
+        ts_str = time.strftime("%H:%M:%S")
+        formatted = f"{ts_str} {line}"
+        with self._done_lock:
+            if email in self.items:
+                self.items[email]["logs"].append(formatted)
+                if len(self.items[email]["logs"]) > 200:
+                    self.items[email]["logs"] = self.items[email]["logs"][-200:]
+        try:
+            self.queue.put({"kind": "log", "email": email, "line": f"[{email}] {line}"})
+        except Exception:
+            pass
+
     def set_status(self, email: str, status: str, result: Optional[dict] = None) -> None:
+        now = time.time()
         item = self.items.get(email)
         if item is None:
             return
         item["status"] = status
+        if status == "running":
+            item["started_at"] = now
         if result is not None:
             item["result"] = result
+            if item.get("started_at"):
+                item["elapsed"] = round(now - item["started_at"], 1)
         self.queue.put({
             "kind": "progress",
             "email": email,
             "status": status,
             "result": result,
+            "elapsed": item.get("elapsed", 0),
         })
 
     def mark_done(self, email: str, result: dict) -> None:
+        now = time.time()
         with self._done_lock:
             self.done_count += 1
             if result.get("state") == "OAICS":
                 self.hit_count += 1
+            if email in self.items:
+                it = self.items[email]
+                it["finished_at"] = now
+                it["elapsed"] = round(now - (it["started_at"] or self.started_at), 1)
         self.set_status(email, "done", result)
 
 
@@ -535,6 +571,7 @@ def _check_one_email(task: OACheckTask, email: str) -> None:
 
     rounds = max(1, int(task.config.get("rounds") or 1))
     task.set_status(email, "running")
+    task.add_email_log(email, f"开始 OAICS 资格探测: {email}")
 
     final_result: dict = {
         "state": "ERROR",
@@ -545,10 +582,12 @@ def _check_one_email(task: OACheckTask, email: str) -> None:
         cred = db.get_registered(email)
         if not cred:
             final_result = {"state": "ERROR", "checked_at": time.time(), "error": "未找到凭证记录"}
+            task.add_email_log(email, "错误: 未找到该账号凭证记录")
             return
         cred_at = (cred.get("access_token") or "").strip()
         if not cred_at:
             final_result = {"state": "NO_AT", "checked_at": time.time(), "error": "该号无 access_token"}
+            task.add_email_log(email, "错误: 账号缺少 access_token，无法发起 Checkout")
             return
 
         def _run_round(proxy: str, attempt: int) -> ProbeResult:
@@ -570,14 +609,19 @@ def _check_one_email(task: OACheckTask, email: str) -> None:
         for attempt in range(1, rounds + 1):
             if task.cancelled:
                 final_result = {"state": "CANCELLED", "checked_at": time.time(), "error": "任务已取消"}
+                task.add_email_log(email, "任务已取消")
                 return
             proxy = task.next_proxy()
-            log_event(task, f"[{email}] 第 {attempt}/{rounds} 轮探测, proxy={proxy_endpoint_label(proxy) or '(直连)'}")
+            proxy_lbl = proxy_endpoint_label(proxy) or "(直连)"
+            task.add_email_log(email, f"第 {attempt}/{rounds} 轮探测, 使用代理: {proxy_lbl}")
             last = _run_round(proxy, attempt)
-            mark = "HIT" if last.ok else "MISS"
-            log_event(task, f"[{email}] {mark} state={last.state} sid={last.session_id_masked or '-'} "
-                            f"http={last.http_status} {last.elapsed_ms}ms"
-                            + (f" err={last.error}" if last.error else ""))
+            mark = "★ 命中 OAICS" if last.ok else ("◆ 普通 CS" if last.state == "CS" else f"✕ {last.state}")
+            task.add_email_log(
+                email,
+                f"探测结果: {mark} (state={last.state}, sid={last.session_id_masked or '-'}, "
+                f"HTTP {last.http_status}, 耗时 {last.elapsed_ms}ms"
+                + (f", err={last.error}" if last.error else "") + ")"
+            )
             if last.ok:  # 命中 oaics_ 提前收工
                 break
         if last is None:
@@ -604,14 +648,14 @@ def _check_one_email(task: OACheckTask, email: str) -> None:
             "checked_at": time.time(),
             "error": f"{type(exc).__name__}: {exc}",
         }
+        task.add_email_log(email, f"探测异常: {exc}")
     finally:
         if final_result.get("state") not in ("CANCELLED", "ERROR"):
             try:
                 db.update_oa_check(email, final_result)
             except Exception as exc:  # noqa: BLE001
-                log_event(task, f"[{email}] 写库失败: {exc}")
+                task.add_email_log(email, f"写库失败: {exc}")
         elif final_result.get("state") == "ERROR":
-            # 记录错误信息到数据库
             try:
                 db.update_oa_check(email, final_result)
             except Exception:
@@ -681,6 +725,11 @@ def stop(task_id: str) -> bool:
         log_event(task, "[task] 收到停止指令，正在停止剩余任务...")
         return True
     return False
+
+
+def get_task(task_id: str) -> Optional[OACheckTask]:
+    with _tasks_lock:
+        return _tasks.get(task_id)
 
 
 def get_queue(task_id: str) -> Optional[queue.Queue]:

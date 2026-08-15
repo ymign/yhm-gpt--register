@@ -1247,6 +1247,21 @@ async def api_oa_check_stream(task_id: str, request: Request):
     )
 
 
+@app.get("/api/registered/oa_check/{task_id}/log")
+def api_oa_check_log(task_id: str, email: str = ""):
+    """获取指定 OAICS 任务中特定账号的详细检测日志。"""
+    from . import oa_check
+
+    task = oa_check.get_task(task_id)
+    if not task:
+        raise HTTPException(404, "任务未找到")
+    email = email.strip().lower()
+    item = task.items.get(email)
+    if not item:
+        return {"ok": True, "email": email, "lines": ["未找到该账号的检测日志"]}
+    return {"ok": True, "email": email, "lines": item.get("logs", []), "status": item.get("status")}
+
+
 # ──────────────────────── auto-loop ────────────────────────
 
 

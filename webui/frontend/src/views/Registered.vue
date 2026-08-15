@@ -34,6 +34,7 @@ import {
   startOACheck,
   stopOACheck,
   oaCheckStreamUrl,
+  getOACheckLog,
 } from '@/api/register'
 import { copyText, fmtTime, createSSE } from '@/api/request'
 import { useFormStore, proxyText } from '@/stores/form'
@@ -352,7 +353,32 @@ function loadProxyListToOA() {
 const oaItems = ref({})
 const oaLogs = ref([])
 const oaSummary = ref('')
-const oaConfigCollapsed = ref(false)
+const oaConfigCollapsed = ref(true) // 默认收起参数配置
+const oaLogModalVisible = ref(false)
+const currentOaLogItem = ref(null)
+const oaLogLines = ref([])
+const oaLogLoading = ref(false)
+
+async function openOaItemLog(row) {
+  currentOaLogItem.value = row
+  oaLogLines.value = []
+  oaLogModalVisible.value = true
+  oaLogLoading.value = true
+
+  try {
+    if (oaTaskId.value) {
+      const res = await getOACheckLog(oaTaskId.value, row.email)
+      oaLogLines.value = res.lines || []
+    } else {
+      oaLogLines.value = row.logs || ['暂无日志']
+    }
+  } catch (e) {
+    oaLogLines.value = ['读取日志失败: ' + (e.response?.data?.detail || e.message)]
+  } finally {
+    oaLogLoading.value = false
+  }
+}
+
 const oaRows = computed(() =>
   Object.entries(oaItems.value).map(([email, item]) => ({ email, ...item })),
 )
@@ -409,7 +435,7 @@ function openOA() {
     oaItems.value = {}
     oaLogs.value = []
     oaSummary.value = ''
-    oaConfigCollapsed.value = false
+    oaConfigCollapsed.value = true
   }
   oaVisible.value = true
 }
@@ -1278,8 +1304,8 @@ onUnmounted(() => {
 
     <!-- ──────────────── OAICS 资格检测控制台弹窗 ──────────────── -->
     <el-dialog
-      v-model="oaVisible" width="980px" top="3vh"
-      class="oa-custom-dialog"
+      v-model="oaVisible" width="880px" top="5vh"
+      class="oa-custom-dialog plus-dialog"
       :close-on-click-modal="false" @closed="closeOA"
     >
       <template #header>
@@ -1289,7 +1315,7 @@ onUnmounted(() => {
             <span class="oa-title-text">资格检测控制台</span>
             <el-tag size="small" type="info" round effect="plain">{{ selected.length }} 个账号</el-tag>
           </div>
-          <div v-if="oaTaskId" class="oa-header-extra">
+          <div class="oa-header-extra">
             <el-button size="small" text @click="oaConfigCollapsed = !oaConfigCollapsed">
               <el-icon><Setting /></el-icon>{{ oaConfigCollapsed ? '展开参数配置' : '收起参数配置' }}
             </el-button>
@@ -1298,9 +1324,9 @@ onUnmounted(() => {
       </template>
 
       <div class="oa-dialog-container">
-        <!-- 配置卡片 -->
+        <!-- 配置卡片 (默认折叠收起) -->
         <el-collapse-transition>
-          <div v-show="!oaTaskId || !oaConfigCollapsed" class="oa-config-card">
+          <div v-show="!oaConfigCollapsed" class="oa-config-card">
             <el-form label-position="top" :disabled="oaRunning" size="small">
               <el-row :gutter="12">
                 <el-col :span="11">
@@ -1360,104 +1386,107 @@ onUnmounted(() => {
           </div>
         </el-collapse-transition>
 
-        <!-- 运行监控面板 -->
-        <template v-if="oaTaskId">
-          <!-- KPI 栏目 -->
-          <div class="oa-kpi-bar">
-            <div class="oa-kpi-item">
-              <div class="kpi-label">总体进度</div>
-              <div class="kpi-val">{{ oaStats.done }} / {{ oaStats.total }}</div>
-            </div>
-            <div class="oa-kpi-item kpi-hit">
-              <div class="kpi-label">OAICS 命中</div>
-              <div class="kpi-val highlight">{{ oaStats.hit }}</div>
-            </div>
-            <div class="oa-kpi-item">
-              <div class="kpi-label">普通 CS</div>
-              <div class="kpi-val">{{ oaStats.cs }}</div>
-            </div>
-            <div class="oa-kpi-item" :class="{ 'kpi-warn': oaStats.err > 0 }">
-              <div class="kpi-label">出错/无AT</div>
-              <div class="kpi-val">{{ oaStats.err }}</div>
-            </div>
-            <div class="oa-progress-wrap">
-              <el-progress
-                :percentage="oaStats.percent"
-                :status="oaStats.done === oaStats.total ? 'success' : ''"
-                :stroke-width="10"
-                striped
-                :striped-flow="oaRunning"
-              />
-            </div>
+        <!-- KPI 栏目 -->
+        <div class="oa-kpi-bar">
+          <div class="oa-kpi-item">
+            <div class="kpi-label">总体进度</div>
+            <div class="kpi-val">{{ oaStats.done }} / {{ oaStats.total }}</div>
           </div>
+          <div class="oa-kpi-item kpi-hit">
+            <div class="kpi-label">OAICS 命中</div>
+            <div class="kpi-val highlight">{{ oaStats.hit }}</div>
+          </div>
+          <div class="oa-kpi-item">
+            <div class="kpi-label">普通 CS</div>
+            <div class="kpi-val">{{ oaStats.cs }}</div>
+          </div>
+          <div class="oa-kpi-item" :class="{ 'kpi-warn': oaStats.err > 0 }">
+            <div class="kpi-label">出错/无AT</div>
+            <div class="kpi-val">{{ oaStats.err }}</div>
+          </div>
+          <div class="oa-progress-wrap">
+            <el-progress
+              :percentage="oaStats.percent"
+              :status="oaStats.done === oaStats.total && oaStats.total > 0 ? 'success' : ''"
+              :stroke-width="8"
+              striped
+              :striped-flow="oaRunning"
+            />
+          </div>
+        </div>
 
-          <!-- 双栏监控 -->
-          <div class="oa-monitor-split">
-            <!-- 左侧表格 -->
-            <div class="oa-table-box">
-              <el-table :data="oaRows" size="small" stripe height="100%" :highlight-current-row="false">
-                <el-table-column prop="email" label="邮箱" min-width="170" show-overflow-tooltip />
-                <el-table-column label="状态" width="75" align="center">
-                  <template #default="{ row }">
-                    <el-tag v-if="row.status === 'done'" type="success" size="small">完成</el-tag>
-                    <el-tag v-else-if="row.status === 'running'" type="warning" size="small" effect="dark">检测中</el-tag>
-                    <el-tag v-else-if="row.status === 'cancelled'" type="info" size="small">已取消</el-tag>
-                    <el-tag v-else type="info" size="small" effect="plain">排队</el-tag>
-                  </template>
-                </el-table-column>
-                <el-table-column label="结果" min-width="155">
-                  <template #default="{ row }">
-                    <template v-if="row.result">
-                      <el-tag
-                        :type="(OA_STATE_META[row.result.state] || {}).type || 'info'"
-                        size="small"
-                        :effect="row.result.state === 'OAICS' ? 'dark' : 'light'"
-                      >
-                        {{ (OA_STATE_META[row.result.state] || { label: row.result.state }).label }}
-                      </el-tag>
-                      <span v-if="row.result.session_id_masked" class="hint mono" style="margin-left: 4px; font-size: 11px">
-                        {{ row.result.session_id_masked }}
-                      </span>
-                      <el-tooltip v-if="row.result.error" :content="row.result.error" placement="top">
-                        <span class="hint error-hint" style="margin-left: 4px; color: var(--el-color-danger); cursor: help">⚠</span>
-                      </el-tooltip>
-                    </template>
-                    <span v-else class="hint">—</span>
-                  </template>
-                </el-table-column>
-                <el-table-column label="耗时" width="75" align="right">
-                  <template #default="{ row }">
-                    <span class="mono" style="font-size: 11px">{{ row.result && row.result.elapsed_ms ? row.result.elapsed_ms + 'ms' : '—' }}</span>
-                  </template>
-                </el-table-column>
-              </el-table>
-            </div>
+        <!-- 核心全宽表格 (每个账号一行，无右侧流水) -->
+        <div class="plus-table-box">
+          <el-table :data="oaRows" size="small" stripe height="340" class="macos-table" :highlight-current-row="false">
+            <el-table-column prop="email" label="账号邮箱" min-width="240" show-overflow-tooltip>
+              <template #default="{ row }">
+                <button
+                  class="macos-tag-btn copy-btn"
+                  title="点击复制邮箱"
+                  @click="copyText(row.email)"
+                >
+                  <span class="mono">{{ row.email }}</span>
+                  <el-icon class="copy-ico"><CopyDocument /></el-icon>
+                </button>
+              </template>
+            </el-table-column>
 
-            <!-- 右侧终端 -->
-            <div class="oa-terminal-box">
-              <div class="oa-terminal-header">
-                <span class="terminal-dot red"></span>
-                <span class="terminal-dot yellow"></span>
-                <span class="terminal-dot green"></span>
-                <span class="terminal-title">实时探测日志 ({{ oaLogs.length }} 行)</span>
-                <el-button size="small" text class="terminal-clear-btn" @click="oaLogs = []">清屏</el-button>
-              </div>
-              <div id="oa-log-box" class="oa-terminal-body">
-                <div v-for="(log, idx) in oaLogs" :key="idx" class="terminal-line" :class="getLogClass(log)">
-                  {{ log }}
+            <el-table-column label="检测状态" width="130" align="center">
+              <template #default="{ row }">
+                <div v-if="row.status === 'running'" class="running-pill">
+                  <span class="pulse-dot"></span> 探测中...
                 </div>
-                <div v-if="!oaLogs.length" class="terminal-empty">等待日志输出...</div>
-              </div>
-            </div>
-          </div>
-        </template>
+                <el-tag v-else-if="row.status === 'done'" type="success" size="small" effect="light">已完成</el-tag>
+                <el-tag v-else-if="row.status === 'cancelled'" type="info" size="small">已取消</el-tag>
+                <el-tag v-else type="info" size="small" effect="plain">排队中</el-tag>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="OA 资格结果" min-width="180">
+              <template #default="{ row }">
+                <template v-if="row.result">
+                  <el-tag
+                    :type="(OA_STATE_META[row.result.state] || {}).type || 'info'"
+                    size="small"
+                    :effect="row.result.state === 'OAICS' ? 'dark' : 'light'"
+                  >
+                    {{ (OA_STATE_META[row.result.state] || { label: row.result.state }).label }}
+                  </el-tag>
+                  <span v-if="row.result.session_id_masked" class="hint mono" style="margin-left: 6px; font-size: 11px">
+                    {{ row.result.session_id_masked }}
+                  </span>
+                  <el-tooltip v-if="row.result.error" :content="row.result.error" placement="top">
+                    <span class="hint error-hint" style="margin-left: 6px; color: var(--el-color-danger); cursor: help">⚠</span>
+                  </el-tooltip>
+                </template>
+                <span v-else class="hint">—</span>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="耗时" width="85" align="right">
+              <template #default="{ row }">
+                <span class="mono" style="font-size: 11.5px">
+                  {{ row.result && row.result.elapsed_ms ? row.result.elapsed_ms + 'ms' : (row.status === 'running' ? '计时中' : '—') }}
+                </span>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="操作" width="85" align="center" fixed="right">
+              <template #default="{ row }">
+                <el-button size="small" text type="primary" @click="openOaItemLog(row)">
+                  <el-icon><Document /></el-icon>日志
+                </el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+        </div>
       </div>
 
       <template #footer>
         <div class="oa-dialog-footer">
           <div class="footer-tip">
             <span v-if="oaRunning" class="running-indicator">
-              <span class="pulse-dot"></span> 检测进行中 (并发: {{ oaForm.workers }})...
+              <span class="pulse-dot"></span> 正在并发检测 (Workers: {{ oaForm.workers }})...
             </span>
             <span v-else-if="oaTaskId" class="finished-indicator">
               检测完毕，结果已自动保存至数据库
@@ -1466,10 +1495,65 @@ onUnmounted(() => {
           <div class="footer-btns">
             <el-button @click="closeOA">关闭</el-button>
             <el-button v-if="oaRunning" type="danger" plain @click="stopOA">
-              停止检测
+              <el-icon><SwitchButton /></el-icon>停止检测
             </el-button>
-            <el-button v-else type="primary" :loading="oaRunning" @click="startOA">
-              {{ oaTaskId ? '重新检测' : '开始检测' }}
+            <el-button v-else type="primary" class="start-gradient-btn" :loading="oaRunning" @click="startOA">
+              <el-icon><VideoPlay /></el-icon>{{ oaTaskId ? '重新检测' : '开始检测' }}
+            </el-button>
+          </div>
+        </div>
+      </template>
+    </el-dialog>
+
+    <!-- ──────────────── 单账号 OA 详细日志终端弹窗 ──────────────── -->
+    <el-dialog
+      v-model="oaLogModalVisible"
+      width="780px"
+      top="8vh"
+      class="macos-terminal-dialog"
+      :close-on-click-modal="false"
+    >
+      <template #header>
+        <div class="modal-header">
+          <div class="window-dots">
+            <span class="dot red"></span>
+            <span class="dot yellow"></span>
+            <span class="dot green"></span>
+          </div>
+          <div class="modal-title-info">
+            <span class="modal-email">{{ currentOaLogItem?.email }}</span>
+            <el-tag size="small" type="info" effect="plain" class="modal-run-tag">
+              OAICS 检测日志
+            </el-tag>
+          </div>
+        </div>
+      </template>
+
+      <div class="modal-terminal-wrap">
+        <div class="modal-terminal-body">
+          <div
+            v-for="(line, idx) in oaLogLines"
+            :key="idx"
+            class="terminal-line"
+            :class="getLogClass(line)"
+          >
+            {{ line }}
+          </div>
+          <div v-if="!oaLogLines.length" class="terminal-empty">
+            {{ oaLogLoading ? '正在加载日志...' : '暂无详细日志' }}
+          </div>
+        </div>
+      </div>
+
+      <template #footer>
+        <div class="modal-footer">
+          <span class="log-count-tip">共 {{ oaLogLines.length }} 行日志</span>
+          <div class="modal-footer-btns">
+            <el-button size="small" @click="copyText(oaLogLines.join('\n'))">
+              <el-icon><CopyDocument /></el-icon>复制全部日志
+            </el-button>
+            <el-button size="small" type="primary" @click="oaLogModalVisible = false">
+              关闭
             </el-button>
           </div>
         </div>

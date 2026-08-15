@@ -61,6 +61,9 @@ export const stopOACheck = (taskId) =>
 export const oaCheckStreamUrl = (taskId) =>
   `/api/registered/oa_check/${encodeURIComponent(taskId)}/stream`
 
+export const getOACheckLog = (taskId, email) =>
+  http.get(`/api/registered/oa_check/${encodeURIComponent(taskId)}/log`, { params: { email } })
+
 export const exportToPanel = (email, targets) =>
   http.post('/api/registered/export_to_panel', { email, targets })
 
