@@ -704,7 +704,7 @@ async function downloadAndDelete() {
   }
 }
 
-// 凭证弹窗
+// 凭证弹窗 (macOS 风格)
 const credVisible = ref(false)
 const credEmail = ref('')
 const credData = ref(null)
@@ -713,6 +713,23 @@ const credRows = computed(() => {
   if (!credData.value) return []
   return CRED_KEYS.filter((k) => credData.value[k]).map((k) => ({ key: k, val: credData.value[k] }))
 })
+
+const CRED_META_DICT = {
+  totp_secret:    { badge: '2FA', bg: 'rgba(16, 185, 129, 0.2)', color: '#34d399' },
+  totp_factor_id: { badge: '2FA', bg: 'rgba(16, 185, 129, 0.15)', color: '#6ee7b7' },
+  access_token:   { badge: 'OAuth', bg: 'rgba(59, 130, 246, 0.2)', color: '#60a5fa' },
+  session_token:  { badge: 'Session', bg: 'rgba(168, 85, 247, 0.2)', color: '#c084fc' },
+  refresh_token:  { badge: 'OAuth', bg: 'rgba(236, 72, 153, 0.2)', color: '#f472b6' },
+  id_token:       { badge: 'Token', bg: 'rgba(100, 116, 139, 0.2)', color: '#94a3b8' },
+  device_id:      { badge: 'Device', bg: 'rgba(100, 116, 139, 0.2)', color: '#94a3b8' },
+  csrf_token:     { badge: 'Security', bg: 'rgba(100, 116, 139, 0.2)', color: '#94a3b8' },
+  cookie_header:  { badge: 'Cookie', bg: 'rgba(245, 158, 11, 0.2)', color: '#fbbf24' },
+  password:       { badge: 'Auth', bg: 'rgba(6, 182, 212, 0.2)', color: '#22d3ee' },
+}
+
+function getCredMeta(key) {
+  return CRED_META_DICT[key] || { badge: 'KEY', bg: 'rgba(148, 163, 184, 0.2)', color: '#cbd5e1' }
+}
 
 async function viewCred(email) {
   try {
@@ -906,28 +923,12 @@ onUnmounted(() => {
           </el-table-column>
 
           <!-- 出口地区 -->
-          <el-table-column label="出口地区" width="130" show-overflow-tooltip>
+          <el-table-column label="出口地区" width="140" show-overflow-tooltip>
             <template #default="{ row }">
               <span v-if="row.reg_country || row.reg_city" class="geo-badge">
                 <span class="geo-country">{{ row.reg_country || '未知' }}</span>
                 <span v-if="row.reg_city" class="geo-city"> · {{ row.reg_city }}</span>
               </span>
-              <span v-else class="hint">—</span>
-            </template>
-          </el-table-column>
-
-          <!-- 出口 IP -->
-          <el-table-column label="出口 IP" width="140" show-overflow-tooltip>
-            <template #default="{ row }">
-              <button
-                v-if="row.reg_ip"
-                class="macos-tag-btn copy-btn ip-btn"
-                title="点击复制出口 IP"
-                @click="copyText(row.reg_ip)"
-              >
-                <span class="mono">{{ row.reg_ip }}</span>
-                <el-icon class="copy-ico"><CopyDocument /></el-icon>
-              </button>
               <span v-else class="hint">—</span>
             </template>
           </el-table-column>
@@ -1505,25 +1506,74 @@ onUnmounted(() => {
       </template>
     </el-dialog>
 
-    <!-- 查看凭证弹窗 -->
-    <el-dialog v-model="credVisible" :title="credEmail" width="740px" top="6vh" class="macos-custom-dialog">
+    <!-- 查看凭证弹窗 (macOS 风格与布局) -->
+    <el-dialog
+      v-model="credVisible"
+      width="780px"
+      top="6vh"
+      class="macos-terminal-dialog macos-cred-dialog"
+      :close-on-click-modal="false"
+    >
       <template #header>
-        <div style="display: flex; align-items: center; gap: 12px">
-          <span class="mono" style="font-weight: 600">{{ credEmail }}</span>
-          <el-button size="small" @click="copyAllJson">复制全部 JSON</el-button>
+        <div class="modal-header">
+          <div class="window-dots">
+            <span class="dot red"></span>
+            <span class="dot yellow"></span>
+            <span class="dot green"></span>
+          </div>
+          <div class="modal-title-info">
+            <span class="modal-email">{{ credEmail }}</span>
+            <el-tag size="small" type="info" effect="plain" class="modal-run-tag">
+              凭证总览 ({{ credRows.length }} 项)
+            </el-tag>
+          </div>
+          <div class="modal-header-actions">
+            <el-button size="small" class="macos-copy-all-btn" @click="copyAllJson">
+              <el-icon><CopyDocument /></el-icon>复制全部 JSON
+            </el-button>
+          </div>
         </div>
       </template>
-      <div class="cred-scroll-wrap">
-        <div v-for="r in credRows" :key="r.key" style="margin-bottom: 12px">
-          <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 4px">
-            <span class="mono" style="font-weight: 600; color: var(--el-color-primary)">{{ r.key }}</span>
-            <el-tag size="small" type="info">len={{ r.val.length }}</el-tag>
-            <el-button size="small" text type="primary" @click="copyText(r.val)">复制</el-button>
+
+      <div class="cred-dialog-body">
+        <div v-for="r in credRows" :key="r.key" class="cred-item-card">
+          <div class="cred-item-header">
+            <div class="cred-item-meta">
+              <span
+                class="cred-type-badge"
+                :style="{ backgroundColor: getCredMeta(r.key).bg, color: getCredMeta(r.key).color }"
+              >
+                {{ getCredMeta(r.key).badge }}
+              </span>
+              <span class="cred-key-title mono">{{ r.key }}</span>
+              <span class="cred-len-pill mono">{{ r.val.length }} chars</span>
+            </div>
+            <el-button size="small" text type="primary" class="cred-copy-btn" @click="copyText(r.val)">
+              <el-icon><CopyDocument /></el-icon>复制
+            </el-button>
           </div>
-          <el-input :model-value="r.val" type="textarea" :rows="2" readonly class="mono" />
+          <div class="cred-item-content mono" @click="copyText(r.val)" title="点击复制内容">
+            {{ r.val }}
+          </div>
         </div>
-        <el-empty v-if="!credRows.length" description="无凭证字段" />
+        <div v-if="!credRows.length" class="cred-empty-box">
+          暂无可用凭证字段
+        </div>
       </div>
+
+      <template #footer>
+        <div class="modal-footer">
+          <span class="log-count-tip">凭证安全保存在本地 SQLite 数据库中</span>
+          <div class="modal-footer-btns">
+            <el-button size="small" @click="copyAllJson">
+              <el-icon><CopyDocument /></el-icon>复制全部 JSON
+            </el-button>
+            <el-button size="small" type="primary" @click="credVisible = false">
+              关闭
+            </el-button>
+          </div>
+        </div>
+      </template>
     </el-dialog>
 
     <!-- 编辑凭证弹窗 -->
@@ -2162,6 +2212,115 @@ onUnmounted(() => {
 .modal-footer-btns {
   display: flex;
   gap: 8px;
+}
+
+/* ──────────── macOS 凭证弹窗精致卡片风格 ──────────── */
+.cred-dialog-body {
+  max-height: 58vh;
+  overflow-y: auto;
+  padding: 14px 18px;
+  background: #141418;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.cred-item-card {
+  background: #1a1a22;
+  border: 1px solid #282834;
+  border-radius: 8px;
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.cred-item-card:hover {
+  border-color: #3e3e50;
+  background: #1c1c26;
+}
+
+.cred-item-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.cred-item-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cred-type-badge {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 4px;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+
+.cred-key-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #f1f5f9;
+}
+
+.cred-len-pill {
+  font-size: 10px;
+  color: #94a3b8;
+  background: #242430;
+  padding: 1px 6px;
+  border-radius: 10px;
+}
+
+.cred-copy-btn {
+  padding: 2px 6px;
+  height: 20px;
+  font-size: 11px;
+}
+
+.cred-item-content {
+  background: #0f0f13;
+  border: 1px solid #22222c;
+  border-radius: 6px;
+  padding: 7px 10px;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: #cbd5e1;
+  word-break: break-all;
+  white-space: pre-wrap;
+  max-height: 110px;
+  overflow-y: auto;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.cred-item-content:hover {
+  border-color: #3b82f6;
+  background: #111118;
+}
+
+.cred-empty-box {
+  text-align: center;
+  padding: 30px 0;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.macos-copy-all-btn {
+  border-radius: 5px;
+  font-size: 11px;
+  padding: 2px 8px;
+  height: 24px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #e2e8f0;
+}
+.macos-copy-all-btn:hover {
+  background: rgba(255, 255, 255, 0.15);
+  border-color: rgba(255, 255, 255, 0.25);
+  color: #fff;
 }
 
 .cred-scroll-wrap {
