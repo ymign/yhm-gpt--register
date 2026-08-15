@@ -16,6 +16,7 @@ from urllib.parse import quote, unquote, urlsplit, urlunsplit
 COUNTRY_OPTIONS = [
     {"code": "", "name": "自动 / 保持原样", "rate": "默认"},
     {"code": "BR", "name": "巴西 (Brazil)", "rate": "Plus试用高爆推荐 ★★★★★", "lang": "pt-BR,pt;q=0.9,en-US;q=0.8"},
+    {"code": "VN", "name": "越南 (Vietnam)", "rate": "东南亚高爆推荐 ★★★★★", "lang": "vi-VN,vi;q=0.9,en-US;q=0.8"},
     {"code": "DE", "name": "德国 (Germany)", "rate": "欧洲高爆推荐 ★★★★", "lang": "de-DE,de;q=0.9,en-US;q=0.8"},
     {"code": "GB", "name": "英国 (United Kingdom)", "rate": "欧洲高爆推荐 ★★★★", "lang": "en-GB,en;q=0.9,en-US;q=0.8"},
     {"code": "PL", "name": "波兰 (Poland)", "rate": "欧洲推荐 ★★★★", "lang": "pl-PL,pl;q=0.9,en-US;q=0.8"},

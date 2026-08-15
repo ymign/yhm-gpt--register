@@ -1030,7 +1030,9 @@ def api_check_plus(req: CheckPlusReq):
 
 class StartPlusCheckReq(BaseModel):
     emails: list[str] = Field(..., description="要检测的账号邮箱列表")
-    proxies: str = Field("", description="检测代理池（每行一个代理；留空则直连）")
+    proxies: Optional[str] = Field("", description="检测代理池（每行一个代理；留空则直连）")
+    proxy: Optional[str] = Field("", description="检测单个代理或选定代理")
+    proxy_country: Optional[str] = Field("", description="代理目标国家代码，如 VN, BR, DE 等")
     workers: int = Field(5, ge=1, le=20, description="并发 worker 线程数")
     timeout: float = Field(20.0, description="单账号请求超时秒数")
 
@@ -1054,13 +1056,19 @@ def api_plus_check_start(req: StartPlusCheckReq):
         raise HTTPException(400, "请提供要检测的账号邮箱列表")
 
     proxies = []
-    for line in str(req.proxies or "").splitlines():
-        line = line.strip()
-        if line and not line.startswith("#"):
-            proxies.append(line)
+    if req.proxies:
+        for line in str(req.proxies or "").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#"):
+                proxies.append(line)
+    elif req.proxy:
+        p = req.proxy.strip()
+        if p:
+            proxies.append(p)
 
     config = {
         "proxies": proxies,
+        "proxy_country": (req.proxy_country or "").strip().upper(),
         "workers": max(1, min(20, req.workers)),
         "timeout": float(req.timeout or 20.0),
     }
@@ -1068,7 +1076,7 @@ def api_plus_check_start(req: StartPlusCheckReq):
         task_id = plus_check.start(emails, config)
     except ValueError as e:
         raise HTTPException(400, str(e))
-    logger.info(f"[plus_check] 任务 {task_id} 启动: {len(emails)} 个账号, workers={config['workers']}")
+    logger.info(f"[plus_check] 任务 {task_id} 启动: {len(emails)} 个账号, workers={config['workers']}, country={config['proxy_country']}")
     return {"ok": True, "task_id": task_id, "taskId": task_id, "total": len(emails)}
 
 

@@ -29,6 +29,7 @@ except ImportError:  # pragma: no cover
     CurlSession = None
 
 from . import db
+from .proxy_util import COUNTRY_LANG_MAP, new_proxy_session_id, route_proxy_country
 
 CHECK_URL = "https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27"
 DEFAULT_UA = (
@@ -254,8 +255,13 @@ def _check_one_account(task: PlusCheckTask, email: str) -> None:
     )
 
     proxy = task.next_proxy()
+    target_country = (task.config.get("proxy_country") or "").strip().upper()
+    if proxy and target_country:
+        proxy = route_proxy_country(proxy, target_country, new_proxy_session_id())
+
     proxy_label = proxy.split("@")[-1] if "@" in proxy else (proxy or "直连")
-    task.add_email_log(email, f"使用代理: {proxy_label}, account_id={account_id or '无'}, device_id={device_id[:8]}...")
+    country_tip = f" (目标国家: {target_country})" if target_country else ""
+    task.add_email_log(email, f"使用代理: {proxy_label}{country_tip}, account_id={account_id or '无'}, device_id={device_id[:8]}...")
 
     sess = None
     timeout = float(task.config.get("timeout") or 20.0)
@@ -280,6 +286,8 @@ def _check_one_account(task: PlusCheckTask, email: str) -> None:
             "Origin": "https://chatgpt.com",
             "Referer": "https://chatgpt.com/",
         }
+        if target_country and target_country in COUNTRY_LANG_MAP:
+            headers["Accept-Language"] = COUNTRY_LANG_MAP[target_country]
         if account_id:
             headers["ChatGPT-Account-ID"] = account_id
         if device_id:

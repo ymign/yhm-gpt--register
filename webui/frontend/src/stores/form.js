@@ -5,6 +5,7 @@ const KEY = 'gpt_outlook_register_form_v2'
 
 export const COUNTRY_OPTIONS = [
   { value: 'BR', label: '🇧🇷 巴西 (BR · Plus试用高爆推荐 ★★★★★)' },
+  { value: 'VN', label: '🇻🇳 越南 (VN · 东南亚高爆推荐 ★★★★★)' },
   { value: 'DE', label: '🇩🇪 德国 (DE · 欧洲高爆推荐 ★★★★)' },
   { value: 'GB', label: '🇬🇧 英国 (GB · 欧洲推荐 ★★★★)' },
   { value: 'PL', label: '🇵🇱 波兰 (PL · 欧洲推荐 ★★★★)' },

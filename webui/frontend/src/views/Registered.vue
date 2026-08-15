@@ -38,7 +38,7 @@ import {
   getOACheckLog,
 } from '@/api/register'
 import { copyText, fmtTime, createSSE } from '@/api/request'
-import { useFormStore, proxyText } from '@/stores/form'
+import { useFormStore, proxyText, COUNTRY_OPTIONS } from '@/stores/form'
 import { useProxyStore } from '@/stores/proxy'
 import { useRuntimeStore } from '@/stores/runtime'
 import StatusDot from '@/components/StatusDot.vue'
@@ -75,7 +75,8 @@ const plusTargetEmails = ref([])
 const plusItems = ref({})
 const plusLogs = ref([])
 const plusForm = reactive({
-  proxies: '',
+  proxy: '__POOL__', // 默认使用全局代理池轮询，也可选单个或直连
+  proxyCountry: 'BR', // 代理目标国家重写（默认高爆巴西）
   workers: 5,
   timeout: 20,
 })
@@ -174,8 +175,8 @@ async function openPlusCheck(mode) {
   }
 
   plusTargetEmails.value = emails
-  if (!plusForm.proxies && proxyList.value.length) {
-    plusForm.proxies = proxyList.value.join('\n')
+  if (!plusForm.proxyCountry && form.value.proxyCountry) {
+    plusForm.proxyCountry = form.value.proxyCountry
   }
 
   if (!plusRunning.value) {
@@ -240,10 +241,20 @@ async function startPlusCheckTask() {
   }
   plusItems.value = initMap
 
+  let proxiesParam = ''
+  let proxyParam = ''
+  if (plusForm.proxy === '__POOL__') {
+    proxiesParam = proxyList.value.join('\n')
+  } else {
+    proxyParam = (plusForm.proxy || '').trim()
+  }
+
   try {
     const res = await startPlusCheck({
       emails,
-      proxies: plusForm.proxies,
+      proxies: proxiesParam,
+      proxy: proxyParam,
+      proxy_country: plusForm.proxyCountry || '',
       workers: plusForm.workers || 5,
       timeout: plusForm.timeout || 20,
     })
@@ -1106,36 +1117,43 @@ onUnmounted(() => {
           <div v-show="!plusConfigCollapsed" class="oa-config-card">
             <el-form label-position="top" :disabled="plusRunning" size="small">
               <el-row :gutter="12">
-                <el-col :span="13">
-                  <el-form-item label="检测代理池 (每行一条；留空直连)">
-                    <el-input
-                      v-model="plusForm.proxies" type="textarea" :rows="3" class="mono oa-proxy-input"
-                      placeholder="socks5h://user:pass@host:port&#10;http://user:pass@host:port"
-                    />
-                    <div class="oa-proxy-actions">
-                      <el-button size="small" text type="primary" @click="loadProxyListToPlus">
-                        载入全局代理池 ({{ proxyList.length }})
-                      </el-button>
-                      <el-button size="small" text @click="plusForm.proxies = ''">清空直连</el-button>
-                    </div>
+                <el-col :xs="24" :sm="12" :md="8">
+                  <el-form-item label="检测代理（支持下拉选择/代理池轮询/手动输入/直连）">
+                    <el-select
+                      v-model="plusForm.proxy" filterable clearable allow-create default-first-option
+                      :reserve-keyword="false" placeholder="选择或手动输入代理" style="width: 100%"
+                    >
+                      <el-option
+                        v-if="proxyList.length"
+                        label="🌐 全局代理池轮询 (自动多Worker分配)"
+                        value="__POOL__"
+                      />
+                      <el-option v-for="p in proxyList" :key="p" :label="p" :value="p" />
+                    </el-select>
                   </el-form-item>
                 </el-col>
-                <el-col :span="11">
-                  <el-row :gutter="12">
-                    <el-col :span="12">
-                      <el-form-item label="并发 Worker 数">
-                        <el-input-number v-model="plusForm.workers" :min="1" :max="20" style="width: 100%" />
-                      </el-form-item>
-                    </el-col>
-                    <el-col :span="12">
-                      <el-form-item label="单请求超时 (秒)">
-                        <el-input-number v-model="plusForm.timeout" :min="5" :max="60" style="width: 100%" />
-                      </el-form-item>
-                    </el-col>
-                  </el-row>
-                  <div class="plus-config-desc">
-                    通过并发请求 ChatGPT 官方账号鉴权接口，实时探测每个账号的 Plus 订阅、试用资格、封号状态并保存至数据库。
-                  </div>
+                <el-col :xs="24" :sm="12" :md="8">
+                  <el-form-item label="代理目标国家（自动重写代理与请求特征）">
+                    <el-select
+                      v-model="plusForm.proxyCountry" filterable allow-create
+                      placeholder="选择目标国家" style="width: 100%"
+                    >
+                      <el-option
+                        v-for="c in COUNTRY_OPTIONS" :key="c.value"
+                        :label="c.label" :value="c.value"
+                      />
+                    </el-select>
+                  </el-form-item>
+                </el-col>
+                <el-col :xs="12" :sm="6" :md="4">
+                  <el-form-item label="并发 Worker 数">
+                    <el-input-number v-model="plusForm.workers" :min="1" :max="20" style="width: 100%" />
+                  </el-form-item>
+                </el-col>
+                <el-col :xs="12" :sm="6" :md="4">
+                  <el-form-item label="单请求超时 (秒)">
+                    <el-input-number v-model="plusForm.timeout" :min="5" :max="60" style="width: 100%" />
+                  </el-form-item>
                 </el-col>
               </el-row>
             </el-form>
