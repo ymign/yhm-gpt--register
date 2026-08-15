@@ -3146,9 +3146,13 @@ class AuthFlow:
         #    结果新号全部走进下面的 else 分支 —— register_password 从没被调用过，
         #    注册出来的号全是无密码号（只能靠临时邮箱收码登录，域名一失效就永久丢失）。
         #    实测 2026-08-06: 这类号照样能走 POST user/register 设密码并成功。
+        want_password = str(self._get_env("WANT_PASSWORD", "1")).lower() in ("1", "true", "yes", "on")
         if is_new or self._existing_email_verification_mode == "passwordless_signup":
-            # 新账号：注册密码 → 主动重新发码 → 验证 OTP → 创建账户
-            password_registered = self.register_password(email)
+            # 新账号流程：若开启设置密码则先走 register_password
+            password_registered = False
+            if want_password:
+                password_registered = self.register_password(email)
+
             if password_registered:
                 # ⚠️ POST user/register 成功后服务端**切换流程**到 email_otp_send 页
                 #    （实测响应 continue_url=/api/accounts/email-otp/send, page.type=email_otp_send），
@@ -3164,9 +3168,12 @@ class AuthFlow:
                     logger.warning(f"密码注册后主动发码失败，回退 resend: {e}")
                     self.kickoff_otp_delivery("post_register_password_send_failed")
             else:
-                logger.warning("注册密码失败，回退到已有账号 OTP 路径")
+                if want_password:
+                    logger.warning("注册密码失败，回退到已有账号 OTP 路径")
+                else:
+                    logger.info("未开启自动设置密码，直接发送 OTP 进行免密注册")
                 self.fetch_client_auth_session_dump("post_register_password_failed_new")
-                # 密码注册失败时 fallback 主动发码
+                # 密码注册失败或免密时 fallback 主动发码
                 if not self.kickoff_otp_delivery("register_password_failed_fallback"):
                     self.send_otp()
                 otp_sent_at = time.time()

@@ -191,6 +191,7 @@ async function start() {
       cool_down_seconds: parseFloat(form.value.autoCoolDown) || 0,
       target_count: parseInt(form.value.autoTargetCount, 10) || 0,
       want_2fa: form.value.autoWant2fa,
+      want_password: form.value.autoWantPassword,
     })
     ElMessage.success('全自动批量跑号已启动')
     syncAutoStatus()
@@ -323,17 +324,17 @@ onUnmounted(() => {
       <div class="panel-body">
         <el-form size="small" label-position="top">
           <el-row :gutter="12" class="config-row">
-            <el-col :xs="12" :sm="6" :md="4">
+            <el-col :xs="12" :sm="6" :md="3">
               <el-form-item label="并发数 (Workers)">
                 <el-input-number v-model="form.autoConcurrency" :min="1" :max="20" class="macos-num-input" />
               </el-form-item>
             </el-col>
-            <el-col :xs="12" :sm="6" :md="4">
+            <el-col :xs="12" :sm="6" :md="3">
               <el-form-item label="冷却间隔 (秒)">
                 <el-input-number v-model="form.autoCoolDown" :min="0" :max="120" class="macos-num-input" />
               </el-form-item>
             </el-col>
-            <el-col :xs="24" :sm="12" :md="6">
+            <el-col :xs="24" :sm="12" :md="5">
               <el-form-item label="代理目标国家 (自动重写代理与时区)">
                 <el-select
                   v-model="form.autoProxyCountry" filterable allow-create
@@ -356,9 +357,16 @@ onUnmounted(() => {
                 <el-input-number v-model="form.otpTimeout" :min="10" :max="600" class="macos-num-input" />
               </el-form-item>
             </el-col>
-            <el-col :xs="24" :sm="12" :md="4">
+            <el-col :xs="24" :sm="12" :md="7">
               <el-form-item label="自动化附加功能">
                 <div class="feature-switches">
+                  <div class="switch-item">
+                    <el-switch v-model="form.autoWantPassword" size="small" />
+                    <span class="switch-label">自动设置密码</span>
+                    <el-tooltip content="开启后新注册账号自动设置16位强随机登录密码并落盘保存到数据库" placement="top">
+                      <el-icon class="info-ico"><QuestionFilled /></el-icon>
+                    </el-tooltip>
+                  </div>
                   <div class="switch-item">
                     <el-switch v-model="form.autoWant2fa" size="small" />
                     <span class="switch-label">自动绑定 2FA</span>
@@ -788,7 +796,9 @@ onUnmounted(() => {
 .feature-switches {
   display: flex;
   align-items: center;
+  gap: 12px;
   height: 28px;
+  flex-wrap: wrap;
 }
 .switch-item {
   display: flex;

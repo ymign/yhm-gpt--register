@@ -28,6 +28,9 @@ const defaults = {
   // 注册后自动绑 2FA。单次 / 批量都**默认 true**：每个号都要 2FA。
   want2fa: true,
   autoWant2fa: true,
+  // 自动设置强登录密码。单次 / 批量都**默认 true**。
+  wantPassword: true,
+  autoWantPassword: true,
 }
 
 // el-select 的 clearable 清空时把值写成 **undefined**（不是 ''），而 proxy 在三个

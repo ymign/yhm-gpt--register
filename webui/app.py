@@ -78,6 +78,7 @@ class RegisterReq(BaseModel):
     proxy_country: str = ""  # 目标代理国家，如 BR, DE, GB 等
     otp_timeout: int = 10
     allow_existing_login: bool = True
+    want_password: bool = True  # 是否自动设置登录密码（默认开）
     # 注册成功后自动绑定 TOTP 2FA。前端两个页面都**默认开**（主人要求每个号都绑）。
     # 这里的 default 保持 False —— 它只在「调用方没传这个字段」时生效，是给旧前端
     # 缓存 / 直接打 API 的保守兜底：漏传时宁可不绑，也不替调用方做一个不可逆的决定。

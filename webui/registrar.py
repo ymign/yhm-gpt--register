@@ -375,6 +375,9 @@ def _do_register(
         # 单号 WebUI 场景下 fast-fail 没意义（批量跑才需要"跳过被识别的号"），故强制 ON。
         env_overrides["WEBUI_ALLOW_LOGIN"] = "1"
         env_overrides["OTP_TIMEOUT"] = str(int(options.get("otp_timeout") or 180))
+        # 自动设置登录密码开关（默认 1）
+        want_password = options.get("want_password", True)
+        env_overrides["WANT_PASSWORD"] = "1" if want_password else "0"
         # 用户不要 refresh_token → 直接跳过 Codex OAuth（每次都失败浪费 ~10s + 一堆告警）
         if not options.get("want_refresh_token", True):
             env_overrides["SKIP_OAUTH_TOKEN_EXCHANGE"] = "1"
