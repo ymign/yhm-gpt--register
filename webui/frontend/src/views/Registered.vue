@@ -1156,6 +1156,9 @@ onUnmounted(() => {
                   </el-form-item>
                 </el-col>
               </el-row>
+              <div style="font-size: 11.5px; color: var(--el-text-color-secondary); line-height: 1.5; margin-top: 2px">
+                💡 <b>运作逻辑</b>：从左侧选定的代理（或全局代理池）获取基础通道，系统会自动将其重写为<b>【{{ plusForm.proxyCountry || '保持原样' }}】</b>出口并分配独立 Session，两者<b>协同生效</b>。
+              </div>
             </el-form>
           </div>
         </el-collapse-transition>
