@@ -130,8 +130,10 @@ def _fetch_sentinel_challenge(
     flow: str,
     request_p: str,
     timeout_ms: int,
+    lang_full: str = "",
 ) -> dict:
     body = {"p": request_p, "id": device_id, "flow": flow}
+    accept_lang = lang_full or "en-US,en;q=0.9"
     resp = session.post(
         SENTINEL_REQ_URL,
         data=json.dumps(body, separators=(",", ":")),
@@ -141,7 +143,7 @@ def _fetch_sentinel_challenge(
             "content-type": "text/plain;charset=UTF-8",
             "accept": "*/*",
             "accept-encoding": "gzip, deflate, br, zstd",
-            "accept-language": "zh-CN,zh;q=0.9",
+            "accept-language": accept_lang,
             "sec-fetch-dest": "empty",
             "sec-fetch-mode": "cors",
             "sec-fetch-site": "same-origin",
@@ -266,7 +268,7 @@ def get_sentinel_token_via_quickjs(
             return None
 
         challenge = _fetch_sentinel_challenge(
-            session, device_id=did, flow=flow, request_p=request_p, timeout_ms=timeout_ms,
+            session, device_id=did, flow=flow, request_p=request_p, timeout_ms=timeout_ms, lang_full=lang_full,
         )
         c_value = str(challenge.get("token") or "").strip()
         if not c_value:

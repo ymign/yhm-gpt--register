@@ -12,23 +12,23 @@ import re
 from typing import Any, Optional
 from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
-# 热门高爆与主流国家列表
-HOT_COUNTRIES = ["BR", "VN", "AR", "ES", "PL", "DE", "GB"]
-ALL_AVAILABLE_COUNTRIES = ["BR", "VN", "AR", "ES", "PL", "DE", "GB", "US", "JP"]
+# 热门高爆与主流国家列表（JP 日本是试用资格高爆地区，放在首位）
+HOT_COUNTRIES = ["JP", "BR", "VN", "AR", "ES", "PL", "DE", "GB", "US"]
+ALL_AVAILABLE_COUNTRIES = ["JP", "BR", "VN", "AR", "ES", "PL", "DE", "GB", "US"]
 
 COUNTRY_OPTIONS = [
     {"code": "", "name": "自动 / 保持原样", "rate": "默认"},
-    {"code": "RANDOM_HOT", "name": "🎲 高爆国家智能轮换 (BR/VN/AR/ES/PL/DE 随机)", "rate": "Plus试用高爆推荐 ★★★★★"},
-    {"code": "RANDOM_ALL", "name": "🌍 全球可用国家随机轮换", "rate": "多国家混合 ★★★★"},
+    {"code": "RANDOM_HOT", "name": "🎲 高爆国家智能轮换 (JP/BR/VN/AR/ES/PL 随机)", "rate": "Plus试用高爆推荐 ★★★★★"},
+    {"code": "JP", "name": "日本 (Japan)", "rate": "亚太高爆推荐 ★★★★★", "lang": "ja-JP,ja;q=0.9,en-US;q=0.8"},
     {"code": "BR", "name": "巴西 (Brazil)", "rate": "Plus试用高爆推荐 ★★★★★", "lang": "pt-BR,pt;q=0.9,en-US;q=0.8"},
     {"code": "VN", "name": "越南 (Vietnam)", "rate": "东南亚高爆推荐 ★★★★★", "lang": "vi-VN,vi;q=0.9,en-US;q=0.8"},
     {"code": "AR", "name": "阿根廷 (Argentina)", "rate": "拉美推荐 ★★★★", "lang": "es-AR,es;q=0.9,en-US;q=0.8"},
     {"code": "ES", "name": "西班牙 (Spain)", "rate": "欧洲推荐 ★★★★", "lang": "es-ES,es;q=0.9,en-US;q=0.8"},
     {"code": "PL", "name": "波兰 (Poland)", "rate": "欧洲推荐 ★★★★", "lang": "pl-PL,pl;q=0.9,en-US;q=0.8"},
-    {"code": "DE", "name": "德国 (Germany)", "rate": "欧洲高爆推荐 ★★★★", "lang": "de-DE,de;q=0.9,en-US;q=0.8"},
-    {"code": "GB", "name": "英国 (United Kingdom)", "rate": "欧洲高爆推荐 ★★★★", "lang": "en-GB,en;q=0.9,en-US;q=0.8"},
+    {"code": "DE", "name": "德国 (Germany)", "rate": "欧洲推荐 ★★★★", "lang": "de-DE,de;q=0.9,en-US;q=0.8"},
+    {"code": "GB", "name": "英国 (United Kingdom)", "rate": "欧洲推荐 ★★★★", "lang": "en-GB,en;q=0.9,en-US;q=0.8"},
     {"code": "US", "name": "美国 (United States)", "rate": "经典通用 ★★★", "lang": "en-US,en;q=0.9"},
-    {"code": "JP", "name": "日本 (Japan)", "rate": "亚太通用 ★★", "lang": "ja-JP,ja;q=0.9,en-US;q=0.8"},
+    {"code": "RANDOM_ALL", "name": "🌍 全球可用国家随机轮换", "rate": "多国家混合 ★★★★"},
 ]
 
 COUNTRY_LANG_MAP = {c["code"]: c.get("lang", "en-US,en;q=0.9") for c in COUNTRY_OPTIONS if c["code"]}

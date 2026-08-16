@@ -36,6 +36,12 @@ import {
   stopOACheck,
   oaCheckStreamUrl,
   getOACheckLog,
+  startOAuthExport,
+  stopOAuthExport,
+  oauthExportStreamUrl,
+  getOAuthExportLog,
+  downloadOAuthExportCpa,
+  downloadOAuthExportSub2,
 } from '@/api/register'
 import { copyText, fmtTime, createSSE } from '@/api/request'
 import { useFormStore, proxyText, COUNTRY_OPTIONS } from '@/stores/form'
@@ -72,6 +78,19 @@ const PLUS_TYPE = {
   error: 'danger',
 }
 function plusOf(row) { return row.plus_check || null }
+
+const OAUTH_STATUS_META = {
+  success:    { type: 'success', label: '✅ 成功', effect: 'light' },
+  need_phone: { type: 'warning', label: '📱 需接码', effect: 'light' },
+  failed:     { type: 'danger',  label: '❌ 失败', effect: 'light' },
+  error:      { type: 'danger',  label: '❌ 失败', effect: 'light' },
+}
+
+function oauthMeta(row) {
+  const st = (row.oauth_status || row.oauth_export?.status || '').toLowerCase().trim()
+  if (!st) return null
+  return OAUTH_STATUS_META[st] || { type: 'info', label: st, effect: 'plain' }
+}
 
 // ════════════════════════ Plus / Pro 状态检测控制台 ════════════════════════
 const plusVisible = ref(false)
@@ -596,6 +615,275 @@ function scrollOaLog() {
   if (box) box.scrollTop = box.scrollHeight
 }
 
+// ════════════════════════ OAuth 导出 (Codex OAuth / CPA / Sub2API) ════════════════════════
+const oauthVisible = ref(false)
+const oauthRunning = ref(false)
+const oauthTaskId = ref('')
+const oauthEs = ref(null)
+const oauthConfigCollapsed = ref(true)
+const oauthTargetEmails = ref([])
+const oauthItems = ref({})
+const oauthLogs = ref([])
+const oauthForm = reactive({
+  proxy: '__POOL__',
+  proxyCountry: 'RANDOM_HOT',
+  workers: 5,
+  timeout: 45,
+})
+
+const oauthLogModalVisible = ref(false)
+const currentOAuthLogItem = ref(null)
+const oauthLogLines = ref([])
+const oauthLogLoading = ref(false)
+
+const oauthRows = computed(() =>
+  Object.values(oauthItems.value).map((item) => ({ ...item })),
+)
+
+const oauthStats = computed(() => {
+  const items = Object.values(oauthItems.value)
+  const tot = items.length || oauthTargetEmails.value.length || 0
+  const done = items.filter((i) => i.status === 'done').length
+  const running = items.filter((i) => i.status === 'running').length
+  const pending = items.filter((i) => i.status === 'pending').length
+  const success = items.filter((i) => i.result && i.result.status === 'success').length
+  const need_phone = items.filter((i) => i.result && i.result.status === 'need_phone').length
+  const error = items.filter((i) => i.result && i.result.status !== 'success' && i.result.status !== 'need_phone').length
+  const percent = tot > 0 ? Math.round((done / tot) * 100) : 0
+  return {
+    total: tot, done, running, pending,
+    success, need_phone, error, percent,
+  }
+})
+
+async function openOAuthExport(target = 'selected') {
+  let emails = []
+  if (target === 'selected') {
+    emails = selected.value.map((r) => r.email)
+    if (!emails.length) {
+      ElMessage.warning('请先在表格中勾选要导出的账号')
+      return
+    }
+  } else if (target === 'all') {
+    try {
+      const res = await listRegisteredEmails('all')
+      emails = res.emails || []
+    } catch (e) {
+      ElMessage.error('加载账号列表失败: ' + e.message)
+      return
+    }
+  }
+
+  oauthTargetEmails.value = emails
+
+  if (!oauthRunning.value) {
+    oauthTaskId.value = ''
+    oauthLogs.value = []
+    oauthConfigCollapsed.value = true
+    const initMap = {}
+    for (const em of emails) {
+      initMap[em] = { email: em, status: 'pending', result: null, elapsed: 0 }
+    }
+    oauthItems.value = initMap
+  }
+
+  oauthVisible.value = true
+}
+
+function closeOAuthExport() {
+  if (oauthRunning.value) {
+    ElMessage.info('OAuth 导出任务在后台继续运行，可随时重新打开查看进度')
+  }
+  if (oauthEs.value && !oauthRunning.value) {
+    oauthEs.value.close()
+    oauthEs.value = null
+  }
+  oauthVisible.value = false
+}
+
+async function stopOAuthExportTask() {
+  if (!oauthTaskId.value) {
+    oauthRunning.value = false
+    return
+  }
+  try {
+    await stopOAuthExport(oauthTaskId.value)
+    ElMessage.success('已发送停止指令')
+  } catch (_) {
+    ElMessage.info('任务已结束')
+  } finally {
+    oauthRunning.value = false
+  }
+}
+
+async function startOAuthExportTask() {
+  const emails = oauthTargetEmails.value
+  if (!emails.length) {
+    ElMessage.warning('没有待导出的账号列表')
+    return
+  }
+
+  if (oauthEs.value) {
+    oauthEs.value.close()
+    oauthEs.value = null
+  }
+
+  oauthRunning.value = true
+  oauthLogs.value = []
+  oauthConfigCollapsed.value = true
+
+  const initMap = {}
+  for (const em of emails) {
+    initMap[em] = { email: em, status: 'pending', result: null, elapsed: 0 }
+  }
+  oauthItems.value = initMap
+
+  let proxiesParam = ''
+  let proxyParam = ''
+  if (oauthForm.proxy === '__POOL__') {
+    proxiesParam = proxyList.value.join('\n')
+  } else {
+    proxyParam = (oauthForm.proxy || '').trim()
+  }
+
+  try {
+    const res = await startOAuthExport({
+      emails,
+      proxies: proxiesParam,
+      proxy: proxyParam,
+      proxy_country: oauthForm.proxyCountry || '',
+      workers: oauthForm.workers || 5,
+      timeout: oauthForm.timeout || 45,
+    })
+    const taskId = res.taskId || res.task_id
+    if (!taskId) throw new Error('未获取到任务 ID')
+    oauthTaskId.value = taskId
+
+    oauthEs.value = createSSE(oauthExportStreamUrl(taskId), {
+      init: (ev) => {
+        try {
+          const snap = JSON.parse(ev.data)
+          if (snap.items) oauthItems.value = snap.items
+        } catch (_) {}
+      },
+      progress: (ev) => {
+        try {
+          const msg = JSON.parse(ev.data)
+          if (msg.email) {
+            if (!oauthItems.value[msg.email]) {
+              oauthItems.value[msg.email] = { email: msg.email }
+            }
+            oauthItems.value[msg.email].status = msg.status
+            if (msg.result !== undefined) oauthItems.value[msg.email].result = msg.result
+            if (msg.elapsed !== undefined) oauthItems.value[msg.email].elapsed = msg.elapsed
+          }
+        } catch (_) {}
+      },
+      log: (ev) => {
+        try {
+          const msg = JSON.parse(ev.data)
+          if (msg.line) {
+            oauthLogs.value.push(msg.line)
+            if (oauthLogs.value.length > 500) oauthLogs.value.splice(0, oauthLogs.value.length - 500)
+            nextTick(scrollOAuthLog)
+          }
+        } catch (_) {}
+      },
+      end: () => {
+        oauthRunning.value = false
+        if (oauthEs.value) {
+          oauthEs.value.close()
+          oauthEs.value = null
+        }
+        ElMessage.success('OAuth 导出任务已全部完成！')
+        load(false)
+      },
+    }, () => {
+      if (!oauthRunning.value && oauthEs.value) {
+        oauthEs.value.close()
+        oauthEs.value = null
+      }
+    })
+  } catch (e) {
+    oauthRunning.value = false
+    oauthConfigCollapsed.value = false
+    ElMessage.error('启动 OAuth 导出失败: ' + (e.response?.data?.detail || e.message))
+  }
+}
+
+function scrollOAuthLog() {
+  const box = document.getElementById('oauth-log-box')
+  if (box) box.scrollTop = box.scrollHeight
+}
+
+async function openOAuthItemLog(row) {
+  currentOAuthLogItem.value = row
+  oauthLogLines.value = []
+  oauthLogModalVisible.value = true
+  oauthLogLoading.value = true
+
+  try {
+    if (oauthTaskId.value) {
+      const res = await getOAuthExportLog(oauthTaskId.value, row.email)
+      oauthLogLines.value = res.lines || []
+    } else {
+      oauthLogLines.value = row.logs || ['暂无日志']
+    }
+  } catch (e) {
+    oauthLogLines.value = ['读取日志失败: ' + (e.response?.data?.detail || e.message)]
+  } finally {
+    oauthLogLoading.value = false
+  }
+}
+
+async function downloadCpaJson() {
+  if (!oauthTaskId.value && !oauthTargetEmails.value.length) {
+    ElMessage.warning('没有可下载的导出数据')
+    return
+  }
+  try {
+    const taskId = oauthTaskId.value || 'current'
+    const emailsParam = oauthTargetEmails.value.join(',')
+    const res = await downloadOAuthExportCpa(taskId, emailsParam)
+    const blob = new Blob([res.data || res], { type: 'application/json' })
+    const url = window.URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `cpa-oauth-${taskId}.json`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    window.URL.revokeObjectURL(url)
+    ElMessage.success('CPA JSON 凭证下载成功')
+  } catch (e) {
+    ElMessage.error('下载 CPA JSON 失败: ' + (e.response?.data?.detail || e.message))
+  }
+}
+
+async function downloadSub2Json() {
+  if (!oauthTaskId.value && !oauthTargetEmails.value.length) {
+    ElMessage.warning('没有可下载的导出数据')
+    return
+  }
+  try {
+    const taskId = oauthTaskId.value || 'current'
+    const emailsParam = oauthTargetEmails.value.join(',')
+    const res = await downloadOAuthExportSub2(taskId, emailsParam)
+    const blob = new Blob([res.data || res], { type: 'application/json' })
+    const url = window.URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `sub2api-oauth-${taskId}.json`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    window.URL.revokeObjectURL(url)
+    ElMessage.success('Sub2API JSON 凭证下载成功')
+  } catch (e) {
+    ElMessage.error('下载 Sub2API JSON 失败: ' + (e.response?.data?.detail || e.message))
+  }
+}
+
 // ════════════════════════ 数据加载与分页 ════════════════════════
 async function load(resetPage = false) {
   if (resetPage) page.value = 1
@@ -876,6 +1164,10 @@ onUnmounted(() => {
     oaEs.value.close()
     oaEs.value = null
   }
+  if (oauthEs.value) {
+    oauthEs.value.close()
+    oauthEs.value = null
+  }
 })
 </script>
 
@@ -909,6 +1201,10 @@ onUnmounted(() => {
             <el-option label="OA未检" value="oa_unchecked" />
             <el-option label="OA命中" value="oa_hit" />
             <el-option label="OA未中" value="oa_miss" />
+            <el-option label="OAuth 成功" value="oauth_success" />
+            <el-option label="需接码 (已跳过)" value="oauth_need_phone" />
+            <el-option label="OAuth 失败" value="oauth_failed" />
+            <el-option label="OAuth 未检" value="oauth_unchecked" />
           </el-select>
 
           <el-select
@@ -936,6 +1232,14 @@ onUnmounted(() => {
             @click="openOA"
           >
             <el-icon><Compass /></el-icon>资格检测 ({{ selected.length }})
+          </el-button>
+
+          <!-- 核心功能：OAuth 导出 -->
+          <el-button
+            type="success" class="oa-action-btn oauth-action-btn" :disabled="!selected.length"
+            @click="openOAuthExport('selected')"
+          >
+            <el-icon><Refresh /></el-icon>OAuth 导出 ({{ selected.length }})
           </el-button>
 
           <!-- 导出下拉 -->
@@ -1000,7 +1304,7 @@ onUnmounted(() => {
               <span
                 v-if="row.reg_country"
                 class="geo-badge"
-                :class="{ 'geo-hot': ['BR', 'DE', 'GB', 'PL', 'ES', 'AR'].includes(row.reg_country) }"
+                :class="{ 'geo-hot': ['JP', 'BR', 'VN', 'DE', 'GB', 'PL', 'ES', 'AR'].includes(row.reg_country) }"
               >
                 <span class="geo-country">{{ row.reg_country }}</span>
               </span>
@@ -1034,6 +1338,21 @@ onUnmounted(() => {
                 class="macos-tag"
               >
                 {{ oaMeta(row).label }}
+              </el-tag>
+              <span v-else class="hint">—</span>
+            </template>
+          </el-table-column>
+
+          <el-table-column label="OAuth授权" width="125" align="center">
+            <template #default="{ row }">
+              <el-tag
+                v-if="oauthMeta(row)"
+                :type="oauthMeta(row).type"
+                size="small"
+                :effect="oauthMeta(row).effect || 'light'"
+                class="macos-tag"
+              >
+                {{ oauthMeta(row).label }}
               </el-tag>
               <span v-else class="hint">—</span>
             </template>
@@ -1620,6 +1939,283 @@ onUnmounted(() => {
               <el-icon><CopyDocument /></el-icon>复制全部日志
             </el-button>
             <el-button size="small" type="primary" @click="oaLogModalVisible = false">
+              关闭
+            </el-button>
+          </div>
+        </div>
+      </template>
+    </el-dialog>
+
+    <!-- ──────────────── OAuth 导出与凭证生成控制台弹窗 (macOS 架构) ──────────────── -->
+    <el-dialog
+      v-model="oauthVisible" width="880px" top="5vh"
+      class="oa-custom-dialog plus-dialog oauth-dialog"
+      :close-on-click-modal="false" @closed="closeOAuthExport"
+    >
+      <template #header>
+        <div class="oa-header">
+          <div class="oa-header-title">
+            <span class="oa-title-badge" style="background: linear-gradient(135deg, #10b981 0%, #059669 100%)">OAUTH</span>
+            <span class="oa-title-text">Codex OAuth 重跑导出与凭证生成</span>
+            <el-tag size="small" type="info" round effect="plain">{{ oauthTargetEmails.length }} 个账号</el-tag>
+          </div>
+          <div class="oa-header-extra">
+            <el-button size="small" text @click="oauthConfigCollapsed = !oauthConfigCollapsed">
+              <el-icon><Setting /></el-icon>{{ oauthConfigCollapsed ? '展开参数配置' : '收起参数配置' }}
+            </el-button>
+          </div>
+        </div>
+      </template>
+
+      <div class="oa-dialog-container">
+        <!-- 参数配置卡片 (默认折叠收起) -->
+        <el-collapse-transition>
+          <div v-show="!oauthConfigCollapsed" class="oa-config-card">
+            <el-form label-position="top" :disabled="oauthRunning" size="small">
+              <el-row :gutter="12">
+                <el-col :xs="24" :sm="12" :md="8">
+                  <el-form-item label="网络代理（支持下拉选择/代理池轮询/手动输入/直连）">
+                    <el-select
+                      v-model="oauthForm.proxy" filterable clearable allow-create default-first-option
+                      :reserve-keyword="false" placeholder="选择或手动输入代理" style="width: 100%"
+                    >
+                      <el-option
+                        v-if="proxyList.length"
+                        label="🌐 全局代理池轮询 (自动多Worker分配)"
+                        value="__POOL__"
+                      />
+                      <el-option v-for="p in proxyList" :key="p" :label="p" :value="p" />
+                    </el-select>
+                  </el-form-item>
+                </el-col>
+                <el-col :xs="24" :sm="12" :md="8">
+                  <el-form-item label="代理目标国家（自动重写代理与请求特征）">
+                    <el-select
+                      v-model="oauthForm.proxyCountry" filterable allow-create
+                      placeholder="选择目标国家" style="width: 100%"
+                    >
+                      <el-option
+                        v-for="c in COUNTRY_OPTIONS" :key="c.value"
+                        :label="c.label" :value="c.value"
+                      />
+                    </el-select>
+                  </el-form-item>
+                </el-col>
+                <el-col :xs="12" :sm="6" :md="4">
+                  <el-form-item label="并发 Worker 数">
+                    <el-input-number v-model="oauthForm.workers" :min="1" :max="20" style="width: 100%" />
+                  </el-form-item>
+                </el-col>
+                <el-col :xs="12" :sm="6" :md="4">
+                  <el-form-item label="单请求超时 (秒)">
+                    <el-input-number v-model="oauthForm.timeout" :min="10" :max="120" style="width: 100%" />
+                  </el-form-item>
+                </el-col>
+              </el-row>
+              <div style="font-size: 11.5px; color: var(--el-text-color-secondary); line-height: 1.5; margin-top: 2px">
+                💡 <b>运作说明</b>：采用纯协议直连模式重走 Codex OAuth 授权；若遇到手机验证（<code>add-phone</code>）<b>将立即标记跳过失败</b>，绝不阻塞接码或扣费；若需邮箱验证码则自动从号池取信推进。
+              </div>
+            </el-form>
+          </div>
+        </el-collapse-transition>
+
+        <!-- KPI 统计看板 -->
+        <div class="plus-kpi-grid">
+          <div class="plus-kpi-card">
+            <span class="kpi-label">已处理 / 总数</span>
+            <span class="kpi-num">{{ oauthStats.done }} / {{ oauthStats.total }}</span>
+          </div>
+          <div class="plus-kpi-card hit-active">
+            <span class="kpi-label">✅ OAuth 成功</span>
+            <span class="kpi-num text-success">{{ oauthStats.success }}</span>
+          </div>
+          <div class="plus-kpi-card card-warn" :class="{ 'card-warn': oauthStats.need_phone > 0 }">
+            <span class="kpi-label">📱 需手机接码 (已跳过)</span>
+            <span class="kpi-num text-warning">{{ oauthStats.need_phone }}</span>
+          </div>
+          <div class="plus-kpi-card" :class="{ 'card-danger': oauthStats.error > 0 }">
+            <span class="kpi-label">❌ 失败 / 异常</span>
+            <span class="kpi-num text-danger">{{ oauthStats.error }}</span>
+          </div>
+        </div>
+
+        <!-- 进度条 -->
+        <div class="oa-progress-wrap">
+          <el-progress
+            :percentage="oauthStats.percent"
+            :status="oauthStats.percent === 100 ? 'success' : ''"
+            :stroke-width="6"
+            :show-text="false"
+          />
+        </div>
+
+        <!-- 核心表格：每个账号一行实时状态 -->
+        <div class="plus-table-wrap">
+          <el-table
+            :data="oauthRows"
+            size="small"
+            stripe
+            height="260px"
+            class="plus-table"
+          >
+            <el-table-column prop="email" label="账号" min-width="190" show-overflow-tooltip />
+
+            <el-table-column label="状态" width="130" align="center">
+              <template #default="{ row }">
+                <el-tag v-if="row.status === 'running'" size="small" type="primary" effect="light">
+                  <span class="spin-dot"></span> 运行中
+                </el-tag>
+                <el-tag v-else-if="row.status === 'pending'" size="small" type="info" effect="plain">
+                  待处理
+                </el-tag>
+                <el-tag v-else-if="row.result?.status === 'success'" size="small" type="success" effect="light">
+                  ✅ 成功 ({{ row.result?.plan_type || 'Plus' }})
+                </el-tag>
+                <el-tag v-else-if="row.result?.status === 'need_phone'" size="small" type="warning" effect="light">
+                  📱 需接码(已跳过)
+                </el-tag>
+                <el-tag v-else size="small" type="danger" effect="light">
+                  ❌ {{ row.result?.label || '失败' }}
+                </el-tag>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="Refresh Token" width="130" align="center">
+              <template #default="{ row }">
+                <span v-if="row.result?.refresh_token_len" class="mono" style="color: var(--el-color-success); font-weight: 600">
+                  有 ({{ row.result.refresh_token_len }}c)
+                </span>
+                <span v-else-if="row.status === 'running'" class="hint">获取中...</span>
+                <span v-else class="hint">—</span>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="耗时" width="80" align="right">
+              <template #default="{ row }">
+                <span class="mono hint">{{ row.elapsed ? row.elapsed + 's' : '—' }}</span>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="日志" width="80" align="center">
+              <template #default="{ row }">
+                <el-button size="small" text type="primary" @click="openOAuthItemLog(row)">
+                  查看
+                </el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+        </div>
+
+        <!-- 实时日志流终端面板 (可收起) -->
+        <div class="plus-live-log-section">
+          <div class="log-section-header">
+            <span class="log-title">实时任务日志</span>
+            <span class="log-count">{{ oauthLogs.length }} 条</span>
+          </div>
+          <div id="oauth-log-box" class="plus-live-log-body">
+            <div
+              v-for="(line, idx) in oauthLogs"
+              :key="idx"
+              class="live-log-line"
+              :class="getLogClass(line)"
+            >
+              {{ line }}
+            </div>
+            <div v-if="!oauthLogs.length" class="live-log-empty">
+              {{ oauthRunning ? '正在建立 OAuth 任务连接...' : '等待开始 OAuth 导出任务' }}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <template #footer>
+        <div class="oa-footer">
+          <div class="footer-left" style="display: flex; gap: 8px">
+            <el-button
+              type="primary" plain size="small"
+              :disabled="oauthStats.success === 0"
+              @click="downloadCpaJson"
+            >
+              <el-icon><Download /></el-icon>下载 CPA JSON ({{ oauthStats.success }})
+            </el-button>
+            <el-button
+              type="success" size="small"
+              :disabled="oauthStats.success === 0"
+              @click="downloadSub2Json"
+            >
+              <el-icon><Download /></el-icon>下载 SUB2 JSON ({{ oauthStats.success }})
+            </el-button>
+          </div>
+          <div class="footer-right">
+            <el-button size="small" @click="closeOAuthExport">关闭</el-button>
+            <el-button
+              v-if="oauthRunning"
+              size="small" type="danger" plain
+              @click="stopOAuthExportTask"
+            >
+              <el-icon><SwitchButton /></el-icon>停止任务
+            </el-button>
+            <el-button
+              v-else
+              type="primary" class="start-gradient-btn"
+              :loading="oauthRunning"
+              @click="startOAuthExportTask"
+            >
+              <el-icon><VideoPlay /></el-icon>{{ oauthTaskId ? '重新执行' : '开始导出' }}
+            </el-button>
+          </div>
+        </div>
+      </template>
+    </el-dialog>
+
+    <!-- ──────────────── 单账号 OAuth 详细日志弹窗 ──────────────── -->
+    <el-dialog
+      v-model="oauthLogModalVisible"
+      width="780px"
+      top="8vh"
+      class="macos-terminal-dialog"
+      :close-on-click-modal="false"
+    >
+      <template #header>
+        <div class="modal-header">
+          <div class="window-dots">
+            <span class="dot red"></span>
+            <span class="dot yellow"></span>
+            <span class="dot green"></span>
+          </div>
+          <div class="modal-title-info">
+            <span class="modal-email">{{ currentOAuthLogItem?.email }}</span>
+            <el-tag size="small" type="success" effect="plain" class="modal-run-tag">
+              OAuth 导出日志
+            </el-tag>
+          </div>
+        </div>
+      </template>
+
+      <div class="modal-terminal-wrap">
+        <div class="modal-terminal-body">
+          <div
+            v-for="(line, idx) in oauthLogLines"
+            :key="idx"
+            class="terminal-line"
+            :class="getLogClass(line)"
+          >
+            {{ line }}
+          </div>
+          <div v-if="!oauthLogLines.length" class="terminal-empty">
+            {{ oauthLogLoading ? '正在加载日志...' : '暂无详细日志' }}
+          </div>
+        </div>
+      </div>
+
+      <template #footer>
+        <div class="modal-footer">
+          <span class="log-count-tip">共 {{ oauthLogLines.length }} 行日志</span>
+          <div class="modal-footer-btns">
+            <el-button size="small" @click="copyText(oauthLogLines.join('\n'))">
+              <el-icon><CopyDocument /></el-icon>复制全部日志
+            </el-button>
+            <el-button size="small" type="primary" @click="oauthLogModalVisible = false">
               关闭
             </el-button>
           </div>

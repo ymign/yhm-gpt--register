@@ -39,7 +39,7 @@ async function run() {
       otp_timeout: parseInt(form.value.otpTimeout, 10) || 10,
       want_access_token: true,
       want_session_token: true,
-      want_refresh_token: true,
+      want_refresh_token: form.value.wantRefreshToken || false,
       want_2fa: form.value.want2fa,
       want_password: form.value.wantPassword,
     })

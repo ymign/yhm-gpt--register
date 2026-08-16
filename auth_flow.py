@@ -919,8 +919,12 @@ class AuthFlow:
             continue_url = self._normalize_continue_url(self._extract_continue_url_from_step(otp_resp))
 
         # add-phone 分支（可选）：
-        # 仅在配置了手机号与验证码获取方式时尝试自动推进
+        # 仅在配置了手机号与验证码获取方式时尝试自动推进；SKIP_SMS_ON_OAUTH=1 时直接跳过并中止
         if self._is_add_phone_state(page_type="", continue_url=continue_url):
+            if self._env_flag("SKIP_SMS_ON_OAUTH", "0") or self._sms_callback is None:
+                self._need_phone_aborted = True
+                logger.info("遇到手机号验证页面，已按 SKIP_SMS_ON_OAUTH 要求跳过接码")
+                return ""
             next_url = self._handle_add_phone_verification(continue_url=continue_url)
             if next_url:
                 continue_url = self._normalize_continue_url(next_url)
@@ -1389,9 +1393,11 @@ class AuthFlow:
                         )
 
             # Codex authorize 直接被打到 /add-phone（不经过 /log-in）：
-            # 如果配了 SMS 接码 controller，先把手机号绑了再重新 authorize
-            if (not callback_url) and self._is_add_phone_state(page_type="", continue_url=final_url or "") \
-                    and self._sms_callback is not None:
+            if (not callback_url) and self._is_add_phone_state(page_type="", continue_url=final_url or ""):
+                if self._env_flag("SKIP_SMS_ON_OAUTH", "0") or self._sms_callback is None:
+                    self._need_phone_aborted = True
+                    logger.info("Codex 授权命中 /add-phone 手机号验证，已按 SKIP_SMS_ON_OAUTH 要求跳过接码")
+                    return False
                 logger.info("Codex 授权直接落到 /add-phone，尝试 SMS 接码绑号 ...")
                 try:
                     self._handle_add_phone_via_sms(continue_url=final_url)
@@ -1808,6 +1814,238 @@ class AuthFlow:
             logger.error(f"网络检查失败: {e}")
         return False
 
+    def _chatgpt_headers(self, referer: str = "https://chatgpt.com/", access_token: str | None = None) -> dict:
+        """构造 ChatGPT 前端标准 XHR 请求头（含客户端版本与 session 特征）。"""
+        fp = self._fingerprint
+        device_id = (self.result.device_id or "").strip() or (self.session.cookies.get("oai-did", "") or "").strip() or str(uuid.uuid4())
+        h = {
+            "Accept": "*/*",
+            "Accept-Language": fp.get("lang_full", "en-US,en;q=0.9"),
+            "Content-Type": "application/json",
+            "Origin": "https://chatgpt.com",
+            "Referer": referer,
+            "User-Agent": self._ua,
+            "oai-device-id": device_id,
+            "oai-client-version": "prod-fb4a8a2a751dfec391053cfd7b01c52699ccf78c",
+            "oai-client-build-number": "8370486",
+            "oai-language": fp.get("lang", "en-US"),
+            "oai-session-id": getattr(self, "_sentinel_sid", "") or device_id,
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "same-origin",
+            "priority": "u=1, i",
+        }
+        if fp.get("sec_ch_ua"):
+            h["sec-ch-ua"] = fp["sec_ch_ua"]
+            h["sec-ch-ua-mobile"] = fp.get("sec_ch_ua_mobile") or "?0"
+            h["sec-ch-ua-platform"] = fp["sec_ch_ua_platform"]
+        if access_token:
+            token_str = access_token if access_token.lower().startswith("bearer ") else f"Bearer {access_token}"
+            h["Authorization"] = token_str
+        return h
+
+    def _get_tz_offset_min(self) -> int:
+        """根据当前目标国家/指纹时区计算与 UTC 的分钟差（与 JS getTimezoneOffset 负值一致）。"""
+        cc = (self._country_code or "").strip().upper()
+        offsets = {
+            "JP": -540,   # UTC+9 (日本)
+            "BR": 180,    # UTC-3 (巴西圣保罗)
+            "VN": -420,   # UTC+7 (越南)
+            "AR": 180,    # UTC-3 (阿根廷)
+            "ES": -60,    # UTC+1 (西班牙)
+            "PL": -60,    # UTC+1 (波兰)
+            "DE": -60,    # UTC+1 (德国)
+            "GB": 0,      # UTC+0 (英国)
+            "US": 300,    # UTC-5 (美东)
+            "KR": -540,   # UTC+9 (韩国)
+            "SG": -480,   # UTC+8 (新加坡)
+            "TW": -480,   # UTC+8 (中国台湾)
+            "HK": -480,   # UTC+8 (中国香港)
+            "CN": -480,   # UTC+8 (中国大陆)
+        }
+        if cc in offsets:
+            return offsets[cc]
+        tz_name = (self._fingerprint or {}).get("timezone", "")
+        if tz_name:
+            try:
+                import zoneinfo
+                tz = zoneinfo.ZoneInfo(tz_name)
+                now = datetime.now(tz)
+                offset = now.utcoffset()
+                if offset is not None:
+                    return int(-offset.total_seconds() / 60)
+            except Exception:
+                pass
+        return -540 if cc == "JP" else -480
+
+    def anonymous_bootstrap(self) -> None:
+        """注册前匿名态 ChatGPT 首页/模型预热链路（模拟真实指纹浏览器首屏访问轨迹）。"""
+        logger.info("[Bootstrap] 执行匿名态 ChatGPT 首屏预热...")
+        referer = "https://chatgpt.com/"
+        tz = self._get_tz_offset_min()
+        anon_base = "https://chatgpt.com/backend-anon"
+
+        # 1. 匿名 accounts/check
+        try:
+            self.session.get(
+                f"{anon_base}/accounts/check/v4-2023-04-27?timezone_offset_min={tz}",
+                headers=self._chatgpt_headers(referer=referer),
+                timeout=10,
+            )
+        except Exception:
+            pass
+
+        # 2. 匿名 me
+        try:
+            self.session.get(f"{anon_base}/me", headers=self._chatgpt_headers(referer=referer), timeout=10)
+        except Exception:
+            pass
+
+        # 3. 匿名 system_hints
+        for mode in ("custom_agents", "connectors", "basic"):
+            try:
+                self.session.get(
+                    f"{anon_base}/system_hints?mode={mode}",
+                    headers=self._chatgpt_headers(referer=referer),
+                    timeout=10,
+                )
+            except Exception:
+                pass
+
+        # 4. 匿名 models
+        try:
+            self.session.get(
+                f"{anon_base}/models?iim=false&is_gizmo=false&supports_model_picker_upgrade_presets=true",
+                headers=self._chatgpt_headers(referer=referer),
+                timeout=10,
+            )
+        except Exception:
+            pass
+
+        # 5. 匿名 conversation/init
+        try:
+            self.session.post(
+                f"{anon_base}/conversation/init",
+                headers=self._chatgpt_headers(referer=referer),
+                json={
+                    "requested_default_model": None,
+                    "conversation_id": None,
+                    "timezone_offset_min": tz,
+                    "conversation_origin": None,
+                },
+                timeout=10,
+            )
+        except Exception:
+            pass
+        logger.info("[Bootstrap] 匿名态首屏预热完成")
+
+    def authenticated_bootstrap(self, access_token: str) -> None:
+        """登录态 ChatGPT bootstrap 预热链路（触发客户端 A/B 测试曝光与试用资格激活）。"""
+        if not access_token:
+            return
+        logger.info("[Bootstrap] 执行登录态 ChatGPT 会话激活与实验曝光...")
+        referer = "https://chatgpt.com/"
+        tz = self._get_tz_offset_min()
+        api_base = "https://chatgpt.com/backend-api"
+        headers = self._chatgpt_headers(referer=referer, access_token=access_token)
+
+        # 1. optimized/check
+        try:
+            self.session.get(f"{api_base}/accounts/optimized/check", headers=headers, timeout=10)
+        except Exception:
+            pass
+
+        # 2. user_granular_consent
+        try:
+            self.session.get(f"{api_base}/user_granular_consent", headers=headers, timeout=10)
+        except Exception:
+            pass
+
+        # 3. me
+        try:
+            self.session.get(f"{api_base}/me", headers=headers, timeout=10)
+        except Exception:
+            pass
+
+        # 4. accounts/check (携带 timezone_offset_min)
+        try:
+            resp = self.session.get(
+                f"{api_base}/accounts/check/v4-2023-04-27?timezone_offset_min={tz}",
+                headers=headers,
+                timeout=10,
+            )
+            if resp.status_code == 200:
+                try:
+                    data = resp.json() or {}
+                    from webui.plus_check import parse_account_plan
+                    plan_info = parse_account_plan(data, resp.text or "")
+                    logger.info(f"[Bootstrap] 账号计划状态识别: {plan_info.get('label', 'Free')} (status={plan_info.get('status')})")
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # 5. settings/user
+        try:
+            self.session.get(f"{api_base}/settings/user", headers=headers, timeout=10)
+        except Exception:
+            pass
+
+        # 6. system_hints
+        for mode in ("custom_agents", "connectors", "basic"):
+            try:
+                self.session.get(
+                    f"{api_base}/system_hints?mode={mode}",
+                    headers=headers,
+                    timeout=10,
+                )
+            except Exception:
+                pass
+
+        # 7. models
+        try:
+            self.session.get(
+                f"{api_base}/models?iim=false&is_gizmo=false&supports_model_picker_upgrade_presets=true",
+                headers=headers,
+                timeout=10,
+            )
+        except Exception:
+            pass
+
+        # 8. conversation/init
+        try:
+            self.session.post(
+                f"{api_base}/conversation/init",
+                headers=headers,
+                json={
+                    "requested_default_model": None,
+                    "conversation_id": None,
+                    "timezone_offset_min": tz,
+                    "conversation_origin": None,
+                },
+                timeout=10,
+            )
+        except Exception:
+            pass
+
+        # 9. conversations
+        try:
+            self.session.get(
+                f"{api_base}/conversations?offset=0&limit=28&order=updated",
+                headers=headers,
+                timeout=10,
+            )
+        except Exception:
+            pass
+
+        # 10. client/strings
+        try:
+            self.session.get(f"{api_base}/client/strings", headers=headers, timeout=10)
+        except Exception:
+            pass
+
+        logger.info("[Bootstrap] 登录态 ChatGPT 激活与实验曝光完成")
+
     # ── Step 2: 获取 CSRF Token ──
     def get_csrf_token(self) -> str:
         logger.info("[1/10] 获取 CSRF Token...")
@@ -2070,12 +2308,13 @@ class AuthFlow:
                 self._existing_email_verification_mode = mode
                 self._existing_page_type = page_type
                 if mode == "passwordless_signup":
-                    logger.info("服务端选择 passwordless 注册流程（新账号，无密码），等待 OTP")
+                    logger.info("服务端选择 passwordless 注册流程（新账号，无密码），已自动发送 OTP")
                     self._is_existing_account = False
+                    return True
                 else:
                     logger.info("检测到已有账号，切换到 OTP 登录流程")
                     self._is_existing_account = True
-                return False
+                    return False
 
             # 未知 page_type：通常是社交登录/风控分支，按已有账号处理，避免误进 register_password 导致 invalid_state
             self._existing_email_verification_mode = (payload.get("email_verification_mode", "") or "").strip()
@@ -2251,7 +2490,7 @@ class AuthFlow:
         is_existing = (
             "existing" in mode_lc
             or "passwordless_login" in mode_lc
-            or "passwordless_signup" in mode_lc  # OpenAI 把 outlook 接码池都打这个 mode
+            or ("passwordless_signup" in mode_lc and self._is_existing_account)
             or self._is_existing_account
         )
 
@@ -2272,7 +2511,7 @@ class AuthFlow:
                 logger.warning(f"已有账号发码全 fail: {e}")
                 return False
 
-        # 新注册 (原顺序)
+        # 新注册 (对齐真实指纹浏览器点击「使用一次性验证码」路径)
         if self.send_passwordless_otp("https://auth.openai.com/create-account/password"):
             return True
         if self.resend_otp("https://auth.openai.com/email-verification"):
@@ -3098,6 +3337,9 @@ class AuthFlow:
                 "请检查代理后重试"
             )
 
+        # 匿名态 ChatGPT 首页/模型预热链路（建立真实客户端行为轨迹）
+        self.anonymous_bootstrap()
+
         # 创建邮箱
         email = mail_provider.create_mailbox()
         self.result.email = email
@@ -3146,9 +3388,9 @@ class AuthFlow:
         #    结果新号全部走进下面的 else 分支 —— register_password 从没被调用过，
         #    注册出来的号全是无密码号（只能靠临时邮箱收码登录，域名一失效就永久丢失）。
         #    实测 2026-08-06: 这类号照样能走 POST user/register 设密码并成功。
-        want_password = str(self._get_env("WANT_PASSWORD", "1")).lower() in ("1", "true", "yes", "on")
+        want_password = str(self._get_env("WANT_PASSWORD", "0")).lower() in ("1", "true", "yes", "on")
         if is_new or self._existing_email_verification_mode == "passwordless_signup":
-            # 新账号流程：若开启设置密码则先走 register_password
+            # 新账号流程：若开启设置密码则先走 register_password，否则走 passwordless 免密 OTP 注册流
             password_registered = False
             if want_password:
                 password_registered = self.register_password(email)
@@ -3169,14 +3411,25 @@ class AuthFlow:
                     self.kickoff_otp_delivery("post_register_password_send_failed")
             else:
                 if want_password:
-                    logger.warning("注册密码失败，回退到已有账号 OTP 路径")
+                    logger.warning("注册密码失败，回退到 OTP 免密注册路径")
                 else:
-                    logger.info("未开启自动设置密码，直接发送 OTP 进行免密注册")
+                    logger.info("采用 OTP-First 免密注册流程（对齐真实指纹浏览器，激活 Plus 试用资格）")
                 self.fetch_client_auth_session_dump("post_register_password_failed_new")
-                # 密码注册失败或免密时 fallback 主动发码
-                if not self.kickoff_otp_delivery("register_password_failed_fallback"):
-                    self.send_otp()
-                otp_sent_at = time.time()
+
+                if self._existing_email_verification_mode == "passwordless_signup":
+                    # authorize/continue 已下发 OTP，直接等邮件，不再重复发码造成状态紊乱
+                    otp_sent_at = time.time() - 8
+                    logger.info("服务端已在邮箱提交阶段发送注册 OTP，直接等待邮件")
+                elif self._existing_page_type == "create_account_password":
+                    # 停留在密码页：调用 passwordless 发码进入 OTP 流程
+                    otp_sent_at = time.time()
+                    if not self.send_passwordless_otp("https://auth.openai.com/create-account/password"):
+                        if not self.kickoff_otp_delivery("new_passwordless"):
+                            self.send_otp()
+                else:
+                    otp_sent_at = time.time()
+                    if not self.kickoff_otp_delivery("new_passwordless"):
+                        self.send_otp()
 
             try:
                 otp_timeout = max(10, int(self._get_env("OTP_TIMEOUT", "60")))
@@ -3432,6 +3685,9 @@ class AuthFlow:
 
         if not refresh_only_mode:
             self.get_auth_session()
+            # 登录态 ChatGPT 首屏与实验曝光 Bootstrap（激活试用与 OAICS 资格）
+            if self.result.access_token:
+                self.authenticated_bootstrap(self.result.access_token)
 
         # ── 钩子：session 到手、Codex 授权之前 ──
         # 主人指定的顺序是「注册完 → 绑 2FA → Codex 授权 → 接码」。这里是唯一同时满足

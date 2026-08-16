@@ -1,20 +1,20 @@
 import { defineStore } from 'pinia'
 import { reactive, watch } from 'vue'
 
-const KEY = 'gpt_outlook_register_form_v2'
+const KEY = 'gpt_outlook_register_form_v3'
 
 export const COUNTRY_OPTIONS = [
-  { value: 'RANDOM_HOT', label: '🎲 高爆国家智能轮换 (BR/VN/AR/ES/PL/DE 随机 ★★★★★)' },
-  { value: 'RANDOM_ALL', label: '🌍 全球可用国家随机轮换 (多国混合 ★★★★)' },
+  { value: 'RANDOM_HOT', label: '🎲 高爆国家智能轮换 (JP/BR/VN/AR/ES/PL 随机 ★★★★★)' },
+  { value: 'JP', label: '🇯🇵 日本 (JP · 亚太高爆推荐 ★★★★★)' },
   { value: 'BR', label: '🇧🇷 巴西 (BR · Plus试用高爆推荐 ★★★★★)' },
   { value: 'VN', label: '🇻🇳 越南 (VN · 东南亚高爆推荐 ★★★★★)' },
   { value: 'AR', label: '🇦🇷 阿根廷 (AR · 拉美推荐 ★★★★)' },
   { value: 'ES', label: '🇪🇸 西班牙 (ES · 欧洲推荐 ★★★★)' },
   { value: 'PL', label: '🇵🇱 波兰 (PL · 欧洲推荐 ★★★★)' },
-  { value: 'DE', label: '🇩🇪 德国 (DE · 欧洲高爆推荐 ★★★★)' },
+  { value: 'DE', label: '🇩🇪 德国 (DE · 欧洲推荐 ★★★★)' },
   { value: 'GB', label: '🇬🇧 英国 (GB · 欧洲推荐 ★★★★)' },
   { value: 'US', label: '🇺🇸 美国 (US · 经典通用 ★★★)' },
-  { value: 'JP', label: '🇯🇵 日本 (JP · 亚太通用 ★★)' },
+  { value: 'RANDOM_ALL', label: '🌍 全球可用国家随机轮换 (多国混合 ★★★★)' },
   { value: '',   label: '🌐 自动 / 保持代理原样' },
 ]
 
@@ -28,12 +28,15 @@ const defaults = {
   autoConcurrency: 1,
   autoCoolDown: 3,
   autoTargetCount: 0,
-  // 注册后自动绑 2FA。单次 / 批量都**默认 true**：每个号都要 2FA。
-  want2fa: true,
-  autoWant2fa: true,
-  // 自动设置强登录密码。单次 / 批量都**默认 true**。
-  wantPassword: true,
-  autoWantPassword: true,
+  // 试用资格高爆推荐配置（对齐指纹浏览器 OTP-First 黄金轨迹，避免触发风控降级）：
+  // 1. 默认免密 OTP 注册（不打 legacy user/register 设密接口，避免 Promotion Suppression）
+  // 2. 默认不秒绑 2FA 和 Codex（避免注册第 1 秒触发自动化工具特征）
+  want2fa: false,
+  autoWant2fa: false,
+  wantPassword: false,
+  autoWantPassword: false,
+  wantRefreshToken: false,
+  autoWantRefreshToken: false,
 }
 
 // el-select 的 clearable 清空时把值写成 **undefined**（不是 ''），而 proxy 在三个

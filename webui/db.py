@@ -150,6 +150,12 @@ def init_db():
     if "reg_ip" not in reg_cols:
         con.execute("ALTER TABLE registered ADD COLUMN reg_ip TEXT")
         con.commit()
+    if "oauth_status" not in reg_cols:
+        con.execute("ALTER TABLE registered ADD COLUMN oauth_status TEXT DEFAULT ''")
+        con.commit()
+    if "oauth_updated_at" not in reg_cols:
+        con.execute("ALTER TABLE registered ADD COLUMN oauth_updated_at REAL")
+        con.commit()
 
     # 自动清理历史中没有任何凭证（AT/ST/RT 全为空）的未完成半成品脏数据
     con.execute("""
@@ -589,6 +595,74 @@ def save_registered(d: dict) -> None:
         con.commit()
 
 
+def update_registered_oauth(
+    email: str,
+    access_token: str = "",
+    refresh_token: str = "",
+    id_token: str = "",
+    cookie_header: str = "",
+    extra_data: Optional[dict] = None,
+) -> bool:
+    """OAuth 导出成功后回写 access_token / refresh_token / id_token / cookie_header 及 extra_json。"""
+    email = (email or "").strip().lower()
+    if not email:
+        return False
+    with _lock:
+        con = _conn()
+        row = con.execute("SELECT * FROM registered WHERE email=?", (email,)).fetchone()
+        if not row:
+            return False
+        d = dict(row)
+        extra = json.loads(d.get("extra_json") or "{}")
+        if extra_data:
+            extra.update(extra_data)
+
+        new_at = access_token.strip() or d.get("access_token") or ""
+        new_rt = refresh_token.strip() or d.get("refresh_token") or ""
+        new_it = id_token.strip() or d.get("id_token") or ""
+        new_cookie = cookie_header.strip() or d.get("cookie_header") or ""
+
+        con.execute(
+            "UPDATE registered SET access_token=?, refresh_token=?, id_token=?, "
+            "cookie_header=?, oauth_status='success', oauth_updated_at=?, extra_json=? WHERE email=?",
+            (new_at, new_rt, new_it, new_cookie, time.time(), json.dumps(extra, ensure_ascii=False), email),
+        )
+        con.commit()
+        return True
+
+
+def update_registered_oauth_status(email: str, status: str, error: str = "") -> bool:
+    """更新账号的 OAuth 授权状态 (success / need_phone / failed)。"""
+    email = (email or "").strip().lower()
+    if not email:
+        return False
+    status = (status or "").strip().lower()
+    with _lock:
+        con = _conn()
+        row = con.execute("SELECT extra_json FROM registered WHERE email=?", (email,)).fetchone()
+        if not row:
+            return False
+        extra = {}
+        if row["extra_json"]:
+            try:
+                extra = json.loads(row["extra_json"])
+            except Exception:
+                extra = {}
+        oauth_meta = extra.get("oauth_export") or {}
+        oauth_meta["status"] = status
+        oauth_meta["updated_at"] = time.time()
+        if error:
+            oauth_meta["error"] = error
+        extra["oauth_export"] = oauth_meta
+
+        con.execute(
+            "UPDATE registered SET oauth_status=?, oauth_updated_at=?, extra_json=? WHERE email=?",
+            (status, time.time(), json.dumps(extra, ensure_ascii=False), email),
+        )
+        con.commit()
+        return True
+
+
 def save_password_early(email: str, password: str) -> None:
     """密码一在 OpenAI 侧生效就落盘，不等整个注册流程跑完。"""
     email = (email or "").strip().lower()
@@ -790,6 +864,15 @@ def _registered_where(filt: str) -> str:
     if filt == "oa_miss":
         return ("WHERE oa_check IS NOT NULL AND oa_check != '' "
                 "AND oa_check NOT LIKE '%\"state\":\"OAICS\"%'")
+    # ── OAuth 授权状态筛选 ──
+    if filt == "oauth_success":
+        return "WHERE oauth_status = 'success'"
+    if filt == "oauth_need_phone":
+        return "WHERE oauth_status = 'need_phone'"
+    if filt == "oauth_failed":
+        return "WHERE (oauth_status = 'failed' OR oauth_status = 'error')"
+    if filt == "oauth_unchecked":
+        return "WHERE (oauth_status IS NULL OR oauth_status = '')"
     return ""
 
 
@@ -813,7 +896,8 @@ def list_registered(limit: int = 20, offset: int = 0, filter_rt: str = "all") ->
     cur = con.execute(
         f"SELECT email, password, totp_secret, reg_country, reg_city, reg_ip, "
         f"length(access_token) AS at_len, length(session_token) AS st_len, "
-        f"length(refresh_token) AS rt_len, extra_json, oa_check, created_at "
+        f"length(refresh_token) AS rt_len, oauth_status, oauth_updated_at, "
+        f"extra_json, oa_check, created_at "
         f"FROM registered {where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
         (limit, offset),
     )
@@ -821,13 +905,16 @@ def list_registered(limit: int = 20, offset: int = 0, filter_rt: str = "all") ->
     for r in cur.fetchall():
         d = dict(r)
         plus = None
+        oauth_meta = None
         if d.get("extra_json"):
             try:
                 extra = json.loads(d["extra_json"])
                 plus = extra.get("plus_check")
+                oauth_meta = extra.get("oauth_export")
             except Exception:
                 pass
         d["plus_check"] = plus
+        d["oauth_export"] = oauth_meta
         d.pop("extra_json", None)
         oa = None
         if d.get("oa_check"):

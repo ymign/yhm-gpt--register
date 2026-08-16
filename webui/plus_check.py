@@ -71,6 +71,41 @@ def _get_auth(claims: dict) -> dict:
     return claims
 
 
+def get_country_timezone_offset_min(country: str, tz_name: str = "") -> int:
+    """获取指定国家对应的时区偏移量（以分钟为单位，与 JavaScript getTimezoneOffset 保持一致）。"""
+    cc = (country or "").strip().upper()
+    offsets = {
+        "JP": -540,   # UTC+9 (日本)
+        "BR": 180,    # UTC-3 (巴西圣保罗)
+        "VN": -420,   # UTC+7 (越南)
+        "AR": 180,    # UTC-3 (阿根廷)
+        "ES": -60,    # UTC+1 (西班牙)
+        "PL": -60,    # UTC+1 (波兰)
+        "DE": -60,    # UTC+1 (德国)
+        "GB": 0,      # UTC+0 (英国)
+        "US": 300,    # UTC-5 (美东)
+        "KR": -540,   # UTC+9 (韩国)
+        "SG": -480,   # UTC+8 (新加坡)
+        "TW": -480,   # UTC+8 (中国台湾)
+        "HK": -480,   # UTC+8 (中国香港)
+        "CN": -480,   # UTC+8 (中国大陆)
+    }
+    if cc in offsets:
+        return offsets[cc]
+    if tz_name:
+        try:
+            import zoneinfo
+            from datetime import datetime
+            tz = zoneinfo.ZoneInfo(tz_name)
+            now = datetime.now(tz)
+            offset = now.utcoffset()
+            if offset is not None:
+                return int(-offset.total_seconds() / 60)
+        except Exception:
+            pass
+    return -540 if cc == "JP" else -480
+
+
 def parse_account_plan(data: dict, body: str = "") -> dict:
     """深度解析 OpenAI accounts/check 返回的账号计划、Pro 倍率 (Pro 20x / Pro 5x / Team / Plus / Free / 试用)。"""
     accts = data.get("accounts", {})
@@ -80,7 +115,12 @@ def parse_account_plan(data: dict, body: str = "") -> dict:
     info = next(iter(accts.values()))
     acct = info.get("account", {})
     ent = info.get("entitlement", {})
-    promo = info.get("eligible_promo_campaigns", {})
+    promo = info.get("eligible_promo_campaigns") or {}
+    if not isinstance(promo, dict):
+        promo = {}
+    offers = info.get("eligible_offers") or []
+    if not isinstance(offers, list):
+        offers = []
 
     plan = str(acct.get("plan_type") or "free").lower().strip()
     structure = str(acct.get("structure") or "").lower().strip()
@@ -143,23 +183,43 @@ def parse_account_plan(data: dict, body: str = "") -> dict:
             "has_sub": has_sub,
         }
 
-    # 3. 判定可领试用活动 (Pro Trial / Plus Trial)
-    has_pro_promo = "pro" in promo or any("pro" in str(v.get("id", "")).lower() for v in promo.values() if isinstance(v, dict))
+    # 3. 判定可领试用活动 (Pro Trial / Plus Trial / 各种优惠活动)
+    has_pro_promo = (
+        "pro" in promo
+        or any("pro" in str(k).lower() or "pro" in str(v.get("id", "")).lower() for k, v in promo.items() if isinstance(v, dict))
+        or any("pro" in str(o.get("id", "")).lower() for o in offers if isinstance(o, dict))
+    )
     if has_pro_promo:
         return {
             "status": "pro_eligible",
-            "label": "◆ 可领Pro试用",
+            "label": "👑 可领Pro试用",
             "plan": plan,
             "promo": "pro-trial",
         }
 
-    has_plus_promo = "plus" in promo and promo["plus"].get("id") == "plus-1-month-free"
+    plus_promo_data = promo.get("plus") or promo.get("chatgpt_plus") or promo.get("chatgptplus")
+    has_plus_promo = False
+    plus_promo_id = "plus-1-month-free"
+
+    if isinstance(plus_promo_data, dict):
+        has_plus_promo = True
+        plus_promo_id = str(plus_promo_data.get("id") or "plus-1-month-free")
+    elif any("plus" in str(k).lower() or "trial" in str(k).lower() for k in promo.keys()):
+        has_plus_promo = True
+        plus_promo_id = "plus-trial"
+    elif any("plus" in str(v.get("id", "")).lower() for v in promo.values() if isinstance(v, dict)):
+        has_plus_promo = True
+        plus_promo_id = "plus-trial"
+    elif any("plus" in str(o.get("id", "")).lower() or "trial" in str(o.get("id", "")).lower() for o in offers if isinstance(o, dict)):
+        has_plus_promo = True
+        plus_promo_id = "plus-offer-trial"
+
     if has_plus_promo:
         return {
             "status": "plus_eligible",
             "label": "可领Plus试用",
             "plan": plan,
-            "promo": "plus-1-month-free",
+            "promo": plus_promo_id,
         }
 
     # 4. 判定 Plus 订阅生效
@@ -407,8 +467,10 @@ def _check_one_account(task: PlusCheckTask, email: str) -> None:
         if device_id:
             headers["OAI-Device-Id"] = device_id
 
-        task.add_email_log(email, f"发送 GET {CHECK_URL}...")
-        resp = sess.get(CHECK_URL, headers=headers, timeout=timeout)
+        tz = get_country_timezone_offset_min(target_country or cred.get("reg_country") or "JP")
+        url_with_tz = f"{CHECK_URL}?timezone_offset_min={tz}"
+        task.add_email_log(email, f"发送 GET {url_with_tz}...")
+        resp = sess.get(url_with_tz, headers=headers, timeout=timeout)
         req_ms = int((time.time() - started_req) * 1000)
         status_code = resp.status_code
         task.add_email_log(email, f"收到响应 HTTP {status_code} ({req_ms}ms)")

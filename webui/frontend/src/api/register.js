@@ -70,6 +70,31 @@ export const getOACheckLog = (taskId, email) =>
 export const exportToPanel = (email, targets) =>
   http.post('/api/registered/export_to_panel', { email, targets })
 
+// ──────────────── OAuth 导出 / Codex 凭证导出 ────────────────
+export const startOAuthExport = (payload) =>
+  http.post('/api/registered/oauth_export/start', payload)
+
+export const stopOAuthExport = (taskId) =>
+  http.post(`/api/registered/oauth_export/${encodeURIComponent(taskId)}/stop`)
+
+export const oauthExportStreamUrl = (taskId) =>
+  `/api/registered/oauth_export/${encodeURIComponent(taskId)}/stream`
+
+export const getOAuthExportLog = (taskId, email) =>
+  http.get(`/api/registered/oauth_export/${encodeURIComponent(taskId)}/log`, { params: { email } })
+
+export const downloadOAuthExportCpa = (taskId, emails = '') =>
+  http.get(`/api/registered/oauth_export/${encodeURIComponent(taskId)}/download_cpa`, {
+    params: { emails },
+    responseType: 'blob',
+  })
+
+export const downloadOAuthExportSub2 = (taskId, emails = '') =>
+  http.get(`/api/registered/oauth_export/${encodeURIComponent(taskId)}/download_sub2`, {
+    params: { emails },
+    responseType: 'blob',
+  })
+
 // ──────────────── 自动跑号 auto-loop ────────────────
 export const autoStart = (payload) => http.post('/api/auto/start', payload)
 export const autoPause = () => http.post('/api/auto/pause')

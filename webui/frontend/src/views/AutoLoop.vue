@@ -219,7 +219,7 @@ async function start() {
       otp_timeout: parseInt(form.value.otpTimeout, 10) || 10,
       want_access_token: true,
       want_session_token: true,
-      want_refresh_token: true,
+      want_refresh_token: form.value.autoWantRefreshToken || false,
       cool_down_seconds: parseFloat(form.value.autoCoolDown) || 0,
       target_count: parseInt(form.value.autoTargetCount, 10) || 0,
       want_2fa: form.value.autoWant2fa,
@@ -534,7 +534,7 @@ onUnmounted(() => {
               <span
                 v-if="row.reg_country"
                 class="geo-badge"
-                :class="{ 'geo-hot': ['BR', 'DE', 'GB', 'PL', 'ES', 'AR'].includes(row.reg_country) }"
+                :class="{ 'geo-hot': ['JP', 'BR', 'VN', 'DE', 'GB', 'PL', 'ES', 'AR'].includes(row.reg_country) }"
               >
                 <span class="geo-country">{{ row.reg_country }}</span>
               </span>

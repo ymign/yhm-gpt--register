@@ -1264,6 +1264,192 @@ def api_oa_check_log(task_id: str, email: str = ""):
     return {"ok": True, "email": email, "lines": item.get("logs", []), "status": item.get("status")}
 
 
+# ──────────────────────── OAuth 导出 (Codex OAuth / CPA / Sub2API) ────────────────────────
+
+
+class StartOAuthExportReq(BaseModel):
+    emails: list[str] = Field(..., description="要执行 OAuth 导出的账号邮箱列表")
+    proxies: str = Field("", description="代理池（每行一个）")
+    proxy: str = Field("", description="单个代理")
+    proxy_country: str = Field("RANDOM_HOT", description="代理目标国家")
+    workers: int = Field(5, ge=1, le=20, description="并发 worker 数")
+    timeout: float = Field(45.0, description="单账号超时秒数")
+
+
+def _safe_get_oauth_export(q, timeout: float = 2.0):
+    try:
+        return q.get(timeout=timeout)
+    except Exception as e:
+        if type(e).__name__ == "Empty":
+            return "__TIMEOUT__"
+        return None
+
+
+@app.post("/api/registered/oauth_export/start")
+def api_oauth_export_start(req: StartOAuthExportReq):
+    """启动 OAuth 导出多 Worker 并发任务，返回 task_id 用于订阅 SSE。"""
+    from . import oauth_export
+
+    emails = [e.strip().lower() for e in (req.emails or []) if e and e.strip()]
+    if not emails:
+        raise HTTPException(400, "请提供要导出的账号邮箱列表")
+
+    proxies = []
+    if req.proxies:
+        for line in str(req.proxies or "").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#"):
+                proxies.append(line)
+    elif req.proxy:
+        p = req.proxy.strip()
+        if p:
+            proxies.append(p)
+
+    config = {
+        "proxies": proxies,
+        "proxy_country": (req.proxy_country or "").strip().upper(),
+        "workers": max(1, min(20, req.workers)),
+        "timeout": float(req.timeout or 45.0),
+    }
+    try:
+        task_id = oauth_export.start(emails, config)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    logger.info(f"[oauth_export] 任务 {task_id} 启动: {len(emails)} 个账号, workers={config['workers']}")
+    return {"ok": True, "task_id": task_id, "taskId": task_id, "total": len(emails)}
+
+
+@app.post("/api/registered/oauth_export/{task_id}/stop")
+def api_oauth_export_stop(task_id: str):
+    """停止指定的 OAuth 导出任务。"""
+    from . import oauth_export
+
+    active = oauth_export.stop(task_id)
+    return {"ok": True, "task_id": task_id, "active": active}
+
+
+@app.get("/api/registered/oauth_export/{task_id}/stream")
+async def api_oauth_export_stream(task_id: str, request: Request):
+    """SSE：实时推流 OAuth 导出进度与日志。"""
+    from . import oauth_export
+
+    snap = oauth_export.snapshot(task_id)
+    if snap is None:
+        raise HTTPException(404, "task_id 不存在或已结束")
+
+    q = oauth_export.get_queue(task_id)
+
+    async def gen():
+        loop = asyncio.get_event_loop()
+        try:
+            yield f"event: init\ndata: {json.dumps(snap, ensure_ascii=False)}\n\n"
+            while True:
+                if await request.is_disconnected():
+                    break
+                msg = await loop.run_in_executor(None, _safe_get_oauth_export, q, 2.0)
+                if msg is None:
+                    yield "event: end\ndata: {}\n\n"
+                    break
+                if msg == "__TIMEOUT__":
+                    yield ": ping\n\n"
+                    continue
+                if msg.get("kind") == "end":
+                    yield f"event: end\ndata: {json.dumps(msg, ensure_ascii=False)}\n\n"
+                    break
+                kind = msg.get("kind", "progress")
+                yield f"event: {kind}\ndata: {json.dumps(msg, ensure_ascii=False)}\n\n"
+        finally:
+            pass
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
+@app.get("/api/registered/oauth_export/{task_id}/log")
+def api_oauth_export_log(task_id: str, email: str = ""):
+    """获取指定任务中特定账号的详细导出日志。"""
+    from . import oauth_export
+
+    lines = oauth_export.get_logs(task_id, email)
+    return {"ok": True, "email": email, "lines": lines}
+
+
+@app.post("/api/registered/oauth_export/{task_id}/download_cpa")
+@app.get("/api/registered/oauth_export/{task_id}/download_cpa")
+def api_oauth_export_download_cpa(task_id: str, emails: str = ""):
+    """下载任务中成功账号的 CPA JSON 凭证。"""
+    from . import oauth_export
+    from datetime import datetime, timezone
+
+    email_list = [e.strip().lower() for e in emails.split(",") if e.strip()] if emails else None
+    cpa_list = oauth_export.export_cpa_bundle(task_id, email_list)
+    if not cpa_list and email_list:
+        cpa_list = []
+        for em in email_list:
+            row = db.get_registered(em)
+            if row and (row.get("access_token") or row.get("refresh_token")):
+                cpa_list.append({
+                    "type": "codex",
+                    "email": em,
+                    "access_token": row.get("access_token") or "",
+                    "refresh_token": row.get("refresh_token") or "",
+                    "id_token": row.get("id_token") or "",
+                    "last_refresh": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                })
+    if not cpa_list:
+        raise HTTPException(404, "没有可供下载的 CPA 凭证数据")
+
+    payload = cpa_list if len(cpa_list) > 1 else cpa_list[0]
+    filename = f"cpa-oauth-{task_id}.json" if len(cpa_list) > 1 else f"codex-{cpa_list[0]['email']}.json"
+    return Response(
+        content=json.dumps(payload, ensure_ascii=False, indent=2),
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.post("/api/registered/oauth_export/{task_id}/download_sub2")
+@app.get("/api/registered/oauth_export/{task_id}/download_sub2")
+def api_oauth_export_download_sub2(task_id: str, emails: str = ""):
+    """下载任务中成功账号的 Sub2API 聚合 JSON 数据。"""
+    from . import oauth_export
+    from datetime import datetime, timezone
+
+    email_list = [e.strip().lower() for e in emails.split(",") if e.strip()] if emails else None
+    sub2_payload = oauth_export.export_sub2_bundle(task_id, email_list)
+    if not sub2_payload.get("accounts") and email_list:
+        cpa_list = []
+        for em in email_list:
+            row = db.get_registered(em)
+            if row and (row.get("access_token") or row.get("refresh_token")):
+                cpa_list.append({
+                    "type": "codex",
+                    "email": em,
+                    "access_token": row.get("access_token") or "",
+                    "refresh_token": row.get("refresh_token") or "",
+                    "id_token": row.get("id_token") or "",
+                    "last_refresh": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                })
+        sub2_payload = oauth_export.build_sub2api_payload(cpa_list)
+
+    if not sub2_payload.get("accounts"):
+        raise HTTPException(404, "没有可供导出的 Sub2API 数据")
+
+    filename = f"sub2api-oauth-{task_id}.json"
+    return Response(
+        content=json.dumps(sub2_payload, ensure_ascii=False, indent=2),
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 # ──────────────────────── auto-loop ────────────────────────
 
 
