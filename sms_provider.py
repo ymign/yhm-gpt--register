@@ -473,43 +473,65 @@ class SmsBowerProvider(BaseSmsProvider):
     def _request_number_single_action(self, action: str, service: str, country: str) -> dict:
         """单次调用 getNumberV2 或 getNumber（不自己 fallback，由调用方双重 for 控制）。
 
-        借鉴 GuJumpgate：每个国家分别试 V2 / V1，而不是内部自动 fallback。
+        优化逻辑：
+          1. 若用户指定了 max_price，传入该值；
+          2. 若用户未指定 max_price，自动尝试获取当前余额作为上限（避免平台只尝试 0 库存的最低档位返回 NO_NUMBERS）；
+          3. 若带 maxPrice 失败则 fallback 不带参数重试。
         """
-        common = {"action": action, "service": service, "country": country}
-        # 用户配了 max_price 才传，空 / <=0 时根本不传（让平台用默认）
-        if self.max_price > 0:
-            common["maxPrice"] = self.max_price
-        logger.info("SmsBower %s: service=%s country=%s maxPrice=%s",
-                    action, service, country, common.get("maxPrice", "未设置"))
+        effective_max = self.max_price
+        if effective_max <= 0:
+            try:
+                bal = self.get_balance()
+                if bal and bal > 0:
+                    effective_max = round(float(bal), 4)
+            except Exception:
+                effective_max = -1
 
-        try:
-            resp = self._request(common)
-            resp_text = resp.text.strip()
-            logger.info("SmsBower %s resp: status=%s text=%s", action, resp.status_code, resp_text[:500])
+        param_attempts = []
+        if effective_max > 0:
+            param_attempts.append({"action": action, "service": service, "country": country, "maxPrice": effective_max})
+        param_attempts.append({"action": action, "service": service, "country": country})
 
-            # V2 返回 JSON
-            if action == "getNumberV2":
-                try:
-                    data = resp.json()
-                    if isinstance(data, dict) and data.get("activationId"):
-                        return data
-                except ValueError:
-                    pass
+        last_resp_text = ""
+        for params in param_attempts:
+            logger.info("SmsBower %s: service=%s country=%s maxPrice=%s",
+                        action, service, country, params.get("maxPrice", "未设置"))
+            try:
+                resp = self._request(params)
+                resp_text = resp.text.strip()
+                last_resp_text = resp_text
+                logger.info("SmsBower %s resp: status=%s text=%s", action, resp.status_code, resp_text[:500])
+
+                # V2 返回 JSON
+                if action == "getNumberV2":
+                    try:
+                        data = resp.json()
+                        if isinstance(data, dict) and data.get("activationId"):
+                            return data
+                    except ValueError:
+                        pass
+                    if "NO_NUMBERS" in resp_text and len(param_attempts) > 1 and "maxPrice" in params:
+                        continue
+                    raise RuntimeError(resp_text[:200] or "empty response")
+
+                # V1 返回纯文本 ACCESS_NUMBER:id:phone
+                if resp_text.startswith("ACCESS_NUMBER:"):
+                    parts = resp_text.split(":", 2)
+                    if len(parts) == 3:
+                        return {
+                            "activationId": parts[1],
+                            "phoneNumber": parts[2],
+                            "countryPhoneCode": "",
+                        }
+                if "NO_NUMBERS" in resp_text and len(param_attempts) > 1 and "maxPrice" in params:
+                    continue
                 raise RuntimeError(resp_text[:200] or "empty response")
+            except Exception as e:
+                if "NO_NUMBERS" in str(e) and len(param_attempts) > 1 and "maxPrice" in params:
+                    continue
+                raise
 
-            # V1 返回纯文本 ACCESS_NUMBER:id:phone
-            if resp_text.startswith("ACCESS_NUMBER:"):
-                parts = resp_text.split(":", 2)
-                if len(parts) == 3:
-                    return {
-                        "activationId": parts[1],
-                        "phoneNumber": parts[2],
-                        "countryPhoneCode": "",
-                    }
-            raise RuntimeError(resp_text[:200] or "empty response")
-        except Exception as e:
-            # 不在这里 fallback，让调用方的 for action 循环去试下个 action
-            raise
+        raise RuntimeError(last_resp_text[:200] or "empty response")
 
     @staticmethod
     def _format_phone(info: dict) -> str:
@@ -527,76 +549,77 @@ class SmsBowerProvider(BaseSmsProvider):
                     country_candidates: Optional[list[str]] = None) -> SmsActivation:
         """租号。支持多国家候选依次尝试（按入参顺序）。
 
-        country_candidates: 候选国家 ID 列表，按这个顺序依次尝试；空时只用 country 单个。
-
-        借鉴 GuJumpgate: 双重 for 循环 —— 外层遍历国家，内层每个国家先试 getNumberV2，
-        失败才 fallback getNumber（V1）。
+        优化：非复用模式直接并发租号，不抢全局锁，避免并发 Worker 阻塞导致 OpenAI 会话超时 409。
         """
         service_code = str(self.default_service or service or SMS_DEFAULT_SERVICE).strip()
-        # 单一 country 兜底
         if not country_candidates:
             country_candidates = [str(country or self.default_country or SMS_DEFAULT_COUNTRY).strip()]
 
-        with _SMS_VERIFY_LOCK:
-            with _SMS_CACHE_LOCK:
-                # 复用 cache（仅当用户许可且 cache 国家在候选列表里）
-                cache = self._load_cache(service_code, country_candidates[0]) if self.reuse_phone_to_max else None
-                if cache and str(cache.get("country") or "") in country_candidates:
-                    activation = SmsActivation(
-                        activation_id=str(cache["activation_id"]),
-                        phone_number=str(cache["phone_number"]),
-                        country=str(cache.get("country") or country_candidates[0]),
-                        metadata={"reused": True, "use_count": int(cache.get("use_count") or 0)},
-                    )
-                    self.current_activation = activation
-                    return activation
+        def _do_get():
+            if self.reuse_phone_to_max:
+                with _SMS_CACHE_LOCK:
+                    cache = self._load_cache(service_code, country_candidates[0])
+                    if cache and str(cache.get("country") or "") in country_candidates:
+                        activation = SmsActivation(
+                            activation_id=str(cache["activation_id"]),
+                            phone_number=str(cache["phone_number"]),
+                            country=str(cache.get("country") or country_candidates[0]),
+                            metadata={"reused": True, "use_count": int(cache.get("use_count") or 0)},
+                        )
+                        self.current_activation = activation
+                        return activation
 
-                # 双重 for：外层国家 × 内层 action（V2 / V1）
-                failures: list[str] = []
-                last_exc: Optional[Exception] = None
-                for cid in country_candidates:
-                    cid = str(cid).strip()
-                    if not cid:
+            failures: list[str] = []
+            last_exc: Optional[Exception] = None
+            for cid in country_candidates:
+                cid = str(cid).strip()
+                if not cid:
+                    continue
+                for action in ("getNumberV2", "getNumber"):
+                    try:
+                        info = self._request_number_single_action(action, service_code, cid)
+                        aid = str(info.get("activationId") or "")
+                        phone = self._format_phone(info)
+                        if not aid or not phone.strip("+"):
+                            failures.append(f"{cid}: {action} 返回信息不完整")
+                            continue
+                        if self.reuse_phone_to_max:
+                            with _SMS_CACHE_LOCK:
+                                cache = {
+                                    **self._cache_identity(service_code, cid),
+                                    "country": cid,
+                                    "activation_id": aid,
+                                    "phone_number": phone,
+                                    "acquired_at": time.time(),
+                                    "use_count": 0,
+                                    "used_codes": set(),
+                                    "reuse_stopped": False,
+                                    "stop_reason": "",
+                                }
+                                self._save_cache(cache)
+                        activation = SmsActivation(
+                            activation_id=aid,
+                            phone_number=phone,
+                            country=cid,
+                            metadata={"reused": False},
+                        )
+                        self.current_activation = activation
+                        if len(country_candidates) > 1:
+                            logger.info("SmsBower 在国家 %s 租到号 %s (action=%s)", cid, phone, action)
+                        return activation
+                    except Exception as e:
+                        msg = str(e)[:120]
+                        failures.append(f"{cid}: {action}={msg}")
+                        last_exc = e
                         continue
-                    for action in ("getNumberV2", "getNumber"):
-                        try:
-                            info = self._request_number_single_action(action, service_code, cid)
-                            aid = str(info.get("activationId") or "")
-                            phone = self._format_phone(info)
-                            if not aid or not phone.strip("+"):
-                                failures.append(f"{cid}: {action} 返回信息不完整")
-                                continue  # 同国家试下个 action
-                            # 成功 → 立刻保存 cache + 返回
-                            cache = {
-                                **self._cache_identity(service_code, cid),
-                                "country": cid,
-                                "activation_id": aid,
-                                "phone_number": phone,
-                                "acquired_at": time.time(),
-                                "use_count": 0,
-                                "used_codes": set(),
-                                "reuse_stopped": False,
-                                "stop_reason": "",
-                            }
-                            self._save_cache(cache)
-                            activation = SmsActivation(
-                                activation_id=aid,
-                                phone_number=phone,
-                                country=cid,
-                                metadata={"reused": False},
-                            )
-                            self.current_activation = activation
-                            if len(country_candidates) > 1:
-                                logger.info("SmsBower 在国家 %s 租到号 %s (action=%s)", cid, phone, action)
-                            return activation
-                        except Exception as e:
-                            msg = str(e)[:120]
-                            failures.append(f"{cid}: {action}={msg}")
-                            last_exc = e
-                            continue  # 同国家试下个 action
 
-                detail = " | ".join(failures) if failures else "未知"
-                raise RuntimeError(f"SmsBower 依次尝试 {len(country_candidates)} 个候选国家全失败: {detail}") from last_exc
+            detail = " | ".join(failures) if failures else "未知"
+            raise RuntimeError(f"SmsBower 依次尝试 {len(country_candidates)} 个候选国家全失败: {detail}") from last_exc
+
+        if self.reuse_phone_to_max:
+            with _SMS_VERIFY_LOCK:
+                return _do_get()
+        return _do_get()
 
     # ---- 等 code / 状态查询 ----
 
@@ -892,12 +915,10 @@ class PhoneCallbackController:
     def get_phone(self) -> str:
         """阶段 1：租手机号（已带 +）。"""
         provider = self._provider()
-        # 同号复用锁（SmsBower 系列才用，防止两个注册任务并发抢同一个 cache）
-        if isinstance(provider, SmsBowerProvider) and not self._verify_lock_acquired:
+        if getattr(provider, "reuse_phone_to_max", False) and isinstance(provider, SmsBowerProvider) and not self._verify_lock_acquired:
             _SMS_VERIFY_LOCK.acquire()
             self._verify_lock_acquired = True
 
-        # 收集候选国家列表：用户多选 > 自动选号选出的 best > 单一 country
         allowed_raw = str(self.config.get("sms_allowed_countries") or "").strip()
         allowed_list = [c.strip() for c in allowed_raw.replace(";", ",").split(",") if c.strip()]
 
@@ -906,22 +927,8 @@ class PhoneCallbackController:
 
         if self.auto_select_country and isinstance(provider, SmsBowerProvider):
             if allowed_list:
-                self.log(f"🔍 自动选号: 从主人勾选的 {len(allowed_list)} 个国家依次尝试（按价格升序）")
-                try:
-                    rows = provider.get_top_countries(service=self.service)
-                    # 按价格升序排，只保留在 allowed_list 中的
-                    in_allow = [r for r in rows if str(r.get("country") or "") in allowed_list]
-                    ordered_allowed = [str(r["country"]) for r in in_allow]
-                    # 把 allowed 里没在排名中出现的也加在最后
-                    appended = [c for c in allowed_list if c not in ordered_allowed]
-                    country_candidates = ordered_allowed + appended
-                    self.log(f"  候选顺序: {','.join(country_candidates)}")
-                except Exception as e:
-                    self.log(f"  排名查询失败({e})，按主人勾选的原始顺序尝试")
-                    country_candidates = list(allowed_list)
+                country_candidates = list(allowed_list)
             else:
-                # 未多选时，单纯按价格选最便宜（默认非严格白名单）
-                self.log("🔍 自动选号（未指定允许国家，按全平台价格+库存挑最优）...")
                 try:
                     best = provider.get_best_country(
                         service=self.service,
@@ -930,20 +937,15 @@ class PhoneCallbackController:
                         strict_whitelist=_safe_bool(self.config.get("sms_strict_whitelist"), False),
                     )
                     if best:
-                        name_cn = SMS_COUNTRY_NAMES_CN.get(best, "未知")
-                        in_wl = best in OPENAI_SMS_COUNTRIES
-                        wl_label = "✅ OpenAI SMS 白名单" if in_wl else "⚠️ 非白名单"
-                        self.log(f"✅ 自动选择国家: {best} {name_cn}  [{wl_label}]")
                         country_candidates = [best]
-                    else:
-                        self.log("⚠️ 未找到满足条件的国家，使用默认 country")
-                        country_candidates = [self.country] if self.country else []
-                except Exception as e:
-                    self.log(f"⚠️ 国家智能选择失败({e})，使用默认 country")
-                    country_candidates = [self.country] if self.country else []
+                except Exception:
+                    pass
+        elif allowed_list:
+            country_candidates = list(allowed_list)
+        elif effective_country:
+            country_candidates = [effective_country]
         else:
-            # 没启用自动选号 → 强制用默认国家
-            country_candidates = [self.country] if self.country else []
+            country_candidates = [SMS_DEFAULT_COUNTRY]
 
         if not country_candidates:
             country_candidates = [SMS_DEFAULT_COUNTRY]

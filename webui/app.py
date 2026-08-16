@@ -1274,6 +1274,14 @@ class StartOAuthExportReq(BaseModel):
     proxy_country: str = Field("RANDOM_HOT", description="代理目标国家")
     workers: int = Field(5, ge=1, le=20, description="并发 worker 数")
     timeout: float = Field(45.0, description="单账号超时秒数")
+    # SMS 接码配置扩展
+    sms_enabled: bool = Field(False, description="是否启用自动 SMS 接码")
+    sms_provider: Optional[str] = Field("smsbower", description="接码服务平台 (smsbower / herosms)")
+    sms_api_key: Optional[str] = Field("", description="接码平台 API Key（留空使用系统全局配置）")
+    sms_country: Optional[str] = Field("52", description="接码国家ID，默认52泰国")
+    sms_max_price: Optional[str] = Field("", description="最高单价限制")
+    sms_max_attempts: int = Field(3, ge=1, le=10, description="最多换号尝试次数")
+    sms_timeout: int = Field(80, ge=20, le=300, description="单号等待短信超时秒数")
 
 
 def _safe_get_oauth_export(q, timeout: float = 2.0):
@@ -1305,17 +1313,34 @@ def api_oauth_export_start(req: StartOAuthExportReq):
         if p:
             proxies.append(p)
 
+    # 接码配置组装
+    sms_api_key = (req.sms_api_key or "").strip()
+    if not sms_api_key or sms_api_key == "***":
+        global_sms = db.get_sms_internal_config()
+        sms_api_key = global_sms.get("sms_api_key") or ""
+
+    sms_config = {
+        "sms_enabled": req.sms_enabled,
+        "sms_provider": (req.sms_provider or "smsbower").strip().lower(),
+        "sms_api_key": sms_api_key,
+        "sms_country": (req.sms_country or "52").strip(),
+        "sms_max_price": (req.sms_max_price or "").strip(),
+        "sms_max_attempts": max(1, min(10, req.sms_max_attempts)),
+        "sms_timeout": max(20, min(300, req.sms_timeout)),
+    }
+
     config = {
         "proxies": proxies,
         "proxy_country": (req.proxy_country or "").strip().upper(),
         "workers": max(1, min(20, req.workers)),
         "timeout": float(req.timeout or 45.0),
+        "sms_config": sms_config,
     }
     try:
         task_id = oauth_export.start(emails, config)
     except ValueError as e:
         raise HTTPException(400, str(e))
-    logger.info(f"[oauth_export] 任务 {task_id} 启动: {len(emails)} 个账号, workers={config['workers']}")
+    logger.info(f"[oauth_export] 任务 {task_id} 启动: {len(emails)} 个账号, workers={config['workers']}, sms_enabled={req.sms_enabled}")
     return {"ok": True, "task_id": task_id, "taskId": task_id, "total": len(emails)}
 
 

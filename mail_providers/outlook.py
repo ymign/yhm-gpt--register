@@ -711,5 +711,7 @@ class OutlookMailProvider(MailProvider):
                     f"[mail] Graph API 兜底也失败 ({type(e).__name__}: {e})；"
                     f"IMAP 先前错误: {type(imap_error).__name__}: {imap_error}"
                 )
+                if isinstance(imap_error, TimeoutError) or "timeout" in str(imap_error).lower():
+                    raise TimeoutError(f"在 {method_timeout} 秒内未收到验证码邮件 ({email_addr})") from imap_error
             raise
 

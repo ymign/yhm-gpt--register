@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, onActivated, onUnmounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onActivated, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
@@ -43,6 +43,7 @@ import {
   downloadOAuthExportCpa,
   downloadOAuthExportSub2,
 } from '@/api/register'
+import { saveSmsConfig } from '@/api/settings'
 import { copyText, fmtTime, createSSE } from '@/api/request'
 import { useFormStore, proxyText, COUNTRY_OPTIONS } from '@/stores/form'
 import { useProxyStore } from '@/stores/proxy'
@@ -624,12 +625,85 @@ const oauthConfigCollapsed = ref(true)
 const oauthTargetEmails = ref([])
 const oauthItems = ref({})
 const oauthLogs = ref([])
+
+const OAUTH_FORM_KEY = 'gpt_oauth_export_form_v2'
+let savedOAuth = {}
+try { savedOAuth = JSON.parse(localStorage.getItem(OAUTH_FORM_KEY) || '{}') } catch (_) {}
+
 const oauthForm = reactive({
-  proxy: '__POOL__',
-  proxyCountry: 'RANDOM_HOT',
-  workers: 5,
-  timeout: 45,
+  proxy: savedOAuth.proxy || '__POOL__',
+  proxyCountry: savedOAuth.proxyCountry || 'RANDOM_HOT',
+  workers: savedOAuth.workers || 5,
+  timeout: savedOAuth.timeout || 45,
+  smsEnabled: !!savedOAuth.smsEnabled,
+  smsProvider: savedOAuth.smsProvider || 'smsbower',
+  smsApiKey: savedOAuth.smsApiKey || '',
+  smsCountry: savedOAuth.smsCountry || '52',
+  smsMaxPrice: savedOAuth.smsMaxPrice || '',
+  smsMaxAttempts: savedOAuth.smsMaxAttempts || 3,
+  smsTimeout: savedOAuth.smsTimeout || 80,
 })
+
+watch(oauthForm, (v) => {
+  try { localStorage.setItem(OAUTH_FORM_KEY, JSON.stringify(v)) } catch (_) {}
+}, { deep: true })
+
+const oauthActiveTab = ref('network')
+const oauthNowTime = ref(Date.now())
+let oauthLiveTimer = null
+
+onMounted(() => {
+  oauthLiveTimer = setInterval(() => {
+    if (oauthRunning.value) {
+      oauthNowTime.value = Date.now()
+    }
+  }, 1000)
+})
+
+onUnmounted(() => {
+  if (oauthLiveTimer) clearInterval(oauthLiveTimer)
+})
+
+function getOAuthRowElapsed(row) {
+  if (row.elapsed) return row.elapsed + 's'
+  if (row.status === 'running' && row.started_at) {
+    const sec = Math.max(0, Math.floor((oauthNowTime.value / 1000) - row.started_at))
+    return sec + 's'
+  }
+  return '—'
+}
+
+function saveOAuthFormDefault() {
+  try {
+    localStorage.setItem(OAUTH_FORM_KEY, JSON.stringify(oauthForm))
+    if (oauthForm.smsApiKey && oauthForm.smsApiKey !== '***') {
+      saveSmsConfig({
+        sms_enabled: oauthForm.smsEnabled ? '1' : '0',
+        sms_provider: oauthForm.smsProvider || 'smsbower',
+        sms_api_key: oauthForm.smsApiKey,
+        sms_country: String(oauthForm.smsCountry || '52').trim(),
+        sms_max_price: String(oauthForm.smsMaxPrice || '').trim(),
+        sms_max_phone_attempts: String(oauthForm.smsMaxAttempts || '3'),
+        sms_per_phone_timeout: String(oauthForm.smsTimeout || '80'),
+      }).catch(() => {})
+    }
+    ElMessage.success('OAuth 参数配置已成功保存为默认！')
+  } catch (e) {
+    ElMessage.error('保存配置失败: ' + e.message)
+  }
+}
+
+const SMS_COUNTRY_OPTIONS = [
+  { value: '52', label: '52 · 泰国 (推荐 ★★★★★ 免WhatsApp极高成功率)' },
+  { value: 'AUTO', label: '🌐 智能多国自动轮换 (泰国52/印尼6/越南10/巴西73/波兰15)' },
+  { value: '6', label: '6 · 印度尼西亚 (东南亚高库存)' },
+  { value: '10', label: '10 · 越南 (东南亚低价)' },
+  { value: '73', label: '73 · 巴西 (拉美高爆)' },
+  { value: '15', label: '15 · 波兰 (欧洲高品质)' },
+  { value: '16', label: '16 · 英国 (欧洲高品质)' },
+  { value: '12', label: '12 · 美国虚拟号' },
+  { value: '187', label: '187 · 美国实体号' },
+]
 
 const oauthLogModalVisible = ref(false)
 const currentOAuthLogItem = ref(null)
@@ -754,6 +828,13 @@ async function startOAuthExportTask() {
       proxy_country: oauthForm.proxyCountry || '',
       workers: oauthForm.workers || 5,
       timeout: oauthForm.timeout || 45,
+      sms_enabled: !!oauthForm.smsEnabled,
+      sms_provider: oauthForm.smsProvider || 'smsbower',
+      sms_api_key: oauthForm.smsApiKey || '',
+      sms_country: String(oauthForm.smsCountry || '52').trim(),
+      sms_max_price: String(oauthForm.smsMaxPrice || '').trim(),
+      sms_max_attempts: Number(oauthForm.smsMaxAttempts) || 3,
+      sms_timeout: Number(oauthForm.smsTimeout) || 80,
     })
     const taskId = res.taskId || res.task_id
     if (!taskId) throw new Error('未获取到任务 ID')
@@ -773,7 +854,9 @@ async function startOAuthExportTask() {
             if (!oauthItems.value[msg.email]) {
               oauthItems.value[msg.email] = { email: msg.email }
             }
-            oauthItems.value[msg.email].status = msg.status
+            if (msg.status !== undefined) oauthItems.value[msg.email].status = msg.status
+            if (msg.step !== undefined) oauthItems.value[msg.email].step = msg.step
+            if (msg.step_text !== undefined) oauthItems.value[msg.email].step_text = msg.step_text
             if (msg.result !== undefined) oauthItems.value[msg.email].result = msg.result
             if (msg.elapsed !== undefined) oauthItems.value[msg.email].elapsed = msg.elapsed
           }
@@ -1946,10 +2029,10 @@ onUnmounted(() => {
       </template>
     </el-dialog>
 
-    <!-- ──────────────── OAuth 导出与凭证生成控制台弹窗 (macOS 架构) ──────────────── -->
+    <!-- ──────────────── OAuth 导出与凭证生成控制台弹窗 (紧凑型设计) ──────────────── -->
     <el-dialog
-      v-model="oauthVisible" width="880px" top="5vh"
-      class="oa-custom-dialog plus-dialog oauth-dialog"
+      v-model="oauthVisible" width="880px" top="2vh"
+      class="oa-custom-dialog plus-dialog oauth-dialog oauth-compact-modal"
       :close-on-click-modal="false" @closed="closeOAuthExport"
     >
       <template #header>
@@ -1968,54 +2051,120 @@ onUnmounted(() => {
       </template>
 
       <div class="oa-dialog-container">
-        <!-- 参数配置卡片 (默认折叠收起) -->
+        <!-- 参数配置卡片 (Tab 选项卡折叠卡片) -->
         <el-collapse-transition>
-          <div v-show="!oauthConfigCollapsed" class="oa-config-card">
-            <el-form label-position="top" :disabled="oauthRunning" size="small">
-              <el-row :gutter="12">
-                <el-col :xs="24" :sm="12" :md="8">
-                  <el-form-item label="网络代理（支持下拉选择/代理池轮询/手动输入/直连）">
-                    <el-select
-                      v-model="oauthForm.proxy" filterable clearable allow-create default-first-option
-                      :reserve-keyword="false" placeholder="选择或手动输入代理" style="width: 100%"
-                    >
-                      <el-option
-                        v-if="proxyList.length"
-                        label="🌐 全局代理池轮询 (自动多Worker分配)"
-                        value="__POOL__"
-                      />
-                      <el-option v-for="p in proxyList" :key="p" :label="p" :value="p" />
-                    </el-select>
-                  </el-form-item>
-                </el-col>
-                <el-col :xs="24" :sm="12" :md="8">
-                  <el-form-item label="代理目标国家（自动重写代理与请求特征）">
-                    <el-select
-                      v-model="oauthForm.proxyCountry" filterable allow-create
-                      placeholder="选择目标国家" style="width: 100%"
-                    >
-                      <el-option
-                        v-for="c in COUNTRY_OPTIONS" :key="c.value"
-                        :label="c.label" :value="c.value"
-                      />
-                    </el-select>
-                  </el-form-item>
-                </el-col>
-                <el-col :xs="12" :sm="6" :md="4">
-                  <el-form-item label="并发 Worker 数">
-                    <el-input-number v-model="oauthForm.workers" :min="1" :max="20" style="width: 100%" />
-                  </el-form-item>
-                </el-col>
-                <el-col :xs="12" :sm="6" :md="4">
-                  <el-form-item label="单请求超时 (秒)">
-                    <el-input-number v-model="oauthForm.timeout" :min="10" :max="120" style="width: 100%" />
-                  </el-form-item>
-                </el-col>
-              </el-row>
-              <div style="font-size: 11.5px; color: var(--el-text-color-secondary); line-height: 1.5; margin-top: 2px">
-                💡 <b>运作说明</b>：采用纯协议直连模式重走 Codex OAuth 授权；若遇到手机验证（<code>add-phone</code>）<b>将立即标记跳过失败</b>，绝不阻塞接码或扣费；若需邮箱验证码则自动从号池取信推进。
-              </div>
-            </el-form>
+          <div v-show="!oauthConfigCollapsed" class="oa-config-card" style="padding: 10px 14px 12px">
+            <el-tabs v-model="oauthActiveTab" class="oa-config-tabs">
+              <!-- Tab 1: 网络与代理 -->
+              <el-tab-pane label="🌐 网络代理 & 并发设置" name="network">
+                <el-form label-position="top" :disabled="oauthRunning" size="small" style="margin-top: 6px">
+                  <el-row :gutter="12">
+                    <el-col :xs="24" :sm="12" :md="8">
+                      <el-form-item label="网络代理（支持下拉选择/代理池轮询/手动输入/直连）">
+                        <el-select
+                          v-model="oauthForm.proxy" filterable clearable allow-create default-first-option
+                          :reserve-keyword="false" placeholder="选择或手动输入代理" style="width: 100%"
+                        >
+                          <el-option
+                            v-if="proxyList.length"
+                            label="🌐 全局代理池轮询 (自动多Worker分配)"
+                            value="__POOL__"
+                          />
+                          <el-option v-for="p in proxyList" :key="p" :label="p" :value="p" />
+                        </el-select>
+                      </el-form-item>
+                    </el-col>
+                    <el-col :xs="24" :sm="12" :md="8">
+                      <el-form-item label="代理目标国家（自动重写代理与请求特征）">
+                        <el-select
+                          v-model="oauthForm.proxyCountry" filterable allow-create
+                          placeholder="选择目标国家" style="width: 100%"
+                        >
+                          <el-option
+                            v-for="c in COUNTRY_OPTIONS" :key="c.value"
+                            :label="c.label" :value="c.value"
+                          />
+                        </el-select>
+                      </el-form-item>
+                    </el-col>
+                    <el-col :xs="12" :sm="6" :md="4">
+                      <el-form-item label="并发 Worker 数">
+                        <el-input-number v-model="oauthForm.workers" :min="1" :max="20" style="width: 100%" />
+                      </el-form-item>
+                    </el-col>
+                    <el-col :xs="12" :sm="6" :md="4">
+                      <el-form-item label="单请求超时 (秒)">
+                        <el-input-number v-model="oauthForm.timeout" :min="10" :max="120" style="width: 100%" />
+                      </el-form-item>
+                    </el-col>
+                  </el-row>
+                </el-form>
+              </el-tab-pane>
+
+              <!-- Tab 2: 短信接码设置 -->
+              <el-tab-pane label="📱 手机号短信接码 (SmsBower)" name="sms">
+                <el-form label-position="top" :disabled="oauthRunning" size="small" style="margin-top: 6px">
+                  <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; flex-wrap: wrap; gap: 6px">
+                    <el-checkbox v-model="oauthForm.smsEnabled" style="font-weight: 600">
+                      启用自动短信接码 (遇到 add-phone 自动收码推进)
+                    </el-checkbox>
+                    <span style="font-size: 11.5px; color: var(--el-color-success)">
+                      🛡️ 自动退款保障：未接码成功的手机号均会自动向平台取消退款
+                    </span>
+                  </div>
+
+                  <div v-show="oauthForm.smsEnabled">
+                    <el-row :gutter="12">
+                      <el-col :xs="24" :sm="12" :md="6">
+                        <el-form-item label="接码服务平台">
+                          <el-select v-model="oauthForm.smsProvider" style="width: 100%">
+                            <el-option label="SmsBower (smsbower.page)" value="smsbower" />
+                            <el-option label="HeroSMS (hero-sms.com)" value="herosms" />
+                          </el-select>
+                        </el-form-item>
+                      </el-col>
+                      <el-col :xs="24" :sm="12" :md="8">
+                        <el-form-item label="接码国家 (建议 52 泰国免 WhatsApp)">
+                          <el-select v-model="oauthForm.smsCountry" filterable allow-create placeholder="选择或输入国家ID" style="width: 100%">
+                            <el-option v-for="sc in SMS_COUNTRY_OPTIONS" :key="sc.value" :label="sc.label" :value="sc.value" />
+                          </el-select>
+                        </el-form-item>
+                      </el-col>
+                      <el-col :xs="12" :sm="6" :md="5">
+                        <el-form-item label="最高金额限制 (留空不限，建议留空或≥0.2)">
+                          <el-input v-model="oauthForm.smsMaxPrice" placeholder="留空不限 / 如 0.25" clearable />
+                        </el-form-item>
+                      </el-col>
+                      <el-col :xs="12" :sm="6" :md="5">
+                        <el-form-item label="最多换号尝试次数">
+                          <el-input-number v-model="oauthForm.smsMaxAttempts" :min="1" :max="10" style="width: 100%" />
+                        </el-form-item>
+                      </el-col>
+                      <el-col :xs="24" :sm="16" :md="16">
+                        <el-form-item label="接码平台 API Key (留空自动使用全局「接码配置」)">
+                          <el-input v-model="oauthForm.smsApiKey" type="password" show-password placeholder="留空自动读取系统接码配置" clearable />
+                        </el-form-item>
+                      </el-col>
+                      <el-col :xs="12" :sm="8" :md="8">
+                        <el-form-item label="单号收码等待超时 (秒)">
+                          <el-input-number v-model="oauthForm.smsTimeout" :min="20" :max="300" :step="10" style="width: 100%" />
+                        </el-form-item>
+                      </el-col>
+                    </el-row>
+                  </div>
+                  <div v-show="!oauthForm.smsEnabled" style="padding: 10px 0; color: var(--el-text-color-secondary); font-size: 12px">
+                    当前未开启接码。遇到手机号验证（add-phone）将<b>直接安全跳过</b>，不会产生任何扣费。
+                  </div>
+                </el-form>
+              </el-tab-pane>
+            </el-tabs>
+
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 6px; padding-top: 8px; border-top: 1px dashed var(--el-border-color-lighter); font-size: 11.5px; color: var(--el-text-color-secondary)">
+              <span>💡 提示：若设置最高金额（如 0.03），若该档位缺货可能报 NO_NUMBERS，建议留空或设为 0.25+。</span>
+              <el-button size="small" type="primary" plain @click="saveOAuthFormDefault">
+                <el-icon><Check /></el-icon> 保存为默认配置
+              </el-button>
+            </div>
           </div>
         </el-collapse-transition>
 
@@ -2055,26 +2204,26 @@ onUnmounted(() => {
             :data="oauthRows"
             size="small"
             stripe
-            height="260px"
+            :height="oauthConfigCollapsed ? '280px' : '170px'"
             class="plus-table"
           >
             <el-table-column prop="email" label="账号" min-width="190" show-overflow-tooltip />
 
-            <el-table-column label="状态" width="130" align="center">
+            <el-table-column label="实时进度 / 状态" min-width="210" align="left">
               <template #default="{ row }">
                 <el-tag v-if="row.status === 'running'" size="small" type="primary" effect="light">
-                  <span class="spin-dot"></span> 运行中
+                  <span class="spin-dot"></span> {{ row.step_text || '[1/6] 建立会话...' }}
                 </el-tag>
                 <el-tag v-else-if="row.status === 'pending'" size="small" type="info" effect="plain">
                   待处理
                 </el-tag>
                 <el-tag v-else-if="row.result?.status === 'success'" size="small" type="success" effect="light">
-                  ✅ 成功 ({{ row.result?.plan_type || 'Plus' }})
+                  ✅ {{ row.result?.label || '成功' }}
                 </el-tag>
                 <el-tag v-else-if="row.result?.status === 'need_phone'" size="small" type="warning" effect="light">
                   📱 需接码(已跳过)
                 </el-tag>
-                <el-tag v-else size="small" type="danger" effect="light">
+                <el-tag v-else size="small" type="danger" effect="light" :title="row.result?.error || ''">
                   ❌ {{ row.result?.label || '失败' }}
                 </el-tag>
               </template>
@@ -2090,9 +2239,11 @@ onUnmounted(() => {
               </template>
             </el-table-column>
 
-            <el-table-column label="耗时" width="80" align="right">
+            <el-table-column label="耗时" width="85" align="right">
               <template #default="{ row }">
-                <span class="mono hint">{{ row.elapsed ? row.elapsed + 's' : '—' }}</span>
+                <span class="mono hint" :style="{ color: row.status === 'running' ? 'var(--el-color-primary)' : '' }">
+                  {{ getOAuthRowElapsed(row) }}
+                </span>
               </template>
             </el-table-column>
 
@@ -2104,27 +2255,6 @@ onUnmounted(() => {
               </template>
             </el-table-column>
           </el-table>
-        </div>
-
-        <!-- 实时日志流终端面板 (可收起) -->
-        <div class="plus-live-log-section">
-          <div class="log-section-header">
-            <span class="log-title">实时任务日志</span>
-            <span class="log-count">{{ oauthLogs.length }} 条</span>
-          </div>
-          <div id="oauth-log-box" class="plus-live-log-body">
-            <div
-              v-for="(line, idx) in oauthLogs"
-              :key="idx"
-              class="live-log-line"
-              :class="getLogClass(line)"
-            >
-              {{ line }}
-            </div>
-            <div v-if="!oauthLogs.length" class="live-log-empty">
-              {{ oauthRunning ? '正在建立 OAuth 任务连接...' : '等待开始 OAuth 导出任务' }}
-            </div>
-          </div>
         </div>
       </div>
 
