@@ -873,6 +873,13 @@ def _registered_where(filt: str) -> str:
         return "WHERE (oauth_status = 'failed' OR oauth_status = 'error')"
     if filt == "oauth_unchecked":
         return "WHERE (oauth_status IS NULL OR oauth_status = '')"
+    # ── 提链状态筛选 ──
+    if filt == "extract_eligible":
+        return "WHERE extra_json LIKE '%\"plus_eligible\"%' AND (extra_json NOT LIKE '%\"extract_link\":{\"status\":\"success\"%')"
+    if filt == "extract_success":
+        return "WHERE extra_json LIKE '%\"extract_link\":{\"status\":\"success\"%'"
+    if filt == "extract_failed":
+        return "WHERE extra_json LIKE '%\"extract_link\":{\"status\":\"failed\"%'"
     return ""
 
 
@@ -906,15 +913,18 @@ def list_registered(limit: int = 20, offset: int = 0, filter_rt: str = "all") ->
         d = dict(r)
         plus = None
         oauth_meta = None
+        extract_link = None
         if d.get("extra_json"):
             try:
                 extra = json.loads(d["extra_json"])
                 plus = extra.get("plus_check")
                 oauth_meta = extra.get("oauth_export")
+                extract_link = extra.get("extract_link")
             except Exception:
                 pass
         d["plus_check"] = plus
         d["oauth_export"] = oauth_meta
+        d["extract_link"] = extract_link
         d.pop("extra_json", None)
         oa = None
         if d.get("oa_check"):
@@ -1338,6 +1348,78 @@ def get_export_internal_config() -> dict:
         "sub2api_timeout":    get_setting("export_sub2api_timeout", "30"),
     }
     return {"cpa": cpa, "sub2api": sub2api}
+
+
+# ──────────────────────── Plus 试用提链配置 (Extract Link) ────────────────────────
+
+
+def get_extract_config() -> dict:
+    """获取提链全局配置。"""
+    cdk_raw = get_setting("extract_link_cdk", "")
+    return {
+        "extract_link_api_base": get_setting("extract_link_api_base", ""),
+        "extract_link_cdk":      "***" if cdk_raw else "",
+        "extract_link_type":     get_setting("extract_link_type", "pix"),
+        "extract_link_workers":  get_setting("extract_link_workers", "3"),
+    }
+
+
+def get_extract_internal_config() -> dict:
+    """内部用：获取明文提链配置。"""
+    return {
+        "extract_link_api_base": get_setting("extract_link_api_base", ""),
+        "extract_link_cdk":      get_setting("extract_link_cdk", ""),
+        "extract_link_type":     get_setting("extract_link_type", "pix"),
+        "extract_link_workers":  get_setting("extract_link_workers", "3"),
+    }
+
+
+def save_extract_config(data: dict) -> None:
+    """保存提链配置。"""
+    if "extract_link_api_base" in data:
+        set_setting("extract_link_api_base", str(data["extract_link_api_base"] or "").strip())
+    if "extract_link_type" in data:
+        set_setting("extract_link_type", str(data["extract_link_type"] or "pix").strip().lower())
+    if "extract_link_workers" in data:
+        set_setting("extract_link_workers", str(data["extract_link_workers"] or "3").strip())
+    if data.get("extract_link_cdk") and data["extract_link_cdk"] != "***":
+        set_setting("extract_link_cdk", str(data["extract_link_cdk"]).strip())
+
+
+def update_registered_extract(email: str, extract_data: dict) -> bool:
+    """更新账号的提链结果至 extra_json.extract_link。"""
+    email = (email or "").strip().lower()
+    if not email:
+        return False
+    with _lock:
+        con = _conn()
+        row = con.execute("SELECT extra_json FROM registered WHERE email=?", (email,)).fetchone()
+        if not row:
+            return False
+        extra = {}
+        if row["extra_json"]:
+            try:
+                extra = json.loads(row["extra_json"])
+            except Exception:
+                extra = {}
+        extra["extract_link"] = extract_data
+        # 若提链成功，自动将资格状态刷新为可领Plus试用
+        if extract_data.get("status") == "success":
+            curr_plus = extra.get("plus_check") or {}
+            if curr_plus.get("status") in ("free", "unchecked", None):
+                extra["plus_check"] = {
+                    "status": "plus_eligible",
+                    "label": "可领Plus试用",
+                    "plan": "free",
+                    "promo": "plus-1-month-free",
+                    "checked_at": time.time(),
+                }
+        con.execute(
+            "UPDATE registered SET extra_json=? WHERE email=?",
+            (json.dumps(extra, ensure_ascii=False), email),
+        )
+        con.commit()
+        return True
 
 
 # 模块加载时自动建表

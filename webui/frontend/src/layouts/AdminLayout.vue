@@ -16,7 +16,7 @@ const { banner } = storeToRefs(runtime)
 
 const collapse = ref(false)
 
-const GROUP_ORDER = ['概览', '注册', '数据', '配置']
+const GROUP_ORDER = ['概览', '注册', '提炼', '数据', '配置']
 const groups = computed(() => {
   const map = {}
   for (const r of router.getRoutes()) {

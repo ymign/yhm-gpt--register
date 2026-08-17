@@ -1475,6 +1475,451 @@ def api_oauth_export_download_sub2(task_id: str, emails: str = ""):
     )
 
 
+# ──────────────────────── Plus 试用提链 (Extract Link) ────────────────────────
+
+
+class ExtractConfigReq(BaseModel):
+    extract_link_api_base: Optional[str] = ""
+    extract_link_cdk: Optional[str] = ""
+    extract_link_type: Optional[str] = "pix"
+    extract_link_workers: Optional[str] = "3"
+
+
+@app.get("/api/extract/config")
+def api_extract_get_config():
+    """获取 Plus 提链全局配置。"""
+    return {"ok": True, "config": db.get_extract_config()}
+
+
+@app.post("/api/extract/config")
+def api_extract_save_config(req: ExtractConfigReq):
+    """保存 Plus 提链全局配置。"""
+    db.save_extract_config(req.model_dump(exclude_unset=True))
+    return {"ok": True, "config": db.get_extract_config()}
+
+
+@app.get("/api/extract/cdk")
+def api_extract_query_cdk(api_base: str = "", cdk: str = ""):
+    """实时查询提链 CDK 剩余次数与额度。"""
+    from . import extract_link_service
+
+    internal = db.get_extract_internal_config()
+    target_base = api_base.strip() or internal.get("extract_link_api_base", "")
+    target_cdk = cdk.strip() if (cdk and cdk != "***") else internal.get("extract_link_cdk", "")
+    if not target_base:
+        raise HTTPException(400, "尚未配置提链服务 API 地址")
+    if not target_cdk:
+        raise HTTPException(400, "尚未配置提链 CDK")
+    try:
+        res = extract_link_service.query_cdk(target_base, target_cdk)
+        return {"ok": True, "data": res}
+    except Exception as e:
+        raise HTTPException(400, str(e))
+
+
+class StartExtractReq(BaseModel):
+    emails: list[str] = Field(..., description="要提链的账号邮箱列表")
+    api_base: Optional[str] = Field("", description="提链服务 API 地址")
+    cdk: Optional[str] = Field("", description="提链 CDK")
+    link_type: Optional[str] = Field("pix", description="渠道类型 (pix/upi/stripe等)")
+    workers: int = Field(3, ge=1, le=20, description="并发 worker 线程数")
+
+
+@app.post("/api/extract/start")
+def api_extract_start(req: StartExtractReq):
+    """启动 Plus 批量提链任务。"""
+    from . import extract_link_service
+
+    emails = [e.strip().lower() for e in (req.emails or []) if e and e.strip()]
+    if not emails:
+        raise HTTPException(400, "请提供要提链的账号邮箱列表")
+
+    internal = db.get_extract_internal_config()
+    cfg = {
+        "api_base": (req.api_base or "").strip() or internal.get("extract_link_api_base", ""),
+        "cdk": (req.cdk or "").strip() if (req.cdk and req.cdk != "***") else internal.get("extract_link_cdk", ""),
+        "link_type": (req.link_type or "").strip().lower() or internal.get("extract_link_type", "pix"),
+        "workers": req.workers or int(internal.get("extract_link_workers") or 3),
+    }
+
+    try:
+        task_id = extract_link_service.start(emails, cfg)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+    logger.info(f"[extract] 提链任务 {task_id} 启动: {len(emails)} 个账号, link_type={cfg['link_type']}, workers={cfg['workers']}")
+    return {"ok": True, "task_id": task_id, "taskId": task_id, "total": len(emails)}
+
+
+@app.post("/api/extract/{task_id}/stop")
+def api_extract_stop(task_id: str):
+    """停止指定的 Plus 提链任务。"""
+    from . import extract_link_service
+
+    active = extract_link_service.stop(task_id)
+    return {"ok": True, "task_id": task_id, "active": active}
+
+
+@app.get("/api/extract/{task_id}/stream")
+async def api_extract_stream(task_id: str, request: Request):
+    """SSE：实时推流 Plus 提链进度、状态与日志。"""
+    from . import extract_link_service
+
+    snap = extract_link_service.snapshot(task_id)
+    if snap is None:
+        raise HTTPException(404, "task_id 不存在或已结束")
+
+    q = extract_link_service.get_queue(task_id)
+
+    async def gen():
+        loop = asyncio.get_event_loop()
+        try:
+            yield f"event: init\ndata: {json.dumps(snap, ensure_ascii=False)}\n\n"
+            while True:
+                if await request.is_disconnected():
+                    break
+                msg = await loop.run_in_executor(None, _safe_get_plus, q, 2.0)
+                if msg is None:
+                    yield "event: end\ndata: {}\n\n"
+                    break
+                if msg == "__TIMEOUT__":
+                    yield ": ping\n\n"
+                    continue
+                if msg.get("kind") == "end":
+                    yield f"event: end\ndata: {json.dumps(msg, ensure_ascii=False)}\n\n"
+                    break
+                kind = msg.get("kind", "progress")
+                yield f"event: {kind}\ndata: {json.dumps(msg, ensure_ascii=False)}\n\n"
+        finally:
+            pass
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
+@app.get("/api/extract/{task_id}/log")
+def api_extract_log(task_id: str, email: str = ""):
+    """获取指定提链任务中特定账号的详细日志。"""
+    from . import extract_link_service
+
+    lines = extract_link_service.get_logs(task_id, email)
+    return {"ok": True, "email": email, "lines": lines}
+
+
+@app.get("/api/extract/export_links")
+def api_extract_export_links(
+    task_id: str = "",
+    emails: str = "",
+    export_format: str = "url_only",
+):
+    """导出提链成功的链接数据 (url_only / email_url / json / csv)。"""
+    from . import extract_link_service
+
+    email_list = [e.strip().lower() for e in emails.split(",") if e.strip()] if emails else []
+    records = []
+
+    if task_id:
+        snap = extract_link_service.snapshot(task_id)
+        if snap and "items" in snap:
+            for em, it in snap["items"].items():
+                if (not email_list or em in email_list) and it.get("link_url"):
+                    records.append({
+                        "email": em,
+                        "link_type": it.get("link_type", ""),
+                        "link_url": it.get("link_url", ""),
+                        "status": it.get("status", ""),
+                    })
+
+    if not records:
+        con = db._conn()
+        placeholders = ",".join("?" * len(email_list)) if email_list else ""
+        query = "SELECT email, extra_json FROM registered WHERE extra_json LIKE '%\"extract_link\"%'"
+        params = []
+        if email_list:
+            query += f" AND email IN ({placeholders})"
+            params = email_list
+        rows = con.execute(query, params).fetchall()
+        for r in rows:
+            em = r["email"]
+            extra = json.loads(r["extra_json"]) if r["extra_json"] else {}
+            ext = extra.get("extract_link") or {}
+            if ext.get("link_url"):
+                records.append({
+                    "email": em,
+                    "link_type": ext.get("link_type", ""),
+                    "link_url": ext.get("link_url", ""),
+                    "status": ext.get("status", ""),
+                })
+
+    if not records:
+        raise HTTPException(404, "没有找到提链成功的链接记录")
+
+    if export_format == "json":
+        return Response(
+            content=json.dumps(records, ensure_ascii=False, indent=2),
+            media_type="application/json",
+            headers={"Content-Disposition": 'attachment; filename="extracted-links.json"'},
+        )
+    elif export_format == "email_url":
+        lines = [f"{r['email']}----{r['link_url']}" for r in records]
+        return Response(
+            content="\n".join(lines),
+            media_type="text/plain; charset=utf-8",
+            headers={"Content-Disposition": 'attachment; filename="extracted-links.txt"'},
+        )
+    elif export_format == "csv":
+        lines = ["email,link_type,status,link_url"]
+        for r in records:
+            lines.append(f'"{r["email"]}","{r["link_type"]}","{r["status"]}","{r["link_url"]}"')
+        return Response(
+            content="\n".join(lines),
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": 'attachment; filename="extracted-links.csv"'},
+        )
+    else:  # url_only
+        lines = [r["link_url"] for r in records]
+        return Response(
+            content="\n".join(lines),
+            media_type="text/plain; charset=utf-8",
+            headers={"Content-Disposition": 'attachment; filename="extracted-links.txt"'},
+        )
+
+
+# ──────────────────────── 本地原生多渠道提炼与资格检测 (无需外部CDK/API) ────────────────────────
+
+
+class StartNativeExtractTaskReq(BaseModel):
+    emails: list[str] = Field(..., description="要提炼的账号邮箱列表")
+    channel: str = Field("paypal", description="提炼渠道类型 (gcash_check/oaics_check/gcash/pix/paypal/ideal/upi/kakao/momo/twint/blik/hosted)")
+    exit_country: Optional[str] = Field("", description="出口代理国家 (BR/US/NL/VN等)")
+    billing_country: Optional[str] = Field("", description="账单国家 (PH/BR/DE/NL/IN等)")
+    currency: Optional[str] = Field("", description="币种 (PHP/BRL/EUR/USD等)")
+    workers: int = Field(3, ge=1, le=20, description="并发 worker 线程数")
+    retries: int = Field(3, ge=1, le=10, description="每号尝试次数")
+    allow_fallback: bool = Field(True, description="允许账单回退")
+    proxy_pool: Optional[str] = Field("", description="指定代理池")
+
+
+@app.post("/api/extract/task/start")
+def api_extract_task_start(req: StartNativeExtractTaskReq):
+    """启动本地原生渠道提炼任务台。"""
+    from . import extract_engine
+
+    emails = [e.strip().lower() for e in (req.emails or []) if e and e.strip()]
+    if not emails:
+        raise HTTPException(400, "请提供要提链的账号邮箱列表")
+
+    # 如果没传代理池，从设置或 proxy_seeds 加载
+    pool_str = req.proxy_pool or db.get_setting("proxy_pool", "") or db.get_setting("proxy_seeds", "")
+
+    task_config = {
+        "channel": req.channel,
+        "exit_country": req.exit_country,
+        "billing_country": req.billing_country,
+        "currency": req.currency,
+        "workers": req.workers,
+        "retries": req.retries,
+        "allow_fallback": req.allow_fallback,
+        "proxy_pool": pool_str,
+    }
+
+    try:
+        task_id = extract_engine.start_extract_job(emails, task_config)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+    logger.info(f"[native_extract] 任务 {task_id} 启动: channel={req.channel}, total={len(emails)}, workers={req.workers}")
+    return {"ok": True, "task_id": task_id, "taskId": task_id, "total": len(emails), "channel": req.channel}
+
+
+@app.post("/api/extract/task/{task_id}/stop")
+def api_extract_task_stop(task_id: str):
+    """停止指定的本地原生提炼任务。"""
+    from . import extract_engine
+
+    active = extract_engine.stop_extract_job(task_id)
+    return {"ok": True, "task_id": task_id, "active": active}
+
+
+@app.get("/api/extract/task/{task_id}/stream")
+async def api_extract_task_stream(task_id: str, request: Request):
+    """SSE：实时推流本地原生提炼进度与状态。"""
+    from . import extract_engine
+
+    snap = extract_engine.get_task_snapshot(task_id)
+    if snap is None:
+        raise HTTPException(404, "task_id 不存在或已结束")
+
+    q = extract_engine.get_task_queue(task_id)
+
+    async def gen():
+        loop = asyncio.get_event_loop()
+        try:
+            yield f"event: init\ndata: {json.dumps(snap, ensure_ascii=False)}\n\n"
+            while True:
+                if await request.is_disconnected():
+                    break
+                msg = await loop.run_in_executor(None, _safe_get_plus, q, 2.0)
+                if msg is None:
+                    yield "event: end\ndata: {}\n\n"
+                    break
+                if msg == "__TIMEOUT__":
+                    yield ": ping\n\n"
+                    continue
+                if msg.get("kind") == "end":
+                    yield f"event: end\ndata: {json.dumps(msg, ensure_ascii=False)}\n\n"
+                    break
+                kind = msg.get("kind", "progress")
+                yield f"event: {kind}\ndata: {json.dumps(msg, ensure_ascii=False)}\n\n"
+        finally:
+            pass
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
+@app.get("/api/extract/task/{task_id}/log")
+def api_extract_task_log(task_id: str, email: str = ""):
+    """获取指定本地提炼任务中特定账号的详细日志。"""
+    from . import extract_engine
+
+    lines = extract_engine.get_task_logs(task_id, email)
+    return {"ok": True, "email": email, "lines": lines}
+
+
+# ──────────────────────── PayPal 协议支付 (自动代付开通) ────────────────────────
+
+
+class StartPayPalPayReq(BaseModel):
+    items: list[dict] = Field(..., description="要支付的列表，每项含 email, ba_token 等")
+    country: Optional[str] = Field("BR", description="买家国家代码，如 BR, US, GB 等")
+    flow_mode: Optional[str] = Field("elevation", description="协议模式: elevation (身份提升) 或 standard (原版)")
+    workers: Optional[int] = Field(2, ge=1, le=10, description="并发线程数")
+    proxy_pool: Optional[str] = Field("", description="代理池")
+
+
+@app.post("/api/paypal-pay/task/start")
+def api_paypal_pay_task_start(req: StartPayPalPayReq):
+    """启动 PayPal 协议代付任务。"""
+    from . import paypal_pay_engine
+
+    if not req.items:
+        raise HTTPException(400, "请提供要执行协议支付的列表")
+
+    pool_str = req.proxy_pool or db.get_setting("proxy_pool", "") or db.get_setting("proxy_seeds", "")
+    task_id = paypal_pay_engine.start_paypal_pay_task(
+        items=req.items,
+        workers=req.workers or 2,
+        country=req.country or "BR",
+        flow_mode=req.flow_mode or "elevation",
+        proxy_pool=pool_str,
+    )
+    return {"ok": True, "task_id": task_id, "taskId": task_id, "total": len(req.items)}
+
+
+@app.post("/api/paypal-pay/task/{task_id}/stop")
+def api_paypal_pay_task_stop(task_id: str):
+    """停止指定的 PayPal 协议代付任务。"""
+    from . import paypal_pay_engine
+
+    active = paypal_pay_engine.stop_paypal_pay_task(task_id)
+    return {"ok": True, "task_id": task_id, "active": active}
+
+
+@app.get("/api/paypal-pay/task/{task_id}/stream")
+async def api_paypal_pay_task_stream(task_id: str, request: Request):
+    """SSE：实时推流 PayPal 协议代付进度与状态。"""
+    from . import paypal_pay_engine
+
+    task = paypal_pay_engine.get_paypal_pay_task(task_id)
+    if not task:
+        raise HTTPException(404, "task_id 不存在或已结束")
+
+    async def gen():
+        loop = asyncio.get_event_loop()
+        try:
+            init_snap = {
+                "items": task.items,
+                "logs": task.logs,
+                "country": task.country,
+                "flow_mode": task.flow_mode,
+            }
+            yield f"event: init\ndata: {json.dumps(init_snap, ensure_ascii=False)}\n\n"
+            while True:
+                if await request.is_disconnected():
+                    break
+                msg = await loop.run_in_executor(None, _safe_get_plus, task.queue, 2.0)
+                if msg is None:
+                    yield "event: end\ndata: {}\n\n"
+                    break
+                if msg == "__TIMEOUT__":
+                    yield ": ping\n\n"
+                    continue
+                if msg.get("kind") == "end":
+                    yield f"event: end\ndata: {json.dumps(msg, ensure_ascii=False)}\n\n"
+                    break
+                kind = msg.get("kind", "progress")
+                yield f"event: {kind}\ndata: {json.dumps(msg, ensure_ascii=False)}\n\n"
+        finally:
+            pass
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
+@app.get("/api/paypal-pay/task/{task_id}/log")
+def api_paypal_pay_task_log(task_id: str, key: str = ""):
+    """获取 PayPal 协议代付中特定账号/Token 的详细日志。"""
+    from . import paypal_pay_engine
+
+    task = paypal_pay_engine.get_paypal_pay_task(task_id)
+    if not task:
+        raise HTTPException(404, "任务不存在")
+    lines = task.item_logs.get(key, []) if key else task.logs
+    return {"ok": True, "key": key, "lines": lines}
+
+
+class SubmitPayPalPayInputReq(BaseModel):
+    key: str = Field(..., description="任务对应账号/Token key")
+    value: str = Field(..., description="6位短信验证码或新手机号")
+
+
+@app.post("/api/paypal-pay/task/{task_id}/input")
+def api_paypal_pay_task_input(task_id: str, req: SubmitPayPalPayInputReq):
+    """向等待中的 PayPal 协议任务提交短信验证码或新手机号。"""
+    from . import paypal_pay_engine
+
+    task = paypal_pay_engine.get_paypal_pay_task(task_id)
+    if not task:
+        raise HTTPException(404, "任务不存在")
+    try:
+        task.submit_input(req.key, req.value)
+        return {"ok": True}
+    except Exception as e:
+        raise HTTPException(400, str(e))
+
+
 # ──────────────────────── auto-loop ────────────────────────
 
 
@@ -1576,7 +2021,14 @@ async def api_auto_stream(request: Request):
 
 @app.get("/")
 def root():
-    return FileResponse(STATIC_DIR / "index.html")
+    return FileResponse(
+        STATIC_DIR / "index.html",
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
 
 
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")

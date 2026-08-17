@@ -48,6 +48,18 @@ const routes = [
     meta: { title: '注册结果', icon: 'CircleCheck', group: '数据' },
   },
   {
+    path: '/extract',
+    name: 'extract',
+    component: () => import('@/views/Extract.vue'),
+    meta: { title: 'Plus 提炼', icon: 'Link', group: '提炼' },
+  },
+  {
+    path: '/paypal-pay',
+    name: 'paypal_pay',
+    component: () => import('@/views/PayPalPay.vue'),
+    meta: { title: 'PayPal 协议支付', icon: 'CreditCard', group: '提炼' },
+  },
+  {
     path: '/runs',
     name: 'runs',
     component: () => import('@/views/Runs.vue'),

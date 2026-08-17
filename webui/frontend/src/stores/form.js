@@ -4,15 +4,18 @@ import { reactive, watch } from 'vue'
 const KEY = 'gpt_outlook_register_form_v3'
 
 export const COUNTRY_OPTIONS = [
-  { value: 'RANDOM_HOT', label: '🎲 高爆国家智能轮换 (JP/BR/VN/AR/ES/PL 随机 ★★★★★)' },
+  { value: 'RANDOM_HOT', label: '🎲 高爆国家智能轮换 (JP/BR/VN/TH/AR/ES/PL 随机 ★★★★★)' },
+  { value: 'TH', label: '🇹🇭 泰国 (TH · 接码提链高爆推荐 ★★★★★)' },
   { value: 'JP', label: '🇯🇵 日本 (JP · 亚太高爆推荐 ★★★★★)' },
   { value: 'BR', label: '🇧🇷 巴西 (BR · Plus试用高爆推荐 ★★★★★)' },
   { value: 'VN', label: '🇻🇳 越南 (VN · 东南亚高爆推荐 ★★★★★)' },
+  { value: 'PH', label: '🇵🇭 菲律宾 (PH · 亚太推荐 ★★★★)' },
   { value: 'AR', label: '🇦🇷 阿根廷 (AR · 拉美推荐 ★★★★)' },
   { value: 'ES', label: '🇪🇸 西班牙 (ES · 欧洲推荐 ★★★★)' },
   { value: 'PL', label: '🇵🇱 波兰 (PL · 欧洲推荐 ★★★★)' },
   { value: 'DE', label: '🇩🇪 德国 (DE · 欧洲推荐 ★★★★)' },
   { value: 'GB', label: '🇬🇧 英国 (GB · 欧洲推荐 ★★★★)' },
+  { value: 'NL', label: '🇳🇱 荷兰 (NL · 欧洲推荐 ★★★★)' },
   { value: 'US', label: '🇺🇸 美国 (US · 经典通用 ★★★)' },
   { value: 'RANDOM_ALL', label: '🌍 全球可用国家随机轮换 (多国混合 ★★★★)' },
   { value: '',   label: '🌐 自动 / 保持代理原样' },

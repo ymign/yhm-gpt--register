@@ -1,10 +1,14 @@
 # ──────────────── 敏感数据（绝对不能提交！）────────────────
 # 注册后的账号凭证 / 接码号池 / OTP 日志
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
 webui/webui.db
-webui/webui.db-shm
-webui/webui.db-wal
-webui/webui.db-journal
+webui/gpt_register.db
 webui/logs/
+webui/data/
+webui/paypal_protocol_data/
 webui.pid
 webui_*.log
 # ⚠️ 2026-08-04 补：手动备份的 *.db.bak 之前没被拦住，

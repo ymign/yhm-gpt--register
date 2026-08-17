@@ -49,12 +49,37 @@ import { useFormStore, proxyText, COUNTRY_OPTIONS } from '@/stores/form'
 import { useProxyStore } from '@/stores/proxy'
 import { useRuntimeStore } from '@/stores/runtime'
 import StatusDot from '@/components/StatusDot.vue'
+import ExtractTaskModal from '@/components/ExtractTaskModal.vue'
 
 const { form } = storeToRefs(useFormStore())
 // 检测用的代理必须能从代理池里挑
 const { list: proxyList } = storeToRefs(useProxyStore())
 const runtime = useRuntimeStore()
 const { dataVersion } = storeToRefs(runtime)
+
+// ════════════════════════ 全渠道提炼模态任务台 ════════════════════════
+const extractModalVisible = ref(false)
+const extractModalChannel = ref('paypal')
+const extractModalEmails = ref([])
+
+async function openExtractChannel(channelKey) {
+  extractModalChannel.value = channelKey
+  if (selected.value.length > 0) {
+    extractModalEmails.value = selected.value.map((r) => r.email)
+    extractModalVisible.value = true
+  } else {
+    try {
+      await ElMessageBox.confirm(
+        '当前未勾选账号，是否针对当前筛选视图下的所有账号打开提炼任务台？',
+        '一键提炼任务确认',
+        { confirmButtonText: '确定', cancelButtonText: '取消', type: 'info' }
+      )
+      const res = await listRegisteredEmails(filter.value)
+      extractModalEmails.value = res.emails || []
+      extractModalVisible.value = true
+    } catch (_) {}
+  }
+}
 
 // 分页与数据
 const rows = ref([])
@@ -1151,10 +1176,16 @@ const credData = ref(null)
 const CRED_KEYS = ['totp_secret', 'totp_factor_id', 'access_token', 'session_token', 'refresh_token', 'id_token', 'device_id', 'csrf_token', 'cookie_header', 'password']
 const credRows = computed(() => {
   if (!credData.value) return []
-  return CRED_KEYS.filter((k) => credData.value[k]).map((k) => ({ key: k, val: credData.value[k] }))
+  const items = CRED_KEYS.filter((k) => credData.value[k]).map((k) => ({ key: k, val: credData.value[k] }))
+  const ext = credData.value.extract_link || credData.value.extra?.extract_link
+  if (ext && ext.link_url) {
+    items.unshift({ key: 'extract_link', val: ext.link_url })
+  }
+  return items
 })
 
 const CRED_META_DICT = {
+  extract_link:   { badge: 'Extract', bg: 'rgba(16, 185, 129, 0.2)', color: '#34d399' },
   totp_secret:    { badge: '2FA', bg: 'rgba(16, 185, 129, 0.2)', color: '#34d399' },
   totp_factor_id: { badge: '2FA', bg: 'rgba(16, 185, 129, 0.15)', color: '#6ee7b7' },
   access_token:   { badge: 'OAuth', bg: 'rgba(59, 130, 246, 0.2)', color: '#60a5fa' },
@@ -1275,6 +1306,9 @@ onUnmounted(() => {
             <el-option label="👑 Pro 账号 (含20x/5x)" value="pro" />
             <el-option label="💎 Team 团队号" value="team" />
             <el-option label="★ Plus / 试用" value="plus" />
+            <el-option label="🎁 可领Plus试用" value="extract_eligible" />
+            <el-option label="⚗️ 提链成功" value="extract_success" />
+            <el-option label="❌ 提链失败" value="extract_failed" />
             <el-option label="Free 普通号" value="free" />
             <el-option label="有 RT" value="has_rt" />
             <el-option label="无 RT" value="no_rt" />
@@ -1309,13 +1343,33 @@ onUnmounted(() => {
             </el-button>
           </div>
 
-          <!-- 核心高亮：资格检测 -->
-          <el-button
-            type="primary" class="oa-action-btn" :disabled="!selected.length"
-            @click="openOA"
-          >
-            <el-icon><Compass /></el-icon>资格检测 ({{ selected.length }})
-          </el-button>
+          <!-- 核心功能：全渠道提炼与资格检测下拉菜单 -->
+          <el-dropdown trigger="click" @command="openExtractChannel">
+            <el-button type="warning" class="oa-action-btn extract-action-btn">
+              <el-icon><Link /></el-icon>⚗️ 提炼 ({{ selected.length }})
+              <el-icon class="el-icon--right"><ArrowDown /></el-icon>
+            </el-button>
+            <template #dropdown>
+              <el-dropdown-menu class="extract-dropdown-menu">
+                <div class="dropdown-group-title">资格检测</div>
+                <el-dropdown-item command="gcash_check">批量 GCash 检测</el-dropdown-item>
+                <el-dropdown-item command="oaics_check">批量 OAICS 检测</el-dropdown-item>
+                <el-dropdown-item command="plus_check">批量 Plus 状态检测</el-dropdown-item>
+
+                <div class="dropdown-group-title divider-title">提链 / 出码</div>
+                <el-dropdown-item command="gcash">批量 GCash 提链</el-dropdown-item>
+                <el-dropdown-item command="pix">批量 PIX 出码</el-dropdown-item>
+                <el-dropdown-item command="paypal">批量 PayPal 提链</el-dropdown-item>
+                <el-dropdown-item command="ideal">批量 iDEAL 提链</el-dropdown-item>
+                <el-dropdown-item command="upi">批量 UPI 提链</el-dropdown-item>
+                <el-dropdown-item command="kakao">批量 Kakao 提链</el-dropdown-item>
+                <el-dropdown-item command="momo">批量 MoMo 提链</el-dropdown-item>
+                <el-dropdown-item command="twint">批量 TWINT 提链</el-dropdown-item>
+                <el-dropdown-item command="blik">批量 BLIK 提链</el-dropdown-item>
+                <el-dropdown-item command="hosted">批量 Hosted 提链</el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
 
           <!-- 核心功能：OAuth 导出 -->
           <el-button
@@ -1436,6 +1490,42 @@ onUnmounted(() => {
                 class="macos-tag"
               >
                 {{ oauthMeta(row).label }}
+              </el-tag>
+              <span v-else class="hint">—</span>
+            </template>
+          </el-table-column>
+
+          <!-- 提链结果 -->
+          <el-table-column label="提链结果" min-width="160" show-overflow-tooltip>
+            <template #default="{ row }">
+              <div v-if="row.extract_link?.link_url" class="extract-link-cell">
+                <el-tag size="small" type="success" effect="light" class="extract-pill-tag">
+                  {{ (row.extract_link.channel || row.extract_link.link_type || '提链').toUpperCase() }}
+                </el-tag>
+                <el-link
+                  :href="row.extract_link.link_url"
+                  target="_blank"
+                  type="primary"
+                  :underline="false"
+                  class="mono extract-url-text"
+                >
+                  {{ row.extract_link.link_url }}
+                </el-link>
+                <el-button
+                  size="small"
+                  link
+                  :icon="CopyDocument"
+                  @click="copyText(row.extract_link.link_url, '提链链接已复制')"
+                />
+              </div>
+              <el-tag
+                v-else-if="row.extract_link?.status === 'failed'"
+                size="small"
+                type="danger"
+                effect="plain"
+                :title="row.extract_link.error"
+              >
+                失败: {{ (row.extract_link.error || '提链失败').slice(0, 8) }}
               </el-tag>
               <span v-else class="hint">—</span>
             </template>
@@ -2482,6 +2572,14 @@ onUnmounted(() => {
         <el-button type="primary" :loading="editSaving" @click="saveEdit">保存</el-button>
       </template>
     </el-dialog>
+
+    <!-- ──────────────── 全渠道提炼模态任务台 (GCash/PIX/PayPal/iDEAL/UPI/Kakao/MoMo/TWINT/BLIK/Hosted 等) ──────────────── -->
+    <ExtractTaskModal
+      v-model="extractModalVisible"
+      :channel="extractModalChannel"
+      :emails="extractModalEmails"
+      @finished="load(false)"
+    />
   </div>
 </template>
 
@@ -2526,6 +2624,21 @@ onUnmounted(() => {
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.extract-dropdown-menu {
+  min-width: 175px;
+}
+.dropdown-group-title {
+  padding: 4px 12px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--el-text-color-secondary);
+}
+.divider-title {
+  margin-top: 6px;
+  border-top: 1px solid var(--el-border-color-lighter);
+  padding-top: 6px;
 }
 
 .page-title-badge {
@@ -3226,5 +3339,25 @@ onUnmounted(() => {
 .cred-scroll-wrap {
   max-height: 60vh;
   overflow-y: auto;
+}
+
+.extract-link-cell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.extract-pill-tag {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 0 4px;
+}
+
+.extract-url-text {
+  font-size: 11px;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 </style>
