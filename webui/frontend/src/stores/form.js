@@ -3,8 +3,84 @@ import { reactive, watch } from 'vue'
 
 const KEY = 'gpt_outlook_register_form_v3'
 
+export const COUNTRY_NAME_MAP = {
+  US: { name: '美国', flag: '🇺🇸' },
+  DE: { name: '德国', flag: '🇩🇪' },
+  BR: { name: '巴西', flag: '🇧🇷' },
+  AR: { name: '阿根廷', flag: '🇦🇷' },
+  GB: { name: '英国', flag: '🇬🇧' },
+  UK: { name: '英国', flag: '🇬🇧' },
+  ES: { name: '西班牙', flag: '🇪🇸' },
+  JP: { name: '日本', flag: '🇯🇵' },
+  VN: { name: '越南', flag: '🇻🇳' },
+  TH: { name: '泰国', flag: '🇹🇭' },
+  PH: { name: '菲律宾', flag: '🇵🇭' },
+  PL: { name: '波兰', flag: '🇵🇱' },
+  NL: { name: '荷兰', flag: '🇳🇱' },
+  FR: { name: '法国', flag: '🇫🇷' },
+  IT: { name: '意大利', flag: '🇮🇹' },
+  CA: { name: '加拿大', flag: '🇨🇦' },
+  AU: { name: '澳大利亚', flag: '🇦🇺' },
+  SG: { name: '新加坡', flag: '🇸🇬' },
+  KR: { name: '韩国', flag: '🇰🇷' },
+  IN: { name: '印度', flag: '🇮🇳' },
+  ID: { name: '印尼', flag: '🇮🇩' },
+  MY: { name: '马来西亚', flag: '🇲🇾' },
+  CH: { name: '瑞士', flag: '🇨🇭' },
+  SE: { name: '瑞典', flag: '🇸🇪' },
+  NO: { name: '挪威', flag: '🇳🇴' },
+  FI: { name: '芬兰', flag: '🇫🇮' },
+  DK: { name: '丹麦', flag: '🇩🇰' },
+  CZ: { name: '捷克', flag: '🇨🇿' },
+  AT: { name: '奥地利', flag: '🇦🇹' },
+  BE: { name: '比利时', flag: '🇧🇪' },
+  IE: { name: '爱尔兰', flag: '🇮🇪' },
+  NZ: { name: '新西兰', flag: '🇳🇿' },
+  MX: { name: '墨西哥', flag: '🇲🇽' },
+  CL: { name: '智利', flag: '🇨🇱' },
+  CO: { name: '哥伦比亚', flag: '🇨🇴' },
+  PE: { name: '秘鲁', flag: '🇵🇪' },
+  TR: { name: '土耳其', flag: '🇹🇷' },
+  AE: { name: '阿联酋', flag: '🇦🇪' },
+  SA: { name: '沙特', flag: '🇸🇦' },
+  ZA: { name: '南非', flag: '🇿🇦' },
+  EG: { name: '埃及', flag: '🇪🇬' },
+  NG: { name: '尼日利亚', flag: '🇳🇬' },
+  HK: { name: '中国香港', flag: '🇭🇰' },
+  TW: { name: '中国台湾', flag: '🇹🇼' },
+  MO: { name: '中国澳门', flag: '🇲🇴' },
+  CN: { name: '中国', flag: '🇨🇳' },
+  RU: { name: '俄罗斯', flag: '🇷🇺' },
+  UA: { name: '乌克兰', flag: '🇺🇦' },
+  RO: { name: '罗马尼亚', flag: '🇷🇴' },
+  BG: { name: '保加利亚', flag: '🇧🇬' },
+  GR: { name: '希腊', flag: '🇬🇷' },
+  PT: { name: '葡萄牙', flag: '🇵🇹' },
+  HU: { name: '匈牙利', flag: '🇭🇺' },
+  IL: { name: '以色列', flag: '🇮🇱' },
+}
+
+export function formatCountry(code) {
+  if (!code) return ''
+  const c = String(code).trim().toUpperCase()
+  const info = COUNTRY_NAME_MAP[c]
+  if (info) {
+    return `${info.flag} ${info.name} ${c}`
+  }
+  return c
+}
+
+export function countryNameCn(code) {
+  if (!code) return ''
+  const c = String(code).trim().toUpperCase()
+  const info = COUNTRY_NAME_MAP[c]
+  if (info) {
+    return info.name
+  }
+  return c
+}
+
 export const COUNTRY_OPTIONS = [
-  { value: 'RANDOM_HOT', label: '🎲 高爆国家智能轮换 (JP/BR/VN/TH/AR/ES/PL 随机 ★★★★★)' },
   { value: 'TH', label: '🇹🇭 泰国 (TH · 接码提链高爆推荐 ★★★★★)' },
   { value: 'JP', label: '🇯🇵 日本 (JP · 亚太高爆推荐 ★★★★★)' },
   { value: 'BR', label: '🇧🇷 巴西 (BR · Plus试用高爆推荐 ★★★★★)' },

@@ -53,7 +53,7 @@ import {
 } from '@/api/register'
 import { saveSmsConfig } from '@/api/settings'
 import { copyText, fmtTime, createSSE } from '@/api/request'
-import { useFormStore, proxyText, COUNTRY_OPTIONS } from '@/stores/form'
+import { useFormStore, proxyText, COUNTRY_OPTIONS, formatCountry } from '@/stores/form'
 import { useProxyStore } from '@/stores/proxy'
 import { useRuntimeStore } from '@/stores/runtime'
 import StatusDot from '@/components/StatusDot.vue'
@@ -1745,15 +1745,15 @@ onUnmounted(() => {
             </template>
           </el-table-column>
 
-          <!-- 出口国家 -->
-          <el-table-column label="出口国家" width="120" align="center" show-overflow-tooltip>
+          <!-- 出口国家 (展示国旗 + 中文 + 代码) -->
+          <el-table-column label="出口国家" width="135" align="center" show-overflow-tooltip>
             <template #default="{ row }">
               <span
                 v-if="row.reg_country"
                 class="geo-badge"
-                :class="{ 'geo-hot': ['JP', 'BR', 'VN', 'DE', 'GB', 'PL', 'ES', 'AR'].includes(row.reg_country) }"
+                :class="{ 'geo-hot': ['JP', 'BR', 'VN', 'DE', 'GB', 'PL', 'ES', 'AR', 'TH'].includes(row.reg_country?.toUpperCase()) }"
               >
-                <span class="geo-country">{{ row.reg_country }}</span>
+                <span class="geo-country">{{ formatCountry(row.reg_country) }}</span>
               </span>
               <span v-else class="hint">—</span>
             </template>

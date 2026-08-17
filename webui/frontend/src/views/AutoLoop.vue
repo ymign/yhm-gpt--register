@@ -23,7 +23,7 @@ import {
   getRunLog,
 } from '@/api/register'
 import { copyText, fmtTime } from '@/api/request'
-import { useFormStore, proxyText, COUNTRY_OPTIONS } from '@/stores/form'
+import { useFormStore, proxyText, COUNTRY_OPTIONS, formatCountry } from '@/stores/form'
 import { useProxyStore } from '@/stores/proxy'
 import { useRuntimeStore } from '@/stores/runtime'
 
@@ -529,14 +529,14 @@ onUnmounted(() => {
           </el-table-column>
 
           <!-- 出口国家 -->
-          <el-table-column label="出口国家" width="130" align="center" show-overflow-tooltip>
+          <el-table-column label="出口国家" width="135" align="center" show-overflow-tooltip>
             <template #default="{ row }">
               <span
                 v-if="row.reg_country"
                 class="geo-badge"
-                :class="{ 'geo-hot': ['JP', 'BR', 'VN', 'DE', 'GB', 'PL', 'ES', 'AR'].includes(row.reg_country) }"
+                :class="{ 'geo-hot': ['JP', 'BR', 'VN', 'DE', 'GB', 'PL', 'ES', 'AR', 'TH'].includes(row.reg_country?.toUpperCase()) }"
               >
-                <span class="geo-country">{{ row.reg_country }}</span>
+                <span class="geo-country">{{ formatCountry(row.reg_country) }}</span>
               </span>
               <span v-else-if="row.status === 'running'" class="hint">匹配中...</span>
               <span v-else class="hint">—</span>
