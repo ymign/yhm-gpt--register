@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
+  Plus,
   Refresh,
   Download,
   CopyDocument,
@@ -18,6 +19,8 @@ import {
   Delete,
   Search,
   Position,
+  DocumentAdd,
+  Promotion,
   ChatDotSquare,
 } from '@element-plus/icons-vue'
 import { listRegistered } from '@/api/register'
@@ -30,18 +33,7 @@ import {
   submitPayPalPayInput,
 } from '@/api/paypalPay'
 
-const activeTab = ref('auto')
-
-// ── 模式 1：从已提链列表选择 ──
-const loading = ref(false)
-const rows = ref([])
-const total = ref(0)
-const page = ref(1)
-const pageSize = ref(30)
-const selected = ref([])
-
-// ── 模式 2：手动输入 BA 列表 ──
-const manualInputText = ref('')
+const activeTab = ref('manual_table')
 
 // ── 参数设置 ──
 const form = reactive({
@@ -70,27 +62,185 @@ function handleCountryChange(val) {
   }
 }
 
-// ── 执行与任务监控 ──
+// ──────────────── 模式 1：动态表格录入模式 (用户重点需求) ────────────────
+let rowIdCounter = 1
+function createNewManualRow(initData = {}) {
+  return {
+    id: `row_${Date.now()}_${rowIdCounter++}`,
+    ba_token: initData.ba_token || '',
+    phone: initData.phone || form.default_phone || '+66812345678',
+    email: initData.email || '',
+    status: 'idle', // idle, running, awaiting_otp, success, error, cancelled
+    step_text: '待支付',
+    prompt: '',
+    otpInput: '',
+    submittingOtp: false,
+    taskId: '',
+    elapsed: 0,
+  }
+}
+
+const manualRows = ref([createNewManualRow()])
+const manualSelected = ref([])
+
+// 新增单行
+function handleAddManualRow() {
+  manualRows.value.push(createNewManualRow())
+}
+
+// 移除单行
+function handleRemoveManualRow(index) {
+  manualRows.value.splice(index, 1)
+  if (manualRows.value.length === 0) {
+    manualRows.value.push(createNewManualRow())
+  }
+}
+
+// 清空全部行
+function handleClearManualRows() {
+  ElMessageBox.confirm('确定要清空当前所有录入的代付数据吗？', '清空确认', {
+    confirmButtonText: '确定清空',
+    cancelButtonText: '取消',
+    type: 'warning',
+  }).then(() => {
+    manualRows.value = [createNewManualRow()]
+    ElMessage.success('已清空列表')
+  })
+}
+
+// 批量粘贴导入弹窗
+const pasteDialogVisible = ref(false)
+const pasteText = ref('')
+
+function openPasteDialog() {
+  pasteText.value = ''
+  pasteDialogVisible.value = true
+}
+
+function handleConfirmPaste() {
+  const lines = pasteText.value.split('\n').map((l) => l.trim()).filter(Boolean)
+  if (!lines.length) {
+    ElMessage.warning('请输入要导入的内容')
+    return
+  }
+
+  const newItems = lines.map((l) => {
+    const parts = l.split('----')
+    if (parts.length >= 3) {
+      return { email: parts[0].trim(), ba_token: parts[1].trim(), phone: parts[2].trim() }
+    }
+    if (parts.length === 2) {
+      if (parts[1].startsWith('+') || /^\d{8,}$/.test(parts[1])) {
+        return { email: '', ba_token: parts[0].trim(), phone: parts[1].trim() }
+      }
+      return { email: parts[0].trim(), ba_token: parts[1].trim(), phone: form.default_phone }
+    }
+    return { email: '', ba_token: l, phone: form.default_phone }
+  })
+
+  // 如果原本只有一条空行，先清空
+  if (manualRows.value.length === 1 && !manualRows.value[0].ba_token.trim()) {
+    manualRows.value = []
+  }
+
+  for (const item of newItems) {
+    manualRows.value.push(createNewManualRow(item))
+  }
+
+  pasteDialogVisible.value = false
+  ElMessage.success(`成功导入 ${newItems.length} 条数据`)
+}
+
+// ──────────────── 模式 2：从已提链列表勾选 ────────────────
+const loading = ref(false)
+const autoRows = ref([])
+const total = ref(0)
+const page = ref(1)
+const pageSize = ref(30)
+const autoSelected = ref([])
+
+async function loadAutoData() {
+  loading.value = true
+  try {
+    const res = await listRegistered({
+      limit: pageSize.value,
+      offset: (page.value - 1) * pageSize.value,
+      filter: 'extract_success',
+    })
+    const list = (res.items || []).filter((r) => r.extract_link && r.extract_link.link_url)
+    autoRows.value = list.map((r) => ({
+      ...r,
+      _phone: r._phone || form.default_phone || '+66812345678',
+      _otpInput: '',
+      _submittingOtp: false,
+    }))
+    total.value = res.total || 0
+  } catch (e) {
+    ElMessage.error(e.message || '加载列表失败')
+  } finally {
+    loading.value = false
+  }
+}
+
+function batchFillAutoPhones() {
+  if (!autoSelected.value.length) {
+    ElMessage.warning('请先勾选要填充手机号的账号')
+    return
+  }
+  const phoneVal = form.default_phone.trim()
+  autoSelected.value.forEach((r) => {
+    r._phone = phoneVal
+  })
+  ElMessage.success(`已为选中的 ${autoSelected.value.length} 个账号填充手机号`)
+}
+
+// ──────────────── 任务调度与 SSE 流管理 ────────────────
 const running = ref(false)
-const taskId = ref('')
-const es = ref(null)
+const activeTaskIds = ref(new Set())
 const taskMap = reactive({})
+const sseStreams = reactive({})
 
 // 全局实时日志流
 const liveLogs = ref([])
 const liveLogFilter = ref('')
 const liveLogAutoScroll = ref(true)
 const liveLogTerminalRef = ref(null)
-const showLiveConsole = ref(true)
 
-// 待接码快速队列
+// 待接码列表聚合
 const pendingOtpList = computed(() => {
-  return Object.values(taskMap).filter((item) => item.status === 'awaiting_otp')
+  const list = []
+  // 从 manualRows 提取
+  manualRows.value.forEach((r) => {
+    if (r.status === 'awaiting_otp') {
+      list.push({
+        type: 'manual',
+        row: r,
+        key: r.email || r.ba_token || r.id,
+        phone: r.phone,
+        prompt: r.prompt,
+      })
+    }
+  })
+  // 从 autoRows 提取
+  autoRows.value.forEach((r) => {
+    const t = taskMap[r.email]
+    if (t && t.status === 'awaiting_otp') {
+      list.push({
+        type: 'auto',
+        row: r,
+        key: r.email,
+        phone: r._phone || form.default_phone,
+        prompt: t.prompt,
+      })
+    }
+  })
+  return list
 })
 
-const taskItems = computed(() => Object.values(taskMap))
+// KPI 统计
+const allTaskItems = computed(() => Object.values(taskMap))
 const stats = computed(() => {
-  const list = taskItems.value
+  const list = allTaskItems.value
   const tot = list.length
   const success = list.filter((i) => i.status === 'success').length
   const failed = list.filter((i) => i.status === 'error' || i.status === 'cancelled').length
@@ -100,7 +250,7 @@ const stats = computed(() => {
   return { tot, success, failed, active, pending, percent }
 })
 
-// ── 单账号日志弹窗 (支持实时动态追加) ──
+// ── 单账号日志弹窗 ──
 const logVisible = ref(false)
 const logLoading = ref(false)
 const logKey = ref('')
@@ -124,104 +274,109 @@ function scrollGlobalTerminalToBottom() {
   })
 }
 
-// ── 加载数据 ──
-async function loadData() {
-  loading.value = true
-  try {
-    const res = await listRegistered({
-      limit: pageSize.value,
-      offset: (page.value - 1) * pageSize.value,
-      filter: 'extract_success',
-    })
-    const list = (res.items || []).filter((r) => r.extract_link && r.extract_link.link_url)
-    // 为每一行附带独立的手机号编辑字段和行内输入状态
-    rows.value = list.map((r) => ({
-      ...r,
-      _phone: r._phone || form.default_phone || '+66812345678',
-      _otpInput: '',
-      _submittingOtp: false,
-    }))
-    total.value = res.total || 0
-  } catch (e) {
-    ElMessage.error(e.message || '加载列表失败')
-  } finally {
-    loading.value = false
-  }
-}
+// ──────────────── 执行支付动作 ────────────────
 
-// ── 批量手机号工具 ──
-function batchFillSelectedPhones() {
-  if (!selected.value.length) {
-    ElMessage.warning('请先勾选要填充手机号的账号')
+// 单行启动支付 (表格录入模式下点击某一行)
+function handleStartSingleRow(row) {
+  const token = (row.ba_token || '').trim()
+  if (!token) {
+    ElMessage.warning('请先输入有效的 0元 BA Token 或授权链接')
     return
   }
-  const phoneVal = form.default_phone.trim()
-  if (!phoneVal) {
-    ElMessage.warning('请在顶部设置默认手机号')
+  const phone = (row.phone || form.default_phone || '').trim()
+  if (!phone) {
+    ElMessage.warning('请填写手机号')
     return
   }
-  selected.value.forEach((r) => {
-    r._phone = phoneVal
+
+  const key = row.email || token
+  row.status = 'running'
+  row.step_text = '正在启动协议会话...'
+  row.prompt = ''
+  row.otpInput = ''
+
+  taskMap[key] = {
+    key,
+    email: row.email,
+    ba_token: token,
+    phone,
+    status: 'running',
+    step_text: '正在启动协议会话...',
+    prompt: '',
+    started_at: Date.now() / 1000,
+    elapsed: 0,
+  }
+
+  startPayPalPayTask({
+    items: [{ email: row.email, ba_token: token, phone }],
+    country: form.country,
+    flow_mode: form.flow_mode,
+    workers: 1,
   })
-  ElMessage.success(`已为选中的 ${selected.value.length} 个账号填充手机号: ${phoneVal}`)
+    .then((res) => {
+      row.taskId = res.task_id
+      running.value = true
+      activeTaskIds.value.add(res.task_id)
+      ElMessage.success(`[${token.slice(0, 14)}...] 协议支付任务已启动！`)
+      connectTaskStream(res.task_id, [row])
+    })
+    .catch((e) => {
+      row.status = 'error'
+      row.step_text = e.message || '启动失败'
+      ElMessage.error(e.message || '启动支付任务失败')
+    })
 }
 
-// ── 启动任务 ──
-function handleStart() {
+// 批量启动支付 (当前 Tab 下所有待处理或勾选数据)
+function handleStartBatch() {
   let payItems = []
+  let targetRowList = []
 
-  if (activeTab.value === 'auto') {
-    const targetRows = selected.value.length ? selected.value : rows.value
-    if (!targetRows.length) {
-      ElMessage.warning('当前没有可执行协议支付的已提链账号')
+  if (activeTab.value === 'manual_table') {
+    const list = manualSelected.value.length ? manualSelected.value : manualRows.value
+    const valid = list.filter((r) => r.ba_token && r.ba_token.trim())
+    if (!valid.length) {
+      ElMessage.warning('请先在表格中输入至少一条包含 BA Token 的数据')
       return
     }
-    payItems = targetRows.map((r) => ({
+    payItems = valid.map((r) => ({
+      email: r.email ? r.email.trim() : '',
+      ba_token: r.ba_token.trim(),
+      phone: (r.phone || form.default_phone || '').trim(),
+    }))
+    targetRowList = valid
+  } else {
+    const list = autoSelected.value.length ? autoSelected.value : autoRows.value
+    if (!list.length) {
+      ElMessage.warning('当前没有可执行的已提链账号')
+      return
+    }
+    payItems = list.map((r) => ({
       email: r.email,
       ba_token: r.extract_link?.ba_token || r.extract_link?.link_url || '',
       phone: (r._phone || form.default_phone || '').trim(),
     }))
-  } else {
-    const lines = manualInputText.value.split('\n').map((l) => l.trim()).filter(Boolean)
-    if (!lines.length) {
-      ElMessage.warning('请输入要代付的 BA Token 列表（每行一个）')
-      return
-    }
-    payItems = lines.map((l) => {
-      const parts = l.split('----')
-      if (parts.length >= 3) {
-        return { email: parts[0].trim(), ba_token: parts[1].trim(), phone: parts[2].trim() }
-      }
-      if (parts.length === 2) {
-        if (parts[1].startsWith('+') || /^\d{8,}$/.test(parts[1])) {
-          return { email: '', ba_token: parts[0].trim(), phone: parts[1].trim() }
-        }
-        return { email: parts[0].trim(), ba_token: parts[1].trim(), phone: form.default_phone.trim() }
-      }
-      return { email: '', ba_token: l, phone: form.default_phone.trim() }
-    })
+    targetRowList = list
   }
 
-  // 重置 taskMap
-  for (const k in taskMap) delete taskMap[k]
-  for (const it of payItems) {
-    const key = it.email || it.ba_token
-    taskMap[key] = {
-      key,
-      email: it.email,
-      ba_token: it.ba_token,
-      phone: it.phone,
-      status: 'pending',
-      step_text: '排队中...',
+  for (const r of targetRowList) {
+    r.status = 'running'
+    r.step_text = '排队准备中...'
+    r.prompt = ''
+    r.otpInput = ''
+    const k = r.email || r.ba_token || r.id
+    taskMap[k] = {
+      key: k,
+      email: r.email || '',
+      ba_token: r.ba_token || '',
+      phone: r.phone || r._phone || form.default_phone,
+      status: 'running',
+      step_text: '排队准备中...',
       prompt: '',
-      started_at: 0,
+      started_at: Date.now() / 1000,
       elapsed: 0,
-      _otpInput: '',
-      _submittingOtp: false,
     }
   }
-
-  liveLogs.value = []
 
   startPayPalPayTask({
     items: payItems,
@@ -230,36 +385,34 @@ function handleStart() {
     workers: form.workers,
   })
     .then((res) => {
-      taskId.value = res.task_id
       running.value = true
-      ElMessage.success(`PayPal 协议批量支付已启动: 共 ${payItems.length} 个任务, 并发数=${form.workers}`)
-      connectStream(res.task_id)
+      activeTaskIds.value.add(res.task_id)
+      ElMessage.success(`批量协议支付已启动: 共 ${payItems.length} 个任务, 并发数=${form.workers}`)
+      connectTaskStream(res.task_id, targetRowList)
     })
     .catch((e) => {
       ElMessage.error(e.message || '启动支付任务失败')
     })
 }
 
-// ── 停止任务 ──
-function handleStop() {
-  if (!taskId.value) return
-  stopPayPalPayTask(taskId.value)
-    .then(() => {
-      ElMessage.info('已发送停止指令')
-    })
-    .catch((e) => {
-      ElMessage.error(e.message || '停止失败')
-    })
+// 停止全部任务
+function handleStopAll() {
+  if (!activeTaskIds.value.size) return
+  activeTaskIds.value.forEach((tid) => {
+    stopPayPalPayTask(tid).catch(() => {})
+  })
+  activeTaskIds.value.clear()
+  running.value = false
+  ElMessage.info('已发送停止全部任务指令')
 }
 
-// ── SSE 实时推流连接 ──
-function connectStream(id) {
-  if (es.value) {
-    es.value.close()
-    es.value = null
+// ── SSE 实时流连接与多行状态绑定 ──
+function connectTaskStream(taskId, boundRows = []) {
+  if (sseStreams[taskId]) {
+    sseStreams[taskId].close()
   }
 
-  es.value = createSSE(paypalPayStreamUrl(id), {
+  const es = createSSE(paypalPayStreamUrl(taskId), {
     init: (ev) => {
       try {
         const data = JSON.parse(ev.data)
@@ -275,8 +428,6 @@ function connectStream(id) {
               prompt: it.prompt || '',
               started_at: it.started_at || 0,
               elapsed: it.elapsed || 0,
-              _otpInput: '',
-              _submittingOtp: false,
             }
           }
         }
@@ -290,6 +441,8 @@ function connectStream(id) {
       try {
         const data = JSON.parse(ev.data)
         const k = data.key || data.email
+
+        // 1. 同步到全局 taskMap
         if (k && taskMap[k]) {
           if (data.status !== undefined) taskMap[k].status = data.status
           if (data.step_text !== undefined) taskMap[k].step_text = data.step_text
@@ -298,6 +451,24 @@ function connectStream(id) {
           if (data.started_at !== undefined) taskMap[k].started_at = data.started_at
           if (data.elapsed !== undefined) taskMap[k].elapsed = data.elapsed
         }
+
+        // 2. 同步更新 manualRows 中匹配的行
+        manualRows.value.forEach((r) => {
+          const matchKey = r.email || r.ba_token
+          if (matchKey && (matchKey === k || k.includes(matchKey) || matchKey.includes(k))) {
+            if (data.status !== undefined) r.status = data.status
+            if (data.step_text !== undefined) r.step_text = data.step_text
+            if (data.prompt !== undefined) r.prompt = data.prompt
+            if (data.elapsed !== undefined) r.elapsed = data.elapsed
+          }
+        })
+
+        // 3. 同步更新 autoRows 中匹配的行
+        autoRows.value.forEach((r) => {
+          if (r.email === k || (r.extract_link?.ba_token && r.extract_link.ba_token === k)) {
+            // autoRows 的渲染直接依赖 taskMap[row.email]
+          }
+        })
       } catch (_) {}
     },
     log: (ev) => {
@@ -310,7 +481,7 @@ function connectStream(id) {
           if (liveLogs.value.length > 800) liveLogs.value.shift()
           scrollGlobalTerminalToBottom()
 
-          // 如果单账号日志弹窗打开，且匹配当前账号，实时追加
+          // 如果单账号日志弹窗当前打开，且匹配该 key，实时追加
           if (logVisible.value && logKey.value) {
             if (!key || logKey.value === key || logKey.value.includes(key) || key.includes(logKey.value)) {
               logLines.value.push(line)
@@ -321,57 +492,69 @@ function connectStream(id) {
       } catch (_) {}
     },
     end: () => {
-      running.value = false
-      if (es.value) {
-        es.value.close()
-        es.value = null
+      activeTaskIds.value.delete(taskId)
+      if (activeTaskIds.value.size === 0) {
+        running.value = false
+        ElMessage.success('PayPal 协议代付任务执行完成！')
       }
-      ElMessage.success('PayPal 协议代付任务已全部执行完毕！')
-      loadData()
+      if (activeTab.value === 'auto') {
+        loadAutoData()
+      }
     },
   })
+
+  sseStreams[taskId] = es
 }
 
-// ── 行内提交 2FA 验证码 / 换手机号 (多账号并发独立输入) ──
-async function submitInlineOtp(targetItem) {
-  const key = targetItem.key || targetItem.email || targetItem.ba_token
-  const val = (targetItem._otpInput || '').trim()
+// ──────────────── 行内 2FA 验证码输入与确认 ────────────────
+async function handleInlineOtpSubmit(row) {
+  const key = row.email || row.ba_token || row.id || row.key
+  const val = (row.otpInput || row._otpInput || '').trim()
   if (!val) {
     ElMessage.warning('请输入 6 位短信验证码或新手机号')
     return
   }
 
-  targetItem._submittingOtp = true
+  row.submittingOtp = true
+  row._submittingOtp = true
+
+  const targetTaskId = row.taskId || Array.from(activeTaskIds.value)[0] || 'latest'
+
   try {
-    await submitPayPalPayInput(taskId.value || 'latest', key, val)
-    ElMessage.success(`[${(targetItem.email || key).slice(0, 16)}] 验证码已提交，正在继续授权...`)
-    targetItem._otpInput = ''
-    targetItem.status = 'running'
-    targetItem.step_text = '已提交验证码，正在继续授权...'
+    await submitPayPalPayInput(targetTaskId, key, val)
+    ElMessage.success(`[${(row.email || row.ba_token || key).slice(0, 16)}] 验证码已提交，正在继续执行协议...`)
+    row.otpInput = ''
+    row._otpInput = ''
+    row.status = 'running'
+    row.step_text = '已收到验证码，正在继续授权...'
     if (taskMap[key]) {
       taskMap[key].status = 'running'
-      taskMap[key].step_text = '已提交验证码，正在继续授权...'
-      taskMap[key]._otpInput = ''
+      taskMap[key].step_text = '已收到验证码，正在继续授权...'
+      taskMap[key].prompt = ''
     }
   } catch (e) {
     ElMessage.error(e.message || '提交验证码失败')
   } finally {
-    targetItem._submittingOtp = false
+    row.submittingOtp = false
+    row._submittingOtp = false
   }
 }
 
-// ── 查看单账号详细日志 ──
+// ── 查看单账号详细实时日志 ──
 async function handleViewLog(item) {
-  logKey.value = item.key || item.email || item.ba_token
+  logKey.value = item.email || item.ba_token || item.key || item.id
   logVisible.value = true
   logLoading.value = true
   logLines.value = []
+
+  const targetTaskId = item.taskId || Array.from(activeTaskIds.value)[0] || 'latest'
+
   try {
-    const res = await getPayPalPayTaskLog(taskId.value || 'latest', logKey.value)
+    const res = await getPayPalPayTaskLog(targetTaskId, logKey.value)
     logLines.value = res.lines || []
     scrollLogModalToBottom()
   } catch (e) {
-    logLines.value = [`加载日志失败: ${e.message}`]
+    logLines.value = [`加载日志提示: ${e.message}`]
   } finally {
     logLoading.value = false
   }
@@ -388,14 +571,11 @@ function getLogLineClass(line) {
 }
 
 onMounted(() => {
-  loadData()
+  loadAutoData()
 })
 
 onUnmounted(() => {
-  if (es.value) {
-    es.value.close()
-    es.value = null
-  }
+  Object.values(sseStreams).forEach((s) => s.close())
 })
 </script>
 
@@ -408,23 +588,22 @@ onUnmounted(() => {
           <div class="page-title-badge">
             <span class="dot-live"></span>
             <span class="title">PayPal 协议代付工作台</span>
-            <span class="badge-total">{{ activeTab === 'auto' ? rows.length : '手动模式' }}</span>
           </div>
 
           <el-radio-group v-model="activeTab" size="small">
-            <el-radio-button label="auto">已提链账号并发代付</el-radio-button>
-            <el-radio-button label="manual">手动批量输入 BA 代付</el-radio-button>
+            <el-radio-button label="manual_table">📝 手动表格录入代付 (实时接码)</el-radio-button>
+            <el-radio-button label="auto">📂 从已提链列表批量代付</el-radio-button>
           </el-radio-group>
         </div>
 
         <div class="toolbar-right">
           <div class="param-inline">
-            <span class="param-label">买家资料/国家:</span>
+            <span class="param-label">国家/买家资料:</span>
             <el-select
               v-model="form.country"
               filterable
               size="small"
-              style="width: 170px"
+              style="width: 175px"
               @change="handleCountryChange"
             >
               <el-option
@@ -435,7 +614,7 @@ onUnmounted(() => {
               />
             </el-select>
 
-            <span class="param-label">默认手机号:</span>
+            <span class="param-label">默认号码:</span>
             <el-input
               v-model="form.default_phone"
               size="small"
@@ -444,37 +623,31 @@ onUnmounted(() => {
               clearable
             />
 
-            <span class="param-label">模式:</span>
-            <el-select v-model="form.flow_mode" size="small" style="width: 140px">
-              <el-option label="🛡️ 身份提升 (推荐)" value="elevation" />
-              <el-option label="⚡ 标准协议版" value="standard" />
-            </el-select>
-
-            <span class="param-label">Worker 并发数:</span>
+            <span class="param-label">并发数:</span>
             <el-input-number v-model="form.workers" :min="1" :max="10" size="small" style="width: 75px" />
           </div>
 
           <el-button
-            v-if="!running"
             type="primary"
             size="small"
             class="start-pay-btn"
-            @click="handleStart"
+            :loading="running"
+            @click="handleStartBatch"
           >
-            <el-icon><VideoPlay /></el-icon>启动多并发代付
+            <el-icon><VideoPlay /></el-icon>批量启动全部代付
           </el-button>
           <el-button
-            v-else
+            v-if="running"
             type="danger"
             size="small"
-            @click="handleStop"
+            @click="handleStopAll"
           >
-            <el-icon><SwitchButton /></el-icon>停止任务
+            <el-icon><SwitchButton /></el-icon>停止所有任务
           </el-button>
         </div>
       </div>
 
-      <!-- KPI 统计卡片与待接码聚合条 -->
+      <!-- KPI 统计卡片 -->
       <div class="kpi-banner">
         <div class="kpi-card">
           <span class="kpi-label">总任务数</span>
@@ -518,22 +691,22 @@ onUnmounted(() => {
         <div class="dock-list">
           <div v-for="item in pendingOtpList" :key="item.key" class="dock-item">
             <div class="dock-item-left">
-              <span class="dock-email">{{ item.email || item.key }}</span>
-              <span class="dock-phone">({{ item.phone || '默认号码' }})</span>
+              <span class="dock-email">{{ item.row.email || item.row.ba_token?.slice(0, 16) || item.key }}</span>
+              <span class="dock-phone">号码: {{ item.phone || '默认' }}</span>
             </div>
             <div class="dock-item-right">
               <el-input
-                v-model="item._otpInput"
+                v-model="item.row.otpInput"
                 size="small"
-                placeholder="输入 6 位验证码或新手机号"
+                placeholder="输入6位验证码/换新号"
                 class="mono dock-input"
-                @keyup.enter="submitInlineOtp(item)"
+                @keyup.enter="handleInlineOtpSubmit(item.row)"
               />
               <el-button
                 size="small"
                 type="warning"
-                :loading="item._submittingOtp"
-                @click="submitInlineOtp(item)"
+                :loading="item.row.submittingOtp"
+                @click="handleInlineOtpSubmit(item.row)"
               >
                 确认提交
               </el-button>
@@ -542,33 +715,207 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <!-- 主体区域 -->
+      <!-- 主体表格区域 -->
       <div class="content-body">
-        <!-- 模式 1：从已提链列表勾选并发执行 -->
-        <div v-show="activeTab === 'auto'" class="auto-tab-view">
+        <!-- ──────────────── 模式 1：动态表格录入模式 ──────────────── -->
+        <div v-show="activeTab === 'manual_table'" class="manual-table-view">
           <div class="table-subtoolbar">
             <div class="subtoolbar-left">
-              <el-button size="small" @click="loadData">
-                <el-icon><Refresh /></el-icon>刷新提链列表
+              <el-button type="success" size="small" @click="handleAddManualRow">
+                <el-icon><Plus /></el-icon>新增一条数据
               </el-button>
-              <el-button size="small" type="primary" plain @click="batchFillSelectedPhones">
-                <el-icon><Iphone /></el-icon>一键为勾选账号填充当前默认手机号
+              <el-button size="small" @click="openPasteDialog">
+                <el-icon><DocumentAdd /></el-icon>批量粘贴导入
               </el-button>
-              <span class="subtoolbar-tip">提示：支持多账号并发，每个账号可在表格内填写专属手机号，并在接码时行内独立填码</span>
+              <el-button size="small" type="danger" plain @click="handleClearManualRows">
+                <el-icon><Delete /></el-icon>清空列表
+              </el-button>
+              <span class="subtoolbar-tip">
+                💡 流程：新增一行 ➔ 填写 0元链接与手机号 ➔ 点击【支付】 ➔ 发送短信后直接在状态列输入验证码 ➔ 确认完成授权！
+              </span>
             </div>
             <div class="subtoolbar-right">
-              <span class="subtoolbar-count">已勾选 {{ selected.length }} / 共 {{ total }} 个</span>
+              <span class="subtoolbar-count">已录入 {{ manualRows.length }} 行</span>
+            </div>
+          </div>
+
+          <el-table
+            :data="manualRows"
+            height="100%"
+            size="small"
+            stripe
+            class="macos-table"
+            @selection-change="(v) => (manualSelected = v)"
+          >
+            <el-table-column type="selection" width="40" align="center" />
+            <el-table-column label="#" width="45" align="center">
+              <template #default="{ $index }">
+                <span class="row-index">{{ $index + 1 }}</span>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="0元 BA Token / 协议链接 (必填)" min-width="260">
+              <template #default="{ row }">
+                <el-input
+                  v-model="row.ba_token"
+                  size="small"
+                  placeholder="BA-XXX 或 https://www.paypal.com/agreements/approve?ba_token=BA-XXX"
+                  class="mono table-input"
+                  clearable
+                />
+              </template>
+            </el-table-column>
+
+            <el-table-column label="绑卡手机号码 (必填)" width="180">
+              <template #default="{ row }">
+                <el-input
+                  v-model="row.phone"
+                  size="small"
+                  placeholder="+66812345678"
+                  class="mono table-input"
+                  clearable
+                />
+              </template>
+            </el-table-column>
+
+            <el-table-column label="关联邮箱 (可选)" width="190">
+              <template #default="{ row }">
+                <el-input
+                  v-model="row.email"
+                  size="small"
+                  placeholder="user@outlook.com"
+                  class="mono table-input"
+                  clearable
+                />
+              </template>
+            </el-table-column>
+
+            <el-table-column label="实时状态 / 2FA 验证码输入" min-width="260">
+              <template #default="{ row }">
+                <!-- 1. 待支付初始状态 -->
+                <el-tag v-if="row.status === 'idle'" size="small" type="info" effect="plain">
+                  待支付
+                </el-tag>
+
+                <!-- 2. 等待 2FA 短信验证码状态 (行内交互卡片) -->
+                <div v-else-if="row.status === 'awaiting_otp'" class="inline-otp-box">
+                  <el-tag size="small" type="warning" effect="dark" class="pulse-tag">
+                    ⚡ 待输入验证码
+                  </el-tag>
+                  <el-input
+                    v-model="row.otpInput"
+                    size="small"
+                    placeholder="输入 6 位验证码"
+                    class="mono inline-otp-input"
+                    autofocus
+                    @keyup.enter="handleInlineOtpSubmit(row)"
+                  />
+                  <el-button
+                    size="small"
+                    type="warning"
+                    :loading="row.submittingOtp"
+                    @click="handleInlineOtpSubmit(row)"
+                  >
+                    确认
+                  </el-button>
+                </div>
+
+                <!-- 3. 执行中 / 成功 / 失败 -->
+                <div v-else class="status-badge-wrap">
+                  <el-tag
+                    size="small"
+                    :type="row.status === 'success' ? 'success' : row.status === 'error' ? 'danger' : row.status === 'running' ? 'primary' : 'info'"
+                  >
+                    {{ row.step_text || row.status }}
+                  </el-tag>
+                  <span v-if="row.elapsed" class="elapsed-tag">{{ row.elapsed }}s</span>
+                </div>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="操作" width="160" align="center" fixed="right">
+              <template #default="{ row, $index }">
+                <div class="row-actions">
+                  <!-- 单行启动支付 -->
+                  <el-button
+                    v-if="row.status === 'idle' || row.status === 'error'"
+                    size="small"
+                    type="primary"
+                    link
+                    @click="handleStartSingleRow(row)"
+                  >
+                    <el-icon><Promotion /></el-icon>支付
+                  </el-button>
+                  <el-button
+                    v-else-if="row.status === 'running'"
+                    size="small"
+                    type="primary"
+                    link
+                    loading
+                  >
+                    进行中
+                  </el-button>
+                  <el-button
+                    v-else-if="row.status === 'success'"
+                    size="small"
+                    type="success"
+                    link
+                    disabled
+                  >
+                    已完成
+                  </el-button>
+
+                  <!-- 查看实时日志 -->
+                  <el-button
+                    size="small"
+                    type="info"
+                    link
+                    :disabled="row.status === 'idle'"
+                    @click="handleViewLog(row)"
+                  >
+                    日志
+                  </el-button>
+
+                  <!-- 移除该行 -->
+                  <el-button
+                    size="small"
+                    type="danger"
+                    link
+                    @click="handleRemoveManualRow($index)"
+                  >
+                    删除
+                  </el-button>
+                </div>
+              </template>
+            </el-table-column>
+          </el-table>
+        </div>
+
+        <!-- ──────────────── 模式 2：从已提链列表勾选 ──────────────── -->
+        <div v-show="activeTab === 'auto'" class="auto-table-view">
+          <div class="table-subtoolbar">
+            <div class="subtoolbar-left">
+              <el-button size="small" @click="loadAutoData">
+                <el-icon><Refresh /></el-icon>刷新提链列表
+              </el-button>
+              <el-button size="small" type="primary" plain @click="batchFillAutoPhones">
+                <el-icon><Iphone /></el-icon>一键为勾选账号填充当前默认手机号
+              </el-button>
+              <span class="subtoolbar-tip">从系统已提取出 0 元链接的账号中勾选并批量执行协议代付</span>
+            </div>
+            <div class="subtoolbar-right">
+              <span class="subtoolbar-count">已勾选 {{ autoSelected.length }} / 共 {{ total }} 个</span>
             </div>
           </div>
 
           <el-table
             v-loading="loading"
-            :data="rows"
+            :data="autoRows"
             height="100%"
             size="small"
             stripe
             class="macos-table"
-            @selection-change="(v) => (selected = v)"
+            @selection-change="(v) => (autoSelected = v)"
           >
             <el-table-column type="selection" width="40" align="center" />
             <el-table-column label="账号邮箱" min-width="190" show-overflow-tooltip>
@@ -577,7 +924,7 @@ onUnmounted(() => {
               </template>
             </el-table-column>
 
-            <el-table-column label="绑卡手机号 (支持每行独立自定义)" width="180">
+            <el-table-column label="绑卡手机号 (可单行编辑)" width="180">
               <template #default="{ row }">
                 <el-input
                   v-model="row._phone"
@@ -588,17 +935,40 @@ onUnmounted(() => {
               </template>
             </el-table-column>
 
-            <el-table-column label="BA Token / 0元链接" min-width="220" show-overflow-tooltip>
+            <el-table-column label="BA Token / 0元链接" min-width="230" show-overflow-tooltip>
               <template #default="{ row }">
                 <span class="mono ba-text">{{ row.extract_link?.ba_token || row.extract_link?.link_url }}</span>
               </template>
             </el-table-column>
 
-            <el-table-column label="执行状态 / 2FA 行内接码交互" min-width="270">
+            <el-table-column label="执行状态 / 2FA 验证码输入" min-width="260">
               <template #default="{ row }">
                 <div v-if="taskMap[row.email]" class="inline-otp-cell">
-                  <!-- 正常运行或完成状态 -->
-                  <div v-if="taskMap[row.email].status !== 'awaiting_otp'" class="status-badge-wrap">
+                  <!-- 行内 2FA 接码交互输入框 -->
+                  <div v-if="taskMap[row.email].status === 'awaiting_otp'" class="inline-otp-box">
+                    <el-tag size="small" type="warning" effect="dark" class="pulse-tag">
+                      ⚡ 待输入验证码
+                    </el-tag>
+                    <el-input
+                      v-model="row._otpInput"
+                      size="small"
+                      placeholder="输入 6 位验证码"
+                      class="mono inline-otp-input"
+                      autofocus
+                      @keyup.enter="handleInlineOtpSubmit(row)"
+                    />
+                    <el-button
+                      size="small"
+                      type="warning"
+                      :loading="row._submittingOtp"
+                      @click="handleInlineOtpSubmit(row)"
+                    >
+                      确认
+                    </el-button>
+                  </div>
+
+                  <!-- 正常状态 -->
+                  <div v-else class="status-badge-wrap">
                     <el-tag
                       size="small"
                       :type="taskMap[row.email].status === 'success' ? 'success' : taskMap[row.email].status === 'error' ? 'danger' : taskMap[row.email].status === 'running' ? 'primary' : 'info'"
@@ -607,34 +977,12 @@ onUnmounted(() => {
                     </el-tag>
                     <span v-if="taskMap[row.email].elapsed" class="elapsed-tag">{{ taskMap[row.email].elapsed }}s</span>
                   </div>
-
-                  <!-- 行内 2FA 接码交互输入框 (多账号并发独立输入) -->
-                  <div v-else class="inline-otp-action-box">
-                    <el-tag size="small" type="warning" effect="dark" class="pulse-tag">
-                      ⚡ 待输入短信验证码
-                    </el-tag>
-                    <el-input
-                      v-model="row._otpInput"
-                      size="small"
-                      placeholder="输入6位验证码/换号"
-                      class="mono inline-otp-input"
-                      @keyup.enter="submitInlineOtp(row)"
-                    />
-                    <el-button
-                      size="small"
-                      type="warning"
-                      :loading="row._submittingOtp"
-                      @click="submitInlineOtp(row)"
-                    >
-                      提交
-                    </el-button>
-                  </div>
                 </div>
-                <el-tag v-else size="small" type="info" effect="plain">就绪中</el-tag>
+                <el-tag v-else size="small" type="info" effect="plain">待支付</el-tag>
               </template>
             </el-table-column>
 
-            <el-table-column label="操作" width="80" align="center">
+            <el-table-column label="操作" width="90" align="center">
               <template #default="{ row }">
                 <el-button
                   size="small"
@@ -649,73 +997,10 @@ onUnmounted(() => {
             </el-table-column>
           </el-table>
         </div>
-
-        <!-- 模式 2：手动批量输入 -->
-        <div v-show="activeTab === 'manual'" class="manual-tab-view">
-          <div class="manual-left">
-            <span class="input-title">输入 BA Token / 链接列表（支持多列格式，每行一条）：</span>
-            <el-input
-              v-model="manualInputText"
-              type="textarea"
-              :rows="18"
-              class="mono manual-textarea"
-              placeholder="支持以下格式（每行一个）：&#10;1. 邮箱----BA链接/Token----手机号 (如 user@outlook.com----BA-XXX----+66812345678)&#10;2. BA链接/Token----手机号 (如 BA-XXX----+66812345678)&#10;3. 邮箱----BA链接/Token (使用顶部默认手机号)&#10;4. 纯 BA Token 或链接 (如 https://www.paypal.com/agreements/approve?ba_token=BA-XXX)"
-            />
-          </div>
-          <div class="manual-right">
-            <span class="input-title">多 Worker 并发执行监控与行内接码：</span>
-            <el-table :data="taskItems" height="100%" size="small" stripe class="macos-table">
-              <el-table-column label="BA / 邮箱" min-width="150" show-overflow-tooltip>
-                <template #default="{ row }">
-                  <span class="mono">{{ row.email || row.ba_token }}</span>
-                </template>
-              </el-table-column>
-              <el-table-column label="手机号" width="120">
-                <template #default="{ row }">
-                  <span class="mono text-muted">{{ row.phone || form.default_phone }}</span>
-                </template>
-              </el-table-column>
-              <el-table-column label="状态 / 行内 2FA 验证" min-width="220">
-                <template #default="{ row }">
-                  <div v-if="row.status !== 'awaiting_otp'" class="status-cell">
-                    <el-tag
-                      size="small"
-                      :type="row.status === 'success' ? 'success' : row.status === 'error' ? 'danger' : row.status === 'running' ? 'primary' : 'info'"
-                    >
-                      {{ row.step_text || row.status }}
-                    </el-tag>
-                  </div>
-                  <div v-else class="inline-otp-action-box">
-                    <el-input
-                      v-model="row._otpInput"
-                      size="small"
-                      placeholder="6位验证码/换手机号"
-                      class="mono inline-otp-input"
-                      @keyup.enter="submitInlineOtp(row)"
-                    />
-                    <el-button
-                      size="small"
-                      type="warning"
-                      :loading="row._submittingOtp"
-                      @click="submitInlineOtp(row)"
-                    >
-                      提交
-                    </el-button>
-                  </div>
-                </template>
-              </el-table-column>
-              <el-table-column label="日志" width="70" align="center">
-                <template #default="{ row }">
-                  <el-button size="small" link type="primary" @click="handleViewLog(row)">查看</el-button>
-                </template>
-              </el-table-column>
-            </el-table>
-          </div>
-        </div>
       </div>
 
       <!-- 底部全量实时协议流控制台 (Live Stream Console) -->
-      <div v-if="showLiveConsole" class="live-console-wrap">
+      <div class="live-console-wrap">
         <div class="console-header">
           <div class="console-header-left">
             <span class="console-dot green"></span>
@@ -746,13 +1031,42 @@ onUnmounted(() => {
             {{ line }}
           </div>
           <div v-if="!liveLogs.length" class="terminal-empty">
-            {{ running ? '协议代付执行中，正在等待实时日志推流...' : '暂无实时日志，启动任务后在此查看实时流' }}
+            {{ running ? '协议代付执行中，正在等待实时日志推流...' : '暂无实时日志，点击【支付】后在此查看实时执行流' }}
           </div>
         </div>
       </div>
     </div>
 
-    <!-- 单任务专属实时日志弹窗 (支持 SSE 实时动态追加) -->
+    <!-- ──────────────── 批量粘贴导入弹窗 ──────────────── -->
+    <el-dialog
+      v-model="pasteDialogVisible"
+      title="📋 批量粘贴导入 BA Token"
+      width="580px"
+      top="15vh"
+      :close-on-click-modal="false"
+    >
+      <div class="paste-dialog-body">
+        <p class="paste-tip">
+          支持直接粘贴多行数据，系统将自动解析为表格行：<br />
+          • 纯 BA Token 或链接：<code>BA-XXX</code> 或 <code>https://www.paypal.com/agreements/approve?ba_token=BA-XXX</code><br />
+          • 带手机号：<code>BA-XXX----+66812345678</code><br />
+          • 带邮箱与手机号：<code>user@outlook.com----BA-XXX----+66812345678</code>
+        </p>
+        <el-input
+          v-model="pasteText"
+          type="textarea"
+          :rows="10"
+          class="mono paste-textarea"
+          placeholder="每行一条，例如：&#10;BA-9AR71182YT9943128----+66802242723&#10;https://www.paypal.com/agreements/approve?ba_token=BA-1YS85615WS776414E"
+        />
+      </div>
+      <template #footer>
+        <el-button size="small" @click="pasteDialogVisible = false">取消</el-button>
+        <el-button size="small" type="primary" @click="handleConfirmPaste">导入到表格</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- ──────────────── 单任务专属实时日志弹窗 (支持 SSE 实时动态追加) ──────────────── -->
     <el-dialog
       v-model="logVisible"
       width="820px"
@@ -770,7 +1084,7 @@ onUnmounted(() => {
           <div class="modal-title-info">
             <span class="modal-email">{{ logKey }}</span>
             <el-tag size="small" type="success" effect="plain" class="modal-run-tag">
-              PayPal 专属协议日志 (实时追踪)
+              PayPal 协议日志 (实时追踪)
             </el-tag>
           </div>
         </div>
@@ -877,13 +1191,6 @@ onUnmounted(() => {
   font-weight: 700;
   color: var(--el-text-color-primary);
 }
-.page-title-badge .badge-total {
-  font-size: 11px;
-  color: var(--el-text-color-secondary);
-  background: var(--el-fill-color-light);
-  padding: 1px 6px;
-  border-radius: 10px;
-}
 
 .start-pay-btn {
   background: linear-gradient(135deg, #0070ba, #003087);
@@ -930,7 +1237,7 @@ onUnmounted(() => {
   padding: 0 8px;
 }
 
-/* 待接码快速悬浮坞 */
+/* 待接码悬浮坞 */
 .pending-otp-dock {
   background: rgba(245, 158, 11, 0.08);
   border-bottom: 1px solid #f59e0b;
@@ -1004,7 +1311,7 @@ onUnmounted(() => {
   overflow: hidden;
 }
 
-.auto-tab-view {
+.manual-table-view, .auto-table-view {
   flex: 1;
   min-height: 0;
   display: flex;
@@ -1015,7 +1322,7 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 4px 12px;
+  padding: 6px 12px;
   background: var(--el-fill-color-blank);
   border-bottom: 1px solid var(--el-border-color-lighter);
   flex-shrink: 0;
@@ -1034,26 +1341,10 @@ onUnmounted(() => {
   color: var(--el-text-color-regular);
 }
 
-.manual-tab-view {
-  flex: 1;
-  min-height: 0;
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
-  padding: 10px;
-}
-
-.manual-left, .manual-right {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  gap: 6px;
-}
-
-.input-title {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--el-text-color-regular);
+.row-index {
+  font-size: 11px;
+  font-family: ui-monospace, monospace;
+  color: var(--el-text-color-secondary);
 }
 
 .mono {
@@ -1073,13 +1364,31 @@ onUnmounted(() => {
 .phone-input {
   font-size: 12px;
 }
+.table-input {
+  font-size: 12px;
+}
 
-/* 行内 2FA 接码交互小卡片 */
+/* 行内 2FA 接码交互输入框 */
 .inline-otp-cell {
   display: flex;
   align-items: center;
-  gap: 6px;
 }
+.inline-otp-box {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(245, 158, 11, 0.1);
+  padding: 3px 6px;
+  border-radius: 4px;
+  border: 1px dashed #f59e0b;
+}
+.inline-otp-input {
+  width: 135px;
+}
+.pulse-tag {
+  animation: pulse-anim 1.5s infinite;
+}
+
 .status-badge-wrap {
   display: flex;
   align-items: center;
@@ -1091,27 +1400,18 @@ onUnmounted(() => {
   font-family: ui-monospace, monospace;
 }
 
-.inline-otp-action-box {
+.row-actions {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
-  background: rgba(245, 158, 11, 0.1);
-  padding: 2px 6px;
-  border-radius: 4px;
-  border: 1px dashed #f59e0b;
-}
-.inline-otp-input {
-  width: 140px;
-}
-.pulse-tag {
-  animation: pulse-anim 1.5s infinite;
 }
 
 /* 底部实时日志终端 */
 .live-console-wrap {
-  height: 160px;
-  min-height: 120px;
-  max-height: 240px;
+  height: 150px;
+  min-height: 110px;
+  max-height: 220px;
   background: #111116;
   border-top: 1px solid #2d2d38;
   display: flex;
@@ -1176,6 +1476,24 @@ onUnmounted(() => {
   font-size: 11px;
   text-align: center;
   padding-top: 30px;
+}
+
+/* 粘贴导入弹窗 */
+.paste-dialog-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.paste-tip {
+  font-size: 11.5px;
+  color: var(--el-text-color-secondary);
+  line-height: 1.6;
+}
+.paste-tip code {
+  color: #3b82f6;
+  background: var(--el-fill-color-light);
+  padding: 1px 4px;
+  border-radius: 4px;
 }
 
 /* 弹窗终端样式 */
