@@ -50,6 +50,11 @@ import {
   getOAuthExportLog,
   downloadOAuthExportCpa,
   downloadOAuthExportSub2,
+  startTokenRefresh,
+  stopTokenRefresh,
+  tokenRefreshStreamUrl,
+  getTokenRefreshLog,
+  downloadTokenRefreshExport,
 } from '@/api/register'
 import { saveSmsConfig } from '@/api/settings'
 import { copyText, fmtTime, createSSE } from '@/api/request'
@@ -690,6 +695,344 @@ async function openHealthItemLog(row) {
     healthLogLines.value = ['读取日志失败: ' + (e.response?.data?.detail || e.message)]
   } finally {
     healthLogLoading.value = false
+  }
+}
+
+// ── 验活异常重试相关计算与操作 (支持批量与单行重试) ──
+const failedHealthEmails = computed(() => {
+  return Object.values(healthItems.value)
+    .filter((i) => {
+      if (i.status === 'error') return true
+      if (i.result && ['error', 'no_at', 'not_found', 'exception'].includes(i.result.status)) return true
+      if (i.result && (i.result.label?.includes('异常') || i.result.label?.includes('失败') || i.result.label?.includes('429'))) return true
+      return false
+    })
+    .map((i) => i.email)
+})
+
+function isHealthFailedRow(row) {
+  if (row.status === 'error') return true
+  if (row.result && ['error', 'no_at', 'not_found', 'exception'].includes(row.result.status)) return true
+  if (row.result && (row.result.label?.includes('异常') || row.result.label?.includes('失败') || row.result.label?.includes('429'))) return true
+  return false
+}
+
+function retryFailedHealthCheck() {
+  const fails = failedHealthEmails.value
+  if (!fails.length) {
+    ElMessage.info('当前没有验活失败的账号')
+    return
+  }
+  healthTargetEmails.value = [...fails]
+  const newMap = { ...healthItems.value }
+  for (const em of fails) {
+    newMap[em] = { email: em, mode: healthForm.mode, status: 'pending', step_text: '待重试...', result: null, elapsed: 0 }
+  }
+  healthItems.value = newMap
+  startHealthCheckTask()
+}
+
+function retrySingleHealthCheck(row) {
+  healthTargetEmails.value = [row.email]
+  healthItems.value = {
+    ...healthItems.value,
+    [row.email]: { email: row.email, mode: healthForm.mode, status: 'pending', step_text: '准备重试...', result: null, elapsed: 0 },
+  }
+  startHealthCheckTask()
+}
+
+// ════════════════════════ Token 刷新与重登工作台 (Token Refresh Studio) ════════════════════════
+const refreshVisible = ref(false)
+const refreshRunning = ref(false)
+const refreshTaskId = ref('')
+const refreshEs = ref(null)
+const refreshTargetEmails = ref([])
+const refreshActiveTab = ref('network')
+const refreshConfigCollapsed = ref(true)
+
+const refreshForm = reactive({
+  proxy: '',
+  proxyCountry: 'JP',
+  workers: 5,
+  timeout: 45,
+  forceFullLogin: false,
+  smsEnabled: false,
+  smsProvider: 'smsbower',
+  smsApiKey: '',
+  smsCountry: '52',
+  smsMaxPrice: '',
+  smsMaxAttempts: 3,
+  smsTimeout: 80,
+})
+
+const refreshItems = ref({})
+const refreshLogs = ref([])
+const refreshLogModalVisible = ref(false)
+const currentRefreshLogItem = ref(null)
+const refreshLogLines = ref([])
+const refreshLogLoading = ref(false)
+
+const refreshRows = computed(() =>
+  Object.values(refreshItems.value).map((item) => ({ ...item })),
+)
+
+const refreshStats = computed(() => {
+  const items = Object.values(refreshItems.value)
+  const tot = items.length || refreshTargetEmails.value.length || 0
+  const done = items.filter((i) => i.status === 'done').length
+  const running = items.filter((i) => i.status === 'running').length
+  const pending = items.filter((i) => i.status === 'pending').length
+  const rt_fast_ok = items.filter((i) => i.result && i.result.status === 'success' && i.result.method === 'rt_fast').length
+  const full_login_ok = items.filter((i) => i.result && i.result.status === 'success' && i.result.method !== 'rt_fast').length
+  const success = items.filter((i) => i.result && i.result.status === 'success').length
+  const need_phone = items.filter((i) => i.result && i.result.status === 'need_phone').length
+  const error = items.filter((i) => i.status === 'done' && (!i.result || (i.result.status !== 'success' && i.result.status !== 'need_phone'))).length
+  const percent = tot > 0 ? Math.round((done / tot) * 100) : 0
+  return {
+    total: tot, done, running, pending,
+    rt_fast_ok, full_login_ok, success, need_phone, error,
+    percent,
+  }
+})
+
+async function openTokenRefresh(scope = 'selected') {
+  let emails = []
+  if (scope === 'selected') {
+    if (!selected.value.length) {
+      ElMessage.warning('请先在表格中勾选要刷新 Token 的账号')
+      return
+    }
+    emails = selected.value.map((r) => r.email)
+  } else if (scope === 'no_token') {
+    loading.value = true
+    try {
+      const res = await listRegisteredEmails('no_at')
+      emails = res.emails || []
+    } catch (e) {
+      ElMessage.error('获取无Token账号失败: ' + e.message)
+      return
+    } finally {
+      loading.value = false
+    }
+    if (!emails.length) {
+      ElMessage.info('当前没有缺少 Token 的账号')
+      return
+    }
+  } else if (scope === 'all') {
+    loading.value = true
+    try {
+      const res = await listRegisteredEmails('all')
+      emails = res.emails || []
+    } catch (e) {
+      ElMessage.error('获取全量账号失败: ' + e.message)
+      return
+    } finally {
+      loading.value = false
+    }
+    if (!emails.length) {
+      ElMessage.info('号池为空，无账号可刷新')
+      return
+    }
+  }
+
+  refreshTargetEmails.value = emails
+
+  if (!refreshRunning.value) {
+    refreshTaskId.value = ''
+    refreshLogs.value = []
+    refreshConfigCollapsed.value = true
+    const initMap = {}
+    for (const em of emails) {
+      initMap[em] = { email: em, status: 'pending', step_text: '排队中...', result: null, elapsed: 0 }
+    }
+    refreshItems.value = initMap
+  }
+
+  refreshVisible.value = true
+}
+
+function handleRefreshCommand(cmd) {
+  if (cmd === 'refresh_selected') openTokenRefresh('selected')
+  else if (cmd === 'refresh_no_token') openTokenRefresh('no_token')
+  else if (cmd === 'refresh_all') openTokenRefresh('all')
+}
+
+function closeTokenRefresh() {
+  if (refreshRunning.value) {
+    ElMessage.info('Token 刷新任务在后台继续运行，可随时重新打开查看进度')
+  }
+  if (refreshEs.value && !refreshRunning.value) {
+    refreshEs.value.close()
+    refreshEs.value = null
+  }
+  refreshVisible.value = false
+}
+
+async function stopTokenRefreshTask() {
+  if (!refreshTaskId.value) {
+    refreshRunning.value = false
+    return
+  }
+  try {
+    await stopTokenRefresh(refreshTaskId.value)
+    ElMessage.success('已发送停止指令')
+  } catch (_) {
+    ElMessage.info('任务已停止')
+  } finally {
+    refreshRunning.value = false
+  }
+}
+
+async function startTokenRefreshTask() {
+  const emails = refreshTargetEmails.value
+  if (!emails.length) {
+    ElMessage.warning('没有待刷新的账号列表')
+    return
+  }
+
+  if (refreshEs.value) {
+    refreshEs.value.close()
+    refreshEs.value = null
+  }
+
+  refreshRunning.value = true
+  refreshLogs.value = []
+  refreshConfigCollapsed.value = true
+
+  const initMap = {}
+  for (const em of emails) {
+    initMap[em] = { email: em, status: 'pending', step_text: '排队中...', result: null, elapsed: 0 }
+  }
+  refreshItems.value = initMap
+
+  let proxiesParam = ''
+  let proxyParam = ''
+  if (refreshForm.proxy === '__POOL__') {
+    proxiesParam = proxyList.value.join('\n')
+  } else {
+    proxyParam = (refreshForm.proxy || '').trim()
+  }
+
+  try {
+    const res = await startTokenRefresh({
+      emails,
+      proxies: proxiesParam,
+      proxy: proxyParam,
+      proxy_country: refreshForm.proxyCountry || '',
+      workers: refreshForm.workers || 5,
+      timeout: refreshForm.timeout || 45,
+      force_full_login: Boolean(refreshForm.forceFullLogin),
+      sms_enabled: Boolean(refreshForm.smsEnabled),
+      sms_provider: refreshForm.smsProvider || 'smsbower',
+      sms_api_key: refreshForm.smsApiKey || '',
+      sms_country: refreshForm.smsCountry || '52',
+      sms_max_price: String(refreshForm.smsMaxPrice || ''),
+      sms_max_attempts: Number(refreshForm.smsMaxAttempts) || 3,
+      sms_timeout: Number(refreshForm.smsTimeout) || 80,
+    })
+    const taskId = res.taskId || res.task_id
+    if (!taskId) throw new Error('未获取到任务 ID')
+    refreshTaskId.value = taskId
+
+    refreshEs.value = createSSE(tokenRefreshStreamUrl(taskId), {
+      init: (ev) => {
+        try {
+          const snap = JSON.parse(ev.data)
+          if (snap.items) refreshItems.value = snap.items
+        } catch (_) {}
+      },
+      progress: (ev) => {
+        try {
+          const msg = JSON.parse(ev.data)
+          if (msg.email) {
+            if (!refreshItems.value[msg.email]) {
+              refreshItems.value[msg.email] = { email: msg.email }
+            }
+            if (msg.status !== undefined) refreshItems.value[msg.email].status = msg.status
+            if (msg.step_text !== undefined) refreshItems.value[msg.email].step_text = msg.step_text
+            if (msg.result !== undefined) refreshItems.value[msg.email].result = msg.result
+            if (msg.elapsed !== undefined) refreshItems.value[msg.email].elapsed = msg.elapsed
+          }
+        } catch (_) {}
+      },
+      log: (ev) => {
+        try {
+          const msg = JSON.parse(ev.data)
+          if (msg.line) {
+            refreshLogs.value.push(msg.line)
+            if (refreshLogs.value.length > 500) refreshLogs.value.splice(0, refreshLogs.value.length - 500)
+            nextTick(scrollRefreshLog)
+          }
+        } catch (_) {}
+      },
+      end: () => {
+        refreshRunning.value = false
+        if (refreshEs.value) {
+          refreshEs.value.close()
+          refreshEs.value = null
+        }
+        ElMessage.success('Token 刷新任务已全部执行完成！凭证已同步写入数据库')
+        load(false)
+      },
+    }, () => {
+      if (!refreshRunning.value && refreshEs.value) {
+        refreshEs.value.close()
+        refreshEs.value = null
+      }
+    })
+  } catch (e) {
+    refreshRunning.value = false
+    refreshConfigCollapsed.value = false
+    ElMessage.error('启动 Token 刷新失败: ' + (e.response?.data?.detail || e.message))
+  }
+}
+
+function scrollRefreshLog() {
+  const box = document.getElementById('refresh-log-box')
+  if (box) box.scrollTop = box.scrollHeight
+}
+
+async function openRefreshItemLog(row) {
+  currentRefreshLogItem.value = row
+  refreshLogLines.value = []
+  refreshLogModalVisible.value = true
+  refreshLogLoading.value = true
+
+  try {
+    if (refreshTaskId.value) {
+      const res = await getTokenRefreshLog(refreshTaskId.value, row.email)
+      refreshLogLines.value = res.lines || []
+    } else {
+      refreshLogLines.value = row.logs || ['暂无日志']
+    }
+  } catch (e) {
+    refreshLogLines.value = ['读取日志失败: ' + (e.response?.data?.detail || e.message)]
+  } finally {
+    refreshLogLoading.value = false
+  }
+}
+
+async function downloadTokenRefresh(format = 'txt') {
+  if (!refreshTaskId.value) {
+    ElMessage.warning('暂无当前任务 ID')
+    return
+  }
+  try {
+    const res = await downloadTokenRefreshExport(refreshTaskId.value, format)
+    const mime = format === 'txt' ? 'text/plain;charset=utf-8' : 'application/json'
+    const ext = format === 'txt' ? 'txt' : 'json'
+    const blob = new Blob([res.data || res], { type: mime })
+    const url = window.URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `tokens_${format}_${refreshTaskId.value}.${ext}`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    window.URL.revokeObjectURL(url)
+    ElMessage.success(`已下载 ${format.toUpperCase()} 格式凭证`)
+  } catch (e) {
+    ElMessage.error('下载导出凭证失败: ' + e.message)
   }
 }
 
@@ -1696,6 +2039,28 @@ onUnmounted(() => {
           >
             <el-icon><Refresh /></el-icon>OAuth 导出 ({{ selected.length }})
           </el-button>
+
+          <!-- 核心功能：Token 重新获取与刷新 -->
+          <el-dropdown trigger="click" @command="handleRefreshCommand">
+            <el-button type="info" class="oa-action-btn refresh-token-action-btn">
+              <el-icon><Refresh /></el-icon>🔄 刷新/重获Token ({{ selected.length }})
+              <el-icon class="el-icon--right"><ArrowDown /></el-icon>
+            </el-button>
+            <template #dropdown>
+              <el-dropdown-menu class="extract-dropdown-menu">
+                <div class="dropdown-group-title">🔑 Token 智能双模刷新与重登</div>
+                <el-dropdown-item command="refresh_selected" :disabled="!selected.length">
+                  刷新选中账号 Token ({{ selected.length }})
+                </el-dropdown-item>
+                <el-dropdown-item command="refresh_no_token">
+                  重新获取无 Token 账号凭证
+                </el-dropdown-item>
+                <el-dropdown-item command="refresh_all">
+                  全量重新获取/刷新所有账号
+                </el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
 
           <!-- 导出下拉 -->
           <el-dropdown trigger="click" @command="doExport" @visible-change="(v) => v && loadExportFormats()">
@@ -2936,8 +3301,18 @@ onUnmounted(() => {
               </template>
             </el-table-column>
 
-            <el-table-column label="操作" width="80" align="center" fixed="right">
+            <el-table-column label="操作" width="130" align="center" fixed="right">
               <template #default="{ row }">
+                <el-button
+                  v-if="isHealthFailedRow(row) && !healthRunning"
+                  size="small"
+                  text
+                  type="warning"
+                  @click="retrySingleHealthCheck(row)"
+                  title="单独重试此异常账号"
+                >
+                  <el-icon><Refresh /></el-icon>验活
+                </el-button>
                 <el-button size="small" text type="primary" :disabled="row.status === 'pending'" @click="openHealthItemLog(row)">
                   <el-icon><Document /></el-icon>日志
                 </el-button>
@@ -2964,16 +3339,25 @@ onUnmounted(() => {
             <el-button v-if="healthRunning" type="danger" plain @click="stopHealthCheckTask">
               <el-icon><SwitchButton /></el-icon>停止验活
             </el-button>
-            <el-button
-              v-else
-              type="primary"
-              class="start-gradient-btn"
-              :loading="healthRunning"
-              :disabled="!healthTargetEmails.length"
-              @click="startHealthCheckTask"
-            >
-              <el-icon><VideoPlay /></el-icon>{{ healthTaskId ? '重新验活' : '开始批量验活' }}
-            </el-button>
+            <template v-else>
+              <el-button
+                v-if="failedHealthEmails.length > 0"
+                type="warning"
+                plain
+                @click="retryFailedHealthCheck"
+              >
+                <el-icon><Refresh /></el-icon>重新验活失败 ({{ failedHealthEmails.length }})
+              </el-button>
+              <el-button
+                type="primary"
+                class="start-gradient-btn"
+                :loading="healthRunning"
+                :disabled="!healthTargetEmails.length"
+                @click="startHealthCheckTask"
+              >
+                <el-icon><VideoPlay /></el-icon>{{ healthTaskId ? '重新验活' : '开始批量验活' }}
+              </el-button>
+            </template>
           </div>
         </div>
       </template>
@@ -3022,6 +3406,327 @@ onUnmounted(() => {
               <el-icon><CopyDocument /></el-icon>复制日志
             </el-button>
             <el-button size="small" type="primary" @click="healthLogModalVisible = false">
+              关闭
+            </el-button>
+          </div>
+        </div>
+      </template>
+    </el-dialog>
+
+    <!-- ──────────────── Token 重新获取与刷新控制台弹窗 (Token Refresh Studio) ──────────────── -->
+    <el-dialog
+      v-model="refreshVisible" width="880px" top="3vh"
+      class="oa-custom-dialog plus-dialog health-dialog refresh-dialog"
+      :close-on-click-modal="false" @closed="closeTokenRefresh"
+    >
+      <template #header>
+        <div class="oa-header">
+          <div class="oa-header-title">
+            <span class="oa-title-badge" style="background: linear-gradient(135deg, #0ea5e9 0%, #0284c7 100%)">TOKEN</span>
+            <span class="oa-title-text">Token 智能双模刷新与重获工作台</span>
+            <el-tag size="small" type="primary" round effect="dark">RT极速置换 / Full OAuth重登</el-tag>
+            <el-tag size="small" type="info" round effect="plain">{{ refreshTargetEmails.length }} 个账号</el-tag>
+          </div>
+          <div class="oa-header-extra">
+            <el-button size="small" text @click="refreshConfigCollapsed = !refreshConfigCollapsed">
+              <el-icon><Setting /></el-icon>{{ refreshConfigCollapsed ? '展开参数配置' : '收起参数配置' }}
+            </el-button>
+          </div>
+        </div>
+      </template>
+
+      <div class="oa-dialog-container">
+        <!-- 参数配置卡片 -->
+        <el-collapse-transition>
+          <div v-show="!refreshConfigCollapsed" class="oa-config-card" style="padding: 10px 14px 12px">
+            <el-tabs v-model="refreshActiveTab" class="oa-config-tabs">
+              <!-- Tab 1: 基础与网络 -->
+              <el-tab-pane label="🌐 网络代理 & 刷新模式" name="network">
+                <el-form label-position="top" :disabled="refreshRunning" size="small" style="margin-top: 6px">
+                  <el-row :gutter="12">
+                    <el-col :xs="24" :sm="12" :md="8">
+                      <el-form-item label="检测/登录代理 (支持代理池轮询/直连)">
+                        <el-select
+                          v-model="refreshForm.proxy" filterable clearable allow-create default-first-option
+                          placeholder="选择或输入代理" style="width: 100%"
+                        >
+                          <el-option
+                            v-if="proxyList.length"
+                            label="🌐 全局代理池轮询 (自动多Worker分配)"
+                            value="__POOL__"
+                          />
+                          <el-option v-for="p in proxyList" :key="p" :label="p" :value="p" />
+                        </el-select>
+                      </el-form-item>
+                    </el-col>
+                    <el-col :xs="24" :sm="12" :md="6">
+                      <el-form-item label="代理目标国家">
+                        <el-select
+                          v-model="refreshForm.proxyCountry" filterable allow-create
+                          placeholder="国家" style="width: 100%"
+                        >
+                          <el-option
+                            v-for="c in COUNTRY_OPTIONS" :key="c.value"
+                            :label="c.label" :value="c.value"
+                          />
+                        </el-select>
+                      </el-form-item>
+                    </el-col>
+                    <el-col :xs="12" :sm="6" :md="5">
+                      <el-form-item label="并发 Worker">
+                        <el-input-number v-model="refreshForm.workers" :min="1" :max="20" style="width: 100%" />
+                      </el-form-item>
+                    </el-col>
+                    <el-col :xs="12" :sm="6" :md="5">
+                      <el-form-item label="超时(秒)">
+                        <el-input-number v-model="refreshForm.timeout" :min="10" :max="120" style="width: 100%" />
+                      </el-form-item>
+                    </el-col>
+                  </el-row>
+                  <el-row :gutter="12">
+                    <el-col :span="24">
+                      <el-checkbox v-model="refreshForm.forceFullLogin">
+                        强制走完整 OAuth 重新登录流程（跳过 RT 快速换取，直接打 OpenAI 登录端点获取全新全套凭证）
+                      </el-checkbox>
+                    </el-col>
+                  </el-row>
+                  <div style="font-size: 11.5px; color: var(--el-text-color-secondary); line-height: 1.5; margin-top: 4px">
+                    💡 <b>智能机制</b>：有历史 Refresh Token 的账号优先 <b>200ms 极速置换</b>；失效或无 RT 账号自动触发 <b>Full OAuth 登录重获</b> 并自动写回数据库。
+                  </div>
+                </el-form>
+              </el-tab-pane>
+
+              <!-- Tab 2: 短信接码设置 (针对需要手机号验证的账号) -->
+              <el-tab-pane label="📱 手机号风控接码设置 (可选)" name="sms">
+                <el-form label-position="top" :disabled="refreshRunning" size="small" style="margin-top: 6px">
+                  <el-row :gutter="12">
+                    <el-col :span="24">
+                      <el-checkbox v-model="refreshForm.smsEnabled">
+                        启用 SMS 自动接码解封（遇到 OpenAI 要求绑定手机号时自动调用接码平台）
+                      </el-checkbox>
+                    </el-col>
+                  </el-row>
+                  <el-row v-if="refreshForm.smsEnabled" :gutter="12" style="margin-top: 6px">
+                    <el-col :xs="24" :sm="8">
+                      <el-form-item label="接码平台">
+                        <el-select v-model="refreshForm.smsProvider" style="width: 100%">
+                          <el-option label="SMSBower (高成功率推荐)" value="smsbower" />
+                          <el-option label="SMS-Activate" value="smsactivate" />
+                          <el-option label="HeroSMS" value="herosms" />
+                          <el-option label="DaisySMS" value="daisysms" />
+                        </el-select>
+                      </el-form-item>
+                    </el-col>
+                    <el-col :xs="24" :sm="10">
+                      <el-form-item label="API Key">
+                        <el-input v-model="refreshForm.smsApiKey" placeholder="平台 API 密钥" clearable />
+                      </el-form-item>
+                    </el-col>
+                    <el-col :xs="24" :sm="6">
+                      <el-form-item label="国家代码">
+                        <el-input v-model="refreshForm.smsCountry" placeholder="如 52(泰国), 6(印尼)" />
+                      </el-form-item>
+                    </el-col>
+                  </el-row>
+                </el-form>
+              </el-tab-pane>
+            </el-tabs>
+          </div>
+        </el-collapse-transition>
+
+        <!-- KPI 统计看板 -->
+        <div class="plus-kpi-grid">
+          <div class="plus-kpi-card">
+            <span class="kpi-label">已处理 / 总数</span>
+            <span class="kpi-num">{{ refreshStats.done }} / {{ refreshStats.total }}</span>
+          </div>
+          <div class="plus-kpi-card hit-active">
+            <span class="kpi-label">⚡ RT极速置换成功</span>
+            <span class="kpi-num text-primary">{{ refreshStats.rt_fast_ok }}</span>
+          </div>
+          <div class="plus-kpi-card hit-promo">
+            <span class="kpi-label">🔑 Full OAuth 重登成功</span>
+            <span class="kpi-num text-success">{{ refreshStats.full_login_ok }}</span>
+          </div>
+          <div class="plus-kpi-card" :class="{ 'card-warn': refreshStats.need_phone > 0 }">
+            <span class="kpi-label">需要手机号</span>
+            <span class="kpi-num" :class="refreshStats.need_phone > 0 ? 'text-warning' : ''">{{ refreshStats.need_phone }}</span>
+          </div>
+          <div class="plus-kpi-card" :class="{ 'card-warn': refreshStats.error > 0 }">
+            <span class="kpi-label">失败 / 异常</span>
+            <span class="kpi-num text-danger">{{ refreshStats.error }}</span>
+          </div>
+          <div class="plus-progress-cell">
+            <el-progress
+              :percentage="refreshStats.percent"
+              :status="refreshStats.done === refreshStats.total && refreshStats.total > 0 ? 'success' : ''"
+              :stroke-width="8"
+              striped
+              :striped-flow="refreshRunning"
+            />
+          </div>
+        </div>
+
+        <!-- 核心表格：账号 Token 刷新监控列表 -->
+        <div class="plus-table-box health-table-box">
+          <el-table :data="refreshRows" size="small" stripe height="340" class="macos-table" :highlight-current-row="false">
+            <el-table-column prop="email" label="账号邮箱" min-width="210" show-overflow-tooltip>
+              <template #default="{ row }">
+                <button
+                  class="macos-tag-btn copy-btn"
+                  title="点击复制邮箱"
+                  @click="copyText(row.email)"
+                >
+                  <span class="mono">{{ row.email }}</span>
+                  <el-icon class="copy-ico"><CopyDocument /></el-icon>
+                </button>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="刷新模式" width="130" align="center">
+              <template #default="{ row }">
+                <el-tag v-if="row.result?.method === 'rt_fast'" size="small" type="primary" effect="plain">⚡ RT 极速置换</el-tag>
+                <el-tag v-else-if="row.result?.method === 'full_oauth'" size="small" type="success" effect="plain">🔑 OAuth 重登</el-tag>
+                <span v-else-if="row.status === 'running'" class="mono text-primary text-xs">执行中...</span>
+                <span v-else class="text-muted">—</span>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="当前状态 / 步骤" min-width="170" show-overflow-tooltip>
+              <template #default="{ row }">
+                <span v-if="row.status === 'running'" class="running-step">
+                  <el-icon class="is-loading" style="margin-right: 4px"><Loading /></el-icon>
+                  {{ row.step_text || '正在刷新...' }}
+                </span>
+                <el-tag v-else-if="row.status === 'pending'" size="small" type="info" effect="plain">排队中</el-tag>
+                <el-tag
+                  v-else-if="row.result"
+                  size="small"
+                  :type="row.result.status === 'success' ? 'success' : row.result.status === 'need_phone' ? 'warning' : 'danger'"
+                >
+                  {{ row.result.label || row.result.status }}
+                </el-tag>
+                <span v-else class="text-muted">—</span>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="耗时" width="80" align="center">
+              <template #default="{ row }">
+                <span v-if="row.elapsed" class="mono text-muted">{{ row.elapsed }}s</span>
+                <span v-else-if="row.status === 'running'" class="mono text-primary">...</span>
+                <span v-else class="text-muted">—</span>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="操作" width="85" align="center" fixed="right">
+              <template #default="{ row }">
+                <el-button size="small" text type="primary" :disabled="row.status === 'pending'" @click="openRefreshItemLog(row)">
+                  <el-icon><Document /></el-icon>日志
+                </el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+        </div>
+      </div>
+
+      <template #footer>
+        <div class="oa-footer">
+          <div class="footer-left" style="display: flex; gap: 8px">
+            <el-button
+              type="primary" plain size="small"
+              :disabled="refreshStats.success === 0"
+              @click="downloadTokenRefresh('txt')"
+            >
+              <el-icon><Download /></el-icon>下载 TXT 凭证 ({{ refreshStats.success }})
+            </el-button>
+            <el-button
+              type="primary" size="small"
+              :disabled="refreshStats.success === 0"
+              @click="downloadTokenRefresh('cpa')"
+            >
+              <el-icon><Download /></el-icon>下载 CPA JSON
+            </el-button>
+            <el-button
+              type="success" size="small"
+              :disabled="refreshStats.success === 0"
+              @click="downloadTokenRefresh('sub2api')"
+            >
+              <el-icon><Download /></el-icon>下载 Sub2API JSON
+            </el-button>
+          </div>
+          <div class="footer-right">
+            <el-button size="small" @click="closeTokenRefresh">
+              {{ refreshRunning ? '后台运行' : '关闭' }}
+            </el-button>
+            <el-button
+              v-if="refreshRunning"
+              size="small" type="danger" plain
+              @click="stopTokenRefreshTask"
+            >
+              <el-icon><SwitchButton /></el-icon>停止任务
+            </el-button>
+            <el-button
+              v-else
+              type="primary" class="start-gradient-btn"
+              :loading="refreshRunning"
+              :disabled="!refreshTargetEmails.length"
+              @click="startTokenRefreshTask"
+            >
+              <el-icon><VideoPlay /></el-icon>{{ refreshTaskId ? '重新刷新' : '开始刷新/重获' }}
+            </el-button>
+          </div>
+        </div>
+      </template>
+    </el-dialog>
+
+    <!-- ──────────────── 单账号 Token 刷新详细日志终端弹窗 ──────────────── -->
+    <el-dialog
+      v-model="refreshLogModalVisible"
+      width="780px"
+      top="8vh"
+      class="macos-terminal-dialog"
+      :close-on-click-modal="false"
+    >
+      <template #header>
+        <div class="modal-header">
+          <div class="window-dots">
+            <span class="dot red"></span>
+            <span class="dot yellow"></span>
+            <span class="dot green"></span>
+          </div>
+          <div class="modal-title-info">
+            <span class="modal-email">{{ currentRefreshLogItem?.email }}</span>
+            <el-tag size="small" type="primary" effect="plain" class="modal-run-tag">
+              Token 刷新/重登日志
+            </el-tag>
+          </div>
+        </div>
+      </template>
+
+      <div class="modal-terminal-wrap">
+        <div class="modal-terminal-body">
+          <div
+            v-for="(line, idx) in refreshLogLines"
+            :key="idx"
+            class="terminal-line"
+            :class="getLogClass(line)"
+          >
+            {{ line }}
+          </div>
+          <div v-if="!refreshLogLines.length" class="terminal-empty">
+            {{ refreshLogLoading ? '正在加载日志...' : '暂无详细日志' }}
+          </div>
+        </div>
+      </div>
+
+      <template #footer>
+        <div class="modal-footer">
+          <span class="log-count-tip">共 {{ refreshLogLines.length }} 行日志</span>
+          <div class="modal-footer-btns">
+            <el-button size="small" @click="copyText(refreshLogLines.join('\n'))">
+              <el-icon><CopyDocument /></el-icon>复制全部日志
+            </el-button>
+            <el-button size="small" type="primary" @click="refreshLogModalVisible = false">
               关闭
             </el-button>
           </div>
@@ -3951,6 +4656,15 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+.refresh-token-action-btn {
+  background: linear-gradient(135deg, #0ea5e9, #0284c7) !important;
+  border-color: #0284c7 !important;
+  color: #fff !important;
+}
+.refresh-token-action-btn:hover {
+  background: linear-gradient(135deg, #0284c7, #0369a1) !important;
 }
 
 .extract-pill-tag {

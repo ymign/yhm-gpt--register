@@ -108,6 +108,25 @@ export const downloadOAuthExportSub2 = (taskId, emails = '') =>
     responseType: 'blob',
   })
 
+// ──────────────── Token 重新获取与刷新 (Token Refresh Studio) ────────────────
+export const startTokenRefresh = (payload) =>
+  http.post('/api/registered/token_refresh/start', payload)
+
+export const stopTokenRefresh = (taskId) =>
+  http.post(`/api/registered/token_refresh/${encodeURIComponent(taskId)}/stop`)
+
+export const tokenRefreshStreamUrl = (taskId) =>
+  `/api/registered/token_refresh/${encodeURIComponent(taskId)}/stream`
+
+export const getTokenRefreshLog = (taskId, email) =>
+  http.get(`/api/registered/token_refresh/${encodeURIComponent(taskId)}/log`, { params: { email } })
+
+export const downloadTokenRefreshExport = (taskId, format = 'txt') =>
+  http.get(`/api/registered/token_refresh/${encodeURIComponent(taskId)}/download`, {
+    params: { format },
+    responseType: 'blob',
+  })
+
 // ──────────────── 自动跑号 auto-loop ────────────────
 export const autoStart = (payload) => http.post('/api/auto/start', payload)
 export const autoPause = () => http.post('/api/auto/pause')

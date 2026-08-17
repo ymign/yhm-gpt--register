@@ -42,8 +42,20 @@ except ImportError:
 
 try:
     from . import db
+    from .proxy_util import (
+        normalize_proxy_url,
+        new_proxy_session_id,
+        route_proxy_country,
+        resolve_target_country,
+    )
 except ImportError:
     import db
+    from proxy_util import (
+        normalize_proxy_url,
+        new_proxy_session_id,
+        route_proxy_country,
+        resolve_target_country,
+    )
 
 # 引入项目内置的高性能 pay_engine 模块 (集成自 pay153 纯协议引擎)
 try:
@@ -122,41 +134,20 @@ def _normalize_proxy_url(proxy: str) -> str:
     return f"http://{proxy}"
 
 
-def _route_proxy_country(proxy: str, country: str, session_id: str = "") -> str:
-    proxy = _normalize_proxy_url(proxy)
-    if not proxy:
-        return proxy
-    parsed = urlsplit(proxy)
-    username = unquote(parsed.username or "")
-    password = unquote(parsed.password or "")
-    match = re.fullmatch(
-        r"(?P<prefix>.+)-(?P<country>[A-Za-z]{2})-(?P<session>\d+)-(?P<ttl>\d+[A-Za-z]+)",
-        password,
-    )
-    if not username or not parsed.hostname or match is None:
-        return proxy
-    routed_password = (
-        f"{match.group('prefix')}-{country.upper()}-"
-        f"{session_id or str(random.randint(10000000, 99999999))}-{match.group('ttl')}"
-    )
-    hostname = parsed.hostname or ""
-    host = f"[{hostname}]" if ":" in hostname and not hostname.startswith("[") else hostname
-    if parsed.port:
-        host = f"{host}:{parsed.port}"
-    netloc = f"{quote(username, safe='-._~')}:{quote(routed_password, safe='-._~')}@{host}"
-    return urlunsplit((parsed.scheme or "http", netloc, parsed.path, parsed.query, parsed.fragment))
-
-
 def _get_proxy_url(pool_str: str = "", country: str = "") -> Optional[str]:
     lines = [line.strip() for line in (pool_str or "").splitlines() if line.strip() and not line.startswith("#")]
     if not lines:
         return None
     p = random.choice(lines)
+    sid = new_proxy_session_id()
     if country:
-        p = _route_proxy_country(p, country)
+        target_c = resolve_target_country(country) or country.upper()
+        p = route_proxy_country(p, target_c, session_id=sid)
         if "{country}" in p or "[country]" in p:
-            p = p.replace("{country}", country.lower()).replace("[country]", country.lower())
-    return _normalize_proxy_url(p)
+            p = p.replace("{country}", target_c.lower()).replace("[country]", target_c.lower())
+    else:
+        p = route_proxy_country(p, session_id=sid)
+    return normalize_proxy_url(p)
 
 
 def _create_http_client(proxy: Optional[str] = None):
@@ -352,6 +343,12 @@ def _execute_account_extract(task: ExtractJobTask, email: str) -> None:
             task.mark_done(email, {"status": "cancelled", "label": "已停止", "error": "任务已中止"})
             return
 
+        if attempt > 1:
+            # 账号级防频控退避 + 强制轮换新代理 Session
+            proxy = _get_proxy_url(task.proxy_pool, task.exit_country)
+            sleep_sec = 2.5 + random.uniform(0.5, 1.5)
+            time.sleep(sleep_sec)
+
         try:
             task.set_running(email, f"发起支付 Checkout ({attempt}/{task.retries})...")
             task.add_email_log(email, f"第 {attempt} 次尝试: 请求 OpenAI Checkout 接口...")
@@ -391,8 +388,8 @@ def _execute_account_extract(task: ExtractJobTask, email: str) -> None:
             if resp.status_code not in (200, 201):
                 err_text = (resp.text or "")[:300]
                 if resp.status_code == 429:
-                    task.add_email_log(email, f"触发 OpenAI 频控 (429: Too many requests)，正在轮换代理并重试 ({attempt}/{task.retries})...")
-                    time.sleep(2.0 * attempt + random.random() * 0.5)
+                    task.add_email_log(email, f"触发 OpenAI 账号频控 (429 Too Many Requests)，正在轮换代理并退避冷却 ({attempt}/{task.retries})...")
+                    time.sleep(4.0 * attempt + random.uniform(2.0, 4.0))
                     proxy = _get_proxy_url(task.proxy_pool, task.exit_country)
                     continue
                 if "account_deactivated" in err_text:

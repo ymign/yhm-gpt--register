@@ -1602,6 +1602,176 @@ def api_oauth_export_download_sub2(task_id: str, emails: str = ""):
     )
 
 
+# ──────────────────────── Token 重新获取与刷新 (Token Refresh Studio) ────────────────────────
+
+
+class StartTokenRefreshReq(BaseModel):
+    emails: list[str] = Field(..., description="要刷新/重获Token的账号邮箱列表")
+    proxies: str = Field("", description="接码代理池（每行一个）")
+    proxy: str = Field("", description="单个代理")
+    proxy_country: str = Field("RANDOM_HOT", description="代理目标国家")
+    workers: int = Field(5, ge=1, le=20, description="并发 worker 数")
+    timeout: float = Field(45.0, description="单账号超时秒数")
+    force_full_login: bool = Field(False, description="是否强制全流程 OAuth 重新登录（不走 RT 快速置换）")
+    # SMS 接码配置扩展
+    sms_enabled: bool = Field(False, description="是否启用自动 SMS 接码")
+    sms_provider: Optional[str] = Field("smsbower", description="接码服务平台 (smsbower / herosms)")
+    sms_api_key: Optional[str] = Field("", description="接码平台 API Key（留空使用系统全局配置）")
+    sms_country: Optional[str] = Field("52", description="接码国家ID，默认52泰国")
+    sms_max_price: Optional[str] = Field("", description="最高单价限制")
+    sms_max_attempts: int = Field(3, ge=1, le=10, description="最多换号尝试次数")
+    sms_timeout: int = Field(80, ge=20, le=300, description="单号等待短信超时秒数")
+
+
+def _safe_get_token_refresh(q, timeout: float = 2.0):
+    try:
+        return q.get(timeout=timeout)
+    except Exception as e:
+        if type(e).__name__ == "Empty":
+            return "__TIMEOUT__"
+        return None
+
+
+@app.post("/api/registered/token_refresh/start")
+def api_token_refresh_start(req: StartTokenRefreshReq):
+    """启动 Token 刷新/重获多 Worker 并发任务，返回 task_id 用于订阅 SSE。"""
+    from . import token_refresh_service
+
+    emails = [e.strip().lower() for e in (req.emails or []) if e and e.strip()]
+    if not emails:
+        raise HTTPException(400, "请提供要刷新 Token 的账号邮箱列表")
+
+    sms_api_key = (req.sms_api_key or "").strip()
+    if not sms_api_key or sms_api_key == "***":
+        global_sms = db.get_sms_internal_config()
+        sms_api_key = global_sms.get("sms_api_key") or ""
+
+    try:
+        task_id = token_refresh_service.start_token_refresh_task(
+            emails=emails,
+            proxies=req.proxies,
+            proxy=req.proxy,
+            proxy_country=req.proxy_country,
+            workers=req.workers,
+            timeout=int(req.timeout or 45),
+            force_full_login=req.force_full_login,
+            sms_enabled=req.sms_enabled,
+            sms_provider=(req.sms_provider or "smsbower").strip().lower(),
+            sms_api_key=sms_api_key,
+            sms_country=(req.sms_country or "52").strip(),
+            sms_max_price=(req.sms_max_price or "").strip(),
+            sms_max_attempts=req.sms_max_attempts,
+            sms_timeout=req.sms_timeout,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+    logger.info(f"[token_refresh] 任务 {task_id} 启动: {len(emails)} 个账号, workers={req.workers}")
+    return {"ok": True, "task_id": task_id, "taskId": task_id, "total": len(emails)}
+
+
+@app.post("/api/registered/token_refresh/{task_id}/stop")
+def api_token_refresh_stop(task_id: str):
+    """停止指定的 Token 刷新任务。"""
+    from . import token_refresh_service
+    active = token_refresh_service.stop_token_refresh_task(task_id)
+    return {"ok": True, "task_id": task_id, "active": active}
+
+
+@app.get("/api/registered/token_refresh/{task_id}/stream")
+async def api_token_refresh_stream(task_id: str, request: Request):
+    """SSE 实时推送 Token 刷新任务进度。"""
+    from . import token_refresh_service
+    task = token_refresh_service.get_token_refresh_task(task_id)
+    if not task:
+        raise HTTPException(404, "任务未找到")
+
+    async def event_gen():
+        loop = asyncio.get_event_loop()
+        yield f"event: init\ndata: {json.dumps({'task_id': task_id, 'total': len(task.items), 'items': task.items}, ensure_ascii=False)}\n\n"
+        while True:
+            if await request.is_disconnected():
+                break
+            msg = await loop.run_in_executor(None, _safe_get_token_refresh, task.queue)
+            if msg is None:
+                break
+            if msg == "__TIMEOUT__":
+                yield ": keep-alive\n\n"
+                continue
+            kind = msg.get("kind") or "progress"
+            data_str = json.dumps(msg, ensure_ascii=False)
+            if kind == "end":
+                yield f"event: end\ndata: {data_str}\n\n"
+                break
+            elif kind == "log":
+                yield f"event: log\ndata: {data_str}\n\n"
+            else:
+                yield f"event: progress\ndata: {data_str}\n\n"
+
+    return StreamingResponse(
+        event_gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
+@app.get("/api/registered/token_refresh/{task_id}/log")
+def api_token_refresh_log(task_id: str, email: str):
+    """查询单个账号在 Token 刷新任务中的日志。"""
+    from . import token_refresh_service
+    lines = token_refresh_service.get_token_refresh_log(task_id, email)
+    return {"ok": True, "email": email, "lines": lines}
+
+
+@app.get("/api/registered/token_refresh/{task_id}/download")
+def api_token_refresh_download(task_id: str, format: str = "txt"):
+    """下载 Token 刷新任务的凭证文件 (txt / cpa / sub2api / json)。"""
+    from . import token_refresh_service
+    task = token_refresh_service.get_token_refresh_task(task_id)
+    if not task:
+        raise HTTPException(404, "任务未找到")
+
+    fmt = format.lower().strip()
+    if fmt == "txt":
+        content = token_refresh_service.export_refreshed_tokens_text(task_id)
+        if not content:
+            raise HTTPException(404, "没有刷新成功的账号可供下载")
+        return Response(
+            content=content,
+            media_type="text/plain; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="refreshed_tokens_{task_id}.txt"'},
+        )
+    elif fmt == "cpa":
+        data = token_refresh_service.export_refreshed_tokens_cpa_json(task_id)
+        if not data:
+            raise HTTPException(404, "没有 CPA 格式凭证可供下载")
+        return Response(
+            content=json.dumps(data, ensure_ascii=False, indent=2),
+            media_type="application/json; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="cpa_refreshed_{task_id}.json"'},
+        )
+    elif fmt == "sub2api":
+        data = token_refresh_service.export_refreshed_tokens_sub2api_json(task_id)
+        if not data.get("accounts"):
+            raise HTTPException(404, "没有 Sub2API 格式凭证可供下载")
+        return Response(
+            content=json.dumps(data, ensure_ascii=False, indent=2),
+            media_type="application/json; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="sub2api_refreshed_{task_id}.json"'},
+        )
+    else:
+        items_dict = {email: it.get("result") for email, it in task.items.items() if it.get("result")}
+        return Response(
+            content=json.dumps(items_dict, ensure_ascii=False, indent=2),
+            media_type="application/json; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="refreshed_all_{task_id}.json"'},
+        )
+
+
 # ──────────────────────── Plus 试用提链 (Extract Link) ────────────────────────
 
 
