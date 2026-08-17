@@ -16,6 +16,10 @@ import {
   SwitchButton,
   Warning,
   CircleCheck,
+  Search,
+  Link,
+  ArrowDown,
+  Loading,
 } from '@element-plus/icons-vue'
 import {
   listRegistered,
@@ -91,8 +95,17 @@ const total = ref(0)
 const page = ref(1)
 const pageSize = ref(20)
 const filter = ref('all')
+const searchKeyword = ref('')
 const selected = ref([])
 const loading = ref(false)
+let searchTimer = null
+
+function onSearchInput() {
+  if (searchTimer) clearTimeout(searchTimer)
+  searchTimer = setTimeout(() => {
+    load(true)
+  }, 300)
+}
 
 const PLUS_TYPE = {
   pro_20x: 'danger',
@@ -1269,6 +1282,7 @@ async function load(resetPage = false) {
       limit: pageSize.value,
       offset: (page.value - 1) * pageSize.value,
       filter: filter.value,
+      search: searchKeyword.value.trim(),
     })
     rows.value = items || []
     total.value = t || 0
@@ -1568,6 +1582,18 @@ onUnmounted(() => {
           <el-button class="macos-btn" @click="load(false)">
             <el-icon><Refresh /></el-icon>刷新
           </el-button>
+
+          <el-input
+            v-model="searchKeyword"
+            placeholder="搜索邮箱..."
+            clearable
+            size="small"
+            class="macos-input search-input"
+            :prefix-icon="Search"
+            @input="onSearchInput"
+            @clear="load(true)"
+            @keyup.enter="load(true)"
+          />
 
           <el-select v-model="filter" class="macos-select filter-select" @change="load(true)">
             <el-option label="全部" value="all" />
@@ -2727,10 +2753,10 @@ onUnmounted(() => {
       </template>
     </el-dialog>
 
-    <!-- ──────────────── 账号批量验活控制台弹窗 (macOS 架构，支持 Token 验活 & 套餐验活双模式) ──────────────── -->
+    <!-- ──────────────── 账号批量验活控制台弹窗 (紧凑型架构，支持 Token 验活 & 套餐验活双模式) ──────────────── -->
     <el-dialog
-      v-model="healthVisible" width="900px" top="4vh"
-      class="oa-custom-dialog health-dialog"
+      v-model="healthVisible" width="880px" top="5vh"
+      class="oa-custom-dialog plus-dialog health-dialog"
       :close-on-click-modal="false" @closed="closeHealthCheck"
     >
       <template #header>
@@ -2852,12 +2878,19 @@ onUnmounted(() => {
           </div>
         </div>
 
-        <!-- 核心表格：验活监控列表 -->
-        <div class="plus-table-box">
-          <el-table :data="healthRows" size="small" stripe height="320" class="macos-table" :highlight-current-row="false">
+        <!-- 核心表格：验活监控列表 (单栏纯净表格，无底部冗余全局日志) -->
+        <div class="plus-table-box health-table-box">
+          <el-table :data="healthRows" size="small" stripe height="360" class="macos-table" :highlight-current-row="false">
             <el-table-column prop="email" label="账号邮箱" min-width="220" show-overflow-tooltip>
               <template #default="{ row }">
-                <span class="mono email-copy" @click="copyText(row.email)">{{ row.email }}</span>
+                <button
+                  class="macos-tag-btn copy-btn"
+                  title="点击复制邮箱"
+                  @click="copyText(row.email)"
+                >
+                  <span class="mono">{{ row.email }}</span>
+                  <el-icon class="copy-ico"><CopyDocument /></el-icon>
+                </button>
               </template>
             </el-table-column>
 
@@ -2895,53 +2928,43 @@ onUnmounted(() => {
               </template>
             </el-table-column>
 
-            <el-table-column label="操作" width="80" align="center">
+            <el-table-column label="操作" width="80" align="center" fixed="right">
               <template #default="{ row }">
-                <el-button size="small" link type="primary" :disabled="row.status === 'pending'" @click="openHealthItemLog(row)">
-                  日志
+                <el-button size="small" text type="primary" :disabled="row.status === 'pending'" @click="openHealthItemLog(row)">
+                  <el-icon><Document /></el-icon>日志
                 </el-button>
               </template>
             </el-table-column>
           </el-table>
         </div>
-
-        <!-- 底部实时流水日志 -->
-        <div class="plus-log-terminal">
-          <div class="terminal-header">
-            <span>实时验活日志流 (Live Event Stream)</span>
-            <el-button size="small" text @click="healthLogs = []">清空</el-button>
-          </div>
-          <div id="health-log-box" class="terminal-body">
-            <div v-for="(l, idx) in healthLogs" :key="idx" class="terminal-line" :class="getLogClass(l)">
-              {{ l }}
-            </div>
-            <div v-if="!healthLogs.length" class="terminal-empty">
-              {{ healthRunning ? '正在连接实时日志流...' : '点击【开始批量验活】后在此查看多 Worker 实时推流' }}
-            </div>
-          </div>
-        </div>
       </div>
 
       <template #footer>
-        <div class="oa-footer-bar">
-          <span class="oa-footer-status">
-            {{ healthRunning ? '多 Worker 验活进行中，可随时在后台运行或停止' : '准备就绪，点击开始执行批量验活' }}
-          </span>
-          <div class="oa-footer-actions">
-            <el-button size="small" @click="closeHealthCheck">
+        <div class="oa-dialog-footer">
+          <div class="footer-tip">
+            <span v-if="healthRunning" class="running-indicator">
+              <span class="pulse-dot"></span> 正在多 Worker 并发验活 (Workers: {{ healthForm.workers }})...
+            </span>
+            <span v-else-if="healthTaskId" class="finished-indicator">
+              验活已完成，结果已自动更新至数据库
+            </span>
+          </div>
+          <div class="footer-btns">
+            <el-button @click="closeHealthCheck">
               {{ healthRunning ? '后台运行' : '关闭' }}
             </el-button>
-            <el-button v-if="healthRunning" size="small" type="danger" @click="stopHealthCheckTask">
+            <el-button v-if="healthRunning" type="danger" plain @click="stopHealthCheckTask">
               <el-icon><SwitchButton /></el-icon>停止验活
             </el-button>
             <el-button
               v-else
-              size="small"
               type="primary"
+              class="start-gradient-btn"
+              :loading="healthRunning"
               :disabled="!healthTargetEmails.length"
               @click="startHealthCheckTask"
             >
-              <el-icon><VideoPlay /></el-icon>开始批量验活
+              <el-icon><VideoPlay /></el-icon>{{ healthTaskId ? '重新验活' : '开始批量验活' }}
             </el-button>
           </div>
         </div>
@@ -3225,6 +3248,13 @@ onUnmounted(() => {
   border-radius: 6px;
   font-size: 12px;
   padding: 6px 10px;
+}
+
+.macos-input.search-input {
+  width: 175px;
+}
+.macos-input.search-input :deep(.el-input__wrapper) {
+  border-radius: 6px;
 }
 
 .macos-select.filter-select {
@@ -3696,6 +3726,10 @@ onUnmounted(() => {
   border-radius: 8px;
   overflow: hidden;
   height: 340px;
+}
+
+.plus-table-box.health-table-box {
+  height: 360px;
 }
 
 :deep(.plus-dialog) {

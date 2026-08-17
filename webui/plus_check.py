@@ -28,8 +28,12 @@ try:
 except ImportError:  # pragma: no cover
     CurlSession = None
 
-from . import db
-from .proxy_util import COUNTRY_LANG_MAP, new_proxy_session_id, resolve_target_country, route_proxy_country
+try:
+    from . import db
+    from .proxy_util import COUNTRY_LANG_MAP, new_proxy_session_id, resolve_target_country, route_proxy_country
+except ImportError:
+    import db
+    from proxy_util import COUNTRY_LANG_MAP, new_proxy_session_id, resolve_target_country, route_proxy_country
 
 CHECK_URL = "https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27"
 DEFAULT_UA = (
@@ -183,11 +187,10 @@ def parse_account_plan(data: dict, body: str = "") -> dict:
             "has_sub": has_sub,
         }
 
-    # 3. 判定可领试用活动 (Pro Trial / Plus Trial / 各种优惠活动)
+    # 3. 判定可领试用活动 (仅以 eligible_promo_campaigns 中的真实活动为准)
     has_pro_promo = (
         "pro" in promo
         or any("pro" in str(k).lower() or "pro" in str(v.get("id", "")).lower() for k, v in promo.items() if isinstance(v, dict))
-        or any("pro" in str(o.get("id", "")).lower() for o in offers if isinstance(o, dict))
     )
     if has_pro_promo:
         return {
@@ -199,7 +202,7 @@ def parse_account_plan(data: dict, body: str = "") -> dict:
 
     plus_promo_data = promo.get("plus") or promo.get("chatgpt_plus") or promo.get("chatgptplus")
     has_plus_promo = False
-    plus_promo_id = "plus-1-month-free"
+    plus_promo_id = ""
 
     if isinstance(plus_promo_data, dict):
         has_plus_promo = True
@@ -210,9 +213,6 @@ def parse_account_plan(data: dict, body: str = "") -> dict:
     elif any("plus" in str(v.get("id", "")).lower() for v in promo.values() if isinstance(v, dict)):
         has_plus_promo = True
         plus_promo_id = "plus-trial"
-    elif any("plus" in str(o.get("id", "")).lower() or "trial" in str(o.get("id", "")).lower() for o in offers if isinstance(o, dict)):
-        has_plus_promo = True
-        plus_promo_id = "plus-offer-trial"
 
     if has_plus_promo:
         return {

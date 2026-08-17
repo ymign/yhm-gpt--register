@@ -376,16 +376,18 @@ def api_run_log(run_id: str):
 
 
 @app.get("/api/registered")
-def api_registered(limit: int = 20, offset: int = 0, filter: str = "all"):
-    items = db.list_registered(limit=limit, offset=offset, filter_rt=filter)
-    total = db.count_registered(filter_rt=filter)
+def api_registered(limit: int = 20, offset: int = 0, filter: str = "all", q: str = "", search: str = ""):
+    query_str = (q or search).strip()
+    items = db.list_registered(limit=limit, offset=offset, filter_rt=filter, search=query_str)
+    total = db.count_registered(filter_rt=filter, search=query_str)
     return {"ok": True, "items": items, "total": total}
 
 
 @app.get("/api/registered_emails")
-def api_registered_emails(filter: str = "all"):
+def api_registered_emails(filter: str = "all", q: str = "", search: str = ""):
     """返回当前过滤条件下的所有账号邮箱列表（用于批量检测未检/全检）。"""
-    emails = db.list_registered_emails(filter_rt=filter)
+    query_str = (q or search).strip()
+    emails = db.list_registered_emails(filter_rt=filter, search=query_str)
     return {"ok": True, "emails": emails, "total": len(emails)}
 
 

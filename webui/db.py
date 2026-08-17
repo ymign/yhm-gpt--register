@@ -835,78 +835,91 @@ def update_oa_check(email: str, oa_info: dict) -> None:
         con.commit()
 
 
-def _registered_where(filt: str) -> str:
+def _registered_where(filt: str, search: str = "") -> tuple[str, list]:
+    conditions = []
+    args = []
     if filt == "has_rt":
-        return "WHERE length(refresh_token) > 0"
-    if filt == "no_rt":
-        return "WHERE coalesce(length(refresh_token),0) = 0"
-    if filt == "unchecked":
-        return "WHERE (extra_json IS NULL OR extra_json NOT LIKE '%\"plus_check\"%')"
-    if filt == "pro":
-        return "WHERE (extra_json LIKE '%\"pro_20x\"%' OR extra_json LIKE '%\"pro_5x\"%' OR extra_json LIKE '%\"pro_active\"%' OR extra_json LIKE '%\"pro_eligible\"%')"
-    if filt == "team":
-        return "WHERE extra_json LIKE '%\"team_active\"%'"
-    if filt == "plus":
-        return "WHERE (extra_json LIKE '%\"plus_eligible\"%' OR extra_json LIKE '%\"plus_active\"%')"
-    if filt == "free":
-        return "WHERE extra_json LIKE '%\"free\"%'"
-    if filt == "banned":
-        return "WHERE extra_json LIKE '%\"banned\"%'"
-    if filt == "token_invalid":
+        conditions.append("length(refresh_token) > 0")
+    elif filt == "no_rt":
+        conditions.append("coalesce(length(refresh_token),0) = 0")
+    elif filt == "unchecked":
+        conditions.append("(extra_json IS NULL OR extra_json NOT LIKE '%\"plus_check\"%')")
+    elif filt == "pro":
+        conditions.append("(extra_json LIKE '%\"pro_20x\"%' OR extra_json LIKE '%\"pro_5x\"%' OR extra_json LIKE '%\"pro_active\"%' OR extra_json LIKE '%\"pro_eligible\"%')")
+    elif filt == "team":
+        conditions.append("extra_json LIKE '%\"team_active\"%'")
+    elif filt == "plus":
+        conditions.append("(extra_json LIKE '%\"plus_eligible\"%' OR extra_json LIKE '%\"plus_active\"%')")
+    elif filt == "free":
+        conditions.append("extra_json LIKE '%\"free\"%'")
+    elif filt == "banned":
+        conditions.append("extra_json LIKE '%\"banned\"%'")
+    elif filt == "token_invalid":
         # token_invalid 从 2026-08-10 起会写库，得能筛出来，否则等于埋了：
         # 它既不在 unchecked 里（已有结论），又不在 free/plus/banned 里。
-        return "WHERE extra_json LIKE '%\"token_invalid\"%'"
+        conditions.append("extra_json LIKE '%\"token_invalid\"%'")
     # ── OAICS 资格检测筛选 ──
-    if filt == "oa_unchecked":
-        return "WHERE (oa_check IS NULL OR oa_check = '')"
-    if filt == "oa_hit":
-        return "WHERE oa_check LIKE '%\"state\":\"OAICS\"%'"
-    if filt == "oa_miss":
-        return ("WHERE oa_check IS NOT NULL AND oa_check != '' "
-                "AND oa_check NOT LIKE '%\"state\":\"OAICS\"%'")
+    elif filt == "oa_unchecked":
+        conditions.append("(oa_check IS NULL OR oa_check = '')")
+    elif filt == "oa_hit":
+        conditions.append("oa_check LIKE '%\"state\":\"OAICS\"%'")
+    elif filt == "oa_miss":
+        conditions.append("(oa_check IS NOT NULL AND oa_check != '' AND oa_check NOT LIKE '%\"state\":\"OAICS\"%')")
     # ── OAuth 授权状态筛选 ──
-    if filt == "oauth_success":
-        return "WHERE oauth_status = 'success'"
-    if filt == "oauth_need_phone":
-        return "WHERE oauth_status = 'need_phone'"
-    if filt == "oauth_failed":
-        return "WHERE (oauth_status = 'failed' OR oauth_status = 'error')"
-    if filt == "oauth_unchecked":
-        return "WHERE (oauth_status IS NULL OR oauth_status = '')"
+    elif filt == "oauth_success":
+        conditions.append("oauth_status = 'success'")
+    elif filt == "oauth_need_phone":
+        conditions.append("oauth_status = 'need_phone'")
+    elif filt == "oauth_failed":
+        conditions.append("(oauth_status = 'failed' OR oauth_status = 'error')")
+    elif filt == "oauth_unchecked":
+        conditions.append("(oauth_status IS NULL OR oauth_status = '')")
     # ── 提链状态筛选 ──
-    if filt == "extract_eligible":
-        return "WHERE extra_json LIKE '%\"plus_eligible\"%' AND (extra_json NOT LIKE '%\"extract_link\":{\"status\":\"success\"%')"
-    if filt == "extract_success":
-        return "WHERE extra_json LIKE '%\"extract_link\":{\"status\":\"success\"%'"
-    if filt == "extract_failed":
-        return "WHERE extra_json LIKE '%\"extract_link\":{\"status\":\"failed\"%'"
-    return ""
+    elif filt == "extract_eligible":
+        conditions.append("extra_json LIKE '%\"plus_eligible\"%' AND (extra_json NOT LIKE '%\"extract_link\":{\"status\":\"success\"%')")
+    elif filt == "extract_success":
+        conditions.append("extra_json LIKE '%\"extract_link\":{\"status\":\"success\"%'")
+    elif filt == "extract_failed":
+        conditions.append("extra_json LIKE '%\"extract_link\":{\"status\":\"failed\"%'")
+
+    search_cleaned = (search or "").strip().lower()
+    if search_cleaned:
+        conditions.append("email LIKE ?")
+        args.append(f"%{search_cleaned}%")
+
+    if conditions:
+        return "WHERE " + " AND ".join(conditions), args
+    return "", args
 
 
-def count_registered(filter_rt: str = "all") -> int:
+def count_registered(filter_rt: str = "all", search: str = "") -> int:
     con = _conn()
-    cur = con.execute(f"SELECT COUNT(*) FROM registered {_registered_where(filter_rt)}")
+    where, args = _registered_where(filter_rt, search)
+    cur = con.execute(f"SELECT COUNT(*) FROM registered {where}", args)
     return cur.fetchone()[0]
 
 
-def list_registered_emails(filter_rt: str = "all", limit: int = 100000) -> list[str]:
+def list_registered_emails(filter_rt: str = "all", search: str = "", limit: int = 100000) -> list[str]:
     """返回符合过滤条件的所有注册邮箱列表。"""
     con = _conn()
-    where = _registered_where(filter_rt)
-    cur = con.execute(f"SELECT email FROM registered {where} ORDER BY created_at DESC LIMIT ?", (limit,))
+    where, args = _registered_where(filter_rt, search)
+    cur = con.execute(
+        f"SELECT email FROM registered {where} ORDER BY created_at DESC LIMIT ?",
+        args + [limit],
+    )
     return [r[0] for r in cur.fetchall()]
 
 
-def list_registered(limit: int = 20, offset: int = 0, filter_rt: str = "all") -> list[dict]:
+def list_registered(limit: int = 20, offset: int = 0, filter_rt: str = "all", search: str = "") -> list[dict]:
     con = _conn()
-    where = _registered_where(filter_rt)
+    where, args = _registered_where(filter_rt, search)
     cur = con.execute(
         f"SELECT email, password, totp_secret, reg_country, reg_city, reg_ip, "
         f"length(access_token) AS at_len, length(session_token) AS st_len, "
         f"length(refresh_token) AS rt_len, oauth_status, oauth_updated_at, "
         f"extra_json, oa_check, created_at "
         f"FROM registered {where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
-        (limit, offset),
+        args + [limit, offset],
     )
     rows = []
     for r in cur.fetchall():

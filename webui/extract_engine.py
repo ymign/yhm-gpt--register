@@ -432,10 +432,14 @@ def _execute_account_extract(task: ExtractJobTask, email: str) -> None:
                     label = "✅ 命中GCash" if is_gcash else "未命中"
                     status = "success" if is_gcash else "error"
                 else:
-                    is_eligible = "promo_campaign" in (resp.text or "") or "free_trial" in (resp.text or "") or "trial" in (resp.text or "")
+                    promo_info = data.get("promo_campaign") or {}
+                    has_promo_id = bool(str(promo_info.get("promo_campaign_id") or "").strip())
+                    total_info = data.get("checkout_state", {}).get("total", {})
+                    is_zero_due = total_info.get("total", {}).get("minorUnitsAmount") == 0 or total_info.get("discount", {}).get("minorUnitsAmount", 0) > 0
+                    is_eligible = has_promo_id or is_zero_due
                     oaics_state = "PLUS_ELIGIBLE" if is_eligible else ("CS" if checkout_session_id.startswith("cs_") else "FREE")
                     label = "可领Plus试用" if is_eligible else "普通/已开通"
-                    status = "success"
+                    status = "success" if is_eligible else "free"
 
                 res = {
                     "status": status,
