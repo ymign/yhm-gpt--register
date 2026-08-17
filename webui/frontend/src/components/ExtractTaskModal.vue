@@ -1,5 +1,6 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import {
   Refresh,
@@ -12,6 +13,7 @@ import {
   Document,
   Link,
   Close,
+  CreditCard,
 } from '@element-plus/icons-vue'
 import {
   startNativeExtractTask,
@@ -22,6 +24,7 @@ import {
 import { copyText, createSSE } from '@/api/request'
 import { useProxyStore } from '@/stores/proxy'
 
+const router = useRouter()
 const proxyStore = useProxyStore()
 
 const props = defineProps({
@@ -84,9 +87,9 @@ const CHANNEL_CONFIGS = {
     title: 'PayPal 提链任务台',
     actionText: '开始提链',
     resultColumn: 'PayPal 链接 / 说明',
-    defaultExit: 'TH',
-    defaultBilling: 'TH',
-    defaultCurrency: 'THB',
+    defaultExit: 'DE',
+    defaultBilling: 'DE',
+    defaultCurrency: 'EUR',
   },
   ideal: {
     name: 'iDEAL',
@@ -463,6 +466,11 @@ function handleClose() {
   emit('update:modelValue', false)
 }
 
+function goToPayPalPay() {
+  handleClose()
+  router.push('/paypal-pay')
+}
+
 onMounted(() => {
   timer = setInterval(() => {
     nowTime.value = Date.now()
@@ -739,6 +747,15 @@ onUnmounted(() => {
           </el-button>
           <el-button size="small" :icon="Download" @click="handleExportJson">
             导出 JSON
+          </el-button>
+          <el-button
+            v-if="props.channel === 'paypal' && successCount > 0"
+            size="small"
+            type="success"
+            :icon="CreditCard"
+            @click="goToPayPalPay"
+          >
+            一键去协议代付 ({{ successCount }})
           </el-button>
         </div>
         <div class="footer-right">

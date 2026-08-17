@@ -79,11 +79,11 @@ logger = logging.getLogger(__name__)
 
 CHANNEL_META = {
     "gcash_check": {"name": "GCash 资格检测", "category": "check", "default_exit": "US", "default_billing": "PH", "default_currency": "PHP"},
-    "oaics_check": {"name": "OAICS 资格检测", "category": "check", "default_exit": "US", "default_billing": "DE", "default_currency": "EUR"},
+    "oaics_check": {"name": "OAICS 资格检测", "category": "check", "default_exit": "DE", "default_billing": "DE", "default_currency": "EUR"},
     "plus_check":  {"name": "Plus 状态检测", "category": "check", "default_exit": "US", "default_billing": "US", "default_currency": "USD"},
     "gcash":       {"name": "GCash 提链", "category": "extract", "default_exit": "US", "default_billing": "PH", "default_currency": "PHP"},
     "pix":         {"name": "PIX 出码", "category": "extract", "default_exit": "BR", "default_billing": "BR", "default_currency": "BRL"},
-    "paypal":      {"name": "PayPal 提链", "category": "extract", "default_exit": "TH", "default_billing": "TH", "default_currency": "THB"},
+    "paypal":      {"name": "PayPal 提链", "category": "extract", "default_exit": "DE", "default_billing": "DE", "default_currency": "EUR"},
     "ideal":       {"name": "iDEAL 提链", "category": "extract", "default_exit": "NL", "default_billing": "NL", "default_currency": "EUR"},
     "upi":         {"name": "UPI 提链", "category": "extract", "default_exit": "IN", "default_billing": "IN", "default_currency": "INR"},
     "kakao":       {"name": "Kakao 提链", "category": "extract", "default_exit": "KR", "default_billing": "KR", "default_currency": "KRW"},
@@ -523,28 +523,25 @@ def _execute_account_extract(task: ExtractJobTask, email: str) -> None:
                     task.add_email_log(email, f"PayPal 深度协议解析失败: {e}")
                     raise RuntimeError(f"PayPal 0元协议提炼失败: {e}") from e
 
-            # 4.2 如果是 PayPal 且为 OAICS 自建会话
+            # 4.2 如果是 PayPal 且为 OAICS 自建会话 (OpenAI Custom Checkout -> confirmation_tokens -> setup_intents/confirm)
             elif task.channel == "paypal" and checkout_session_id.startswith("oaics_"):
-                task.set_running(email, "正在读取 OAICS PayPal 支付方式...")
-                task.add_email_log(email, "OAICS 会话：正在读取自定义支付方式并提交账单...")
+                task.set_running(email, "正在执行 OAICS 深度协议解析 (Taxes -> CToken -> Intent Confirm)...")
+                task.add_email_log(email, "OAICS 会话：执行 Stripe 确认令牌与意图确认协议...")
                 try:
-                    custom_get_resp = client.get(
-                        f"https://chatgpt.com/backend-api/payments/checkout/{processor_entity}/{checkout_session_id}",
-                        headers={
-                            "Authorization": f"Bearer {access_token}",
-                            "Accept": "application/json",
-                            "Referer": f"https://chatgpt.com/checkout/{processor_entity}/{checkout_session_id}",
-                            "User-Agent": _random_ua(),
-                        },
-                        timeout=25,
-                    )
-                    custom_state = custom_get_resp.json() if custom_get_resp.status_code == 200 else {}
-                    methods = custom_state.get("custom_payment_methods") or []
-                    paypal_method = next((m for m in methods if "paypal" in json.dumps(m, ensure_ascii=False).lower()), None)
-                    if not paypal_method:
-                        paypal_method = next((m for m in methods if str(m.get("id") or "").startswith("cpmt_")), None)
+                    stripe_client = _create_http_client(proxy)
+                    stripe_hdrs = {
+                        "User-Agent": _random_ua(),
+                        "Accept": "application/json",
+                        "Origin": "https://pay.openai.com",
+                        "Referer": "https://pay.openai.com/",
+                        "Content-Type": "application/x-www-form-urlencoded",
+                    }
+                    guid = f"{uuid.uuid4()}{secrets.token_hex(3)}"
+                    muid = f"{uuid.uuid4()}{secrets.token_hex(3)}"
+                    sid = f"{uuid.uuid4()}{secrets.token_hex(3)}"
+                    stripe_js_id = str(uuid.uuid4())
 
-                    # 提交 tax
+                    # 1. 提交 Taxes 校验
                     tax_body = {
                         "checkout_session_id": checkout_session_id,
                         "checkout_email": email,
@@ -567,34 +564,91 @@ def _execute_account_extract(task: ExtractJobTask, email: str) -> None:
                         timeout=25,
                     )
 
-                    if paypal_method:
-                        method_id = str(paypal_method.get("id") or "")
-                        client.post(
-                            "https://chatgpt.com/backend-api/payments/checkout/confirm",
-                            json={
-                                "checkout_session_id": checkout_session_id,
-                                "selected_payment_method_type": method_id,
-                            },
-                            headers=headers,
-                            timeout=25,
+                    # 2. 生成 Stripe Confirmation Token (ctoken_)
+                    ctoken_body = {
+                        "payment_method_data[type]": "paypal",
+                        "payment_method_data[billing_details][name]": "Alex Schmidt",
+                        "payment_method_data[billing_details][email]": email,
+                        "payment_method_data[billing_details][address][country]": task.billing_country,
+                        "payment_method_data[billing_details][address][city]": "Berlin",
+                        "payment_method_data[billing_details][address][postal_code]": "10115",
+                        "payment_method_data[billing_details][address][line1]": "Friedrichstrasse 1",
+                        "payment_method_data[billing_details][address][state]": "Berlin",
+                        "payment_method_data[allow_redisplay]": "always",
+                        "payment_method_data[guid]": guid,
+                        "payment_method_data[muid]": muid,
+                        "payment_method_data[sid]": sid,
+                        "payment_method_data[payment_user_agent]": f"stripe.js/{stripe_js_id}; stripe-js-v3/{stripe_js_id}; custom-checkout",
+                        "payment_method_data[referrer]": "https://chatgpt.com",
+                        "key": pk,
+                        "_stripe_version": STRIPE_VERSION_FULL,
+                    }
+                    r_ctoken = stripe_client.post(
+                        f"{STRIPE_API}/v1/confirmation_tokens",
+                        data=ctoken_body,
+                        headers=stripe_hdrs,
+                        timeout=25,
+                    )
+                    ctoken_data = r_ctoken.json() if r_ctoken.status_code == 200 else {}
+                    ctoken_id = str(ctoken_data.get("id") or "")
+                    if not ctoken_id:
+                        task.add_email_log(email, f"CToken 创建说明: HTTP {r_ctoken.status_code}")
+
+                    # 3. 提交 OpenAI Checkout Confirm
+                    confirm_body = {
+                        "checkout_session_id": checkout_session_id,
+                        "selected_payment_method_type": "paypal",
+                    }
+                    if ctoken_id:
+                        confirm_body["confirm_token"] = ctoken_id
+
+                    r_confirm = client.post(
+                        "https://chatgpt.com/backend-api/payments/checkout/confirm",
+                        json=confirm_body,
+                        headers=headers,
+                        timeout=25,
+                    )
+                    confirm_data = r_confirm.json() if r_confirm.status_code == 200 else {}
+                    client_secret = str(confirm_data.get("client_secret") or "")
+
+                    cand_url = ""
+                    # 4. 如果返回了 client_secret，向 Stripe 发起 setup_intents 或 payment_intents confirm
+                    if client_secret and ("_secret_" in client_secret):
+                        intent_prefix, _, _ = client_secret.partition("_secret_")
+                        intent_endpoint = (
+                            f"{STRIPE_API}/v1/setup_intents/{intent_prefix}/confirm"
+                            if intent_prefix.startswith("seti_")
+                            else f"{STRIPE_API}/v1/payment_intents/{intent_prefix}/confirm"
                         )
+                        intent_body = {
+                            "client_secret": client_secret,
+                            "return_url": f"https://pay.openai.com/c/pay/{checkout_session_id}?redirect_pm_type=paypal&ui_mode=custom",
+                            "key": pk,
+                            "_stripe_version": STRIPE_VERSION_FULL,
+                        }
+                        if ctoken_id:
+                            intent_body["confirmation_token"] = ctoken_id
+                        r_intent = stripe_client.post(intent_endpoint, data=intent_body, headers=stripe_hdrs, timeout=25)
+                        intent_data = r_intent.json() if r_intent.status_code == 200 else {}
+                        next_act = intent_data.get("next_action") or {}
+                        cand_url = str(next_act.get("redirect_to_url", {}).get("url") or intent_data.get("redirect_to_url") or "").strip()
+
+                    if not cand_url:
+                        # 兜底：尝试 checkout/start
                         start_resp = client.post(
                             "https://chatgpt.com/backend-api/payments/checkout/start",
-                            json={
-                                "checkout_session_id": checkout_session_id,
-                                "selected_payment_method_type": method_id,
-                            },
+                            json={"checkout_session_id": checkout_session_id, "selected_payment_method_type": "paypal"},
                             headers=headers,
                             timeout=25,
                         )
                         start_data = start_resp.json() if start_resp.status_code == 200 else {}
-                        action = start_data.get("next_action") or {}
-                        cand_url = str(action.get("url") or "").strip()
-                        if cand_url:
-                            final_link = _resolve_paypal_agreements_url(client, cand_url)
-                            task.add_email_log(email, f"🎉 OAICS 成功解析出 PayPal 官方跳转: {final_link}")
+                        cand_url = str(start_data.get("next_action", {}).get("url") or "").strip()
+
+                    if cand_url:
+                        final_link = _resolve_paypal_agreements_url(client, cand_url)
+                        task.add_email_log(email, f"🎉 OAICS 成功解析出 PayPal 官方跳转: {final_link}")
                 except Exception as exc:
-                    task.add_email_log(email, f"OAICS PayPal 解析提示: {exc}")
+                    task.add_email_log(email, f"OAICS PayPal 协议解析提示: {exc}")
 
             # 5. 其它通用渠道处理
             if not final_link:

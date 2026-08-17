@@ -22,7 +22,7 @@ import ExtractTaskModal from '@/components/ExtractTaskModal.vue'
 
 // ── 渠道卡片元数据 ──
 const CHANNELS = [
-  { key: 'paypal', name: 'PayPal', flag: '💳', exit: 'BR 巴西', billing: 'DE 德国 / EUR', desc: 'PayPal 授权与支付提链', hot: true, tag: 'DE/EUR' },
+  { key: 'paypal', name: 'PayPal', flag: '💳', exit: 'DE 德国', billing: 'DE 德国 / EUR', desc: 'PayPal 授权与支付提链', hot: true, tag: 'DE/EUR' },
   { key: 'pix', name: 'PIX 出码', flag: '🇧🇷', exit: 'BR 巴西', billing: 'BR 巴西 / BRL', desc: '巴西 PIX 二维码与银行跳转', hot: true, tag: 'BR/BRL' },
   { key: 'gcash', name: 'GCash', flag: '🇵🇭', exit: 'US 美国', billing: 'PH 菲律宾 / PHP', desc: '菲律宾 GCash 短链接直提', tag: 'PH/PHP' },
   { key: 'ideal', name: 'iDEAL', flag: '🇳🇱', exit: 'NL 荷兰', billing: 'NL 荷兰 / EUR', desc: '荷兰及欧洲银行跳转扫码', tag: 'NL/EUR' },
