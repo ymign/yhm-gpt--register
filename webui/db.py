@@ -835,6 +835,31 @@ def update_oa_check(email: str, oa_info: dict) -> None:
         con.commit()
 
 
+def update_registered_extract(email: str, extract_data: dict) -> bool:
+    """把提链结果 (status, link_url, ba_token, channel 等) 写入 registered.extra_json.extract_link。"""
+    email = (email or "").strip().lower()
+    if not email:
+        return False
+    with _lock:
+        con = _conn()
+        row = con.execute("SELECT extra_json FROM registered WHERE email=?", (email,)).fetchone()
+        if not row:
+            return False
+        extra = {}
+        if row["extra_json"]:
+            try:
+                extra = json.loads(row["extra_json"])
+            except Exception:
+                extra = {}
+        extra["extract_link"] = extract_data
+        con.execute(
+            "UPDATE registered SET extra_json=? WHERE email=?",
+            (json.dumps(extra, ensure_ascii=False), email),
+        )
+        con.commit()
+        return True
+
+
 def _registered_where(filt: str, search: str = "") -> tuple[str, list]:
     conditions = []
     args = []
@@ -876,11 +901,11 @@ def _registered_where(filt: str, search: str = "") -> tuple[str, list]:
         conditions.append("(oauth_status IS NULL OR oauth_status = '')")
     # ── 提链状态筛选 ──
     elif filt == "extract_eligible":
-        conditions.append("extra_json LIKE '%\"plus_eligible\"%' AND (extra_json NOT LIKE '%\"extract_link\":{\"status\":\"success\"%')")
+        conditions.append("(extra_json LIKE '%\"plus_eligible\"%' AND (extra_json NOT LIKE '%\"extract_link\"%' OR extra_json NOT LIKE '%\"status\":\"success\"%'))")
     elif filt == "extract_success":
-        conditions.append("extra_json LIKE '%\"extract_link\":{\"status\":\"success\"%'")
+        conditions.append("(extra_json LIKE '%\"extract_link\"%' AND (extra_json LIKE '%\"status\":\"success\"%' OR extra_json LIKE '%\"status\": \"success\"%'))")
     elif filt == "extract_failed":
-        conditions.append("extra_json LIKE '%\"extract_link\":{\"status\":\"failed\"%'")
+        conditions.append("(extra_json LIKE '%\"extract_link\"%' AND (extra_json LIKE '%\"status\":\"failed\"%' OR extra_json LIKE '%\"status\":\"error\"%' OR extra_json LIKE '%\"status\": \"failed\"%'))")
 
     search_cleaned = (search or "").strip().lower()
     if search_cleaned:

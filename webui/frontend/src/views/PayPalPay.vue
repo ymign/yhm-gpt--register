@@ -156,7 +156,7 @@ const loading = ref(false)
 const autoRows = ref([])
 const total = ref(0)
 const page = ref(1)
-const pageSize = ref(30)
+const pageSize = ref(50)
 const autoSelected = ref([])
 
 async function loadAutoData() {
@@ -167,20 +167,36 @@ async function loadAutoData() {
       offset: (page.value - 1) * pageSize.value,
       filter: 'extract_success',
     })
-    const list = (res.items || []).filter((r) => r.extract_link && r.extract_link.link_url)
-    autoRows.value = list.map((r) => ({
-      ...r,
-      _phone: r._phone || form.default_phone || '+66812345678',
-      _otpInput: '',
-      _submittingOtp: false,
-    }))
-    total.value = res.total || 0
+    const list = (res.items || []).map((r) => {
+      let ext = r.extract_link || null
+      if (!ext && r.extra_json) {
+        try {
+          const ex = typeof r.extra_json === 'string' ? JSON.parse(r.extra_json) : r.extra_json
+          ext = ex.extract_link || null
+        } catch (_) {}
+      }
+      return {
+        ...r,
+        extract_link: ext,
+        _phone: r._phone || form.default_phone || '+491512345678',
+        _otpInput: '',
+        _submittingOtp: false,
+      }
+    }).filter((r) => r.extract_link && (r.extract_link.ba_token || r.extract_link.link_url))
+    autoRows.value = list
+    total.value = res.total || list.length
   } catch (e) {
     ElMessage.error(e.message || '加载列表失败')
   } finally {
     loading.value = false
   }
 }
+
+watch(activeTab, (tab) => {
+  if (tab === 'auto') {
+    loadAutoData()
+  }
+})
 
 function batchFillAutoPhones() {
   if (!autoSelected.value.length) {
