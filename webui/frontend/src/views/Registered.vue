@@ -120,7 +120,15 @@ const PLUS_TYPE = {
   banned: 'danger',
   error: 'danger',
 }
-function plusOf(row) { return row.plus_check || null }
+function plusOf(row) {
+  if (!row || !row.plus_check) return null
+  const p = row.plus_check
+  let label = p.label || p.status || ''
+  if (p.status === 'plus_eligible' || label === '可领Plus试用' || label === '🎁 可领Plus试用') {
+    label = 'Plus试用'
+  }
+  return { ...p, label }
+}
 
 const OAUTH_STATUS_META = {
   success:    { type: 'success', label: '✅ 成功', effect: 'light' },
@@ -206,7 +214,7 @@ const PLUS_STATE_META = {
   pro_eligible:  { type: 'success', label: '◆ 可领Pro试用', icon: 'Check' },
   team_active:   { type: 'primary', label: '💎 Team', icon: 'Check' },
   plus_active:   { type: 'primary', label: 'Plus生效中', icon: 'Check' },
-  plus_eligible: { type: 'success', label: '可领Plus试用', icon: 'Check' },
+  plus_eligible: { type: 'success', label: 'Plus试用', icon: 'Check' },
   free:          { type: 'info',    label: 'Free', icon: '' },
   banned:        { type: 'danger',  label: '已封号', icon: 'Close' },
   token_invalid: { type: 'danger',  label: '凭证失效', icon: 'Close' },
@@ -1600,7 +1608,7 @@ onUnmounted(() => {
             <el-option label="👑 Pro 账号 (含20x/5x)" value="pro" />
             <el-option label="💎 Team 团队号" value="team" />
             <el-option label="★ Plus / 试用" value="plus" />
-            <el-option label="🎁 可领Plus试用" value="extract_eligible" />
+            <el-option label="🎁 Plus试用" value="extract_eligible" />
             <el-option label="⚗️ 提链成功" value="extract_success" />
             <el-option label="❌ 提链失败" value="extract_failed" />
             <el-option label="Free 普通号" value="free" />
@@ -2006,7 +2014,7 @@ onUnmounted(() => {
             <span class="kpi-num text-primary">{{ plusStats.plus_active }}</span>
           </div>
           <div class="plus-kpi-card hit-promo">
-            <span class="kpi-label">◆ 可领 Plus 试用</span>
+            <span class="kpi-label">◆ Plus 试用</span>
             <span class="kpi-num text-success">{{ plusStats.plus_eligible }}</span>
           </div>
           <div class="plus-kpi-card">
@@ -2856,7 +2864,7 @@ onUnmounted(() => {
             <span class="kpi-num text-primary">{{ healthStats.plus_active }}</span>
           </div>
           <div v-if="healthForm.mode === 'plan'" class="plus-kpi-card hit-promo">
-            <span class="kpi-label">◆ 可领 Plus 试用</span>
+            <span class="kpi-label">◆ Plus 试用</span>
             <span class="kpi-num text-success">{{ healthStats.plus_eligible }}</span>
           </div>
           <div class="plus-kpi-card" :class="{ 'card-warn': healthStats.banned > 0 || healthStats.token_invalid > 0 }">

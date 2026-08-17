@@ -438,7 +438,7 @@ def _execute_account_extract(task: ExtractJobTask, email: str) -> None:
                     is_zero_due = total_info.get("total", {}).get("minorUnitsAmount") == 0 or total_info.get("discount", {}).get("minorUnitsAmount", 0) > 0
                     is_eligible = has_promo_id or is_zero_due
                     oaics_state = "PLUS_ELIGIBLE" if is_eligible else ("CS" if checkout_session_id.startswith("cs_") else "FREE")
-                    label = "可领Plus试用" if is_eligible else "普通/已开通"
+                    label = "Plus试用" if is_eligible else "普通/已开通"
                     status = "success" if is_eligible else "free"
 
                 res = {

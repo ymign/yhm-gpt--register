@@ -1416,13 +1416,13 @@ def update_registered_extract(email: str, extract_data: dict) -> bool:
             except Exception:
                 extra = {}
         extra["extract_link"] = extract_data
-        # 若提链成功，自动将资格状态刷新为可领Plus试用
+        # 若提链成功，自动将资格状态刷新为Plus试用
         if extract_data.get("status") == "success":
             curr_plus = extra.get("plus_check") or {}
             if curr_plus.get("status") in ("free", "unchecked", None):
                 extra["plus_check"] = {
                     "status": "plus_eligible",
-                    "label": "可领Plus试用",
+                    "label": "Plus试用",
                     "plan": "free",
                     "promo": "plus-1-month-free",
                     "checked_at": time.time(),

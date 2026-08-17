@@ -217,7 +217,7 @@ def parse_account_plan(data: dict, body: str = "") -> dict:
     if has_plus_promo:
         return {
             "status": "plus_eligible",
-            "label": "可领Plus试用",
+            "label": "Plus试用",
             "plan": plan,
             "promo": plus_promo_id,
         }

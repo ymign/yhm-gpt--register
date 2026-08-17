@@ -122,7 +122,7 @@ function getExtractUrl(row) {
 function getFilterLabel(f) {
   const map = {
     all: '全部账号',
-    extract_eligible: '可领Plus试用',
+    extract_eligible: 'Plus试用',
     extract_success: '提链成功',
     extract_failed: '提链失败',
     has_rt: '包含 RT 账号',
@@ -191,7 +191,7 @@ onActivated(() => {
 
           <el-radio-group v-model="filter" size="small" class="filter-radio-group" @change="() => { page = 1; loadData() }">
             <el-radio-button label="all">全部</el-radio-button>
-            <el-radio-button label="extract_eligible">🎁 0元Plus试用</el-radio-button>
+            <el-radio-button label="extract_eligible">🎁 Plus试用</el-radio-button>
             <el-radio-button label="extract_success">✅ 提链成功</el-radio-button>
             <el-radio-button label="extract_failed">❌ 失败</el-radio-button>
           </el-radio-group>
