@@ -65,7 +65,7 @@ export function formatCountry(code) {
   const c = String(code).trim().toUpperCase()
   const info = COUNTRY_NAME_MAP[c]
   if (info) {
-    return `${info.flag} ${info.name} ${c}`
+    return `${info.name} (${c})`
   }
   return c
 }
