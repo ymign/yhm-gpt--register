@@ -457,9 +457,73 @@ const currentHealthLogItem = ref(null)
 const healthLogLines = ref([])
 const healthLogLoading = ref(false)
 
+// ── 验活高性能分页、状态筛选与批量节流更新 (防万号卡死) ──
+const healthPage = ref(1)
+const healthPageSize = ref(50)
+const healthFilter = ref('all') // 'all' | 'running' | 'failed' | 'done' | 'pending'
+const healthSearch = ref('')
+
+const healthFilteredRows = computed(() => {
+  const list = Object.values(healthItems.value)
+  const kw = healthSearch.value.trim().toLowerCase()
+  const f = healthFilter.value
+  return list.filter((item) => {
+    if (kw && !item.email.toLowerCase().includes(kw)) return false
+    if (f === 'all') return true
+    if (f === 'running') return item.status === 'running'
+    if (f === 'pending') return item.status === 'pending'
+    if (f === 'failed') return isHealthFailedRow(item)
+    if (f === 'done') return item.status === 'done' && !isHealthFailedRow(item)
+    return true
+  })
+})
+
+const healthDisplayRows = computed(() => {
+  const rows = healthFilteredRows.value
+  const start = (healthPage.value - 1) * healthPageSize.value
+  return rows.slice(start, start + healthPageSize.value)
+})
+
 const healthRows = computed(() =>
   Object.values(healthItems.value).map((item) => ({ ...item })),
 )
+
+let healthUpdateTimer = null
+let healthPendingUpdates = {}
+let healthPendingLogs = []
+
+function flushHealthUpdates() {
+  if (healthUpdateTimer) {
+    cancelAnimationFrame(healthUpdateTimer)
+    healthUpdateTimer = null
+  }
+  if (Object.keys(healthPendingUpdates).length > 0) {
+    const copy = { ...healthItems.value }
+    for (const [em, up] of Object.entries(healthPendingUpdates)) {
+      if (!copy[em]) {
+        copy[em] = { email: em, mode: healthForm.mode, status: 'pending', step_text: '排队中...', result: null, elapsed: 0 }
+      }
+      Object.assign(copy[em], up)
+    }
+    healthItems.value = copy
+    healthPendingUpdates = {}
+  }
+  if (healthPendingLogs.length > 0) {
+    healthLogs.value.push(...healthPendingLogs)
+    if (healthLogs.value.length > 200) {
+      healthLogs.value = healthLogs.value.slice(-200)
+    }
+    healthPendingLogs = []
+  }
+}
+
+function scheduleHealthUpdate() {
+  if (healthUpdateTimer) return
+  healthUpdateTimer = requestAnimationFrame(() => {
+    healthUpdateTimer = null
+    flushHealthUpdates()
+  })
+}
 
 const healthStats = computed(() => {
   const items = Object.values(healthItems.value)
@@ -475,7 +539,7 @@ const healthStats = computed(() => {
   const free = items.filter((i) => i.result && i.result.status === 'free').length
   const banned = items.filter((i) => i.result && i.result.status === 'banned').length
   const token_invalid = items.filter((i) => i.result && i.result.status === 'token_invalid').length
-  const error = items.filter((i) => i.result && (i.result.status === 'error' || i.result.status === 'no_at' || i.result.status === 'not_found')).length
+  const error = items.filter((i) => isHealthFailedRow(i)).length
   const percent = tot > 0 ? Math.round((done / tot) * 100) : 0
   return {
     total: tot, done, running, pending,
@@ -526,12 +590,15 @@ async function openHealthCheck(scope = 'selected', mode = 'token') {
 
   healthTargetEmails.value = emails
   healthForm.mode = mode
+  healthPage.value = 1
+  healthFilter.value = 'all'
+  healthSearch.value = ''
 
   if (!healthRunning.value) {
     healthTaskId.value = ''
     healthLogs.value = []
     healthConfigCollapsed.value = true
-    const initMap = {}
+    const initMap = Object.create(null)
     for (const em of emails) {
       initMap[em] = { email: em, mode, status: 'pending', step_text: '排队中...', result: null, elapsed: 0 }
     }
@@ -551,6 +618,7 @@ function handleHealthCheckCommand(cmd) {
 }
 
 function closeHealthCheck() {
+  flushHealthUpdates()
   if (healthRunning.value) {
     ElMessage.info('验活任务在后台继续运行，可随时重新打开查看进度')
   }
@@ -572,6 +640,7 @@ async function stopHealthCheckTask() {
   } catch (_) {
     ElMessage.info('任务已结束')
   } finally {
+    flushHealthUpdates()
     healthRunning.value = false
   }
 }
@@ -588,11 +657,15 @@ async function startHealthCheckTask() {
     healthEs.value = null
   }
 
+  flushHealthUpdates()
   healthRunning.value = true
   healthLogs.value = []
+  healthPage.value = 1
+  healthFilter.value = 'all'
+  healthSearch.value = ''
   healthConfigCollapsed.value = true
 
-  const initMap = {}
+  const initMap = Object.create(null)
   for (const em of emails) {
     initMap[em] = { email: em, mode: healthForm.mode, status: 'pending', step_text: '排队中...', result: null, elapsed: 0 }
   }
@@ -624,20 +697,21 @@ async function startHealthCheckTask() {
       init: (ev) => {
         try {
           const snap = JSON.parse(ev.data)
-          if (snap.items) healthItems.value = snap.items
+          if (snap.items) {
+            healthItems.value = snap.items
+          }
         } catch (_) {}
       },
       progress: (ev) => {
         try {
           const msg = JSON.parse(ev.data)
           if (msg.email) {
-            if (!healthItems.value[msg.email]) {
-              healthItems.value[msg.email] = { email: msg.email }
-            }
-            healthItems.value[msg.email].status = msg.status
-            if (msg.step_text !== undefined) healthItems.value[msg.email].step_text = msg.step_text
-            if (msg.result !== undefined) healthItems.value[msg.email].result = msg.result
-            if (msg.elapsed !== undefined) healthItems.value[msg.email].elapsed = msg.elapsed
+            if (!healthPendingUpdates[msg.email]) healthPendingUpdates[msg.email] = {}
+            if (msg.status !== undefined) healthPendingUpdates[msg.email].status = msg.status
+            if (msg.step_text !== undefined) healthPendingUpdates[msg.email].step_text = msg.step_text
+            if (msg.result !== undefined) healthPendingUpdates[msg.email].result = msg.result
+            if (msg.elapsed !== undefined) healthPendingUpdates[msg.email].elapsed = msg.elapsed
+            scheduleHealthUpdate()
           }
         } catch (_) {}
       },
@@ -645,13 +719,13 @@ async function startHealthCheckTask() {
         try {
           const msg = JSON.parse(ev.data)
           if (msg.line) {
-            healthLogs.value.push(msg.line)
-            if (healthLogs.value.length > 500) healthLogs.value.splice(0, healthLogs.value.length - 500)
-            nextTick(scrollHealthLog)
+            healthPendingLogs.push(msg.line)
+            scheduleHealthUpdate()
           }
         } catch (_) {}
       },
       end: () => {
+        flushHealthUpdates()
         healthRunning.value = false
         if (healthEs.value) {
           healthEs.value.close()
@@ -667,6 +741,7 @@ async function startHealthCheckTask() {
       }
     })
   } catch (e) {
+    flushHealthUpdates()
     healthRunning.value = false
     healthConfigCollapsed.value = false
     ElMessage.error('启动验活失败: ' + (e.response?.data?.detail || e.message))
@@ -3251,9 +3326,31 @@ onUnmounted(() => {
           </div>
         </div>
 
-        <!-- 核心表格：验活监控列表 (单栏纯净表格，无底部冗余全局日志) -->
+        <!-- 核心表格：验活监控列表 (内置状态过滤与前端高性能分页，杜绝万级账号卡顿) -->
+        <div class="health-table-filter-bar">
+          <el-radio-group v-model="healthFilter" size="small" class="health-filter-radio" @change="healthPage = 1">
+            <el-radio-button label="all">全部 ({{ healthStats.total }})</el-radio-button>
+            <el-radio-button label="running">运行中 ({{ healthStats.running }})</el-radio-button>
+            <el-radio-button label="failed">
+              <span :class="{ 'text-danger': healthStats.error > 0 }">异常/失败 ({{ healthStats.error }})</span>
+            </el-radio-button>
+            <el-radio-button label="done">正常完成 ({{ Math.max(0, healthStats.done - healthStats.error) }})</el-radio-button>
+          </el-radio-group>
+          <div class="health-filter-right">
+            <el-input
+              v-model="healthSearch"
+              placeholder="快速过滤邮箱..."
+              clearable
+              size="small"
+              class="health-search-input"
+              :prefix-icon="Search"
+              @input="healthPage = 1"
+            />
+          </div>
+        </div>
+
         <div class="plus-table-box health-table-box">
-          <el-table :data="healthRows" size="small" stripe height="360" class="macos-table" :highlight-current-row="false">
+          <el-table :data="healthDisplayRows" size="small" stripe height="330" class="macos-table" :highlight-current-row="false">
             <el-table-column prop="email" label="账号邮箱" min-width="220" show-overflow-tooltip>
               <template #default="{ row }">
                 <button
@@ -3319,6 +3416,21 @@ onUnmounted(() => {
               </template>
             </el-table-column>
           </el-table>
+        </div>
+
+        <!-- 高性能极速分页底栏 -->
+        <div class="health-pagination-bar">
+          <span class="health-page-count-tip text-muted text-xs">
+            显示第 {{ healthFilteredRows.length > 0 ? (healthPage - 1) * healthPageSize + 1 : 0 }} - {{ Math.min(healthPage * healthPageSize, healthFilteredRows.length) }} 条 · 过滤共 <b>{{ healthFilteredRows.length }}</b> 条
+          </span>
+          <el-pagination
+            v-model:current-page="healthPage"
+            v-model:page-size="healthPageSize"
+            :page-sizes="[50, 100, 200, 500]"
+            :total="healthFilteredRows.length"
+            layout="sizes, prev, pager, next"
+            size="small"
+          />
         </div>
       </div>
 
@@ -4679,5 +4791,28 @@ onUnmounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* ──────── 验活弹窗高性能工具栏与分页底栏 ──────── */
+.health-table-filter-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.health-search-input {
+  width: 180px;
+}
+
+.health-pagination-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 6px;
+  background: var(--el-fill-color-light);
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 6px;
 }
 </style>
