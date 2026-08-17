@@ -657,6 +657,16 @@ onUnmounted(() => {
           <el-table-column label="状态" width="165" align="center">
             <template #default="{ row }">
               <el-tag
+                v-if="row.result && row.result.state"
+                size="small"
+                :type="row.result.state === 'OAICS' ? 'success' : row.result.state === 'CS' ? 'warning' : row.result.state === 'OAIC' ? 'primary' : row.status === 'error' ? 'danger' : 'info'"
+                effect="light"
+                class="status-tag"
+              >
+                {{ row.result.label || row.step_text || row.status }}
+              </el-tag>
+              <el-tag
+                v-else
                 size="small"
                 :type="row.status === 'success' ? 'success' : row.status === 'error' ? 'danger' : row.status === 'running' ? 'warning' : 'info'"
                 effect="light"

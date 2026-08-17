@@ -409,18 +409,43 @@ def _execute_account_extract(task: ExtractJobTask, email: str) -> None:
 
             # 2. 资格检测分支
             if "check" in task.channel:
-                is_eligible = "promo_campaign" in (resp.text or "") or "free_trial" in (resp.text or "") or "trial" in (resp.text or "")
-                oaics_state = "OAICS" if (checkout_session_id or is_eligible) else "NON_OAICS"
-                label = "✅ 命中OAICS" if oaics_state == "OAICS" else "未命中"
+                if task.channel == "oaics_check":
+                    if checkout_session_id.startswith("oaics_"):
+                        oaics_state = "OAICS"
+                        label = "🎯 命中OAICS"
+                        status = "success"
+                    elif checkout_session_id.startswith("cs_"):
+                        oaics_state = "CS"
+                        label = "CS (普通Stripe)"
+                        status = "cs"
+                    elif checkout_session_id.startswith("oaic_"):
+                        oaics_state = "OAIC"
+                        label = "OAIC (内部会话)"
+                        status = "oaic"
+                    else:
+                        oaics_state = "NONE"
+                        label = "未命中"
+                        status = "error"
+                elif task.channel == "gcash_check":
+                    is_gcash = "gcash" in (resp.text or "").lower() or checkout_session_id.startswith("cs_")
+                    oaics_state = "GCASH" if is_gcash else "NON_GCASH"
+                    label = "✅ 命中GCash" if is_gcash else "未命中"
+                    status = "success" if is_gcash else "error"
+                else:
+                    is_eligible = "promo_campaign" in (resp.text or "") or "free_trial" in (resp.text or "") or "trial" in (resp.text or "")
+                    oaics_state = "PLUS_ELIGIBLE" if is_eligible else ("CS" if checkout_session_id.startswith("cs_") else "FREE")
+                    label = "可领Plus试用" if is_eligible else "普通/已开通"
+                    status = "success"
+
                 res = {
-                    "status": "success",
+                    "status": status,
                     "label": label,
                     "state": oaics_state,
                     "checkout_url": checkout_url or f"https://chatgpt.com/checkout/{processor_entity}/{checkout_session_id}",
                     "link_url": checkout_url or f"https://chatgpt.com/checkout/{processor_entity}/{checkout_session_id}",
                     "req_ms": int((time.time() - start_ts) * 1000),
                 }
-                task.add_email_log(email, f"🎉 检测完成: {label}")
+                task.add_email_log(email, f"🎉 检测完成: {label} (Session: {checkout_session_id[:16]}...)")
                 db.update_oa_check(email, {"state": oaics_state, "checked_at": time.time(), "url": res["link_url"]})
                 task.mark_done(email, res)
                 return
