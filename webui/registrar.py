@@ -291,8 +291,8 @@ def _do_register(
         # 单号 WebUI 场景下 fast-fail 没意义（批量跑才需要"跳过被识别的号"），故强制 ON。
         env_overrides["WEBUI_ALLOW_LOGIN"] = "1"
         env_overrides["OTP_TIMEOUT"] = str(int(options.get("otp_timeout") or 180))
-        # 自动设置登录密码开关（默认 False 以对齐真实指纹浏览器，避免触发 Promotion Suppression）
-        want_password = bool(options.get("want_password", False))
+        # 自动设置登录密码开关（支持前端开关控制）
+        want_password = bool(options.get("want_password", True))
         env_overrides["WANT_PASSWORD"] = "1" if want_password else "0"
         # 默认不抢跑 Codex OAuth（避免注册 1 秒内触发自动化工具特征）
         want_refresh = bool(options.get("want_refresh_token", False))

@@ -2063,10 +2063,7 @@ class AutoLoopStartReq(BaseModel):
     allow_existing_login: bool = True
     cool_down_seconds: float = 3.0  # 每个 worker 跑完后冷却（防风控）
     target_count: int = 0        # 目标成功数（0=不限量，达标自动停止）
-    # 批量页已放开关且**默认开**（主人要求每个号都绑）。
-    # 这里的 default 仍保持 False —— 它只在「前端没传这个字段」时生效，
-    # 是给旧前端缓存 / 直接打 API 的保守兜底：漏传时宁可不绑，也不要
-    # 替调用方做一个不可逆的决定。真实默认值由 AutoLoop.vue 的 autoWant2fa 决定。
+    want_password: bool = True   # 是否自动设置强登录密码（默认开）
     want_2fa: bool = False
 
 
