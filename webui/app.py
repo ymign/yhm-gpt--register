@@ -1131,6 +1131,131 @@ def api_plus_check_log(task_id: str, email: str = ""):
     return {"ok": True, "email": email, "lines": item.get("logs", []), "status": item.get("status")}
 
 
+# ──────────────────────── 账号批量验活 (Token 验活 & 套餐验活) ────────────────────────
+
+
+class StartHealthCheckReq(BaseModel):
+    emails: list[str] = Field(..., description="要验活的账号邮箱列表")
+    mode: Optional[str] = Field("token", description="验活模式: token (Token 状态验活) 或 plan (套餐订阅探测)")
+    proxies: Optional[str] = Field("", description="代理池（每行一个）")
+    proxy: Optional[str] = Field("", description="单个代理")
+    proxy_country: Optional[str] = Field("", description="代理出口国家")
+    workers: Optional[int] = Field(5, ge=1, le=10, description="并发线程数")
+    timeout: Optional[float] = Field(20.0, description="请求超时秒数")
+
+
+@app.post("/api/registered/health_check/start")
+def api_health_check_start(req: StartHealthCheckReq):
+    """启动账号批量验活任务 (Token 状态验活 或 套餐订阅探测)。"""
+    from . import health_check_service
+
+    emails = [e.strip().lower() for e in (req.emails or []) if e and e.strip()]
+    if not emails:
+        raise HTTPException(400, "请先提供要验活的账号列表")
+
+    proxies = []
+    if req.proxies:
+        for line in str(req.proxies or "").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#"):
+                proxies.append(line)
+    elif req.proxy:
+        p = req.proxy.strip()
+        if p:
+            proxies.append(p)
+
+    cfg = {
+        "mode": (req.mode or "token").strip().lower(),
+        "proxies": proxies,
+        "proxy_country": (req.proxy_country or "").strip().upper(),
+        "workers": max(1, min(10, req.workers or 5)),
+        "timeout": float(req.timeout or 20.0),
+    }
+
+    try:
+        task_id = health_check_service.start_health_check(emails, cfg)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+    logger.info(f"[health_check] 验活任务 {task_id} 启动: {len(emails)} 个账号, mode={cfg['mode']}, workers={cfg['workers']}")
+    return {"ok": True, "task_id": task_id, "taskId": task_id, "total": len(emails), "mode": cfg["mode"]}
+
+
+@app.post("/api/registered/health_check/{task_id}/stop")
+def api_health_check_stop(task_id: str):
+    """停止指定的批量验活任务。"""
+    from . import health_check_service
+
+    active = health_check_service.stop_health_check(task_id)
+    return {"ok": True, "task_id": task_id, "active": active}
+
+
+@app.get("/api/registered/health_check/{task_id}/stream")
+async def api_health_check_stream(task_id: str, request: Request):
+    """SSE：实时推流批量验活进度与日志。"""
+    from . import health_check_service
+
+    task = health_check_service.get_task(task_id)
+    if not task:
+        raise HTTPException(404, "task_id 不存在或已结束")
+
+    q = task.queue
+
+    async def gen():
+        loop = asyncio.get_event_loop()
+        try:
+            init_snap = {
+                "items": task.items,
+                "stats": task.stats,
+                "mode": task.mode,
+                "total": len(task.items),
+                "done_count": task.done_count,
+            }
+            yield f"event: init\ndata: {json.dumps(init_snap, ensure_ascii=False)}\n\n"
+            while True:
+                if await request.is_disconnected():
+                    break
+                msg = await loop.run_in_executor(None, _safe_get_plus, q, 2.0)
+                if msg is None:
+                    yield "event: end\ndata: {}\n\n"
+                    break
+                if msg == "__TIMEOUT__":
+                    yield ": ping\n\n"
+                    continue
+                if msg.get("kind") == "end":
+                    yield f"event: end\ndata: {json.dumps(msg, ensure_ascii=False)}\n\n"
+                    break
+                kind = msg.get("kind", "progress")
+                yield f"event: {kind}\ndata: {json.dumps(msg, ensure_ascii=False)}\n\n"
+        finally:
+            pass
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
+@app.get("/api/registered/health_check/{task_id}/log")
+def api_health_check_log(task_id: str, email: str = ""):
+    """获取指定验活任务中特定账号的详细日志。"""
+    from . import health_check_service
+
+    task = health_check_service.get_task(task_id)
+    if not task:
+        raise HTTPException(404, "任务未找到")
+    email = email.strip().lower()
+    item = task.items.get(email)
+    if not item:
+        return {"ok": True, "email": email, "lines": ["未找到该账号的验活日志"]}
+    return {"ok": True, "email": email, "lines": item.get("logs", []), "status": item.get("status")}
+
+
 # ──────────────────────── OAICS 资格检测 ────────────────────────
 
 

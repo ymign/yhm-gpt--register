@@ -32,6 +32,10 @@ import {
   stopPlusCheck,
   plusCheckStreamUrl,
   getPlusCheckLog,
+  startHealthCheck,
+  stopHealthCheck,
+  healthCheckStreamUrl,
+  getHealthCheckLog,
   startOACheck,
   stopOACheck,
   oaCheckStreamUrl,
@@ -401,6 +405,270 @@ async function openPlusItemLog(row) {
     plusLogLines.value = ['读取日志失败: ' + (e.response?.data?.detail || e.message)]
   } finally {
     plusLogLoading.value = false
+  }
+}
+
+// ════════════════════════ 账号批量验活 (Token 验活 & 套餐验活) ════════════════════════
+const healthVisible = ref(false)
+const healthRunning = ref(false)
+const healthTaskId = ref('')
+const healthEs = ref(null)
+const healthConfigCollapsed = ref(true)
+const healthTargetEmails = ref([])
+const healthItems = ref({})
+const healthLogs = ref([])
+const healthForm = reactive({
+  mode: 'token', // 'token' (Token 状态验活) | 'plan' (套餐与试用资格探测)
+  proxy: '__POOL__',
+  proxyCountry: 'BR',
+  workers: 5,
+  timeout: 20,
+})
+
+// 弹窗内单账号日志终端
+const healthLogModalVisible = ref(false)
+const currentHealthLogItem = ref(null)
+const healthLogLines = ref([])
+const healthLogLoading = ref(false)
+
+const healthRows = computed(() =>
+  Object.values(healthItems.value).map((item) => ({ ...item })),
+)
+
+const healthStats = computed(() => {
+  const items = Object.values(healthItems.value)
+  const tot = items.length || healthTargetEmails.value.length || 0
+  const done = items.filter((i) => i.status === 'done').length
+  const running = items.filter((i) => i.status === 'running').length
+  const pending = items.filter((i) => i.status === 'pending').length
+  const token_valid = items.filter((i) => i.result && i.result.status === 'token_valid').length
+  const plus_active = items.filter((i) => i.result && i.result.status === 'plus_active').length
+  const plus_eligible = items.filter((i) => i.result && i.result.status === 'plus_eligible').length
+  const pro_active = items.filter((i) => i.result && (i.result.status === 'pro_active' || i.result.status === 'pro_20x' || i.result.status === 'pro_5x' || i.result.status === 'pro_eligible')).length
+  const team_active = items.filter((i) => i.result && i.result.status === 'team_active').length
+  const free = items.filter((i) => i.result && i.result.status === 'free').length
+  const banned = items.filter((i) => i.result && i.result.status === 'banned').length
+  const token_invalid = items.filter((i) => i.result && i.result.status === 'token_invalid').length
+  const error = items.filter((i) => i.result && (i.result.status === 'error' || i.result.status === 'no_at' || i.result.status === 'not_found')).length
+  const percent = tot > 0 ? Math.round((done / tot) * 100) : 0
+  return {
+    total: tot, done, running, pending,
+    token_valid, plus_active, plus_eligible, pro_active, team_active, free, banned, token_invalid, error,
+    percent,
+  }
+})
+
+async function openHealthCheck(scope = 'selected', mode = 'token') {
+  let emails = []
+  if (scope === 'selected') {
+    if (!selected.value.length) {
+      ElMessage.warning('请先在表格中勾选要验活的账号')
+      return
+    }
+    emails = selected.value.map((r) => r.email)
+  } else if (scope === 'unchecked') {
+    loading.value = true
+    try {
+      const res = await listRegisteredEmails('unchecked')
+      emails = res.emails || []
+    } catch (e) {
+      ElMessage.error('获取未验活账号失败: ' + e.message)
+      return
+    } finally {
+      loading.value = false
+    }
+    if (!emails.length) {
+      ElMessage.info('当前没有未验活的账号')
+      return
+    }
+  } else if (scope === 'all') {
+    loading.value = true
+    try {
+      const res = await listRegisteredEmails('all')
+      emails = res.emails || []
+    } catch (e) {
+      ElMessage.error('获取全量账号失败: ' + e.message)
+      return
+    } finally {
+      loading.value = false
+    }
+    if (!emails.length) {
+      ElMessage.info('当前号池为空，无账号可验活')
+      return
+    }
+  }
+
+  healthTargetEmails.value = emails
+  healthForm.mode = mode
+
+  if (!healthRunning.value) {
+    healthTaskId.value = ''
+    healthLogs.value = []
+    healthConfigCollapsed.value = true
+    const initMap = {}
+    for (const em of emails) {
+      initMap[em] = { email: em, mode, status: 'pending', step_text: '排队中...', result: null, elapsed: 0 }
+    }
+    healthItems.value = initMap
+  }
+
+  healthVisible.value = true
+}
+
+function handleHealthCheckCommand(cmd) {
+  if (cmd === 'token_selected') openHealthCheck('selected', 'token')
+  else if (cmd === 'token_unchecked') openHealthCheck('unchecked', 'token')
+  else if (cmd === 'token_all') openHealthCheck('all', 'token')
+  else if (cmd === 'plan_selected') openHealthCheck('selected', 'plan')
+  else if (cmd === 'plan_unchecked') openHealthCheck('unchecked', 'plan')
+  else if (cmd === 'plan_all') openHealthCheck('all', 'plan')
+}
+
+function closeHealthCheck() {
+  if (healthRunning.value) {
+    ElMessage.info('验活任务在后台继续运行，可随时重新打开查看进度')
+  }
+  if (healthEs.value && !healthRunning.value) {
+    healthEs.value.close()
+    healthEs.value = null
+  }
+  healthVisible.value = false
+}
+
+async function stopHealthCheckTask() {
+  if (!healthTaskId.value) {
+    healthRunning.value = false
+    return
+  }
+  try {
+    await stopHealthCheck(healthTaskId.value)
+    ElMessage.success('已发送停止指令')
+  } catch (_) {
+    ElMessage.info('任务已结束')
+  } finally {
+    healthRunning.value = false
+  }
+}
+
+async function startHealthCheckTask() {
+  const emails = healthTargetEmails.value
+  if (!emails.length) {
+    ElMessage.warning('没有待验活的账号列表')
+    return
+  }
+
+  if (healthEs.value) {
+    healthEs.value.close()
+    healthEs.value = null
+  }
+
+  healthRunning.value = true
+  healthLogs.value = []
+  healthConfigCollapsed.value = true
+
+  const initMap = {}
+  for (const em of emails) {
+    initMap[em] = { email: em, mode: healthForm.mode, status: 'pending', step_text: '排队中...', result: null, elapsed: 0 }
+  }
+  healthItems.value = initMap
+
+  let proxiesParam = ''
+  let proxyParam = ''
+  if (healthForm.proxy === '__POOL__') {
+    proxiesParam = proxyList.value.join('\n')
+  } else {
+    proxyParam = (healthForm.proxy || '').trim()
+  }
+
+  try {
+    const res = await startHealthCheck({
+      emails,
+      mode: healthForm.mode,
+      proxies: proxiesParam,
+      proxy: proxyParam,
+      proxy_country: healthForm.proxyCountry || '',
+      workers: healthForm.workers || 5,
+      timeout: healthForm.timeout || 20,
+    })
+    const taskId = res.taskId || res.task_id
+    if (!taskId) throw new Error('未获取到任务 ID')
+    healthTaskId.value = taskId
+
+    healthEs.value = createSSE(healthCheckStreamUrl(taskId), {
+      init: (ev) => {
+        try {
+          const snap = JSON.parse(ev.data)
+          if (snap.items) healthItems.value = snap.items
+        } catch (_) {}
+      },
+      progress: (ev) => {
+        try {
+          const msg = JSON.parse(ev.data)
+          if (msg.email) {
+            if (!healthItems.value[msg.email]) {
+              healthItems.value[msg.email] = { email: msg.email }
+            }
+            healthItems.value[msg.email].status = msg.status
+            if (msg.step_text !== undefined) healthItems.value[msg.email].step_text = msg.step_text
+            if (msg.result !== undefined) healthItems.value[msg.email].result = msg.result
+            if (msg.elapsed !== undefined) healthItems.value[msg.email].elapsed = msg.elapsed
+          }
+        } catch (_) {}
+      },
+      log: (ev) => {
+        try {
+          const msg = JSON.parse(ev.data)
+          if (msg.line) {
+            healthLogs.value.push(msg.line)
+            if (healthLogs.value.length > 500) healthLogs.value.splice(0, healthLogs.value.length - 500)
+            nextTick(scrollHealthLog)
+          }
+        } catch (_) {}
+      },
+      end: () => {
+        healthRunning.value = false
+        if (healthEs.value) {
+          healthEs.value.close()
+          healthEs.value = null
+        }
+        ElMessage.success('批量验活任务已全部执行完成！')
+        load(false)
+      },
+    }, () => {
+      if (!healthRunning.value && healthEs.value) {
+        healthEs.value.close()
+        healthEs.value = null
+      }
+    })
+  } catch (e) {
+    healthRunning.value = false
+    healthConfigCollapsed.value = false
+    ElMessage.error('启动验活失败: ' + (e.response?.data?.detail || e.message))
+  }
+}
+
+function scrollHealthLog() {
+  const box = document.getElementById('health-log-box')
+  if (box) box.scrollTop = box.scrollHeight
+}
+
+async function openHealthItemLog(row) {
+  currentHealthLogItem.value = row
+  healthLogLines.value = []
+  healthLogModalVisible.value = true
+  healthLogLoading.value = true
+
+  try {
+    if (healthTaskId.value) {
+      const res = await getHealthCheckLog(healthTaskId.value, row.email)
+      healthLogLines.value = res.lines || []
+    } else {
+      healthLogLines.value = row.logs || ['暂无日志']
+    }
+  } catch (e) {
+    healthLogLines.value = ['读取日志失败: ' + (e.response?.data?.detail || e.message)]
+  } finally {
+    healthLogLoading.value = false
   }
 }
 
@@ -1334,14 +1602,30 @@ onUnmounted(() => {
         </div>
 
         <div class="toolbar-right">
-          <!-- 升级后的 Plus 检测操作组（全部采用现代化弹窗架构） -->
-          <div class="macos-btn-group highlight-group">
-            <el-button size="small" @click="openPlusCheck('unchecked')">检查未检</el-button>
-            <el-button size="small" @click="openPlusCheck('all')">全重检</el-button>
-            <el-button size="small" :disabled="!selected.length" @click="openPlusCheck('selected')">
-              检选中 ({{ selected.length }})
+          <!-- 核心功能：账号批量验活 (Token 验活 & 套餐/试用资格探测) -->
+          <el-dropdown trigger="click" @command="handleHealthCheckCommand">
+            <el-button type="primary" class="oa-action-btn health-action-btn">
+              <el-icon><Compass /></el-icon>⚡ 批量验活 ({{ selected.length }})
+              <el-icon class="el-icon--right"><ArrowDown /></el-icon>
             </el-button>
-          </div>
+            <template #dropdown>
+              <el-dropdown-menu class="extract-dropdown-menu">
+                <div class="dropdown-group-title">🔑 Token 状态验活</div>
+                <el-dropdown-item command="token_selected" :disabled="!selected.length">
+                  验活选中账号 Token ({{ selected.length }})
+                </el-dropdown-item>
+                <el-dropdown-item command="token_unchecked">验活未检账号 Token</el-dropdown-item>
+                <el-dropdown-item command="token_all">全量重验所有账号 Token</el-dropdown-item>
+
+                <div class="dropdown-group-title divider-title">💎 套餐与试用资格探测</div>
+                <el-dropdown-item command="plan_selected" :disabled="!selected.length">
+                  探测选中账号套餐 ({{ selected.length }})
+                </el-dropdown-item>
+                <el-dropdown-item command="plan_unchecked">探测未检账号套餐</el-dropdown-item>
+                <el-dropdown-item command="plan_all">全量重测所有账号套餐</el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
 
           <!-- 核心功能：全渠道提炼与资格检测下拉菜单 -->
           <el-dropdown trigger="click" @command="openExtractChannel">
@@ -2443,6 +2727,277 @@ onUnmounted(() => {
       </template>
     </el-dialog>
 
+    <!-- ──────────────── 账号批量验活控制台弹窗 (macOS 架构，支持 Token 验活 & 套餐验活双模式) ──────────────── -->
+    <el-dialog
+      v-model="healthVisible" width="900px" top="4vh"
+      class="oa-custom-dialog health-dialog"
+      :close-on-click-modal="false" @closed="closeHealthCheck"
+    >
+      <template #header>
+        <div class="oa-header">
+          <div class="oa-header-title">
+            <span class="oa-title-badge health-badge">HEALTH</span>
+            <span class="oa-title-text">账号批量验活任务台</span>
+            <el-tag size="small" :type="healthForm.mode === 'token' ? 'primary' : 'success'" round effect="dark">
+              {{ healthForm.mode === 'token' ? '🔑 Token 状态验活' : '💎 套餐与试用资格探测' }}
+            </el-tag>
+            <el-tag size="small" type="info" round effect="plain">{{ healthTargetEmails.length }} 个账号</el-tag>
+          </div>
+          <div class="oa-header-extra">
+            <el-button size="small" text @click="healthConfigCollapsed = !healthConfigCollapsed">
+              <el-icon><Setting /></el-icon>{{ healthConfigCollapsed ? '展开参数配置' : '收起参数配置' }}
+            </el-button>
+          </div>
+        </div>
+      </template>
+
+      <div class="oa-dialog-container">
+        <!-- 参数配置卡片 -->
+        <el-collapse-transition>
+          <div v-show="!healthConfigCollapsed" class="oa-config-card">
+            <el-form label-position="top" :disabled="healthRunning" size="small">
+              <el-row :gutter="12">
+                <el-col :xs="24" :sm="12" :md="6">
+                  <el-form-item label="验活模式选择">
+                    <el-select v-model="healthForm.mode" style="width: 100%">
+                      <el-option label="🔑 Token 状态验活 (快速)" value="token" />
+                      <el-option label="💎 套餐与试用探测 (深度)" value="plan" />
+                    </el-select>
+                  </el-form-item>
+                </el-col>
+                <el-col :xs="24" :sm="12" :md="8">
+                  <el-form-item label="检测代理 (支持代理池轮询/直连)">
+                    <el-select
+                      v-model="healthForm.proxy" filterable clearable allow-create default-first-option
+                      placeholder="选择或输入代理" style="width: 100%"
+                    >
+                      <el-option
+                        v-if="proxyList.length"
+                        label="🌐 全局代理池轮询 (自动多Worker分配)"
+                        value="__POOL__"
+                      />
+                      <el-option v-for="p in proxyList" :key="p" :label="p" :value="p" />
+                    </el-select>
+                  </el-form-item>
+                </el-col>
+                <el-col :xs="24" :sm="12" :md="4">
+                  <el-form-item label="代理目标国家">
+                    <el-select
+                      v-model="healthForm.proxyCountry" filterable allow-create
+                      placeholder="国家" style="width: 100%"
+                    >
+                      <el-option
+                        v-for="c in COUNTRY_OPTIONS" :key="c.value"
+                        :label="c.label" :value="c.value"
+                      />
+                    </el-select>
+                  </el-form-item>
+                </el-col>
+                <el-col :xs="12" :sm="6" :md="3">
+                  <el-form-item label="并发 Worker">
+                    <el-input-number v-model="healthForm.workers" :min="1" :max="10" style="width: 100%" />
+                  </el-form-item>
+                </el-col>
+                <el-col :xs="12" :sm="6" :md="3">
+                  <el-form-item label="超时(秒)">
+                    <el-input-number v-model="healthForm.timeout" :min="5" :max="60" style="width: 100%" />
+                  </el-form-item>
+                </el-col>
+              </el-row>
+              <div style="font-size: 11.5px; color: var(--el-text-color-secondary); line-height: 1.5; margin-top: 2px">
+                💡 <b>模式说明</b>：<b>Token 状态验活</b> 快速检测 Token 存活、JWT 到期时间与封号排查；<b>套餐与试用探测</b> 深度提取 Plus、Pro 5x/20x、Team、1个月免单活动等订阅状态。
+              </div>
+            </el-form>
+          </div>
+        </el-collapse-transition>
+
+        <!-- KPI 统计看板 -->
+        <div class="plus-kpi-grid">
+          <div class="plus-kpi-card">
+            <span class="kpi-label">已验活 / 总数</span>
+            <span class="kpi-num">{{ healthStats.done }} / {{ healthStats.total }}</span>
+          </div>
+          <div v-if="healthForm.mode === 'token'" class="plus-kpi-card hit-active">
+            <span class="kpi-label">✅ Token 正常有效</span>
+            <span class="kpi-num text-primary">{{ healthStats.token_valid }}</span>
+          </div>
+          <div v-if="healthForm.mode === 'plan' && healthStats.pro_active > 0" class="plus-kpi-card hit-pro">
+            <span class="kpi-label">👑 Pro 账号</span>
+            <span class="kpi-num text-pro">{{ healthStats.pro_active }}</span>
+          </div>
+          <div v-if="healthForm.mode === 'plan'" class="plus-kpi-card hit-active">
+            <span class="kpi-label">★ Plus 订阅生效</span>
+            <span class="kpi-num text-primary">{{ healthStats.plus_active }}</span>
+          </div>
+          <div v-if="healthForm.mode === 'plan'" class="plus-kpi-card hit-promo">
+            <span class="kpi-label">◆ 可领 Plus 试用</span>
+            <span class="kpi-num text-success">{{ healthStats.plus_eligible }}</span>
+          </div>
+          <div class="plus-kpi-card" :class="{ 'card-warn': healthStats.banned > 0 || healthStats.token_invalid > 0 }">
+            <span class="kpi-label">封号 / 凭证失效</span>
+            <span class="kpi-num text-danger">{{ healthStats.banned + healthStats.token_invalid }}</span>
+          </div>
+          <div class="plus-kpi-card">
+            <span class="kpi-label">异常 / 失败</span>
+            <span class="kpi-num">{{ healthStats.error }}</span>
+          </div>
+          <div class="plus-progress-cell">
+            <el-progress
+              :percentage="healthStats.percent"
+              :status="healthStats.done === healthStats.total && healthStats.total > 0 ? 'success' : ''"
+              :stroke-width="8"
+              striped
+              :striped-flow="healthRunning"
+            />
+          </div>
+        </div>
+
+        <!-- 核心表格：验活监控列表 -->
+        <div class="plus-table-box">
+          <el-table :data="healthRows" size="small" stripe height="320" class="macos-table" :highlight-current-row="false">
+            <el-table-column prop="email" label="账号邮箱" min-width="220" show-overflow-tooltip>
+              <template #default="{ row }">
+                <span class="mono email-copy" @click="copyText(row.email)">{{ row.email }}</span>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="验活模式" width="110" align="center">
+              <template #default="{ row }">
+                <el-tag size="small" :type="row.mode === 'token' ? 'primary' : 'success'" effect="plain">
+                  {{ row.mode === 'token' ? 'Token 探测' : '套餐探测' }}
+                </el-tag>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="当前状态 / 步骤" min-width="160">
+              <template #default="{ row }">
+                <span v-if="row.status === 'running'" class="running-step">
+                  <el-icon class="is-loading" style="margin-right: 4px"><Loading /></el-icon>
+                  {{ row.step_text || '检测中...' }}
+                </span>
+                <el-tag v-else-if="row.status === 'pending'" size="small" type="info" effect="plain">排队中</el-tag>
+                <el-tag
+                  v-else-if="row.result"
+                  size="small"
+                  :type="row.result.status === 'token_valid' ? 'success' : row.result.status === 'plus_active' || row.result.status === 'team_active' ? 'primary' : row.result.status === 'plus_eligible' ? 'success' : row.result.status === 'pro_active' || row.result.status === 'pro_20x' || row.result.status === 'pro_5x' ? 'danger' : row.result.status === 'banned' || row.result.status === 'token_invalid' ? 'danger' : 'info'"
+                >
+                  {{ row.result.label || row.result.status }}
+                </el-tag>
+                <span v-else class="text-muted">—</span>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="耗时" width="80" align="center">
+              <template #default="{ row }">
+                <span v-if="row.elapsed" class="mono text-muted">{{ row.elapsed }}s</span>
+                <span v-else-if="row.status === 'running'" class="mono text-primary">...</span>
+                <span v-else class="text-muted">—</span>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="操作" width="80" align="center">
+              <template #default="{ row }">
+                <el-button size="small" link type="primary" :disabled="row.status === 'pending'" @click="openHealthItemLog(row)">
+                  日志
+                </el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+        </div>
+
+        <!-- 底部实时流水日志 -->
+        <div class="plus-log-terminal">
+          <div class="terminal-header">
+            <span>实时验活日志流 (Live Event Stream)</span>
+            <el-button size="small" text @click="healthLogs = []">清空</el-button>
+          </div>
+          <div id="health-log-box" class="terminal-body">
+            <div v-for="(l, idx) in healthLogs" :key="idx" class="terminal-line" :class="getLogClass(l)">
+              {{ l }}
+            </div>
+            <div v-if="!healthLogs.length" class="terminal-empty">
+              {{ healthRunning ? '正在连接实时日志流...' : '点击【开始批量验活】后在此查看多 Worker 实时推流' }}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <template #footer>
+        <div class="oa-footer-bar">
+          <span class="oa-footer-status">
+            {{ healthRunning ? '多 Worker 验活进行中，可随时在后台运行或停止' : '准备就绪，点击开始执行批量验活' }}
+          </span>
+          <div class="oa-footer-actions">
+            <el-button size="small" @click="closeHealthCheck">
+              {{ healthRunning ? '后台运行' : '关闭' }}
+            </el-button>
+            <el-button v-if="healthRunning" size="small" type="danger" @click="stopHealthCheckTask">
+              <el-icon><SwitchButton /></el-icon>停止验活
+            </el-button>
+            <el-button
+              v-else
+              size="small"
+              type="primary"
+              :disabled="!healthTargetEmails.length"
+              @click="startHealthCheckTask"
+            >
+              <el-icon><VideoPlay /></el-icon>开始批量验活
+            </el-button>
+          </div>
+        </div>
+      </template>
+    </el-dialog>
+
+    <!-- 单账号专属验活日志弹窗 -->
+    <el-dialog
+      v-model="healthLogModalVisible"
+      width="780px"
+      top="8vh"
+      class="macos-terminal-dialog"
+      :close-on-click-modal="false"
+    >
+      <template #header>
+        <div class="modal-header">
+          <div class="window-dots">
+            <span class="dot red"></span>
+            <span class="dot yellow"></span>
+            <span class="dot green"></span>
+          </div>
+          <div class="modal-title-info">
+            <span class="modal-email">{{ currentHealthLogItem?.email }}</span>
+            <el-tag size="small" type="success" effect="plain" class="modal-run-tag">
+              验活详细日志
+            </el-tag>
+          </div>
+        </div>
+      </template>
+
+      <div class="modal-terminal-wrap">
+        <div class="modal-terminal-body">
+          <div v-for="(line, idx) in healthLogLines" :key="idx" class="terminal-line">
+            {{ line }}
+          </div>
+          <div v-if="!healthLogLines.length" class="terminal-empty">
+            {{ healthLogLoading ? '正在加载日志...' : '暂无详细日志' }}
+          </div>
+        </div>
+      </div>
+
+      <template #footer>
+        <div class="modal-footer">
+          <span class="log-count-tip">共 {{ healthLogLines.length }} 行日志</span>
+          <div class="modal-footer-btns">
+            <el-button size="small" @click="copyText(healthLogLines.join('\n'))">
+              <el-icon><CopyDocument /></el-icon>复制日志
+            </el-button>
+            <el-button size="small" type="primary" @click="healthLogModalVisible = false">
+              关闭
+            </el-button>
+          </div>
+        </div>
+      </template>
+    </el-dialog>
+
     <!-- 批量导出弹窗 -->
     <el-dialog v-model="exportVisible" width="720px" top="8vh" class="macos-custom-dialog">
       <template #header>
@@ -2882,6 +3437,15 @@ onUnmounted(() => {
 }
 .oa-title-badge.plus-badge {
   background: linear-gradient(135deg, #3b82f6, #1d4ed8);
+}
+.oa-title-badge.health-badge {
+  background: linear-gradient(135deg, #0ea5e9, #0284c7);
+}
+.health-action-btn {
+  background: linear-gradient(135deg, #0ea5e9, #0284c7) !important;
+  border: none !important;
+  color: #fff !important;
+  font-weight: 600;
 }
 .oa-title-text {
   font-size: 14px;

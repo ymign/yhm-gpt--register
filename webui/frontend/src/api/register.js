@@ -54,6 +54,19 @@ export const plusCheckStreamUrl = (taskId) =>
 export const getPlusCheckLog = (taskId, email) =>
   http.get(`/api/registered/plus_check/${encodeURIComponent(taskId)}/log`, { params: { email } })
 
+// ──────────────── 账号批量验活 (Token 验活 & 套餐验活) ────────────────
+export const startHealthCheck = (payload) =>
+  http.post('/api/registered/health_check/start', payload) // { emails, mode, proxies, workers, timeout }
+
+export const stopHealthCheck = (taskId) =>
+  http.post(`/api/registered/health_check/${encodeURIComponent(taskId)}/stop`)
+
+export const healthCheckStreamUrl = (taskId) =>
+  `/api/registered/health_check/${encodeURIComponent(taskId)}/stream`
+
+export const getHealthCheckLog = (taskId, email) =>
+  http.get(`/api/registered/health_check/${encodeURIComponent(taskId)}/log`, { params: { email } })
+
 // ──────────────── OAICS 资格检测 ────────────────
 export const startOACheck = (payload) =>
   http.post('/api/registered/oa_check/start', payload) // { emails, proxies, workers, ... }
