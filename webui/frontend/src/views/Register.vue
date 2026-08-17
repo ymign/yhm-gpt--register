@@ -3,6 +3,16 @@ import { onActivated, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import { ElMessage } from 'element-plus'
+import {
+  VideoPlay,
+  Setting,
+  CopyDocument,
+  Lock,
+  Key,
+  Position,
+  Connection,
+  Timer,
+} from '@element-plus/icons-vue'
 import { startRegister, getRegistered } from '@/api/register'
 import { copyText } from '@/api/request'
 import { useFormStore, proxyText, COUNTRY_OPTIONS } from '@/stores/form'
@@ -18,11 +28,7 @@ const { runningSingle, lastRunResult } = storeToRefs(runtime)
 
 const starting = ref(false)
 const regEmail = ref('')
-// 2FA 默认开（主人要求每个号都绑）。绑定不可逆，所以留开关。
-// 放在 form store（localStorage 持久化）而不是组件局部 ref —— 组件是
-// keep-alive 的，切页不丢，但刷新页面会重建，关了就白关。
 
-// 从「邮箱列表 → 使用」跳转过来时，带上指定邮箱
 onActivated(() => {
   if (route.query.email) regEmail.value = String(route.query.email)
 })
@@ -66,107 +72,404 @@ async function copyField(email, field) {
 </script>
 
 <template>
-  <div class="page">
-    <el-row :gutter="16">
-      <el-col :md="10" style="margin-bottom: 16px">
-        <el-card shadow="never">
-          <template #header><span class="section-title" style="margin: 0">单次注册</span></template>
-          <el-form label-position="top">
-            <el-form-item label="邮箱（留空 = 自动 claim 下一个 available）">
-              <el-input v-model="regEmail" placeholder="留空 = 自动选号 / 或填指定邮箱" clearable />
-            </el-form-item>
-            <el-form-item label="本次使用的单个代理（可从代理池选，或手动输入；直连留空）">
-              <el-select
-                v-model="form.proxy" filterable clearable allow-create default-first-option
-                :reserve-keyword="false" placeholder="socks5://user:pass@host:1080"
-                style="width: 100%"
-              >
-                <el-option v-for="p in proxyList" :key="p" :label="p" :value="p" />
-              </el-select>
-              <div class="hint" style="margin-top: 4px">
-                Plus 检测、自动批量的兜底代理都复用这里；批量并发轮换请到「代理池」页管理。
-              </div>
-            </el-form-item>
-            <el-form-item label="代理目标国家（自动重写代理、生成独立会话并对齐指纹）">
-              <el-select v-model="form.proxyCountry" filterable allow-create placeholder="选择或输入国家代码" style="width: 100%">
-                <el-option v-for="c in COUNTRY_OPTIONS" :key="c.value" :label="c.label" :value="c.value" />
-              </el-select>
-              <div class="hint" style="margin-top: 4px">
-                推荐巴西 (BR) 或欧洲 (DE/GB/PL)，将动态代理重写至高爆区以大幅提升 Plus 试用资格率。
-              </div>
-            </el-form-item>
-            <el-form-item label="OTP 等待秒数">
-              <el-input-number v-model="form.otpTimeout" :min="10" :max="600" />
-            </el-form-item>
-            <el-form-item label="自动化附加功能">
-              <div style="display: flex; flex-direction: column; gap: 12px">
-                <div>
-                  <div style="display: flex; align-items: center; gap: 10px">
-                    <el-switch v-model="form.wantPassword" />
-                    <span style="font-weight: 500">自动设置强登录密码</span>
-                  </div>
-                  <div class="hint" style="margin-top: 4px; line-height: 1.5">
-                    默认开。注册时强制生成 16 位强随机密码并验证落盘，确保拥有完整账号登录凭证。
-                  </div>
-                </div>
-                <div>
-                  <div style="display: flex; align-items: center; gap: 10px">
-                    <el-switch v-model="form.want2fa" />
-                    <span style="font-weight: 500">注册成功后自动绑定 2FA（TOTP）</span>
-                  </div>
-                  <div class="hint" style="margin-top: 4px; line-height: 1.5">
-                    默认开。绑定不可逆、即刻生效：<b>之后该号所有登录都需 6 位动态码</b>；
-                    secret 仅在绑定时下发<b>一次</b>、服务端取不回，
-                    请在下方结果或「注册结果」页<b>立刻复制导出</b>并录入验证器，丢失 = 该号 2FA 永久锁死。
-                  </div>
-                </div>
-              </div>
-            </el-form-item>
-            <el-button type="primary" :loading="starting || runningSingle" @click="run">
-              开始注册
-            </el-button>
-          </el-form>
+  <div class="register-page">
+    <div class="macos-window-panel">
+      <!-- 窗口标题栏 -->
+      <div class="macos-panel-header">
+        <div class="header-left">
+          <div class="window-dot-group">
+            <span class="dot red"></span>
+            <span class="dot yellow"></span>
+            <span class="dot green"></span>
+          </div>
+          <span class="panel-title">单次注册调试控制台 · Register Workbench</span>
+        </div>
+        <div class="header-right">
+          <el-tag size="small" type="primary" effect="plain" class="header-tag">
+            <el-icon><Position /></el-icon>单账号注册与凭证生成
+          </el-tag>
+        </div>
+      </div>
 
-          <el-alert
-            v-if="lastRunResult && !lastRunResult.error"
-            type="success" :closable="false" style="margin-top: 14px"
-          >
-            注册完成 {{ lastRunResult.email }}
-            (access_token len={{ lastRunResult.access_token_len }}{{ lastRunResult.partial ? ', 部分凭证' : '' }})
-            <div v-if="lastRunResult.password" class="cred-line">
-              <span class="cred-label">密码</span><code class="cred-val">{{ lastRunResult.password }}</code>
+      <!-- 双栏布局 (左配置表单 + 右 macOS 终端) -->
+      <div class="macos-split-container">
+        <!-- 左栏：注册配置表单 -->
+        <div class="form-pane">
+          <div class="pane-inner">
+            <div class="pane-section-title">
+              <el-icon><Setting /></el-icon>注册参数配置
             </div>
-            <div v-else class="cred-line hint">该号未设置密码（服务端未走密码注册流程）</div>
-            <div v-if="lastRunResult.totp_secret" class="cred-line">
-              <span class="cred-label">2FA</span><code class="cred-val">{{ lastRunResult.totp_secret }}</code>
-              <span class="hint" style="margin-left: 6px">仅此一次！务必复制录入验证器</span>
-            </div>
-            <div style="margin-top: 8px">
-              <el-button size="small" @click="copyText(lastRunResult.email)">复制邮箱</el-button>
-              <template v-if="lastRunResult.password">
-                <el-button size="small" type="primary" @click="copyText(lastRunResult.password)">复制密码</el-button>
-                <el-button size="small" @click="copyText(lastRunResult.email + '----' + lastRunResult.password)">
-                  复制 邮箱----密码
+
+            <el-form label-position="top" size="small" class="macos-form">
+              <el-form-item label="指定邮箱 (留空自动从号池 Claim 可用账号)">
+                <el-input
+                  v-model="regEmail"
+                  placeholder="留空 = 自动从号池挑选 / 或填入指定邮箱"
+                  clearable
+                  class="mono"
+                />
+              </el-form-item>
+
+              <el-form-item label="单次注册代理 (支持下拉选择/代理池轮询/手动输入/留空直连)">
+                <el-select
+                  v-model="form.proxy"
+                  filterable
+                  clearable
+                  allow-create
+                  default-first-option
+                  :reserve-keyword="false"
+                  placeholder="socks5://user:pass@host:1080"
+                  style="width: 100%"
+                >
+                  <el-option v-for="p in proxyList" :key="p" :label="p" :value="p" />
+                </el-select>
+                <div class="form-hint">
+                  批量并发轮换与代理质量检测请前往「代理池」页面管理。
+                </div>
+              </el-form-item>
+
+              <el-row :gutter="10">
+                <el-col :span="16">
+                  <el-form-item label="代理目标国家出口">
+                    <el-select
+                      v-model="form.proxyCountry"
+                      filterable
+                      allow-create
+                      placeholder="选择国家"
+                      style="width: 100%"
+                    >
+                      <el-option v-for="c in COUNTRY_OPTIONS" :key="c.value" :label="c.label" :value="c.value" />
+                    </el-select>
+                  </el-form-item>
+                </el-col>
+                <el-col :span="8">
+                  <el-form-item label="OTP超时(秒)">
+                    <el-input-number v-model="form.otpTimeout" :min="10" :max="600" style="width: 100%" />
+                  </el-form-item>
+                </el-col>
+              </el-row>
+
+              <!-- 自动化附加功能卡片 -->
+              <div class="feature-switches-card">
+                <div class="switch-row">
+                  <div class="switch-meta">
+                    <span class="switch-title">自动设置强随机密码</span>
+                    <span class="switch-desc">强制生成 16 位高强度密码并落库，确保账号随时可密码登录</span>
+                  </div>
+                  <el-switch v-model="form.wantPassword" />
+                </div>
+
+                <div class="switch-divider"></div>
+
+                <div class="switch-row">
+                  <div class="switch-meta">
+                    <span class="switch-title">自动绑定 2FA (TOTP)</span>
+                    <span class="switch-desc">注册成功后自动生成并绑定 TOTP Secret，大幅降低 OpenAI 封号率</span>
+                  </div>
+                  <el-switch v-model="form.want2fa" />
+                </div>
+              </div>
+
+              <!-- 启动按钮 -->
+              <div class="form-actions">
+                <el-button
+                  type="primary"
+                  class="start-btn"
+                  :loading="starting || runningSingle"
+                  @click="run"
+                >
+                  <el-icon><VideoPlay /></el-icon>
+                  {{ starting || runningSingle ? '正在执行注册流程...' : '开始单次注册' }}
                 </el-button>
-              </template>
-              <el-button v-if="lastRunResult.access_token_len > 0" size="small"
-                         @click="copyField(lastRunResult.email, 'access_token')">复制 access_token</el-button>
-              <el-button v-if="lastRunResult.totp_secret" size="small" type="warning"
-                         @click="copyText(lastRunResult.totp_secret)">复制 2FA secret</el-button>
-            </div>
-          </el-alert>
-          <el-alert
-            v-else-if="lastRunResult && lastRunResult.error"
-            type="error" :closable="false" style="margin-top: 14px" :title="lastRunResult.error"
-          />
-        </el-card>
-      </el-col>
+              </div>
+            </el-form>
 
-      <el-col :md="14" style="margin-bottom: 16px">
-        <el-card shadow="never">
+            <!-- 注册成功凭证卡片 -->
+            <el-collapse-transition>
+              <div v-if="lastRunResult && !lastRunResult.error" class="result-cred-card">
+                <div class="result-header">
+                  <span class="result-badge">SUCCESS</span>
+                  <span class="result-email mono">{{ lastRunResult.email }}</span>
+                </div>
+
+                <div class="result-grid">
+                  <div v-if="lastRunResult.password" class="result-item">
+                    <span class="item-label">登录密码</span>
+                    <div class="item-val-row">
+                      <span class="item-val mono">{{ lastRunResult.password }}</span>
+                      <el-button size="small" text type="primary" @click="copyText(lastRunResult.password, '密码已复制')">
+                        <el-icon><CopyDocument /></el-icon>
+                      </el-button>
+                    </div>
+                  </div>
+
+                  <div v-if="lastRunResult.totp_secret" class="result-item">
+                    <span class="item-label">2FA Secret (仅此一次)</span>
+                    <div class="item-val-row">
+                      <span class="item-val mono highlight-2fa">{{ lastRunResult.totp_secret }}</span>
+                      <el-button size="small" text type="primary" @click="copyText(lastRunResult.totp_secret, '2FA Secret 已复制')">
+                        <el-icon><CopyDocument /></el-icon>
+                      </el-button>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="result-quick-copy">
+                  <el-button size="small" @click="copyText(lastRunResult.email)">复制邮箱</el-button>
+                  <el-button
+                    v-if="lastRunResult.password"
+                    size="small"
+                    @click="copyText(lastRunResult.email + '----' + lastRunResult.password, '邮箱----密码已复制')"
+                  >
+                    复制 邮箱----密码
+                  </el-button>
+                  <el-button
+                    v-if="lastRunResult.access_token_len > 0"
+                    size="small"
+                    type="primary"
+                    plain
+                    @click="copyField(lastRunResult.email, 'access_token')"
+                  >
+                    复制 Access Token
+                  </el-button>
+                </div>
+              </div>
+            </el-collapse-transition>
+
+            <el-alert
+              v-if="lastRunResult && lastRunResult.error"
+              type="error"
+              :closable="false"
+              style="margin-top: 14px; border-radius: 8px"
+              :title="lastRunResult.error"
+            />
+          </div>
+        </div>
+
+        <!-- 右栏：macOS 风格实时终端 -->
+        <div class="terminal-pane">
           <LogPanel />
-        </el-card>
-      </el-col>
-    </el-row>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
+
+<style scoped>
+.register-page {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.macos-window-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--app-window-bg);
+  border: 1px solid var(--app-border);
+  border-radius: 12px;
+  box-shadow: var(--app-shadow-sm);
+  overflow: hidden;
+}
+
+.macos-panel-header {
+  padding: 12px 18px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--app-border);
+  background: var(--el-fill-color-light);
+  flex-shrink: 0;
+}
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.window-dot-group {
+  display: flex;
+  gap: 6px;
+}
+.dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+.dot.red { background: #ff5f56; }
+.dot.yellow { background: #ffbd2e; }
+.dot.green { background: #27c93f; }
+
+.panel-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--app-title);
+}
+.header-tag {
+  font-size: 11px;
+}
+
+.macos-split-container {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 440px 1fr;
+  overflow: hidden;
+}
+
+.form-pane {
+  border-right: 1px solid var(--app-border);
+  overflow-y: auto;
+  background: var(--app-card-bg);
+}
+.pane-inner {
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.pane-section-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--app-title);
+}
+
+.form-hint {
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+  line-height: 1.5;
+  margin-top: 4px;
+}
+
+.feature-switches-card {
+  background: var(--el-fill-color-light);
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.switch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.switch-meta {
+  display: flex;
+  flex-direction: column;
+}
+.switch-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--app-title);
+}
+.switch-desc {
+  font-size: 10.5px;
+  color: var(--el-text-color-secondary);
+  margin-top: 2px;
+  line-height: 1.4;
+}
+.switch-divider {
+  height: 1px;
+  background: var(--app-border);
+}
+
+.start-btn {
+  width: 100%;
+  height: 36px;
+  font-size: 13px;
+  font-weight: 600;
+  border-radius: 8px;
+}
+
+.result-cred-card {
+  background: rgba(52, 199, 89, 0.08);
+  border: 1px solid rgba(52, 199, 89, 0.3);
+  border-radius: 10px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.result-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.result-badge {
+  font-size: 10px;
+  font-weight: 700;
+  background: var(--apple-green);
+  color: #fff;
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+.result-email {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--app-title);
+}
+
+.result-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.result-item {
+  display: flex;
+  flex-direction: column;
+  background: var(--app-window-bg);
+  border: 1px solid var(--app-border);
+  border-radius: 6px;
+  padding: 6px 10px;
+}
+.item-label {
+  font-size: 10.5px;
+  color: var(--el-text-color-secondary);
+}
+.item-val-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 2px;
+}
+.item-val {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--app-title);
+  word-break: break-all;
+}
+.highlight-2fa {
+  color: #d97706;
+}
+
+.result-quick-copy {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.terminal-pane {
+  padding: 14px;
+  background: var(--app-canvas-bg);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+@media (max-width: 900px) {
+  .macos-split-container {
+    grid-template-columns: 1fr;
+  }
+}
+</style>

@@ -1,116 +1,330 @@
-/* 企业级白色管理后台主题：中性蓝主色 + 克制留白，支持深色模式 */
+/* ═════════════════════════════════════════════════════════════════════
+   Apple macOS Design System (macOS Sequoia / VisionOS Inspired)
+   Pure Apple aesthetic: Typography, Vibrancy, Frosted Glass, Fluid Easing
+   ═════════════════════════════════════════════════════════════════════ */
 
 :root {
-  /* 主色：企业蓝，覆盖 Element Plus primary */
-  --el-color-primary: #2563eb;
-  --el-color-primary-light-3: #5b87f0;
-  --el-color-primary-light-5: #8aa9f4;
-  --el-color-primary-light-7: #b9ccf9;
-  --el-color-primary-light-8: #d0defb;
-  --el-color-primary-light-9: #e8f0fd;
-  --el-color-primary-dark-2: #1d4fc4;
+  /* Apple System Accent Colors */
+  --el-color-primary: #0071e3;
+  --el-color-primary-light-3: #409eff;
+  --el-color-primary-light-5: #79bbff;
+  --el-color-primary-light-7: #a0cfff;
+  --el-color-primary-light-8: #c6e2ff;
+  --el-color-primary-light-9: #ecf5ff;
+  --el-color-primary-dark-2: #0056b3;
 
-  /* 自定义变量 */
-  --brand: #2563eb;
-  --brand-dark: #1d4fc4;
-  --app-sidebar-bg: #ffffff;
-  --app-header-bg: #ffffff;
-  --app-content-bg: #f5f6f8;
-  --app-border: var(--el-border-color-light);
-  --app-title: var(--el-text-color-primary);
-  /* 日志：中性深色终端风 */
-  --app-log-bg: #1e1f22;
-  --app-log-text: #d4d4d4;
+  --el-color-success: #34c759;
+  --el-color-warning: #ff9500;
+  --el-color-danger: #ff3b30;
+  --el-color-info: #8e8e93;
+
+  /* Apple Palette Variables */
+  --apple-blue: #007aff;
+  --apple-blue-dark: #0062cc;
+  --apple-green: #34c759;
+  --apple-indigo: #5856d6;
+  --apple-orange: #ff9500;
+  --apple-pink: #ff2d55;
+  --apple-purple: #af52de;
+  --apple-red: #ff3b30;
+  --apple-teal: #5ac8fa;
+  --apple-yellow: #ffcc00;
+
+  --brand: #0071e3;
+  --brand-dark: #0056b3;
+
+  /* Light Surface & Glassmorphism Tokens */
+  --app-canvas-bg: #f5f5f7;
+  --app-window-bg: #ffffff;
+  --app-sidebar-bg: rgba(246, 246, 248, 0.86);
+  --app-header-bg: rgba(255, 255, 255, 0.82);
+  --app-content-bg: #f5f5f7;
+  --app-card-bg: #ffffff;
+  --app-border: rgba(0, 0, 0, 0.08);
+  --app-card-border: rgba(0, 0, 0, 0.06);
+  --app-title: #1d1d1f;
+  --app-text-regular: #424245;
+  --app-text-secondary: #86868b;
+
+  /* macOS Layered Shadows */
+  --app-shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.02);
+  --app-shadow-md: 0 4px 16px -2px rgba(0, 0, 0, 0.06), 0 2px 6px -1px rgba(0, 0, 0, 0.03);
+  --app-shadow-lg: 0 12px 32px -4px rgba(0, 0, 0, 0.08), 0 4px 12px -2px rgba(0, 0, 0, 0.04);
+  --app-shadow-glass: 0 8px 32px 0 rgba(31, 38, 135, 0.06);
+
+  /* Terminal & Log Surfaces */
+  --app-log-bg: #141418;
+  --app-log-text: #e2e8f0;
+  --app-log-border: #242430;
 }
 
 html.dark {
-  --el-color-primary: #4b83f0;
-  --el-color-primary-dark-2: #6b9bf3;
-  --brand: #6b9bf3;
-  --app-sidebar-bg: #1d1e1f;
-  --app-header-bg: #1d1e1f;
-  --app-content-bg: #141414;
-  --app-log-bg: #141414;
+  --el-color-primary: #0a84ff;
+  --el-color-primary-light-3: #409eff;
+  --el-color-primary-dark-2: #0066cc;
+  --el-color-success: #30d158;
+  --el-color-warning: #ffd60a;
+  --el-color-danger: #ff453a;
+  --el-color-info: #98989d;
+
+  --brand: #0a84ff;
+  --brand-dark: #0066cc;
+
+  /* Dark Surface & Materials */
+  --app-canvas-bg: #000000;
+  --app-window-bg: #1c1c1e;
+  --app-sidebar-bg: rgba(28, 28, 30, 0.85);
+  --app-header-bg: rgba(28, 28, 30, 0.82);
+  --app-content-bg: #121214;
+  --app-card-bg: #1c1c1e;
+  --app-border: rgba(255, 255, 255, 0.1);
+  --app-card-border: rgba(255, 255, 255, 0.08);
+  --app-title: #f5f5f7;
+  --app-text-regular: #d1d1d6;
+  --app-text-secondary: #8e8e93;
+
+  --app-shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.5);
+  --app-shadow-md: 0 4px 20px -2px rgba(0, 0, 0, 0.55), 0 2px 6px -1px rgba(0, 0, 0, 0.35);
+  --app-shadow-lg: 0 16px 36px -4px rgba(0, 0, 0, 0.7);
+  --app-shadow-glass: 0 8px 32px 0 rgba(0, 0, 0, 0.4);
+
+  --app-log-bg: #0d0d10;
+  --app-log-text: #f1f5f9;
+  --app-log-border: #262630;
 }
 
-* { box-sizing: border-box; }
+* {
+  box-sizing: border-box;
+}
 
 html, body, #app {
   margin: 0;
   height: 100%;
-  font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Helvetica Neue", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  letter-spacing: -0.01em;
 }
 
 body {
   background: var(--app-content-bg);
   color: var(--el-text-color-primary);
+  user-select: none;
 }
 
-/* 统计卡片 */
-.stat-card { border-radius: 8px; overflow: hidden; }
-.stat-card .stat-value { font-size: 28px; font-weight: 600; line-height: 1.1; }
-.stat-card .stat-label { font-size: 13px; color: var(--el-text-color-secondary); margin-top: 4px; }
+/* ──────────── Element Plus macOS 深度定制 ──────────── */
 
-/* 实时日志框 */
-.log-box {
-  background: var(--app-log-bg);
-  color: var(--app-log-text);
-  border: 1px solid var(--app-border);
-  border-radius: 6px;
-  padding: 10px 12px;
-  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+/* 卡片 */
+.el-card {
+  border-radius: 12px !important;
+  border: 1px solid var(--app-card-border) !important;
+  background: var(--app-card-bg) !important;
+  box-shadow: var(--app-shadow-sm) !important;
+  transition: all 0.22s cubic-bezier(0.16, 1, 0.3, 1) !important;
+}
+.el-card.is-hover-shadow:hover {
+  box-shadow: var(--app-shadow-md) !important;
+  transform: translateY(-1px);
+}
+.el-card__header {
+  padding: 13px 18px !important;
+  border-bottom: 1px solid var(--app-border) !important;
+  font-size: 13.5px !important;
+  font-weight: 600 !important;
+  color: var(--app-title) !important;
+}
+.el-card__body {
+  padding: 18px !important;
+}
+
+/* 按钮 */
+.el-button {
+  border-radius: 8px !important;
+  font-weight: 500 !important;
+  letter-spacing: -0.01em;
+  transition: all 0.16s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
+.el-button--primary:not(.is-link):not(.is-text) {
+  background: linear-gradient(180deg, #007aff 0%, #006de0 100%) !important;
+  border: none !important;
+  color: #fff !important;
+  box-shadow: 0 1px 3px rgba(0, 122, 255, 0.25) !important;
+}
+.el-button--primary:not(.is-link):not(.is-text):hover:not(:disabled) {
+  background: linear-gradient(180deg, #006de0 0%, #005bb5 100%) !important;
+  box-shadow: 0 2px 8px rgba(0, 122, 255, 0.35) !important;
+  transform: translateY(-0.5px);
+}
+.el-button--success:not(.is-link):not(.is-text) {
+  background: linear-gradient(180deg, #34c759 0%, #2cb34e 100%) !important;
+  border: none !important;
+  color: #fff !important;
+  box-shadow: 0 1px 3px rgba(52, 199, 89, 0.25) !important;
+}
+.el-button--success:not(.is-link):not(.is-text):hover:not(:disabled) {
+  background: linear-gradient(180deg, #2cb34e 0%, #249742 100%) !important;
+}
+.el-button--danger:not(.is-link):not(.is-text) {
+  background: linear-gradient(180deg, #ff3b30 0%, #e62e24 100%) !important;
+  border: none !important;
+  color: #fff !important;
+  box-shadow: 0 1px 3px rgba(255, 59, 48, 0.25) !important;
+}
+.el-button--warning:not(.is-link):not(.is-text) {
+  background: linear-gradient(180deg, #ff9500 0%, #e68500 100%) !important;
+  border: none !important;
+  color: #fff !important;
+  box-shadow: 0 1px 3px rgba(255, 149, 0, 0.25) !important;
+}
+
+/* 输入框与选择器 */
+.el-input__wrapper,
+.el-select__wrapper,
+.el-textarea__inner {
+  border-radius: 8px !important;
+  box-shadow: 0 0 0 1px var(--app-border) inset !important;
+  background: var(--el-fill-color-blank) !important;
+  transition: all 0.16s ease !important;
+}
+.el-input__wrapper.is-focus,
+.el-select__wrapper.is-focused,
+.el-textarea__inner:focus {
+  box-shadow: 0 0 0 1px var(--el-color-primary) inset, 0 0 0 3px rgba(0, 113, 227, 0.2) !important;
+}
+
+/* 表格 */
+.el-table {
+  border-radius: 10px !important;
+  border: 1px solid var(--app-border) !important;
+  font-size: 12.5px !important;
+  background: var(--app-window-bg) !important;
+}
+.el-table th.el-table__cell {
+  background: var(--el-fill-color-lighter) !important;
+  color: var(--el-text-color-secondary) !important;
+  font-weight: 600 !important;
+  font-size: 12px !important;
+}
+.el-table--striped .el-table__body tr.el-table__row--striped td.el-table__cell {
+  background: var(--el-fill-color-light) !important;
+}
+.el-table tr:hover > td.el-table__cell {
+  background: var(--el-fill-color) !important;
+}
+
+/* 标签 Tag */
+.el-tag {
+  border-radius: 6px !important;
+  font-weight: 500 !important;
+  font-size: 11.5px !important;
+}
+
+/* 弹窗 Dialog */
+.el-dialog {
+  border-radius: 16px !important;
+  overflow: hidden !important;
+  box-shadow: var(--app-shadow-lg) !important;
+  border: 1px solid var(--app-border) !important;
+}
+.el-dialog__header {
+  padding: 14px 20px !important;
+  margin-right: 0 !important;
+  border-bottom: 1px solid var(--app-border) !important;
+  background: var(--el-fill-color-light) !important;
+}
+.el-dialog__title {
+  font-size: 14px !important;
+  font-weight: 600 !important;
+}
+.el-dialog__body {
+  padding: 16px 20px !important;
+}
+.el-dialog__footer {
+  padding: 12px 20px !important;
+  border-top: 1px solid var(--app-border) !important;
+  background: var(--el-fill-color-light) !important;
+}
+
+/* 描述列表 Descriptions */
+.el-descriptions {
+  border-radius: 8px !important;
+  overflow: hidden !important;
+}
+.el-descriptions__label {
+  font-weight: 600 !important;
+  color: var(--el-text-color-secondary) !important;
+  background: var(--el-fill-color-lighter) !important;
+}
+
+/* ──────────── 统计卡片与通用卡片 ──────────── */
+.stat-card {
+  border-radius: 12px;
+  overflow: hidden;
+  position: relative;
+  background: var(--app-card-bg);
+  border: 1px solid var(--app-card-border);
+}
+.stat-card .stat-value {
+  font-size: 26px;
+  font-weight: 700;
+  line-height: 1.1;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", sans-serif;
+  letter-spacing: -0.02em;
+}
+.stat-card .stat-label {
   font-size: 12px;
-  line-height: 1.55;
-  height: 320px;
-  overflow-y: auto;
-  white-space: pre-wrap;
-  word-break: break-all;
+  color: var(--el-text-color-secondary);
+  margin-top: 4px;
+  font-weight: 500;
 }
-.log-box .line.err  { color: #f48771; }
-.log-box .line.warn { color: #dcdcaa; }
-.log-box .line.ok   { color: #6a9955; }
-.log-box .line.evt  { color: #569cd6; }
 
 /* 页面 */
-.page { padding: 4px; }
-.page .el-card { margin-bottom: 16px; }
+.page {
+  padding: 4px;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
 .section-title {
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 600;
   color: var(--app-title);
   margin: 0 0 12px;
+  letter-spacing: -0.01em;
 }
-.hint { color: var(--el-text-color-secondary); font-size: 12px; line-height: 1.6; }
-.mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
-
-/* 明文凭证展示（注册完成提示里的密码）：等宽 + 可选中，方便直接框选复制 */
-.cred-line { margin-top: 8px; display: flex; align-items: center; gap: 8px; }
-.cred-label { font-size: 12px; color: var(--el-text-color-secondary); }
-.cred-val {
-  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 13px;
-  padding: 2px 8px;
-  border-radius: 4px;
-  background: var(--el-fill-color-light);
-  user-select: all;
-  word-break: break-all;
-}
-
-/* 批量导出弹窗的文本框：不换行 + 横向滚动，
-   长 access_token 一行就是一行，肉眼数行数 = 账号数，不会被折行骗到 */
-.export-area .el-textarea__inner {
-  white-space: pre;
-  overflow-x: auto;
-  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+.hint {
+  color: var(--el-text-color-secondary);
   font-size: 12px;
-  line-height: 1.65;
+  line-height: 1.6;
+}
+.mono {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace !important;
 }
 
-/* 路由进度条配色（品牌蓝） */
-#nprogress .bar { background: var(--brand); height: 2px; }
-#nprogress .peg { box-shadow: 0 0 10px var(--brand), 0 0 5px var(--brand); }
+/* ──────────── macOS 红黄绿交通灯组件 ──────────── */
+.mac-traffic-lights {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 2px 0;
+}
+.mac-traffic-lights .traffic-dot {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  position: relative;
+  transition: transform 0.15s ease, opacity 0.15s ease;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.12);
+}
+.mac-traffic-lights .traffic-dot.red { background: #ff5f56; }
+.mac-traffic-lights .traffic-dot.yellow { background: #ffbd2e; }
+.mac-traffic-lights .traffic-dot.green { background: #27c93f; }
+.mac-traffic-lights:hover .traffic-dot {
+  opacity: 0.9;
+}
 
-/* ──────────── 全局 macOS 极简悬浮滚动条 ──────────── */
+/* ──────────── macOS 极简悬浮滚动条 ──────────── */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
@@ -119,16 +333,15 @@ body {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(150, 150, 160, 0.25);
+  background: rgba(140, 140, 150, 0.28);
   border-radius: 4px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(150, 150, 160, 0.45);
+  background: rgba(140, 140, 150, 0.5);
 }
 html.dark ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.2);
 }
 html.dark ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.35);
+  background: rgba(255, 255, 255, 0.38);
 }
-

@@ -1,18 +1,14 @@
 <script setup>
-// 邮箱来源配置。
-//
-// 这个页面不认识任何具体邮箱 —— 单选项和下面的表单字段全部来自
-// GET /api/mail/providers 的声明（provider 类里的 config_fields）。
-// 后端加一种邮箱，这个文件一行都不用改。
 import { computed, onActivated, ref } from 'vue'
 import { ElMessage } from 'element-plus'
+import { Setting, Message, Check, Connection } from '@element-plus/icons-vue'
 import { getMailConfig, getMailProviders, saveMailConfig, testMail } from '@/api/settings'
 import FooterToolbar from '@/components/FooterToolbar.vue'
 
 const providers = ref([])
 const source = ref('outlook')
-const form = ref({})          // { 字段 key: 用户填的值 }
-const saved = ref({})         // 后端返回的原值，密码类是 '***'
+const form = ref({})
+const saved = ref({})
 const loading = ref(true)
 const saving = ref(false)
 const testing = ref(false)
@@ -21,12 +17,8 @@ const current = computed(
   () => providers.value.find((p) => p.kind === source.value) || null,
 )
 const fields = computed(() => current.value?.config_fields || [])
-
-// 池化 provider（Outlook 这类导号进来的）连通性绑在具体某个号上，
-// 没号可测；测试按钮只对非池化的显示。
 const canTest = computed(() => !!current.value && !current.value.pooled)
 
-/** 密码类字段已存过 → 输入框留空表示"不修改"，提示语要说清楚 */
 function phFor(f) {
   if (f.type === 'password' && saved.value[f.key] === '***') {
     return '已设置（留空则不修改）'
@@ -42,7 +34,6 @@ async function load() {
     saved.value = cfg.config || {}
     source.value = saved.value.mail_source || pr.current || 'outlook'
 
-    // 回填：密码类一律留空（后端存的是 '***'，填进去会把真值覆盖掉）
     const next = {}
     for (const p of providers.value) {
       for (const f of p.config_fields) {
@@ -62,7 +53,6 @@ async function save() {
   for (const f of fields.value) {
     const v = (form.value[f.key] ?? '').trim()
     if (f.type === 'password' && !v) {
-      // 留空 = 不修改。后端见到 '***' 会跳过，不覆盖已存的真 token
       if (saved.value[f.key] === '***') continue
     }
     payload[f.key] = v
@@ -75,14 +65,14 @@ async function save() {
       return !v && !(f.type === 'password' && saved.value[f.key] === '***')
     })
   if (missing.length) {
-    ElMessage.warning('还没填：' + missing.map((f) => f.label).join('、'))
+    ElMessage.warning('请填写必填项：' + missing.map((f) => f.label).join('、'))
     return
   }
 
   saving.value = true
   try {
     await saveMailConfig(payload)
-    ElMessage.success('保存成功')
+    ElMessage.success('配置已保存')
     await load()
   } catch (e) {
     ElMessage.error(e.message)
@@ -108,78 +98,199 @@ load()
 </script>
 
 <template>
-  <div class="page" v-loading="loading">
-    <el-card shadow="never" style="max-width: 720px">
-      <template #header>
-        <span class="section-title" style="margin: 0">邮箱来源配置</span>
-      </template>
-      <p class="hint">
-        OpenAI 注册需要邮箱收 OTP。下面的选项由后端已注册的 provider 自动生成。
-      </p>
-
-      <el-form label-position="top">
-        <el-form-item label="邮箱来源">
-          <el-radio-group v-model="source">
-            <el-radio v-for="p in providers" :key="p.kind" :value="p.kind">
-              {{ p.display_name }}
-            </el-radio>
-          </el-radio-group>
-        </el-form-item>
-
-        <!-- 能力说明：让主人一眼看出这种邮箱是怎么工作的 -->
-        <el-form-item v-if="current">
-          <div class="caps">
-            <el-tag size="small" :type="current.pooled ? 'warning' : 'success'">
-              {{ current.pooled ? '号池型：需先导入号，用完要补' : '自建型：自动生成地址，无限量' }}
-            </el-tag>
-            <el-tag size="small" :type="current.ephemeral ? 'success' : 'info'">
-              {{ current.ephemeral ? '每次新地址' : '固定地址' }}
-            </el-tag>
-            <el-tag v-if="current.line_segments > 0" size="small" type="info">
-              导入格式 {{ current.line_segments }} 段
-            </el-tag>
+  <div class="mailconfig-page" v-loading="loading">
+    <div class="macos-window-panel">
+      <div class="macos-panel-header">
+        <div class="header-left">
+          <div class="window-dot-group">
+            <span class="dot red"></span>
+            <span class="dot yellow"></span>
+            <span class="dot green"></span>
           </div>
-        </el-form-item>
+          <span class="panel-title">邮箱接收源配置 · Mail Preferences</span>
+        </div>
+        <div class="header-right">
+          <span class="header-badge">当前生效: {{ current?.display_name || source }}</span>
+        </div>
+      </div>
 
-        <!-- 配置项：完全由 provider 声明驱动 -->
-        <el-form-item v-for="f in fields" :key="f.key" :label="f.label">
-          <el-input
-            v-model="form[f.key]"
-            :type="f.type === 'password' ? 'password' : 'text'"
-            :show-password="f.type === 'password'"
-            :placeholder="phFor(f)"
+      <div class="config-scroll-body">
+        <div class="macos-settings-card">
+          <div class="card-section">
+            <span class="section-heading">选择验证码接信渠道</span>
+            <el-radio-group v-model="source" class="macos-radio-group">
+              <el-radio-button
+                v-for="p in providers"
+                :key="p.kind"
+                :value="p.kind"
+              >
+                {{ p.display_name }}
+              </el-radio-button>
+            </el-radio-group>
+          </div>
+
+          <div v-if="current" class="card-section info-section">
+            <span class="section-heading">渠道特性</span>
+            <div class="caps-tags">
+              <el-tag size="small" :type="current.pooled ? 'warning' : 'success'" effect="light">
+                {{ current.pooled ? '📦 号池型：需先批量导入账号' : '⚡ 自建型：动态自动生成地址' }}
+              </el-tag>
+              <el-tag size="small" :type="current.ephemeral ? 'success' : 'info'" effect="plain">
+                {{ current.ephemeral ? '每次注册使用新地址' : '固定地址轮询' }}
+              </el-tag>
+              <el-tag v-if="current.line_segments > 0" size="small" type="info" effect="plain">
+                导入格式 {{ current.line_segments }} 段
+              </el-tag>
+            </div>
+          </div>
+
+          <div v-if="fields.length" class="card-section form-section">
+            <span class="section-heading">渠道参数详情</span>
+            <el-form label-position="top" size="small">
+              <el-form-item
+                v-for="f in fields"
+                :key="f.key"
+                :label="f.label"
+                :required="f.required"
+              >
+                <el-input
+                  v-model="form[f.key]"
+                  :type="f.type === 'password' ? 'password' : 'text'"
+                  :show-password="f.type === 'password'"
+                  :placeholder="phFor(f)"
+                />
+                <div v-if="f.help" class="hint-text">{{ f.help }}</div>
+              </el-form-item>
+            </el-form>
+          </div>
+
+          <el-alert
+            v-if="current && !current.pooled && fields.length"
+            type="warning"
+            :closable="false"
+            show-icon
+            style="border-radius: 8px"
+            title="自建邮箱需配置好 Catch-all 转发，确保验证码能实时投递给服务端接口。"
           />
-          <div v-if="f.help" class="hint" style="margin-top: 4px">{{ f.help }}</div>
-        </el-form-item>
+        </div>
+      </div>
 
-        <el-alert
-          v-if="current && !current.pooled && fields.length"
-          type="warning" :closable="false" show-icon
-          title="自建邮箱需要把域名的 catch-all 收件正确转发到服务端，否则收不到验证码。"
-        />
-
-        <el-alert
-          v-if="current && current.pooled"
-          type="info" :closable="false" show-icon
-          :title="`${current.display_name} 不需要在这里配置，去「导入邮箱」页把号导进来即可。`"
-        />
-      </el-form>
-    </el-card>
-
-    <FooterToolbar>
-      <template #left>
-        邮箱来源：{{ current?.display_name || source }}
-      </template>
-      <el-button v-if="canTest" :loading="testing" @click="test">测试连通性</el-button>
-      <el-button type="primary" :loading="saving" @click="save">保存配置</el-button>
-    </FooterToolbar>
+      <FooterToolbar>
+        <template #right>
+          <el-button v-if="canTest" :loading="testing" @click="test">
+            <el-icon><Connection /></el-icon>测试连通性
+          </el-button>
+          <el-button type="primary" :loading="saving" @click="save">
+            <el-icon><Check /></el-icon>保存配置
+          </el-button>
+        </template>
+      </FooterToolbar>
+    </div>
   </div>
 </template>
 
 <style scoped>
-.caps {
+.mailconfig-page {
+  height: 100%;
+  min-height: 0;
   display: flex;
-  gap: 8px;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.macos-window-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--app-window-bg);
+  border: 1px solid var(--app-border);
+  border-radius: 12px;
+  box-shadow: var(--app-shadow-sm);
+  overflow: hidden;
+}
+
+.macos-panel-header {
+  padding: 12px 18px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--app-border);
+  background: var(--el-fill-color-light);
+  flex-shrink: 0;
+}
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.window-dot-group {
+  display: flex;
+  gap: 6px;
+}
+.dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+.dot.red { background: #ff5f56; }
+.dot.yellow { background: #ffbd2e; }
+.dot.green { background: #27c93f; }
+
+.panel-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--app-title);
+}
+.header-badge {
+  font-size: 11px;
+  color: var(--app-text-secondary);
+  background: var(--el-fill-color);
+  padding: 2px 8px;
+  border-radius: 10px;
+}
+
+.config-scroll-body {
+  flex: 1;
+  min-height: 0;
+  padding: 20px 24px;
+  overflow-y: auto;
+}
+
+.macos-settings-card {
+  max-width: 680px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.card-section {
+  background: var(--el-fill-color-light);
+  border: 1px solid var(--app-border);
+  border-radius: 10px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.section-heading {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--app-title);
+}
+
+.caps-tags {
+  display: flex;
   flex-wrap: wrap;
+  gap: 8px;
+}
+
+.hint-text {
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+  margin-top: 3px;
+  line-height: 1.4;
 }
 </style>
