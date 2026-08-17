@@ -158,21 +158,21 @@ const CHANNEL_CONFIGS = {
 
 // ── 国家 / 币种字典 ──
 const COUNTRY_OPTIONS = [
-  { value: 'TH', label: 'TH · 泰国 (推荐)', currency: 'THB' },
-  { value: 'BR', label: 'BR · 巴西 (推荐)', currency: 'BRL' },
-  { value: 'US', label: 'US · 美国', currency: 'USD' },
-  { value: 'DE', label: 'DE · 德国', currency: 'EUR' },
-  { value: 'NL', label: 'NL · 荷兰', currency: 'EUR' },
-  { value: 'PH', label: 'PH · 菲律宾', currency: 'PHP' },
-  { value: 'IN', label: 'IN · 印度', currency: 'INR' },
-  { value: 'KR', label: 'KR · 韩国', currency: 'KRW' },
-  { value: 'VN', label: 'VN · 越南', currency: 'VND' },
-  { value: 'CH', label: 'CH · 瑞士', currency: 'CHF' },
-  { value: 'PL', label: 'PL · 波兰', currency: 'PLN' },
+  { value: 'DE', label: 'DE · 德国 (PayPal高爆 ★★★★★)', currency: 'EUR' },
+  { value: 'BR', label: 'BR · 巴西 (Plus试用高爆 ★★★★★)', currency: 'BRL' },
+  { value: 'US', label: 'US · 美国 (标准通用 ★★★)', currency: 'USD' },
+  { value: 'NL', label: 'NL · 荷兰 (欧洲推荐 ★★★★)', currency: 'EUR' },
+  { value: 'FR', label: 'FR · 法国 (欧洲推荐 ★★★★)', currency: 'EUR' },
+  { value: 'GB', label: 'GB · 英国 (欧洲推荐 ★★★★)', currency: 'GBP' },
+  { value: 'JP', label: 'JP · 日本 (亚太推荐 ★★★★)', currency: 'JPY' },
+  { value: 'PH', label: 'PH · 菲律宾 (GCash推荐 ★★★★)', currency: 'PHP' },
+  { value: 'IN', label: 'IN · 印度 (UPI推荐 ★★★★)', currency: 'INR' },
+  { value: 'VN', label: 'VN · 越南 (MoMo推荐 ★★★★)', currency: 'VND' },
+  { value: 'CH', label: 'CH · 瑞士 (TWINT推荐 ★★★★)', currency: 'CHF' },
+  { value: 'PL', label: 'PL · 波兰 (BLIK推荐 ★★★★)', currency: 'PLN' },
+  { value: 'KR', label: 'KR · 韩国 (Kakao推荐 ★★★★)', currency: 'KRW' },
+  { value: 'TH', label: 'TH · 泰国 (接码注册)', currency: 'THB' },
   { value: 'TR', label: 'TR · 土耳其', currency: 'TRY' },
-  { value: 'JP', label: 'JP · 日本', currency: 'JPY' },
-  { value: 'GB', label: 'GB · 英国', currency: 'GBP' },
-  { value: 'FR', label: 'FR · 法国', currency: 'EUR' },
   { value: 'ID', label: 'ID · 印尼', currency: 'IDR' },
   { value: 'MY', label: 'MY · 马来西亚', currency: 'MYR' },
   { value: 'SG', label: 'SG · 新加坡', currency: 'SGD' },
@@ -284,6 +284,14 @@ watch(
   },
   { immediate: true },
 )
+
+function onExitCountryChange(c) {
+  form.billing_country = c
+  const match = COUNTRY_OPTIONS.find((item) => item.value === c)
+  if (match && match.currency) {
+    form.currency = match.currency
+  }
+}
 
 function onBillingCountryChange(c) {
   const match = COUNTRY_OPTIONS.find((item) => item.value === c)
@@ -540,7 +548,13 @@ onUnmounted(() => {
 
           <div class="param-field">
             <span class="field-title">出口</span>
-            <el-select v-model="form.exit_country" filterable size="small" style="width: 145px">
+            <el-select
+              v-model="form.exit_country"
+              filterable
+              size="small"
+              style="width: 145px"
+              @change="onExitCountryChange"
+            >
               <el-option
                 v-for="opt in COUNTRY_OPTIONS"
                 :key="opt.value"

@@ -209,6 +209,7 @@ def _resolve_paypal_agreements_url(http_client, redirect_url: str) -> str:
 
 def _extract_oaics_flow(
     client,
+    headers: dict,
     proxy: str,
     email: str,
     checkout_data: dict,
@@ -319,18 +320,18 @@ def _extract_oaics_flow(
             "state": state,
         },
     }
+    tax_headers = {
+        **headers,
+        "Origin": "https://chatgpt.com",
+        "Referer": f"https://chatgpt.com/checkout/{processor_entity}/{checkout_session_id}",
+        "x-openai-target-path": "/backend-api/payments/checkout/taxes",
+        "x-openai-target-route": "/backend-api/payments/checkout/taxes",
+    }
     try:
         r_tax = client.post(
             "https://chatgpt.com/backend-api/payments/checkout/taxes",
             json=tax_body,
-            headers={
-                "Accept": "application/json",
-                "Content-Type": "application/json",
-                "Origin": "https://chatgpt.com",
-                "Referer": f"https://chatgpt.com/checkout/{processor_entity}/{checkout_session_id}",
-                "x-openai-target-path": "/backend-api/payments/checkout/taxes",
-                "x-openai-target-route": "/backend-api/payments/checkout/taxes",
-            },
+            headers=tax_headers,
             timeout=25,
         )
         log_fn(f"[oaics] Taxes 响应 HTTP {r_tax.status_code}")
@@ -402,17 +403,17 @@ def _extract_oaics_flow(
         "confirm_token": ctoken_id,
         "selected_payment_method_type": pm_type,
     }
+    confirm_headers = {
+        **headers,
+        "Origin": "https://chatgpt.com",
+        "Referer": f"https://chatgpt.com/checkout/{processor_entity}/{checkout_session_id}",
+        "x-openai-target-path": "/backend-api/payments/checkout/confirm",
+        "x-openai-target-route": "/backend-api/payments/checkout/confirm",
+    }
     r_conf = client.post(
         "https://chatgpt.com/backend-api/payments/checkout/confirm",
         json=confirm_body,
-        headers={
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-            "Origin": "https://chatgpt.com",
-            "Referer": f"https://chatgpt.com/checkout/{processor_entity}/{checkout_session_id}",
-            "x-openai-target-path": "/backend-api/payments/checkout/confirm",
-            "x-openai-target-route": "/backend-api/payments/checkout/confirm",
-        },
+        headers=confirm_headers,
         timeout=25,
     )
     if r_conf.status_code not in (200, 201):
@@ -597,7 +598,15 @@ def _execute_account_extract(task: ExtractJobTask, email: str) -> None:
         return
 
     start_ts = time.time()
-    proxy = _get_proxy_url(task.proxy_pool, task.exit_country)
+
+    # 智能出口国家安全校准：对于 PayPal 提链，如果账单为欧洲国家 (DE/NL/FR 等)，出口必须匹配为欧洲代理，杜绝因跨洲 IP (如 TH) 触发 Stripe 屏蔽 PayPal
+    effective_exit = task.exit_country
+    if task.channel == "paypal":
+        if task.billing_country in ("DE", "NL", "FR", "ES", "IT", "GB") and effective_exit not in ("DE", "NL", "FR", "ES", "IT", "GB"):
+            effective_exit = task.billing_country
+            task.add_email_log(email, f"💡 智能安全校准: PayPal 提链出口由 {task.exit_country} 自动对齐为 {effective_exit} (匹配 {task.billing_country} 账单)")
+
+    proxy = _get_proxy_url(task.proxy_pool, effective_exit)
 
     for attempt in range(1, task.retries + 1):
         if task.cancelled:
@@ -606,7 +615,7 @@ def _execute_account_extract(task: ExtractJobTask, email: str) -> None:
 
         if attempt > 1:
             # 账号级防频控退避 + 强制轮换新代理 Session
-            proxy = _get_proxy_url(task.proxy_pool, task.exit_country)
+            proxy = _get_proxy_url(task.proxy_pool, effective_exit)
             sleep_sec = 2.5 + random.uniform(0.5, 1.5)
             time.sleep(sleep_sec)
 
@@ -724,6 +733,7 @@ def _execute_account_extract(task: ExtractJobTask, email: str) -> None:
                     try:
                         final_link = _extract_oaics_flow(
                             client=client,
+                            headers=headers,
                             proxy=proxy,
                             email=email,
                             checkout_data=data,
