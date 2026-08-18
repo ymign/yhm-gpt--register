@@ -399,18 +399,25 @@ class CFTempEmailProvider(MailProvider):
     # ──────────────────────── 核心邮箱操作 ────────────────────────
 
     def resolve_domain(self) -> str:
-        """确保收件域名可用：若未配置则自动从 Worker settings 获取。"""
+        """确保收件域名可用：若配置多域名或未配置则自动轮换/从 Worker 获取。"""
         if self.domain:
-            return self.domain
+            parts = [d.strip().lstrip("@").strip(".") for d in self.domain.split(",") if d.strip()]
+            if len(parts) > 1:
+                chosen = self._rng.choice(parts)
+                logger.info(f"[cf_temp] 从多域名列表中选用: {chosen}")
+                return chosen
+            elif len(parts) == 1:
+                return parts[0]
+
         domains = cf_list_domains(
             self.api_url,
             admin_token=self.admin_token,
             site_password=self.site_password,
         )
         if domains:
-            self.domain = domains[0]
-            logger.info(f"[cf_temp] 自动解析并选用 Worker 域名: {self.domain}")
-            return self.domain
+            chosen = self._rng.choice(domains)
+            logger.info(f"[cf_temp] 自动从 Worker 可用域名中选用: {chosen} (候选: {domains})")
+            return chosen
         raise RuntimeError(
             "Cloudflare Temp Email 未配置收件域名，且无法从 Worker 获取可用域名列表，"
             "请前往「邮箱配置」填写收件域名。"

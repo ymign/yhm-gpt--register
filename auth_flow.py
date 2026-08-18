@@ -3409,9 +3409,9 @@ class AuthFlow:
                     self.kickoff_otp_delivery("post_register_password_send_failed")
             else:
                 if is_passwordless:
-                    # authorize/continue 已下发 OTP，直接等邮件，不再重复发码造成状态紊乱
+                    # authorize/continue 已下发 OTP，先等待几秒；若未收到则主动触发 resend 强制投递
                     otp_sent_at = getattr(self, "_passwordless_otp_sent_at", 0) or (time.time() - 30)
-                    logger.info("服务端已在邮箱提交阶段发送注册 OTP，直接等待邮件")
+                    logger.info("服务端已在邮箱提交阶段发送注册 OTP，正在等待邮件...")
                 elif self._existing_page_type == "create_account_password":
                     if want_password:
                         logger.warning("注册密码失败，回退到 OTP 免密注册路径")
@@ -3430,11 +3430,22 @@ class AuthFlow:
                 otp_timeout = max(10, int(self._get_env("OTP_TIMEOUT", "60")))
             except Exception:
                 otp_timeout = 180
-            otp_code = mail_provider.wait_for_otp(
-                email,
-                timeout=otp_timeout,
-                issued_after=otp_sent_at,
-            )
+
+            # 针对 passwordless_signup：若 5 秒内未命中首发 OTP，主动调一次 resend_otp 确保服务端推信
+            otp_code = None
+            if is_passwordless and hasattr(mail_provider, "peek_otp"):
+                otp_code = mail_provider.peek_otp(email, issued_after=otp_sent_at, wait=5.0)
+                if not otp_code:
+                    logger.info("未立即命中首发 OTP，主动调用 resend_otp 触发官方投递...")
+                    if self.resend_otp("https://auth.openai.com/email-verification"):
+                        otp_sent_at = time.time() - 5
+
+            if not otp_code:
+                otp_code = mail_provider.wait_for_otp(
+                    email,
+                    timeout=otp_timeout,
+                    issued_after=otp_sent_at,
+                )
             try:
                 self.verify_otp(otp_code)
                 self.fetch_client_auth_session_dump("post_verify_otp_new")
