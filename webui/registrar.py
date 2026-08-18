@@ -445,6 +445,29 @@ def _do_register(
             except Exception as e:
                 logging.getLogger("registrar").warning(f"[register] 回读已存密码失败: {e}")
 
+        # 若用户勾选了设置密码，但该号通过 passwordless_signup 注册未设密码，则自动通过官方协议补设
+        if want_password and not (d.get("password") or "").strip():
+            try:
+                logging.getLogger("registrar").info(
+                    f"[register] 该账号为免密注册，正在调用 OpenAI 官方协议全自动补设登录密码..."
+                )
+                from .official_password import official_set_account_password
+                used_proxy_for_pwd = getattr(cfg, "proxy", "") or options.get("proxy") or ""
+                res_pwd = official_set_account_password(
+                    email=d.get("email"),
+                    proxy=used_proxy_for_pwd,
+                    timeout=min(int(options.get("otp_timeout") or 60), 60),
+                )
+                if res_pwd.get("password"):
+                    d["password"] = res_pwd["password"]
+                    logging.getLogger("registrar").info(
+                        f"[register] ✅ 官方登录密码设置成功: {d['password']}"
+                    )
+            except Exception as e:
+                logging.getLogger("registrar").warning(
+                    f"[register] 自动补设官方密码异常（账号已注册成功，仅未设密）: {e}"
+                )
+
         # ─ 可选：绑定 TOTP 2FA（仅用户勾选 want_2fa 时才跑） ─
         #   正常情况上面的 on_session_ready 钩子已经在【Codex 授权之前】绑完了，
         #   这里只是兜底：钩子没跑到（run_register 中途抛异常走 partial 分支、

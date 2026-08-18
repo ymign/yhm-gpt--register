@@ -2279,6 +2279,7 @@ class AuthFlow:
     def signup(self, email: str, sentinel_token: str) -> bool:
         """提交注册邮箱。返回 True 表示走新注册流程，False 表示已有账号走 OTP 登录流程"""
         logger.info("[5/10] 提交注册邮箱...")
+        t_signup = time.time()
         data = self.authorize_continue(
             email=email,
             sentinel_token=sentinel_token,
@@ -2310,6 +2311,7 @@ class AuthFlow:
                 if mode == "passwordless_signup":
                     logger.info("服务端选择 passwordless 注册流程（新账号，无密码），已自动发送 OTP")
                     self._is_existing_account = False
+                    self._passwordless_otp_sent_at = t_signup
                     return True
                 else:
                     logger.info("检测到已有账号，切换到 OTP 登录流程")
@@ -3390,18 +3392,14 @@ class AuthFlow:
         #    实测 2026-08-06: 这类号照样能走 POST user/register 设密码并成功。
         want_password = str(self._get_env("WANT_PASSWORD", "0")).lower() in ("1", "true", "yes", "on")
         if is_new or self._existing_email_verification_mode == "passwordless_signup":
-            # 新账号流程：若开启设置密码则先走 register_password，否则走 passwordless 免密 OTP 注册流
+            # 新账号流程：若开启设置密码且服务端处于密码阶段则先走 register_password，否则走 passwordless 免密 OTP 注册流
             password_registered = False
-            if want_password:
+            is_passwordless = (self._existing_email_verification_mode == "passwordless_signup")
+
+            if want_password and not is_passwordless:
                 password_registered = self.register_password(email)
 
             if password_registered:
-                # ⚠️ POST user/register 成功后服务端**切换流程**到 email_otp_send 页
-                #    （实测响应 continue_url=/api/accounts/email-otp/send, page.type=email_otp_send），
-                #    signup 阶段自动发的那封 OTP 立即失效，拿它 verify 会 409 invalid_state。
-                #    所以必须主动重新发码，且以本次发码时间为准，不能再用 -8 偏移。
-                #    时间戳在发码**之前**取：邮件是服务端在这次请求里发出的，
-                #    先发再取时间会让 otp_sent_at 晚于邮件时间戳，被 issued_after 过滤掉。
                 otp_sent_at = time.time()
                 try:
                     self.send_otp()
@@ -3410,17 +3408,14 @@ class AuthFlow:
                     logger.warning(f"密码注册后主动发码失败，回退 resend: {e}")
                     self.kickoff_otp_delivery("post_register_password_send_failed")
             else:
-                if want_password:
-                    logger.warning("注册密码失败，回退到 OTP 免密注册路径")
-                else:
-                    logger.info("采用 OTP-First 免密注册流程（对齐真实指纹浏览器，激活 Plus 试用资格）")
-                self.fetch_client_auth_session_dump("post_register_password_failed_new")
-
-                if self._existing_email_verification_mode == "passwordless_signup":
+                if is_passwordless:
                     # authorize/continue 已下发 OTP，直接等邮件，不再重复发码造成状态紊乱
-                    otp_sent_at = time.time() - 8
+                    otp_sent_at = getattr(self, "_passwordless_otp_sent_at", 0) or (time.time() - 30)
                     logger.info("服务端已在邮箱提交阶段发送注册 OTP，直接等待邮件")
                 elif self._existing_page_type == "create_account_password":
+                    if want_password:
+                        logger.warning("注册密码失败，回退到 OTP 免密注册路径")
+                    self.fetch_client_auth_session_dump("post_register_password_failed_new")
                     # 停留在密码页：调用 passwordless 发码进入 OTP 流程
                     otp_sent_at = time.time()
                     if not self.send_passwordless_otp("https://auth.openai.com/create-account/password"):

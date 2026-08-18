@@ -658,7 +658,7 @@ class CFTempEmailProvider(MailProvider):
                         continue
                     if issued_after is not None:
                         ts = self._mail_epoch(mail)
-                        if ts is not None and ts < issued_after - 2:
+                        if ts is not None and ts < (issued_after - 120):
                             continue
                     otp = self._extract_otp_from_mail(mail)
                     if otp:
@@ -682,21 +682,6 @@ class CFTempEmailProvider(MailProvider):
         deadline = time.time() + timeout
         logger.info(f"[cf_temp] 等待 OTP 邮件 -> {email_addr} (timeout={timeout}s)")
 
-        # 记录初始历史邮件 id
-        try:
-            init_mails = self._get_mails(email_addr)
-            for m in init_mails:
-                mid = str(m.get("id", ""))
-                if not mid:
-                    continue
-                if issued_after is not None:
-                    ts = self._mail_epoch(m)
-                    if ts is not None and ts >= issued_after - 2:
-                        continue
-                self._seen_mail_ids.add(mid)
-        except Exception as e:
-            logger.warning(f"[cf_temp] 初始邮件快照拉取异常: {e}")
-
         while time.time() < deadline:
             try:
                 mails = self._get_mails(email_addr)
@@ -704,15 +689,19 @@ class CFTempEmailProvider(MailProvider):
                     mid = str(mail.get("id", ""))
                     if not mid or mid in self._seen_mail_ids:
                         continue
-                    self._seen_mail_ids.add(mid)
-
+                    if issued_after is not None:
+                        ts = self._mail_epoch(mail)
+                        # 允许 120 秒的时间容差（时钟偏差与前序步骤耗时）
+                        if ts is not None and ts < (issued_after - 120):
+                            continue
                     otp = self._extract_otp_from_mail(mail)
                     if otp:
+                        self._seen_mail_ids.add(mid)
                         logger.info(f"[cf_temp] ✅ 成功获取 OTP={otp} (mail_id={mid})")
                         return otp
             except Exception as e:
                 logger.warning(f"[cf_temp] poll 收信异常: {e}")
-            time.sleep(2.5)
+            time.sleep(2.0)
 
         raise TimeoutError(f"CFTempEmail 等待 OTP 超时 ({timeout}s) - {email_addr}")
 
