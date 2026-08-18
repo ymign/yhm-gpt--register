@@ -318,6 +318,10 @@ def execute_token_refresh_flow(
     _step("full_oauth", "[2/2] 启动官方 Web 登录流程重新获取全套凭证...")
     _log("正在启动 ChatGPT 官方 Web 认证流程重新登录 (密码 + 2FA TOTP 自动算码)...")
 
+    pwd = str(account_info.get("password") or "").strip()
+    if not pwd and (not mail_provider or getattr(mail_provider, "exhausted", False)):
+        raise RuntimeError("该账号未设置登录密码，且号池中无可用收信凭据，无法全自动重登。建议先在列表点击【补设密码】或在号池导入该邮箱")
+
     from config import Config
     from auth_flow import AuthFlow
 
@@ -339,11 +343,24 @@ def execute_token_refresh_flow(
         },
     )
 
-    result = login_flow.run_protocol_login(
-        mail_provider=mail_provider,
-        email=email,
-        password=account_info.get("password") or "",
-    )
+    try:
+        result = login_flow.run_protocol_login(
+            mail_provider=mail_provider,
+            email=email,
+            password=pwd,
+        )
+    except Exception as e:
+        err_str = str(e).lower()
+        if "deactivated" in err_str or "deleted" in err_str or "封禁" in err_str:
+            _log(f"❌ 账号已废：已被 OpenAI 官方注销/封禁 (deleted/deactivated)")
+            return {
+                "status": "deactivated",
+                "label": "❌ 账号已注销/封号",
+                "error": "账号已被 OpenAI 官方注销或封禁",
+            }
+        if "invalid_auth_step" in err_str:
+            raise RuntimeError("登录认证失败：该账号未设置登录密码或密码错误，且未能通过邮箱接收 OTP 验证码。请先补设密码")
+        raise
 
     if not result or not (result.access_token or result.session_token or result.refresh_token):
         raise RuntimeError("登录完成，但未获取到有效 Access Token 或 Session Token")

@@ -715,3 +715,89 @@ class OutlookMailProvider(MailProvider):
                     raise TimeoutError(f"在 {method_timeout} 秒内未收到验证码邮件 ({email_addr})") from imap_error
             raise
 
+    def peek_otp(self, email_addr: str = "", wait: float = 3.0) -> Optional[str]:
+        """快速探针：只看一眼邮箱里有没有当前 OTP，超时立刻返回 None。"""
+        try:
+            return self.wait_for_otp(email_addr=email_addr, timeout=int(max(2, wait)), threshold_ts=time.time() - 300)
+        except Exception:
+            return None
+
+    def _get_mails(self, email_addr: str = "") -> list[dict]:
+        """获取最近邮件列表，供 WebUI 收件箱 / 实时取码弹窗展示。"""
+        results = []
+        has_oauth = bool(self.client_id and self.refresh_token)
+        has_password = bool(self.password)
+        if not has_oauth and not has_password:
+            return []
+
+        try:
+            cached_token = ""
+            if has_oauth:
+                try:
+                    data = _request_access_token(self.refresh_token, self.client_id, IMAP_SCOPE)
+                    cached_token = data.get("access_token") or ""
+                except Exception:
+                    pass
+
+            for srv in IMAP_SERVERS:
+                M = None
+                try:
+                    M = imaplib.IMAP4_SSL(srv, timeout=12)
+                    if cached_token:
+                        auth_str = f"user={self.email}\x01auth=Bearer {cached_token}\x01\x01"
+                        M.authenticate("XOAUTH2", lambda x: auth_str)
+                    elif has_password:
+                        M.login(self.email, self.password)
+                    else:
+                        continue
+
+                    for folder in ["INBOX", "Junk", "Junk Email"]:
+                        try:
+                            status, _ = M.select(f'"{folder}"', readonly=True)
+                            if status != "OK":
+                                continue
+                            typ, data = M.search(None, "ALL")
+                            ids = data[0].split() if data and data[0] else []
+                            for mid in reversed(ids[-8:]):
+                                typ, raw = M.fetch(mid, "(BODY.PEEK[])")
+                                if not raw or not raw[0] or len(raw[0]) < 2:
+                                    continue
+                                msg = _email.message_from_bytes(raw[0][1])
+                                subject = str(msg.get("Subject") or "(无主题)")
+                                from_field = str(msg.get("From") or "OpenAI")
+                                date_str = str(msg.get("Date") or "")
+                                text_body = ""
+                                for part in msg.walk():
+                                    if part.get_content_type() in ("text/plain", "text/html"):
+                                        try:
+                                            payload = part.get_payload(decode=True) or b""
+                                            text_body += payload.decode(part.get_content_charset() or "utf-8", errors="replace") + "\n"
+                                        except Exception:
+                                            pass
+                                results.append({
+                                    "id": str(mid.decode("utf-8", errors="replace") if isinstance(mid, bytes) else mid),
+                                    "subject": subject,
+                                    "from": from_field,
+                                    "date": date_str,
+                                    "content": text_body,
+                                    "raw": text_body,
+                                })
+                        except Exception:
+                            continue
+                    try:
+                        M.logout()
+                    except Exception:
+                        pass
+                    if results:
+                        break
+                except Exception:
+                    if M:
+                        try:
+                            M.logout()
+                        except Exception:
+                            pass
+        except Exception as e:
+            logger.debug(f"[outlook] _get_mails 异常: {e}")
+
+        return results
+
