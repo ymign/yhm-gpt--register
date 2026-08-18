@@ -374,13 +374,21 @@ def register(provider_cls: type[MailProvider]) -> type[MailProvider]:
 
 
 def get_provider_class(kind: str) -> type[MailProvider]:
-    """按 kind 拿 provider 类，未知 kind 抛错（不静默回退）。
-
-    注意：db.save_mail_config 以前用白名单 ("outlook","cf_temp")
-    把未知值静默改写成 "outlook"，导致「选了新邮箱保存后跳回微软」。
-    这里明确抛错，让问题在第一时间暴露。
-    """
+    """按 kind 拿 provider 类，支持别名映射，未知 kind 抛错（不静默回退）。"""
     key = (kind or "").strip().lower()
+    # 别名映射
+    _ALIASES = {
+        "cfmail": "cf_temp",
+        "cf_mail": "cf_temp",
+        "cf-mail": "cf_temp",
+        "cloudflare": "cf_temp",
+        "cloudflare_temp_email": "cf_temp",
+        "cloudflare-temp-email": "cf_temp",
+        "moemail": "moemail",
+        "yyds": "yyds",
+        "gptmail": "gptmail",
+    }
+    key = _ALIASES.get(key, key)
     if key not in _PROVIDERS:
         known = ", ".join(sorted(_PROVIDERS)) or "(空)"
         raise MailProviderError(

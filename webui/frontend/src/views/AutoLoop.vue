@@ -212,6 +212,7 @@ function getLogLineClass(line) {
 async function start() {
   try {
     await autoStart({
+      mail_source: form.value.autoMailSource || form.value.mailSource || 'cf_temp',
       proxy: proxyText(form.value),
       proxy_pool: proxyStore.text,
       proxy_country: form.value.autoProxyCountry || '',
@@ -355,6 +356,26 @@ onUnmounted(() => {
 
       <div class="panel-body">
         <el-form size="small" label-position="top">
+          <!-- 邮箱渠道选择 -->
+          <el-row :gutter="12" class="config-row-source">
+            <el-col :span="24">
+              <el-form-item label="接码邮箱渠道 (选择并发注册使用的邮箱来源)">
+                <div class="mail-source-selector-row">
+                  <el-radio-group v-model="form.autoMailSource" class="macos-radio-group">
+                    <el-radio-button value="cf_temp">⚡ CF 临时邮箱 (动态造号)</el-radio-button>
+                    <el-radio-button value="outlook">📦 微软 Outlook (号池)</el-radio-button>
+                    <el-radio-button value="icloud_relay">✉️ iCloud 邮箱 (中转)</el-radio-button>
+                  </el-radio-group>
+                  <span class="mail-source-badge-tip">
+                    <span v-if="form.autoMailSource === 'cf_temp'" class="text-cf">⚡ 无需号池：Worker 动态无限生成地址并发注册，推荐</span>
+                    <span v-else-if="form.autoMailSource === 'outlook'" class="text-outlook">📦 微软号池并发：自动从号池领取可用账号，池空自动等待</span>
+                    <span v-else-if="form.autoMailSource === 'icloud_relay'" class="text-ic">✉️ iCloud 号池并发：自动从号池领取带中转链接的账号</span>
+                  </span>
+                </div>
+              </el-form-item>
+            </el-col>
+          </el-row>
+
           <el-row :gutter="12" class="config-row">
             <el-col :xs="12" :sm="6" :md="3">
               <el-form-item label="并发数 (Workers)">
@@ -847,6 +868,39 @@ onUnmounted(() => {
 .panel-body {
   padding: 10px 14px;
 }
+.config-row-source {
+  margin-bottom: 8px;
+}
+.config-row-source :deep(.el-form-item) {
+  margin-bottom: 0;
+}
+.config-row-source :deep(.el-form-item__label) {
+  font-size: 11.5px;
+  color: var(--el-text-color-secondary);
+  padding-bottom: 2px;
+}
+.mail-source-selector-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.mail-source-badge-tip {
+  font-size: 11.5px;
+}
+.text-cf {
+  color: #10b981;
+  font-weight: 500;
+}
+.text-outlook {
+  color: #3b82f6;
+  font-weight: 500;
+}
+.text-ic {
+  color: #f59e0b;
+  font-weight: 500;
+}
+
 .config-row :deep(.el-form-item) {
   margin-bottom: 0;
 }

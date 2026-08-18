@@ -20,6 +20,10 @@ import {
   Link,
   ArrowDown,
   Loading,
+  Key,
+  Message,
+  Lock,
+  Timer,
 } from '@element-plus/icons-vue'
 import {
   listRegistered,
@@ -32,6 +36,12 @@ import {
   listExportFormats,
   exportRegistered,
   updateCredentials,
+  getAccountTotp,
+  fetchMailOtp,
+  bindAccount2fa,
+  setAccountPassword,
+  bulkBind2fa,
+  bulkSetPassword,
   startPlusCheck,
   stopPlusCheck,
   plusCheckStreamUrl,
@@ -384,6 +394,13 @@ async function startPlusCheckTask() {
             plusLogs.value.push(msg.line)
             if (plusLogs.value.length > 500) plusLogs.value.splice(0, plusLogs.value.length - 500)
             nextTick(scrollPlusLog)
+            if (plusLogModalVisible.value && currentPlusLogItem.value) {
+              const targetEmail = currentPlusLogItem.value.email
+              if (!msg.email || msg.email === targetEmail || msg.line.includes(targetEmail)) {
+                plusLogLines.value.push(msg.line)
+                scrollPlusModalLog()
+              }
+            }
           }
         } catch (_) {}
       },
@@ -407,6 +424,15 @@ async function startPlusCheckTask() {
     plusConfigCollapsed.value = false
     ElMessage.error('启动检测失败: ' + (e.response?.data?.detail || e.message))
   }
+}
+
+const plusModalLogBoxRef = ref(null)
+function scrollPlusModalLog() {
+  nextTick(() => {
+    if (plusModalLogBoxRef.value) {
+      plusModalLogBoxRef.value.scrollTop = plusModalLogBoxRef.value.scrollHeight
+    }
+  })
 }
 
 function scrollPlusLog() {
@@ -721,6 +747,13 @@ async function startHealthCheckTask() {
           if (msg.line) {
             healthPendingLogs.push(msg.line)
             scheduleHealthUpdate()
+            if (healthLogModalVisible.value && currentHealthLogItem.value) {
+              const targetEmail = currentHealthLogItem.value.email
+              if (!msg.email || msg.email === targetEmail || msg.line.includes(targetEmail)) {
+                healthLogLines.value.push(msg.line)
+                scrollHealthModalLog()
+              }
+            }
           }
         } catch (_) {}
       },
@@ -746,6 +779,15 @@ async function startHealthCheckTask() {
     healthConfigCollapsed.value = false
     ElMessage.error('启动验活失败: ' + (e.response?.data?.detail || e.message))
   }
+}
+
+const healthModalLogBoxRef = ref(null)
+function scrollHealthModalLog() {
+  nextTick(() => {
+    if (healthModalLogBoxRef.value) {
+      healthModalLogBoxRef.value.scrollTop = healthModalLogBoxRef.value.scrollHeight
+    }
+  })
 }
 
 function scrollHealthLog() {
@@ -846,6 +888,41 @@ const refreshLogModalVisible = ref(false)
 const currentRefreshLogItem = ref(null)
 const refreshLogLines = ref([])
 const refreshLogLoading = ref(false)
+const refreshModalLogBoxRef = ref(null)
+let refreshLiveTimer = null
+
+function startRefreshLiveTimer() {
+  stopRefreshLiveTimer()
+  refreshLiveTimer = setInterval(() => {
+    if (!refreshRunning.value) {
+      stopRefreshLiveTimer()
+      return
+    }
+    const now = Date.now() / 1000
+    for (const em in refreshItems.value) {
+      const it = refreshItems.value[em]
+      if (it && it.status === 'running') {
+        const start = it.started_at || (now - (it.elapsed || 0))
+        it.elapsed = Math.round((now - start) * 10) / 10
+      }
+    }
+  }, 1000)
+}
+
+function stopRefreshLiveTimer() {
+  if (refreshLiveTimer) {
+    clearInterval(refreshLiveTimer)
+    refreshLiveTimer = null
+  }
+}
+
+function scrollRefreshModalLog() {
+  nextTick(() => {
+    if (refreshModalLogBoxRef.value) {
+      refreshModalLogBoxRef.value.scrollTop = refreshModalLogBoxRef.value.scrollHeight
+    }
+  })
+}
 
 const refreshRows = computed(() =>
   Object.values(refreshItems.value).map((item) => ({ ...item })),
@@ -973,10 +1050,11 @@ async function startTokenRefreshTask() {
   refreshRunning.value = true
   refreshLogs.value = []
   refreshConfigCollapsed.value = true
+  startRefreshLiveTimer()
 
   const initMap = {}
   for (const em of emails) {
-    initMap[em] = { email: em, status: 'pending', step_text: '排队中...', result: null, elapsed: 0 }
+    initMap[em] = { email: em, status: 'pending', step_text: '排队中...', result: null, elapsed: 0, started_at: 0 }
   }
   refreshItems.value = initMap
 
@@ -1026,6 +1104,7 @@ async function startTokenRefreshTask() {
             if (msg.status !== undefined) refreshItems.value[msg.email].status = msg.status
             if (msg.step_text !== undefined) refreshItems.value[msg.email].step_text = msg.step_text
             if (msg.result !== undefined) refreshItems.value[msg.email].result = msg.result
+            if (msg.started_at !== undefined) refreshItems.value[msg.email].started_at = msg.started_at
             if (msg.elapsed !== undefined) refreshItems.value[msg.email].elapsed = msg.elapsed
           }
         } catch (_) {}
@@ -1037,10 +1116,19 @@ async function startTokenRefreshTask() {
             refreshLogs.value.push(msg.line)
             if (refreshLogs.value.length > 500) refreshLogs.value.splice(0, refreshLogs.value.length - 500)
             nextTick(scrollRefreshLog)
+            // 实时追加到正在打开的单账号日志弹窗！
+            if (refreshLogModalVisible.value && currentRefreshLogItem.value) {
+              const targetEmail = currentRefreshLogItem.value.email
+              if (!msg.email || msg.email === targetEmail || msg.line.includes(targetEmail)) {
+                refreshLogLines.value.push(msg.line)
+                scrollRefreshModalLog()
+              }
+            }
           }
         } catch (_) {}
       },
       end: () => {
+        stopRefreshLiveTimer()
         refreshRunning.value = false
         if (refreshEs.value) {
           refreshEs.value.close()
@@ -1050,12 +1138,14 @@ async function startTokenRefreshTask() {
         load(false)
       },
     }, () => {
+      stopRefreshLiveTimer()
       if (!refreshRunning.value && refreshEs.value) {
         refreshEs.value.close()
         refreshEs.value = null
       }
     })
   } catch (e) {
+    stopRefreshLiveTimer()
     refreshRunning.value = false
     refreshConfigCollapsed.value = false
     ElMessage.error('启动 Token 刷新失败: ' + (e.response?.data?.detail || e.message))
@@ -1316,6 +1406,13 @@ async function startOA() {
             oaLogs.value.push(msg.line)
             if (oaLogs.value.length > 500) oaLogs.value.splice(0, oaLogs.value.length - 500)
             nextTick(scrollOaLog)
+            if (oaLogModalVisible.value && currentOaLogItem.value) {
+              const targetEmail = currentOaLogItem.value.email
+              if (!msg.email || msg.email === targetEmail || msg.line.includes(targetEmail)) {
+                oaLogLines.value.push(msg.line)
+                scrollOaModalLog()
+              }
+            }
           }
         } catch (_) {}
       },
@@ -1341,6 +1438,15 @@ async function startOA() {
     oaConfigCollapsed.value = false
     ElMessage.error('启动资格检测失败: ' + (e.response?.data?.detail || e.message))
   }
+}
+
+const oaModalLogBoxRef = ref(null)
+function scrollOaModalLog() {
+  nextTick(() => {
+    if (oaModalLogBoxRef.value) {
+      oaModalLogBoxRef.value.scrollTop = oaModalLogBoxRef.value.scrollHeight
+    }
+  })
 }
 
 function scrollOaLog() {
@@ -1601,6 +1707,13 @@ async function startOAuthExportTask() {
             oauthLogs.value.push(msg.line)
             if (oauthLogs.value.length > 500) oauthLogs.value.splice(0, oauthLogs.value.length - 500)
             nextTick(scrollOAuthLog)
+            if (oauthLogModalVisible.value && currentOAuthLogItem.value) {
+              const targetEmail = currentOAuthLogItem.value.email
+              if (!msg.email || msg.email === targetEmail || msg.line.includes(targetEmail)) {
+                oauthLogLines.value.push(msg.line)
+                scrollOAuthModalLog()
+              }
+            }
           }
         } catch (_) {}
       },
@@ -1624,6 +1737,15 @@ async function startOAuthExportTask() {
     oauthConfigCollapsed.value = false
     ElMessage.error('启动 OAuth 导出失败: ' + (e.response?.data?.detail || e.message))
   }
+}
+
+const oauthModalLogBoxRef = ref(null)
+function scrollOAuthModalLog() {
+  nextTick(() => {
+    if (oauthModalLogBoxRef.value) {
+      oauthModalLogBoxRef.value.scrollTop = oauthModalLogBoxRef.value.scrollHeight
+    }
+  })
 }
 
 function scrollOAuthLog() {
@@ -1974,6 +2096,261 @@ async function saveEdit() {
   } finally { editSaving.value = false }
 }
 
+// ════════════════════════ 2FA 实时动态码 & 邮箱 OTP 抓取 & 补密补2FA ════════════════════════
+// 1. 2FA 实时动态码弹窗
+const totpModalVisible = ref(false)
+const totpEmail = ref('')
+const totpCode = ref('')
+const totpNextCode = ref('')
+const totpRemaining = ref(30)
+const totpSecret = ref('')
+const totpLoading = ref(false)
+let totpTimer = null
+
+async function openTotpModal(row) {
+  totpEmail.value = row.email
+  totpSecret.value = row.totp_secret || ''
+  totpCode.value = ''
+  totpNextCode.value = ''
+  totpRemaining.value = 30
+  totpModalVisible.value = true
+  await fetchTotpCode()
+  startTotpTicker()
+}
+
+async function fetchTotpCode() {
+  if (!totpEmail.value) return
+  totpLoading.value = true
+  try {
+    const res = await getAccountTotp(totpEmail.value)
+    totpCode.value = res.code || ''
+    totpNextCode.value = res.next_code || ''
+    totpRemaining.value = res.remaining_seconds || 30
+    totpSecret.value = res.totp_secret || totpSecret.value
+  } catch (e) {
+    ElMessage.error('获取 2FA 动态码失败: ' + (e.response?.data?.detail || e.message))
+  } finally {
+    totpLoading.value = false
+  }
+}
+
+function startTotpTicker() {
+  stopTotpTicker()
+  totpTimer = setInterval(() => {
+    if (!totpModalVisible.value) {
+      stopTotpTicker()
+      return
+    }
+    if (totpRemaining.value > 1) {
+      totpRemaining.value--
+    } else {
+      totpRemaining.value = 30
+      fetchTotpCode()
+    }
+  }, 1000)
+}
+
+function stopTotpTicker() {
+  if (totpTimer) {
+    clearInterval(totpTimer)
+    totpTimer = null
+  }
+}
+
+function closeTotpModal() {
+  stopTotpTicker()
+  totpModalVisible.value = false
+}
+
+// 2. 邮箱验证码实时抓取弹窗
+const mailOtpModalVisible = ref(false)
+const mailOtpEmail = ref('')
+const mailOtpCode = ref('')
+const mailOtpFound = ref(false)
+const mailOtpProvider = ref('')
+const mailOtpMessages = ref([])
+const mailOtpLoading = ref(false)
+
+async function openMailOtpModal(row) {
+  mailOtpEmail.value = row.email
+  mailOtpCode.value = ''
+  mailOtpFound.value = false
+  mailOtpMessages.value = []
+  mailOtpModalVisible.value = true
+  await doFetchMailOtp()
+}
+
+async function doFetchMailOtp() {
+  if (!mailOtpEmail.value) return
+  mailOtpLoading.value = true
+  try {
+    const res = await fetchMailOtp(mailOtpEmail.value)
+    mailOtpCode.value = res.otp || ''
+    mailOtpFound.value = Boolean(res.found && res.otp)
+    mailOtpProvider.value = res.provider || ''
+    mailOtpMessages.value = res.messages || []
+    if (res.otp) {
+      ElMessage.success(`成功抓取到验证码: ${res.otp}`)
+    } else {
+      ElMessage.info('暂未检索到包含验证码的新邮件')
+    }
+  } catch (e) {
+    ElMessage.error('抓取邮箱验证码失败: ' + (e.response?.data?.detail || e.message))
+  } finally {
+    mailOtpLoading.value = false
+  }
+}
+
+// 3. 补设密码弹窗
+const repairPwVisible = ref(false)
+const repairPwEmail = ref('')
+const repairPwVal = ref('')
+const repairPwOfficial = ref(true) // 默认勾选：全自动走官方服务端设置密码
+const repairPwLoading = ref(false)
+
+function openRepairPassword(row) {
+  repairPwEmail.value = row.email
+  repairPwVal.value = generateRandomPassword(16)
+  repairPwOfficial.value = true
+  repairPwVisible.value = true
+}
+
+function generateRandomPassword(len = 16) {
+  const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*'
+  let pw = ''
+  pw += 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'[Math.floor(Math.random() * 26)]
+  pw += 'abcdefghijklmnopqrstuvwxyz'[Math.floor(Math.random() * 26)]
+  pw += '0123456789'[Math.floor(Math.random() * 10)]
+  pw += '!@#$%^&*'[Math.floor(Math.random() * 8)]
+  for (let i = 4; i < len; i++) {
+    pw += chars[Math.floor(Math.random() * chars.length)]
+  }
+  return pw.split('').sort(() => Math.random() - 0.5).join('')
+}
+
+async function submitRepairPassword() {
+  const pw = repairPwVal.value.trim()
+  if (!pw) {
+    ElMessage.warning('请输入或生成密码')
+    return
+  }
+  repairPwLoading.value = true
+  try {
+    const res = await setAccountPassword(repairPwEmail.value, {
+      password: pw,
+      official_reset: repairPwOfficial.value,
+      proxy: proxyText(form.value),
+    })
+    ElMessage.success(res.message || `账号 ${repairPwEmail.value} 密码已设置成功`)
+    repairPwVisible.value = false
+    load(false)
+  } catch (e) {
+    ElMessage.error('设置密码失败: ' + (e.response?.data?.detail || e.message))
+  } finally {
+    repairPwLoading.value = false
+  }
+}
+
+// 4. 补绑 2FA 弹窗
+const repair2faVisible = ref(false)
+const repair2faEmail = ref('')
+const repair2faRow = ref(null)
+const repair2faLoading = ref(false)
+
+function openRepair2FA(row) {
+  repair2faEmail.value = row.email
+  repair2faRow.value = row
+  repair2faVisible.value = true
+}
+
+async function submitRepair2FA() {
+  if (!repair2faEmail.value) return
+  repair2faLoading.value = true
+  try {
+    const res = await bindAccount2fa(repair2faEmail.value, { proxy: proxyText(form.value) })
+    ElMessage.success(res.message || '2FA 绑定成功')
+    repair2faVisible.value = false
+    load(false)
+  } catch (e) {
+    ElMessage.error('补绑 2FA 失败: ' + (e.response?.data?.detail || e.message))
+  } finally {
+    repair2faLoading.value = false
+  }
+}
+
+// 5. 行内更多操作菜单处理
+function handleRowMoreCommand(cmd, row) {
+  if (cmd === 'edit') openEdit(row)
+  else if (cmd === 'repair_pwd') openRepairPassword(row)
+  else if (cmd === 'repair_2fa') openRepair2FA(row)
+  else if (cmd === 'totp_code') openTotpModal(row)
+  else if (cmd === 'fetch_mail') openMailOtpModal(row)
+  else if (cmd === 'copy_pwd') copyText(row.password, '密码已复制')
+  else if (cmd === 'copy_2fa') copyText(row.totp_secret, '2FA Secret 已复制')
+  else if (cmd === 'delete') deleteOne(row.email)
+}
+
+// 6. 顶部安全加固批量操作
+async function handleSecurityCommand(cmd) {
+  if (cmd === 'batch_pwd_selected') {
+    const emails = selected.value.map((r) => r.email)
+    if (!emails.length) { ElMessage.warning('请先勾选要补设密码的账号'); return }
+    try {
+      await ElMessageBox.confirm(
+        `将为选中的 ${emails.length} 个账号全自动向 OpenAI 官方申请重置邮件并在服务端真正设置密码并落库，确定？`,
+        '批量官方设置密码确认',
+        { type: 'info', confirmButtonText: '确定官方设置', cancelButtonText: '取消' }
+      )
+      loading.value = true
+      const res = await bulkSetPassword({ emails, official_reset: true, proxy: proxyText(form.value) })
+      ElMessage.success(`批量设置密码完成：成功 ${res.updated_count} 个，失败 ${res.fail_count || 0} 个`)
+      load(false)
+    } catch (_) {} finally { loading.value = false }
+  } else if (cmd === 'batch_pwd_all_missing') {
+    try {
+      await ElMessageBox.confirm(
+        '将为号池中所有未设置密码的账号全量向 OpenAI 官方申请重置邮件并完成官方设密，确定？',
+        '全量官方设置密码确认',
+        { type: 'warning', confirmButtonText: '确定全量设置', cancelButtonText: '取消' }
+      )
+      loading.value = true
+      const resEmails = await listRegisteredEmails('no_password')
+      const emails = resEmails.emails || []
+      if (!emails.length) {
+        ElMessage.info('当前没有缺少密码的账号')
+        return
+      }
+      const res = await bulkSetPassword({ emails, official_reset: true, proxy: proxyText(form.value) })
+      ElMessage.success(`全量官方设密完成！成功 ${res.updated_count} 个，失败 ${res.fail_count || 0} 个`)
+      load(false)
+    } catch (_) {} finally { loading.value = false }
+  } else if (cmd === 'batch_2fa_selected') {
+    const emails = selected.value.map((r) => r.email)
+    if (!emails.length) { ElMessage.warning('请先勾选要补绑 2FA 的账号'); return }
+    try {
+      await ElMessageBox.confirm(`将调用官方 API 为选中的 ${emails.length} 个账号批量补绑 2FA，确定？`, '批量补绑 2FA 确认', { type: 'info' })
+      loading.value = true
+      const res = await bulkBind2fa({ emails, proxy: proxyText(form.value) })
+      ElMessage.success(`批量 2FA 绑定完成：成功 ${res.success_count} 个，失败 ${res.fail_count} 个，已绑定 ${res.already_count} 个`)
+      load(false)
+    } catch (_) {} finally { loading.value = false }
+  } else if (cmd === 'batch_2fa_all_missing') {
+    try {
+      await ElMessageBox.confirm('将为所有未绑定 2FA 且拥有 Token 的账号全量补绑 2FA，确定？', '全量补绑 2FA 确认', { type: 'warning' })
+      loading.value = true
+      const resEmails = await listRegisteredEmails('no_2fa')
+      const emails = resEmails.emails || []
+      if (!emails.length) {
+        ElMessage.info('当前没有缺少 2FA 的账号')
+        return
+      }
+      const res = await bulkBind2fa({ emails, proxy: proxyText(form.value) })
+      ElMessage.success(`全量 2FA 绑定完成：成功 ${res.success_count} 个，失败 ${res.fail_count} 个，已绑定 ${res.already_count} 个`)
+      load(false)
+    } catch (_) {} finally { loading.value = false }
+  }
+}
+
 watch(dataVersion, () => load())
 onActivated(() => load())
 
@@ -2023,6 +2400,12 @@ onUnmounted(() => {
 
           <el-select v-model="filter" class="macos-select filter-select" @change="load(true)">
             <el-option label="全部" value="all" />
+            <el-option label="🔑 缺少密码" value="no_password" />
+            <el-option label="🛡️ 缺少 2FA" value="no_2fa" />
+            <el-option label="⚠️ 密码/2FA 不全" value="missing_security" />
+            <el-option label="✅ 已绑 2FA" value="has_2fa" />
+            <el-option label="🔐 已设密码" value="has_password" />
+            <el-option label="🛡️ 密码与2FA双全" value="both_secured" />
             <el-option label="👑 Pro 账号 (含20x/5x)" value="pro" />
             <el-option label="💎 Team 团队号" value="team" />
             <el-option label="★ Plus / 试用" value="plus" />
@@ -2137,6 +2520,33 @@ onUnmounted(() => {
             </template>
           </el-dropdown>
 
+          <!-- 核心功能：安全加固 (批量补密码 / 批量补 2FA) -->
+          <el-dropdown trigger="click" @command="handleSecurityCommand">
+            <el-button type="success" plain class="oa-action-btn sec-action-btn">
+              <el-icon><Key /></el-icon>🛡️ 密码/2FA ({{ selected.length }})
+              <el-icon class="el-icon--right"><ArrowDown /></el-icon>
+            </el-button>
+            <template #dropdown>
+              <el-dropdown-menu class="extract-dropdown-menu">
+                <div class="dropdown-group-title">🔑 密码加固</div>
+                <el-dropdown-item command="batch_pwd_selected" :disabled="!selected.length">
+                  为选中无密码账号补设随机密码 ({{ selected.length }})
+                </el-dropdown-item>
+                <el-dropdown-item command="batch_pwd_all_missing">
+                  全量为所有无密码账号补设随机密码
+                </el-dropdown-item>
+
+                <div class="dropdown-group-title divider-title">🛡️ 2FA 绑定加固</div>
+                <el-dropdown-item command="batch_2fa_selected" :disabled="!selected.length">
+                  为选中有 Token 账号批量补绑 2FA ({{ selected.length }})
+                </el-dropdown-item>
+                <el-dropdown-item command="batch_2fa_all_missing">
+                  全量为所有未绑 2FA 账号批量补绑
+                </el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
+
           <!-- 导出下拉 -->
           <el-dropdown trigger="click" @command="doExport" @visible-change="(v) => v && loadExportFormats()">
             <el-button class="macos-btn" :loading="exporting">
@@ -2204,6 +2614,47 @@ onUnmounted(() => {
                 <span class="geo-country">{{ formatCountry(row.reg_country) }}</span>
               </span>
               <span v-else class="hint">—</span>
+            </template>
+          </el-table-column>
+
+          <!-- 密码 / 2FA (贴合 Image #92 呈现) -->
+          <el-table-column label="密码/2FA" width="105" align="center">
+            <template #default="{ row }">
+              <div class="sec-col-wrapper">
+                <span
+                  v-if="row.password"
+                  class="sec-badge sec-pwd-ok"
+                  title="已设置登录密码 (点击复制密码)"
+                  @click.stop="copyText(row.password, '密码已复制')"
+                >
+                  密码✓
+                </span>
+                <span
+                  v-else
+                  class="sec-badge sec-pwd-no"
+                  title="未设置密码 (点击快速补设密码)"
+                  @click.stop="openRepairPassword(row)"
+                >
+                  密码×
+                </span>
+
+                <span
+                  v-if="row.totp_secret"
+                  class="sec-badge sec-2fa-ok"
+                  title="已绑定 2FA (点击查看实时动态码)"
+                  @click.stop="openTotpModal(row)"
+                >
+                  2FA✓
+                </span>
+                <span
+                  v-else
+                  class="sec-badge sec-2fa-no"
+                  title="未绑定 2FA (点击快速补绑 2FA)"
+                  @click.stop="openRepair2FA(row)"
+                >
+                  2FA×
+                </span>
+              </div>
             </template>
           </el-table-column>
 
@@ -2322,12 +2773,31 @@ onUnmounted(() => {
             </template>
           </el-table-column>
 
-          <el-table-column label="操作" width="170" fixed="right" align="center">
+          <el-table-column label="操作" width="220" fixed="right" align="center">
             <template #default="{ row }">
               <div class="row-actions">
                 <el-button size="small" text @click="viewCred(row.email)">凭证</el-button>
-                <el-button size="small" text type="primary" @click="openEdit(row)">编辑</el-button>
-                <el-button size="small" text type="danger" @click="deleteOne(row.email)">删除</el-button>
+                <el-button v-if="row.totp_secret" size="small" text type="success" @click="openTotpModal(row)">2FA码</el-button>
+                <el-button size="small" text type="primary" @click="openMailOtpModal(row)">收件码</el-button>
+
+                <el-dropdown trigger="click" @command="(cmd) => handleRowMoreCommand(cmd, row)">
+                  <el-button size="small" text type="info" class="more-btn">
+                    更多 <el-icon><ArrowDown /></el-icon>
+                  </el-button>
+                  <template #dropdown>
+                    <el-dropdown-menu class="extract-dropdown-menu">
+                      <el-dropdown-item command="edit">编辑凭证</el-dropdown-item>
+                      <el-dropdown-item v-if="!row.password" command="repair_pwd">🔑 补设密码</el-dropdown-item>
+                      <el-dropdown-item v-if="!row.totp_secret" command="repair_2fa">🛡️ 补绑 2FA</el-dropdown-item>
+                      <el-dropdown-item v-if="!row.totp_secret" command="totp_code" disabled>无 2FA 动态码</el-dropdown-item>
+                      <el-dropdown-item v-else command="totp_code">🔑 查看 2FA 动态码</el-dropdown-item>
+                      <el-dropdown-item command="fetch_mail">✉️ 检索邮箱验证码</el-dropdown-item>
+                      <el-dropdown-item v-if="row.password" command="copy_pwd">复制密码</el-dropdown-item>
+                      <el-dropdown-item v-if="row.totp_secret" command="copy_2fa">复制 2FA Secret</el-dropdown-item>
+                      <el-dropdown-item divided command="delete" style="color: var(--el-color-danger)">删除账号</el-dropdown-item>
+                    </el-dropdown-menu>
+                  </template>
+                </el-dropdown>
               </div>
             </template>
           </el-table-column>
@@ -2589,7 +3059,7 @@ onUnmounted(() => {
       </template>
 
       <div class="modal-terminal-wrap">
-        <div class="modal-terminal-body">
+        <div ref="plusModalLogBoxRef" class="modal-terminal-body">
           <div
             v-for="(line, idx) in plusLogLines"
             :key="idx"
@@ -2847,7 +3317,7 @@ onUnmounted(() => {
       </template>
 
       <div class="modal-terminal-wrap">
-        <div class="modal-terminal-body">
+        <div ref="oaModalLogBoxRef" class="modal-terminal-body">
           <div
             v-for="(line, idx) in oaLogLines"
             :key="idx"
@@ -3171,7 +3641,7 @@ onUnmounted(() => {
       </template>
 
       <div class="modal-terminal-wrap">
-        <div class="modal-terminal-body">
+        <div ref="oauthModalLogBoxRef" class="modal-terminal-body">
           <div
             v-for="(line, idx) in oauthLogLines"
             :key="idx"
@@ -3500,7 +3970,7 @@ onUnmounted(() => {
       </template>
 
       <div class="modal-terminal-wrap">
-        <div class="modal-terminal-body">
+        <div ref="healthModalLogBoxRef" class="modal-terminal-body">
           <div v-for="(line, idx) in healthLogLines" :key="idx" class="terminal-line">
             {{ line }}
           </div>
@@ -3816,7 +4286,7 @@ onUnmounted(() => {
       </template>
 
       <div class="modal-terminal-wrap">
-        <div class="modal-terminal-body">
+        <div ref="refreshModalLogBoxRef" class="modal-terminal-body">
           <div
             v-for="(line, idx) in refreshLogLines"
             :key="idx"
@@ -3973,6 +4443,219 @@ onUnmounted(() => {
       <template #footer>
         <el-button @click="editVisible = false">取消</el-button>
         <el-button type="primary" :loading="editSaving" @click="saveEdit">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- ──────────────── 2FA 实时动态验证码 (TOTP) 弹窗 ──────────────── -->
+    <el-dialog
+      v-model="totpModalVisible"
+      title="2FA 实时动态验证码"
+      width="460px"
+      top="15vh"
+      class="macos-custom-dialog"
+      :close-on-click-modal="false"
+      @closed="closeTotpModal"
+    >
+      <div v-loading="totpLoading" class="totp-card-container">
+        <div class="totp-hero-box">
+          <div class="totp-email-tag mono">{{ totpEmail }}</div>
+          <div
+            class="totp-digits-large mono"
+            title="点击复制动态验证码"
+            @click="copyText(totpCode, '2FA 动态码已复制')"
+          >
+            {{ totpCode ? (totpCode.slice(0, 3) + ' ' + totpCode.slice(3)) : '------' }}
+          </div>
+          <div class="totp-countdown-row">
+            <el-progress
+              type="circle"
+              :percentage="Math.round((totpRemaining / 30) * 100)"
+              :width="20"
+              :stroke-width="3"
+              :show-text="false"
+              :color="totpRemaining <= 5 ? '#f87171' : '#34d399'"
+            />
+            <span>动态码 <b>{{ totpRemaining }}</b> 秒后自动刷新</span>
+            <el-button size="small" text type="primary" :icon="Refresh" @click="fetchTotpCode">刷新</el-button>
+          </div>
+        </div>
+
+        <div class="totp-meta-grid">
+          <div class="meta-field-row" v-if="totpNextCode">
+            <span class="meta-field-label">下一周期备用码:</span>
+            <span class="meta-field-val mono">{{ totpNextCode }}</span>
+          </div>
+          <div class="meta-field-row">
+            <span class="meta-field-label">TOTP Secret:</span>
+            <div style="display: flex; align-items: center; gap: 6px">
+              <span class="meta-field-val mono" style="font-size: 11px; max-width: 190px; overflow: hidden; text-overflow: ellipsis">{{ totpSecret }}</span>
+              <el-button size="small" link :icon="CopyDocument" @click="copyText(totpSecret, '2FA Secret 已复制')" />
+            </div>
+          </div>
+        </div>
+      </div>
+      <template #footer>
+        <div style="display: flex; justify-content: space-between; align-items: center; width: 100%">
+          <el-button size="small" @click="copyText(totpSecret, '2FA Secret 已复制')">
+            <el-icon><CopyDocument /></el-icon>复制 Secret
+          </el-button>
+          <div style="display: flex; gap: 8px">
+            <el-button size="small" type="primary" @click="copyText(totpCode, '2FA 动态码已复制')">
+              <el-icon><CopyDocument /></el-icon>复制动态码 ({{ totpCode }})
+            </el-button>
+            <el-button size="small" @click="totpModalVisible = false">关闭</el-button>
+          </div>
+        </div>
+      </template>
+    </el-dialog>
+
+    <!-- ──────────────── 邮箱最新验证码抓取 (Mail OTP) 弹窗 ──────────────── -->
+    <el-dialog
+      v-model="mailOtpModalVisible"
+      title="检索邮箱实时验证码 · Mailbox OTP"
+      width="620px"
+      top="12vh"
+      class="macos-custom-dialog"
+    >
+      <div v-loading="mailOtpLoading" style="min-height: 180px">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px">
+          <div>
+            <span style="font-size: 13px; font-weight: 700; color: var(--app-title)">{{ mailOtpEmail }}</span>
+            <el-tag size="small" type="info" style="margin-left: 8px">{{ mailOtpProvider || 'mailbox' }}</el-tag>
+          </div>
+          <el-button size="small" type="primary" plain :loading="mailOtpLoading" @click="doFetchMailOtp">
+            <el-icon><Refresh /></el-icon>重新检索
+          </el-button>
+        </div>
+
+        <div v-if="mailOtpCode" class="otp-hero-result">
+          <div style="font-size: 12px; color: var(--el-text-color-secondary); margin-bottom: 6px">
+            ⚡ 检索到最新 6 位验证码
+          </div>
+          <div class="otp-huge-badge mono" @click="copyText(mailOtpCode, '验证码已复制')" title="点击复制验证码">
+            {{ mailOtpCode }}
+            <el-button size="small" text type="success"><el-icon><CopyDocument /></el-icon></el-button>
+          </div>
+        </div>
+        <el-alert
+          v-else-if="!mailOtpLoading"
+          type="info"
+          :closable="false"
+          show-icon
+          style="margin-bottom: 14px"
+          title="当前未检索到包含 6 位验证码的未读/近期邮件，如刚触发发码请稍等 3~5 秒后点右上角「重新检索」"
+        />
+
+        <div v-if="mailOtpMessages.length > 0">
+          <div style="font-size: 12px; font-weight: 700; margin-bottom: 6px; color: var(--app-title)">
+            📬 近期收到邮件 ({{ mailOtpMessages.length }} 封)
+          </div>
+          <div class="otp-mails-list">
+            <div v-for="m in mailOtpMessages" :key="m.id || m.date" class="otp-mail-card">
+              <div class="mail-header-line">
+                <span style="color: var(--app-title)">{{ m.subject }}</span>
+                <span class="mono" style="font-size: 11px; color: var(--el-text-color-secondary)">{{ m.date }}</span>
+              </div>
+              <div style="display: flex; justify-content: space-between; align-items: center">
+                <span style="font-size: 11px; color: var(--el-color-primary)">发件人: {{ m.from }}</span>
+                <el-tag v-if="m.otp" size="small" type="success" effect="dark" style="cursor: pointer" @click="copyText(m.otp, '验证码已复制')">
+                  OTP: {{ m.otp }}
+                </el-tag>
+              </div>
+              <div v-if="m.snippet" class="mail-snippet">{{ m.snippet }}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <template #footer>
+        <el-button @click="mailOtpModalVisible = false">关闭</el-button>
+        <el-button v-if="mailOtpCode" type="primary" @click="copyText(mailOtpCode, '验证码已复制')">
+          <el-icon><CopyDocument /></el-icon>复制验证码 ({{ mailOtpCode }})
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <!-- ──────────────── 快速补设/生成密码弹窗 ──────────────── -->
+    <el-dialog
+      v-model="repairPwVisible"
+      title="设置 / 补设登录密码"
+      width="500px"
+      top="15vh"
+      class="macos-custom-dialog"
+    >
+      <el-alert
+        type="info"
+        :closable="false"
+        show-icon
+        style="margin-bottom: 14px"
+        title="支持全自动联动 OpenAI 官方重置邮件并在服务端真正生效，或仅修改本地数据库记录。"
+      />
+      <el-form label-position="top" size="small">
+        <el-form-item label="账号邮箱">
+          <el-input :model-value="repairPwEmail" class="mono" disabled />
+        </el-form-item>
+        <el-form-item label="登录密码 (可自定义输入或一键随机生成)">
+          <div style="display: flex; gap: 8px; width: 100%">
+            <el-input v-model="repairPwVal" class="mono" placeholder="16位强随机密码" />
+            <el-button @click="repairPwVal = generateRandomPassword(16)">随机生成</el-button>
+          </div>
+        </el-form-item>
+
+        <el-form-item>
+          <el-checkbox v-model="repairPwOfficial">
+            🚀 同步在 OpenAI 官方服务端生效 (全自动申请重置并收信设密)
+          </el-checkbox>
+          <div style="margin-top: 4px; line-height: 1.5; color: var(--el-text-color-secondary); font-size: 11px;">
+            💡 默认勾选：系统将全自动向 OpenAI 申请密码重置邮件、由对应邮箱渠道自动收取链接并提交完成官方生效；若取消勾选则仅修改本地数据库记录。
+          </div>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="repairPwVisible = false">取消</el-button>
+        <el-button type="primary" :loading="repairPwLoading" @click="submitRepairPassword">
+          {{ repairPwOfficial ? '确认并在官方全自动设置密码' : '仅保存到本地数据库' }}
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <!-- ──────────────── 快速补绑 2FA 弹窗 ──────────────── -->
+    <el-dialog
+      v-model="repair2faVisible"
+      title="账号快速补绑 2FA (TOTP)"
+      width="480px"
+      top="15vh"
+      class="macos-custom-dialog"
+    >
+      <el-alert
+        type="warning"
+        :closable="false"
+        show-icon
+        style="margin-bottom: 14px"
+        title="将直接调用官方 API 进行 2FA 绑定，绑定后生成的 TOTP Secret 将自动存入数据库。"
+      />
+      <el-form label-position="top" size="small">
+        <el-form-item label="账号邮箱">
+          <el-input :model-value="repair2faEmail" class="mono" disabled />
+        </el-form-item>
+        <el-form-item label="Access Token 状态">
+          <el-tag v-if="repair2faRow?.at_len" type="success" size="small">
+            ✓ 具备 Access Token (长度: {{ repair2faRow.at_len }})
+          </el-tag>
+          <el-tag v-else type="danger" size="small">
+            × 缺少 Access Token (需先刷新/重新获取 Token)
+          </el-tag>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="repair2faVisible = false">取消</el-button>
+        <el-button
+          type="primary"
+          :loading="repair2faLoading"
+          :disabled="!repair2faRow?.at_len"
+          @click="submitRepair2FA"
+        >
+          立即绑定 2FA
+        </el-button>
       </template>
     </el-dialog>
 
@@ -4814,5 +5497,227 @@ onUnmounted(() => {
   background: var(--el-fill-color-light);
   border: 1px solid var(--el-border-color-lighter);
   border-radius: 6px;
+}
+
+/* ──────────── 密码 / 2FA 药丸徽章 (Apple HIG 磨砂半透明质感) ──────────── */
+.sec-col-wrapper {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 0;
+}
+
+.sec-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10.5px;
+  line-height: 1.1;
+  padding: 2px 7px;
+  border-radius: 9999px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  cursor: pointer;
+  user-select: none;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  transition: all 0.18s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.sec-badge:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
+}
+
+/* 密码 - 已设置：柔和 Apple Green 暗调半透绿 */
+.sec-pwd-ok {
+  background: rgba(52, 199, 89, 0.12);
+  color: #34d399;
+  border: 1px solid rgba(52, 211, 153, 0.3);
+}
+.sec-pwd-ok:hover {
+  background: rgba(52, 199, 89, 0.22);
+  border-color: rgba(52, 211, 153, 0.5);
+}
+
+/* 密码 - 未设置：中性低对比度半透灰 */
+.sec-pwd-no {
+  background: rgba(148, 163, 184, 0.08);
+  color: #64748b;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+}
+.sec-pwd-no:hover {
+  background: rgba(239, 68, 68, 0.12);
+  color: #f87171;
+  border-color: rgba(239, 68, 68, 0.35);
+}
+
+/* 2FA - 已绑定：质感 Teal/Cyan 蓝绿半透明 */
+.sec-2fa-ok {
+  background: rgba(16, 185, 129, 0.15);
+  color: #10b981;
+  border: 1px solid rgba(16, 185, 129, 0.35);
+  font-weight: 700;
+}
+.sec-2fa-ok:hover {
+  background: rgba(16, 185, 129, 0.25);
+  border-color: rgba(16, 185, 129, 0.55);
+}
+
+/* 2FA - 未绑定：中性半透灰 */
+.sec-2fa-no {
+  background: rgba(148, 163, 184, 0.08);
+  color: #64748b;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+}
+.sec-2fa-no:hover {
+  background: rgba(245, 158, 11, 0.12);
+  color: #fbbf24;
+  border-color: rgba(245, 158, 11, 0.35);
+}
+
+.sec-action-btn {
+  background: rgba(52, 199, 89, 0.12) !important;
+  border-color: rgba(52, 211, 153, 0.3) !important;
+  color: #34d399 !important;
+}
+.sec-action-btn:hover {
+  background: rgba(52, 199, 89, 0.22) !important;
+  border-color: rgba(52, 211, 153, 0.5) !important;
+}
+
+/* ──────────── 2FA 实时动态码弹窗样式 ──────────── */
+.totp-card-container {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 4px 0;
+}
+
+.totp-hero-box {
+  background: linear-gradient(135deg, #1e293b, #0f172a);
+  border-radius: 12px;
+  padding: 22px 18px;
+  text-align: center;
+  color: #fff;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.15);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.totp-email-tag {
+  font-size: 11.5px;
+  color: #94a3b8;
+  margin-bottom: 6px;
+}
+
+.totp-digits-large {
+  font-family: 'SF Mono', Monaco, Menlo, Consolas, monospace;
+  font-size: 36px;
+  font-weight: 800;
+  letter-spacing: 5px;
+  color: #34d399;
+  margin-bottom: 8px;
+  cursor: pointer;
+  transition: transform 0.15s ease;
+}
+
+.totp-digits-large:hover {
+  transform: scale(1.03);
+}
+
+.totp-countdown-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-size: 12px;
+  color: #94a3b8;
+}
+
+.totp-meta-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+  background: var(--el-fill-color-light);
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  padding: 10px 14px;
+}
+
+.meta-field-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+}
+
+.meta-field-label {
+  color: var(--el-text-color-secondary);
+}
+
+.meta-field-val {
+  font-family: monospace;
+  font-weight: 600;
+  color: var(--app-title);
+}
+
+/* ──────────── 邮箱 OTP 抓取弹窗样式 ──────────── */
+.otp-hero-result {
+  background: var(--el-fill-color-light);
+  border: 1px solid var(--el-color-success-light-3, #86efac);
+  border-radius: 10px;
+  padding: 14px;
+  text-align: center;
+  margin-bottom: 14px;
+}
+
+.otp-huge-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-family: 'SF Mono', Monaco, Menlo, Consolas, monospace;
+  font-size: 30px;
+  font-weight: 800;
+  color: #16a34a;
+  letter-spacing: 4px;
+  cursor: pointer;
+  transition: transform 0.15s ease;
+}
+.otp-huge-badge:hover {
+  transform: scale(1.04);
+}
+
+.otp-mails-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.otp-mail-card {
+  background: var(--app-card-bg);
+  border: 1px solid var(--app-border);
+  border-radius: 6px;
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.mail-header-line {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.mail-snippet {
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+  line-height: 1.4;
+  word-break: break-all;
 }
 </style>

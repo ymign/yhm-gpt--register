@@ -100,6 +100,8 @@ export const COUNTRY_OPTIONS = [
 // 跨页面共享 + localStorage 持久化的表单字段
 // （proxy 在 注册 / 自动跑号 / Plus 检测 三处共用）
 const defaults = {
+  mailSource: 'cf_temp',          // 注册邮箱来源: 'cf_temp' | 'outlook' | 'icloud_relay'
+  autoMailSource: 'cf_temp',      // 自动跑号邮箱来源
   proxy: '',
   proxyCountry: 'RANDOM_HOT',      // 单次注册代理目标国家 (默认高爆智能轮换)
   autoProxyCountry: 'RANDOM_HOT',  // 全自动批量代理目标国家

@@ -1,8 +1,8 @@
 <script setup>
 import { computed, onActivated, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Setting, Message, Check, Connection } from '@element-plus/icons-vue'
-import { getMailConfig, getMailProviders, saveMailConfig, testMail } from '@/api/settings'
+import { Setting, Message, Check, Connection, Search, InfoFilled } from '@element-plus/icons-vue'
+import { getMailConfig, getMailProviders, saveMailConfig, testMail, fetchCfDomains } from '@/api/settings'
 import FooterToolbar from '@/components/FooterToolbar.vue'
 
 const providers = ref([])
@@ -12,6 +12,9 @@ const saved = ref({})
 const loading = ref(true)
 const saving = ref(false)
 const testing = ref(false)
+const fetchingDomains = ref(false)
+const discoveredDomains = ref([])
+const testResultMsg = ref('')
 
 const current = computed(
   () => providers.value.find((p) => p.kind === source.value) || null,
@@ -28,6 +31,7 @@ function phFor(f) {
 
 async function load() {
   loading.value = true
+  testResultMsg.value = ''
   try {
     const [pr, cfg] = await Promise.all([getMailProviders(), getMailConfig()])
     providers.value = pr.providers || []
@@ -46,6 +50,40 @@ async function load() {
   } finally {
     loading.value = false
   }
+}
+
+async function handleFetchDomains() {
+  const apiUrl = (form.value.cf_api_url || saved.value.cf_api_url || '').trim()
+  const token = (form.value.cf_admin_token || '').trim()
+  if (!apiUrl) {
+    ElMessage.warning('请先填写 Worker API 地址')
+    return
+  }
+  fetchingDomains.value = true
+  try {
+    const res = await fetchCfDomains({
+      api_url: apiUrl,
+      admin_token: token || undefined,
+    })
+    discoveredDomains.value = res.domains || []
+    if (discoveredDomains.value.length > 0) {
+      ElMessage.success(`探测到 ${discoveredDomains.value.length} 个可用域名`)
+      if (!form.value.cf_domain) {
+        form.value.cf_domain = discoveredDomains.value[0]
+      }
+    } else {
+      ElMessage.info('Worker 未返回可用域名，可手动输入收件域名')
+    }
+  } catch (e) {
+    ElMessage.error('探测域名失败: ' + e.message)
+  } finally {
+    fetchingDomains.value = false
+  }
+}
+
+function selectDomain(dom) {
+  form.value.cf_domain = dom
+  ElMessage.success(`已选用域名: ${dom}`)
 }
 
 async function save() {
@@ -72,7 +110,7 @@ async function save() {
   saving.value = true
   try {
     await saveMailConfig(payload)
-    ElMessage.success('配置已保存')
+    ElMessage.success('邮箱配置已保存')
     await load()
   } catch (e) {
     ElMessage.error(e.message)
@@ -83,10 +121,16 @@ async function save() {
 
 async function test() {
   testing.value = true
+  testResultMsg.value = ''
   try {
     const r = await testMail()
-    ElMessage.success(r.message || '连通正常')
+    testResultMsg.value = r.message || '连通正常'
+    if (Array.isArray(r.domains) && r.domains.length > 0) {
+      discoveredDomains.value = r.domains
+    }
+    ElMessage.success('测试成功')
   } catch (e) {
+    testResultMsg.value = '测试失败: ' + e.message
     ElMessage.error(e.message)
   } finally {
     testing.value = false
@@ -138,6 +182,9 @@ load()
               <el-tag size="small" :type="current.ephemeral ? 'success' : 'info'" effect="plain">
                 {{ current.ephemeral ? '每次注册使用新地址' : '固定地址轮询' }}
               </el-tag>
+              <el-tag v-if="current.kind === 'cf_temp'" size="small" type="success" effect="plain">
+                支持 dreamhunter2333 / cloudflare_temp_email Worker 协议
+              </el-tag>
               <el-tag v-if="current.line_segments > 0" size="small" type="info" effect="plain">
                 导入格式 {{ current.line_segments }} 段
               </el-tag>
@@ -145,7 +192,20 @@ load()
           </div>
 
           <div v-if="fields.length" class="card-section form-section">
-            <span class="section-heading">渠道参数详情</span>
+            <div class="section-header-row">
+              <span class="section-heading">渠道参数详情</span>
+              <el-button
+                v-if="source === 'cf_temp'"
+                size="small"
+                type="primary"
+                plain
+                :loading="fetchingDomains"
+                @click="handleFetchDomains"
+              >
+                <el-icon><Search /></el-icon>探测可用域名
+              </el-button>
+            </div>
+
             <el-form label-position="top" size="small">
               <el-form-item
                 v-for="f in fields"
@@ -153,7 +213,29 @@ load()
                 :label="f.label"
                 :required="f.required"
               >
+                <div v-if="f.key === 'cf_domain'" class="domain-input-wrapper">
+                  <el-input
+                    v-model="form[f.key]"
+                    :type="f.type === 'password' ? 'password' : 'text'"
+                    :placeholder="phFor(f)"
+                  />
+                  <div v-if="discoveredDomains.length > 0" class="discovered-domains-list">
+                    <span class="hint-label">探测到的域名:</span>
+                    <el-tag
+                      v-for="d in discoveredDomains"
+                      :key="d"
+                      size="small"
+                      :type="form[f.key] === d ? 'primary' : 'info'"
+                      class="domain-tag"
+                      @click="selectDomain(d)"
+                    >
+                      {{ d }}
+                    </el-tag>
+                  </div>
+                </div>
+
                 <el-input
+                  v-else
                   v-model="form[f.key]"
                   :type="f.type === 'password' ? 'password' : 'text'"
                   :show-password="f.type === 'password'"
@@ -164,13 +246,17 @@ load()
             </el-form>
           </div>
 
+          <div v-if="testResultMsg" class="test-result-box">
+            <pre class="test-result-text">{{ testResultMsg }}</pre>
+          </div>
+
           <el-alert
-            v-if="current && !current.pooled && fields.length"
-            type="warning"
+            v-if="source === 'cf_temp'"
+            type="info"
             :closable="false"
             show-icon
             style="border-radius: 8px"
-            title="自建邮箱需配置好 Catch-all 转发，确保验证码能实时投递给服务端接口。"
+            title="Cloudflare 域名临时邮箱使用说明：在 Worker 中配置环境变量 ADMIN_PASSWORDS 与 DOMAINS，并在 Cloudflare Email Routing 设置 Catch-all 发送到该 Worker 即可无限动态生成邮箱并自动收码。"
           />
         </div>
       </div>
@@ -275,6 +361,12 @@ load()
   gap: 10px;
 }
 
+.section-header-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
 .section-heading {
   font-size: 12.5px;
   font-weight: 700;
@@ -287,10 +379,57 @@ load()
   gap: 8px;
 }
 
+.domain-input-wrapper {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.discovered-domains-list {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.hint-label {
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+}
+
+.domain-tag {
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.domain-tag:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+}
+
 .hint-text {
   font-size: 11px;
   color: var(--el-text-color-secondary);
   margin-top: 3px;
   line-height: 1.4;
+}
+
+.test-result-box {
+  background: #1e1e1e;
+  border-radius: 8px;
+  padding: 12px 14px;
+  border: 1px solid #333;
+}
+
+.test-result-text {
+  margin: 0;
+  font-family: 'SF Mono', Monaco, Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: #5af78e;
+  white-space: pre-wrap;
+  word-break: break-all;
 }
 </style>

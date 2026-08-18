@@ -70,7 +70,8 @@ class ImportReq(BaseModel):
 
 
 class RegisterReq(BaseModel):
-    email: Optional[str] = Field(None, description="留空 = 自动 claim 下一个 available")
+    email: Optional[str] = Field(None, description="留空 = 自动 claim 下一个 available 或动态造号")
+    mail_source: Optional[str] = Field(None, description="指定邮箱渠道: cf_temp / outlook / icloud_relay 等")
     want_access_token: bool = True
     want_session_token: bool = True
     want_refresh_token: bool = True
@@ -79,10 +80,6 @@ class RegisterReq(BaseModel):
     otp_timeout: int = 10
     allow_existing_login: bool = True
     want_password: bool = True  # 是否自动设置登录密码（默认开）
-    # 注册成功后自动绑定 TOTP 2FA。前端两个页面都**默认开**（主人要求每个号都绑）。
-    # 这里的 default 保持 False —— 它只在「调用方没传这个字段」时生效，是给旧前端
-    # 缓存 / 直接打 API 的保守兜底：漏传时宁可不绑，也不替调用方做一个不可逆的决定。
-    # 真实默认值由前端 form store 的 want2fa / autoWant2fa 决定。
     want_2fa: bool = False
 
 
@@ -254,14 +251,13 @@ def api_proxy_test(req: ProxyTestReq):
 @app.post("/api/register")
 def api_register(req: RegisterReq):
     """启动注册任务，返回 run_id。前端拿 run_id 去 /api/runs/{run_id}/stream 订阅 SSE。"""
-    mail_source = db.get_setting("mail_source", "outlook")
+    mail_source = (req.mail_source or db.get_setting("mail_source", "cf_temp")).strip().lower()
     try:
         provider_cls = get_provider_class(mail_source)
     except MailProviderError as e:
         raise HTTPException(400, str(e))
 
-    # 要不要 claim 号池，由 provider 自己声明的 pooled 决定 ——
-    # 原来写死 `mail_source == "cf_temp"`，加一种非池化邮箱就得改这里。
+    # 要不要 claim 号池，由 provider 自己声明的 pooled 决定
     if not provider_cls.pooled:
         # 非池化：地址由 provider 现造，用占位 account 走完后面的流程
         import time as _t
@@ -278,23 +274,23 @@ def api_register(req: RegisterReq):
         if not account:
             raise HTTPException(400, f"邮箱 {req.email} 不可用 (不存在 / 已 in_use / 已完成)")
         if (account.get("kind") or "outlook") != mail_source:
-            # 号池里混放多种邮箱，点名的号必须和当前来源一致，
-            # 否则会拿 Outlook 的凭证去初始化 Gmail provider
+            # 号池里混放多种邮箱，点名的号必须和当前来源一致
             db.release_unused(account["email"])
             raise HTTPException(
                 400,
                 f"{req.email} 是 {account.get('kind')} 的号，"
-                f"当前邮箱来源是 {mail_source}，请先切换来源",
+                f"当前所选邮箱渠道为 {provider_cls.display_name}，请切换对应渠道",
             )
     else:
         account = db.claim_next(kind=mail_source)
         if not account:
             raise HTTPException(
                 400,
-                f"号池里没有 available 的 {provider_cls.display_name} 账号；请先批量导入",
+                f"号池里没有可用的 {provider_cls.display_name} 账号；请先前往「导入」页面添加号池",
             )
 
     options = {
+        "mail_source": mail_source,
         "want_access_token": req.want_access_token,
         "want_session_token": req.want_session_token,
         "want_refresh_token": req.want_refresh_token,
@@ -567,7 +563,34 @@ def api_test_mail():
         raise HTTPException(500, f"连接失败: {e}")
     if not result.get("ok"):
         raise HTTPException(500, result.get("message") or "连接失败")
-    return {"ok": True, "message": result.get("message", "连接成功")}
+    return {
+        "ok": True,
+        "message": result.get("message", "连接成功"),
+        "domains": result.get("domains", []),
+        "email": result.get("email", ""),
+    }
+
+
+class FetchCfDomainsReq(BaseModel):
+    api_url: Optional[str] = None
+    admin_token: Optional[str] = None
+    site_password: Optional[str] = None
+
+
+@app.post("/api/mail/cf/domains")
+def api_fetch_cf_domains(req: FetchCfDomainsReq):
+    """从 Cloudflare Worker /open_api/settings 探测并获取可用收信域名列表。"""
+    from mail_providers.cf_temp import cf_list_domains
+    settings = db.get_mail_settings()
+    api_url = (req.api_url or settings.get("cf_api_url") or "").strip()
+    admin_token = (req.admin_token or settings.get("cf_admin_token") or "").strip()
+    if admin_token == "***":
+        admin_token = settings.get("cf_admin_token") or ""
+    site_pw = (req.site_password or settings.get("cf_site_password") or "").strip()
+    if not api_url:
+        raise HTTPException(400, "请先填写 Cloudflare Worker API 地址")
+    domains = cf_list_domains(api_url, admin_token=admin_token, site_password=site_pw)
+    return {"ok": True, "domains": domains}
 
 
 # ──────────────────────── SMS 接码配置 ────────────────────────
@@ -821,6 +844,286 @@ def api_update_credentials(req: UpdateCredReq):
                if v is not None]
     logger.info(f"[registered] 手动修改凭证 email={email} 字段={'+'.join(changed)}")
     return {"ok": True, "email": email, "changed": changed}
+
+
+# ──────────────────────── 2FA TOTP 动态码 & 邮箱 OTP 抓取 & 补密补2FA ────────────────────────
+
+
+@app.get("/api/registered/{email}/totp")
+def api_get_account_totp(email: str):
+    """获取指定账号的当前实时 2FA (TOTP) 动态验证码及倒计时。"""
+    from .two_factor import totp_now, hotp
+    row = db.get_registered(email)
+    if not row:
+        raise HTTPException(404, "未找到该账号")
+    secret = (row.get("totp_secret") or "").strip()
+    if not secret:
+        raise HTTPException(400, "该账号未绑定 2FA (无 TOTP Secret)")
+
+    now_ts = int(time.time())
+    period = 30
+    remaining = period - (now_ts % period)
+    curr_counter = now_ts // period
+    try:
+        code = totp_now(secret)
+        next_code = hotp(secret, curr_counter + 1)
+    except Exception as e:
+        raise HTTPException(400, f"计算 TOTP 失败: {e}")
+
+    return {
+        "ok": True,
+        "email": row["email"],
+        "totp_secret": secret,
+        "code": code,
+        "next_code": next_code,
+        "remaining_seconds": remaining,
+        "period": period,
+    }
+
+
+class FetchMailOtpReq(BaseModel):
+    timeout: int = 15
+
+
+@app.post("/api/registered/{email}/fetch_otp")
+def api_fetch_mail_otp(email: str, req: Optional[FetchMailOtpReq] = None):
+    """从邮箱渠道实时抓取/检索该邮箱最新的邮件和 6 位 OTP 验证码。"""
+    from mail_providers import create_mail_provider, extract_otp
+    email_clean = (email or "").strip().lower()
+    if not email_clean:
+        raise HTTPException(400, "email 不能为空")
+
+    settings = db.get_mail_settings()
+    account_row = db.get_account(email_clean)
+    kind = (account_row.get("kind") if account_row else None) or settings.get("mail_source") or "cf_temp"
+
+    try:
+        provider = create_mail_provider(kind, settings, account_row)
+    except Exception:
+        provider = create_mail_provider("cf_temp", settings)
+
+    recent_mails = []
+    otp_code = None
+
+    try:
+        otp_code = provider.peek_otp(email_clean, wait=1.5)
+    except Exception:
+        pass
+
+    try:
+        if hasattr(provider, "_get_mails"):
+            raw_mails = provider._get_mails(email_clean)
+            for m in raw_mails[:10]:
+                raw_text = str(m.get("raw") or m.get("content") or m.get("text") or m.get("html") or "")
+                c = extract_otp(raw_text) or extract_otp(str(m.get("subject") or ""))
+                if not otp_code and c:
+                    otp_code = c
+                recent_mails.append({
+                    "id": str(m.get("id") or ""),
+                    "subject": str(m.get("subject") or "(无主题)"),
+                    "from": str(m.get("from") or m.get("sender") or m.get("source") or "OpenAI"),
+                    "date": str(m.get("created_at") or m.get("date") or m.get("date_str") or ""),
+                    "otp": c or "",
+                    "snippet": (str(m.get("subject") or "") + " " + raw_text)[:200].strip(),
+                })
+        elif hasattr(provider, "_load"):
+            raw_mails = provider._load()
+            for m in raw_mails[:10]:
+                c = m.get("otp") or extract_otp(m.get("body", ""))
+                if not otp_code and c:
+                    otp_code = c
+                recent_mails.append({
+                    "id": str(m.get("uid") or ""),
+                    "subject": str(m.get("subject") or "(无主题)"),
+                    "from": str(m.get("sender") or "OpenAI"),
+                    "date": str(m.get("date_str") or ""),
+                    "otp": c or "",
+                    "snippet": str(m.get("body") or "")[:200].strip(),
+                })
+    except Exception as e:
+        logger.warning(f"[fetch_otp] 拉取邮件列表异常: {e}")
+
+    return {
+        "ok": True,
+        "email": email_clean,
+        "provider": provider.kind,
+        "otp": otp_code,
+        "found": bool(otp_code),
+        "messages": recent_mails,
+    }
+
+
+class Bind2FAReq(BaseModel):
+    proxy: Optional[str] = None
+
+
+@app.post("/api/registered/{email}/bind_2fa")
+def api_bind_account_2fa(email: str, req: Optional[Bind2FAReq] = None):
+    """为指定账号补绑 2FA。打 OpenAI 官方 API 激活 TOTP 并落库。支持 Token 自适应刷新。"""
+    from .two_factor import bind_totp_2fa_adaptive, totp_now
+    email_clean = (email or "").strip().lower()
+    row = db.get_registered(email_clean)
+    if not row:
+        raise HTTPException(404, "未找到该账号")
+
+    if (row.get("totp_secret") or "").strip():
+        secret = row["totp_secret"].strip()
+        return {
+            "ok": True,
+            "already_bound": True,
+            "totp_secret": secret,
+            "code": totp_now(secret),
+            "message": "该账号已在数据库中登记 2FA",
+        }
+
+    proxy_str = (req.proxy if req else "") or db.get_setting("proxy", "")
+    try:
+        res = bind_totp_2fa_adaptive(row, proxy=proxy_str)
+    except Exception as e:
+        raise HTTPException(500, f"OpenAI 官方 2FA 绑定失败: {e}")
+
+    secret = res.get("secret", "")
+    if not secret:
+        raise HTTPException(500, res.get("message") or "绑定 2FA 失败")
+
+    return {
+        "ok": True,
+        "email": email_clean,
+        "totp_secret": secret,
+        "code": totp_now(secret),
+        "mfa_enabled": res.get("mfa_enabled", True),
+        "message": "OpenAI 官方 2FA 绑定成功 (mfa_enabled: true) 并已持久化落库",
+    }
+
+
+class SetPasswordReq(BaseModel):
+    password: Optional[str] = None
+    official_reset: Optional[bool] = True
+    proxy: Optional[str] = None
+
+
+@app.post("/api/registered/{email}/set_password")
+def api_set_account_password(email: str, req: Optional[SetPasswordReq] = None):
+    """为指定账号设置/补设密码。支持官方全自动重置设密 (默认) 与本地快速修改。"""
+    from .two_factor import generate_random_password
+    from .official_password import official_set_account_password
+
+    email_clean = (email or "").strip().lower()
+    row = db.get_registered(email_clean)
+    if not row:
+        raise HTTPException(404, "未找到该账号")
+
+    new_pw = (req.password if req and req.password else "").strip()
+    if not new_pw:
+        new_pw = generate_random_password(16)
+
+    official = True if req is None or req.official_reset is None else bool(req.official_reset)
+    proxy_str = (req.proxy if req else "") or db.get_setting("proxy", "")
+
+    if official:
+        try:
+            res = official_set_account_password(email_clean, new_password=new_pw, proxy=proxy_str)
+            return res
+        except Exception as e:
+            logger.warning(f"[set_password] 官方全自动重设密码失败: {e}")
+            raise HTTPException(500, f"OpenAI 官方全自动设置密码失败: {e}")
+    else:
+        db.update_registered_manual(email_clean, password=new_pw)
+        logger.info(f"[registered] 账号 {email_clean} 密码已修改并落库: {new_pw}")
+        return {
+            "ok": True,
+            "email": email_clean,
+            "password": new_pw,
+            "official_applied": False,
+            "message": "密码已成功保存在本地数据库中",
+        }
+
+
+class BulkRepairReq(BaseModel):
+    emails: list[str]
+    official_reset: Optional[bool] = True
+    proxy: Optional[str] = None
+
+
+@app.post("/api/registered/bulk_bind_2fa")
+def api_bulk_bind_2fa(req: BulkRepairReq):
+    """批量为选中账号打 OpenAI 官方接口补绑 2FA。"""
+    from .two_factor import bind_totp_2fa_adaptive
+    emails = [e.strip().lower() for e in req.emails if e.strip()]
+    if not emails:
+        raise HTTPException(400, "请提供账号列表")
+
+    success_list = []
+    fail_list = []
+    already_list = []
+
+    for em in emails:
+        row = db.get_registered(em)
+        if not row:
+            fail_list.append({"email": em, "error": "账号不存在"})
+            continue
+        if (row.get("totp_secret") or "").strip():
+            already_list.append(em)
+            continue
+        try:
+            res = bind_totp_2fa_adaptive(row, proxy=req.proxy or "")
+            sec = res.get("secret")
+            if sec:
+                success_list.append(em)
+            else:
+                fail_list.append({"email": em, "error": res.get("message") or "绑定失败"})
+        except Exception as e:
+            fail_list.append({"email": em, "error": str(e)})
+
+    return {
+        "ok": True,
+        "success_count": len(success_list),
+        "already_count": len(already_list),
+        "fail_count": len(fail_list),
+        "success_emails": success_list,
+        "fails": fail_list,
+    }
+
+
+@app.post("/api/registered/bulk_set_password")
+def api_bulk_set_password(req: BulkRepairReq):
+    """批量为账号设置/补设密码。支持官方全自动重置设密 (默认) 或本地批量生成。"""
+    from .two_factor import generate_random_password
+    from .official_password import official_set_account_password
+
+    emails = [e.strip().lower() for e in req.emails if e.strip()]
+    if not emails:
+        raise HTTPException(400, "请提供账号列表")
+
+    official = True if req.official_reset is None else bool(req.official_reset)
+    proxy_str = req.proxy or db.get_setting("proxy", "")
+
+    updated = []
+    failed = []
+
+    for em in emails:
+        row = db.get_registered(em)
+        if not row:
+            continue
+        new_pw = generate_random_password(16)
+        if official:
+            try:
+                official_set_account_password(em, new_password=new_pw, proxy=proxy_str)
+                updated.append(em)
+            except Exception as e:
+                failed.append({"email": em, "error": str(e)})
+        else:
+            db.update_registered_manual(em, password=new_pw)
+            updated.append(em)
+
+    return {
+        "ok": True,
+        "updated_count": len(updated),
+        "fail_count": len(failed),
+        "updated_emails": updated,
+        "fails": failed,
+        "official_applied": official,
+    }
 
 
 # ──────────────────────── Plus 试用检查 ────────────────────────
@@ -2222,6 +2525,7 @@ def api_paypal_pay_task_input(task_id: str, req: SubmitPayPalPayInputReq):
 
 class AutoLoopStartReq(BaseModel):
     """跟 RegisterReq 复用同样的字段，auto-loop 内部传给每个 run。"""
+    mail_source: Optional[str] = Field(None, description="指定邮箱渠道: cf_temp / outlook / icloud_relay 等")
     want_access_token: bool = True
     want_session_token: bool = True
     want_refresh_token: bool = True

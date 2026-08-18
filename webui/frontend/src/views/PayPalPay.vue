@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue'
+import { computed, nextTick, onActivated, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   Plus,
@@ -62,7 +62,7 @@ function handleCountryChange(val) {
   }
 }
 
-// ──────────────── 模式 1：动态表格录入模式 (用户重点需求) ────────────────
+// ──────────────── 模式 1：动态表格录入模式 ────────────────
 let rowIdCounter = 1
 function createNewManualRow(initData = {}) {
   return {
@@ -105,7 +105,7 @@ function handleClearManualRows() {
   }).then(() => {
     manualRows.value = [createNewManualRow()]
     ElMessage.success('已清空列表')
-  })
+  }).catch(() => {})
 }
 
 // 批量粘贴导入弹窗
@@ -178,7 +178,7 @@ async function loadAutoData() {
       return {
         ...r,
         extract_link: ext,
-        _phone: r._phone || form.default_phone || '+491512345678',
+        _phone: r._phone || form.default_phone || '+66812345678',
         _otpInput: '',
         _submittingOtp: false,
       }
@@ -225,43 +225,47 @@ const liveLogTerminalRef = ref(null)
 // 待接码列表聚合
 const pendingOtpList = computed(() => {
   const list = []
-  // 从 manualRows 提取
-  manualRows.value.forEach((r) => {
-    if (r.status === 'awaiting_otp') {
-      list.push({
-        type: 'manual',
-        row: r,
-        key: r.email || r.ba_token || r.id,
-        phone: r.phone,
-        prompt: r.prompt,
-      })
-    }
-  })
-  // 从 autoRows 提取
-  autoRows.value.forEach((r) => {
-    const t = taskMap[r.email]
-    if (t && t.status === 'awaiting_otp') {
-      list.push({
-        type: 'auto',
-        row: r,
-        key: r.email,
-        phone: r._phone || form.default_phone,
-        prompt: t.prompt,
-      })
-    }
-  })
+  if (Array.isArray(manualRows.value)) {
+    manualRows.value.forEach((r) => {
+      if (r && r.status === 'awaiting_otp') {
+        list.push({
+          type: 'manual',
+          row: r,
+          key: r.email || r.ba_token || r.id,
+          phone: r.phone,
+          prompt: r.prompt,
+        })
+      }
+    })
+  }
+  if (Array.isArray(autoRows.value)) {
+    autoRows.value.forEach((r) => {
+      if (r && r.email) {
+        const t = taskMap[r.email]
+        if (t && t.status === 'awaiting_otp') {
+          list.push({
+            type: 'auto',
+            row: r,
+            key: r.email,
+            phone: r._phone || form.default_phone,
+            prompt: t.prompt,
+          })
+        }
+      }
+    })
+  }
   return list
 })
 
 // KPI 统计
-const allTaskItems = computed(() => Object.values(taskMap))
+const allTaskItems = computed(() => Object.values(taskMap || {}))
 const stats = computed(() => {
-  const list = allTaskItems.value
+  const list = allTaskItems.value || []
   const tot = list.length
-  const success = list.filter((i) => i.status === 'success').length
-  const failed = list.filter((i) => i.status === 'error' || i.status === 'cancelled').length
-  const active = list.filter((i) => i.status === 'running' || i.status === 'awaiting_otp').length
-  const pending = list.filter((i) => i.status === 'pending').length
+  const success = list.filter((i) => i && i.status === 'success').length
+  const failed = list.filter((i) => i && (i.status === 'error' || i.status === 'cancelled')).length
+  const active = list.filter((i) => i && (i.status === 'running' || i.status === 'awaiting_otp')).length
+  const pending = list.filter((i) => i && i.status === 'pending').length
   const percent = tot > 0 ? Math.round(((success + failed) / tot) * 100) : 0
   return { tot, success, failed, active, pending, percent }
 })
@@ -343,7 +347,7 @@ function handleStartSingleRow(row) {
     })
 }
 
-// 批量启动支付 (当前 Tab 下所有待处理或勾选数据)
+// 批量启动支付
 function handleStartBatch() {
   let payItems = []
   let targetRowList = []
@@ -375,54 +379,73 @@ function handleStartBatch() {
     targetRowList = list
   }
 
-  for (const r of targetRowList) {
+  // 初始化每行状态
+  targetRowList.forEach((r) => {
     r.status = 'running'
-    r.step_text = '排队准备中...'
+    r.step_text = '排队启动中...'
     r.prompt = ''
     r.otpInput = ''
-    const k = r.email || r.ba_token || r.id
-    taskMap[k] = {
-      key: k,
-      email: r.email || '',
-      ba_token: r.ba_token || '',
+    const key = r.email || r.ba_token
+    taskMap[key] = {
+      key,
+      email: r.email,
+      ba_token: r.ba_token || r.extract_link?.ba_token,
       phone: r.phone || r._phone || form.default_phone,
       status: 'running',
-      step_text: '排队准备中...',
-      prompt: '',
+      step_text: '排队启动中...',
       started_at: Date.now() / 1000,
       elapsed: 0,
     }
-  }
+  })
+
+  running.value = true
 
   startPayPalPayTask({
     items: payItems,
     country: form.country,
     flow_mode: form.flow_mode,
-    workers: form.workers,
+    workers: form.workers || 3,
   })
     .then((res) => {
-      running.value = true
-      activeTaskIds.value.add(res.task_id)
-      ElMessage.success(`批量协议支付已启动: 共 ${payItems.length} 个任务, 并发数=${form.workers}`)
-      connectTaskStream(res.task_id, targetRowList)
+      const taskId = res.task_id
+      activeTaskIds.value.add(taskId)
+      targetRowList.forEach((r) => {
+        r.taskId = taskId
+      })
+      ElMessage.success(`成功启动 ${payItems.length} 个 PayPal 协议代付任务 (Workers: ${form.workers})`)
+      connectTaskStream(taskId, targetRowList)
     })
     .catch((e) => {
-      ElMessage.error(e.message || '启动支付任务失败')
+      targetRowList.forEach((r) => {
+        r.status = 'error'
+        r.step_text = e.message || '启动失败'
+      })
+      ElMessage.error(e.message || '启动失败')
+      running.value = false
     })
 }
 
-// 停止全部任务
-function handleStopAll() {
-  if (!activeTaskIds.value.size) return
-  activeTaskIds.value.forEach((tid) => {
-    stopPayPalPayTask(tid).catch(() => {})
-  })
-  activeTaskIds.value.clear()
-  running.value = false
-  ElMessage.info('已发送停止全部任务指令')
+// 停止所有运行中的任务
+async function handleStopAll() {
+  if (activeTaskIds.value.size === 0) {
+    running.value = false
+    return
+  }
+  try {
+    for (const taskId of Array.from(activeTaskIds.value)) {
+      await stopPayPalPayTask(taskId)
+    }
+    ElMessage.success('已向所有运行中的代付任务发送停止指令')
+  } catch (e) {
+    ElMessage.info('停止任务指令已发送')
+  } finally {
+    running.value = false
+    activeTaskIds.value.clear()
+    Object.values(sseStreams).forEach((s) => s.close())
+  }
 }
 
-// ── SSE 实时流连接与多行状态绑定 ──
+// ──────────────── 任务 SSE 流连接与状态同步 ────────────────
 function connectTaskStream(taskId, boundRows = []) {
   if (sseStreams[taskId]) {
     sseStreams[taskId].close()
@@ -433,19 +456,7 @@ function connectTaskStream(taskId, boundRows = []) {
       try {
         const data = JSON.parse(ev.data)
         if (data.items) {
-          for (const [k, it] of Object.entries(data.items)) {
-            taskMap[k] = {
-              key: k,
-              email: it.email || '',
-              ba_token: it.ba_token || '',
-              phone: it.phone || '',
-              status: it.status,
-              step_text: it.step_text || it.status,
-              prompt: it.prompt || '',
-              started_at: it.started_at || 0,
-              elapsed: it.elapsed || 0,
-            }
-          }
+          Object.assign(taskMap, data.items)
         }
         if (data.logs && Array.isArray(data.logs)) {
           liveLogs.value = [...data.logs]
@@ -590,6 +601,12 @@ onMounted(() => {
   loadAutoData()
 })
 
+onActivated(() => {
+  if (activeTab.value === 'auto') {
+    loadAutoData()
+  }
+})
+
 onUnmounted(() => {
   Object.values(sseStreams).forEach((s) => s.close())
 })
@@ -607,8 +624,8 @@ onUnmounted(() => {
           </div>
 
           <el-radio-group v-model="activeTab" size="small">
-            <el-radio-button label="manual_table">📝 手动表格录入代付 (实时接码)</el-radio-button>
-            <el-radio-button label="auto">📂 从已提链列表批量代付</el-radio-button>
+            <el-radio-button value="manual_table" label="manual_table">📝 手动表格录入代付 (实时接码)</el-radio-button>
+            <el-radio-button value="auto" label="auto">📂 从已提链列表批量代付</el-radio-button>
           </el-radio-group>
         </div>
 
@@ -640,7 +657,7 @@ onUnmounted(() => {
             />
 
             <span class="param-label">并发数:</span>
-            <el-input-number v-model="form.workers" :min="1" :max="10" size="small" style="width: 75px" />
+            <el-input-number v-model="form.workers" :min="1" :max="10" size="small" style="width: 80px" />
           </div>
 
           <el-button
@@ -1153,10 +1170,10 @@ onUnmounted(() => {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  background: var(--el-bg-color);
-  border: 1px solid var(--el-border-color-light);
+  background: var(--el-bg-color, var(--app-window-bg));
+  border: 1px solid var(--app-border);
   border-radius: 10px;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.04);
+  box-shadow: var(--app-shadow-sm);
   overflow: hidden;
 }
 
@@ -1168,7 +1185,7 @@ onUnmounted(() => {
   gap: 12px;
   flex-wrap: wrap;
   background: var(--el-fill-color-blank);
-  border-bottom: 1px solid var(--el-border-color-lighter);
+  border-bottom: 1px solid var(--app-border);
   flex-shrink: 0;
 }
 
@@ -1205,7 +1222,7 @@ onUnmounted(() => {
 .page-title-badge .title {
   font-size: 13px;
   font-weight: 700;
-  color: var(--el-text-color-primary);
+  color: var(--app-title);
 }
 
 .start-pay-btn {
@@ -1220,13 +1237,13 @@ onUnmounted(() => {
   gap: 8px;
   padding: 8px 12px;
   background: var(--el-fill-color-light);
-  border-bottom: 1px solid var(--el-border-color-lighter);
+  border-bottom: 1px solid var(--app-border);
   flex-shrink: 0;
 }
 
 .kpi-card {
-  background: var(--el-bg-color);
-  border: 1px solid var(--el-border-color-lighter);
+  background: var(--app-card-bg, var(--el-bg-color));
+  border: 1px solid var(--app-border);
   border-radius: 6px;
   padding: 4px 8px;
   display: flex;
@@ -1291,7 +1308,7 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 8px;
-  background: var(--el-bg-color);
+  background: var(--app-card-bg, var(--el-bg-color));
   border: 1px solid #f59e0b;
   border-radius: 6px;
   padding: 4px 8px;
@@ -1304,7 +1321,7 @@ onUnmounted(() => {
 .dock-email {
   font-size: 11px;
   font-weight: 600;
-  color: var(--el-text-color-primary);
+  color: var(--app-title);
 }
 .dock-phone {
   font-size: 10px;
@@ -1332,6 +1349,7 @@ onUnmounted(() => {
   min-height: 0;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 .table-subtoolbar {
@@ -1340,7 +1358,7 @@ onUnmounted(() => {
   justify-content: space-between;
   padding: 6px 12px;
   background: var(--el-fill-color-blank);
-  border-bottom: 1px solid var(--el-border-color-lighter);
+  border-bottom: 1px solid var(--app-border);
   flex-shrink: 0;
 }
 .subtoolbar-left, .subtoolbar-right {

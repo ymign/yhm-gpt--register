@@ -269,8 +269,8 @@ def _do_register(
         root_logger.setLevel(logging.INFO)
 
     email = account["email"]
-    # 提前读取，避免在 try 块前异常时 except 引用未定义
-    mail_source = db.get_setting("mail_source", "outlook")
+    # 提前读取，优先用 options 传入的 mail_source，其次 account['kind']，最后回退全局配置
+    mail_source = (options.get("mail_source") or account.get("kind") or db.get_setting("mail_source", "cf_temp")).strip().lower()
     # 要不要操作号池（mark_done / mark_failed / release）由 provider 声明的
     # pooled 决定。未知 kind 时保守当池化处理 —— 号池里真有这行的话
     # 至少不会漏掉状态回写，把号永远卡在 in_use。

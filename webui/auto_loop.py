@@ -355,7 +355,7 @@ class AutoLoopController:
 
             # claim 下一个号。要不要走号池由 provider 的 pooled 决定，
             # 非池化的（CF 这类自己造地址的）用虚拟占位。
-            mail_source = db.get_setting("mail_source", "outlook")
+            mail_source = (self._options.get("mail_source") or db.get_setting("mail_source", "cf_temp")).strip().lower()
             try:
                 pooled = get_provider_class(mail_source).pooled
             except MailProviderError as e:
@@ -389,8 +389,9 @@ class AutoLoopController:
                 continue
             idle_round = 0
 
-            # 给这个 run 注入 worker 自己的代理
+            # 给这个 run 注入 worker 自己的代理与邮箱来源
             run_options = dict(self._options)
+            run_options["mail_source"] = mail_source
             if proxy:
                 run_options["proxy"] = proxy
 

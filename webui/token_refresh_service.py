@@ -107,6 +107,53 @@ def refresh_token_fast(
     return data
 
 
+def refresh_session_token_fast(
+    session_token: str = "",
+    cookie_header: str = "",
+    proxy: str = "",
+    timeout: float = 25.0,
+) -> dict:
+    """使用 session_token 快速请求 chatgpt.com/api/auth/session 刷新 access_token。"""
+    from http_client import create_http_session
+    st = str(session_token or "").strip()
+    session = create_http_session(proxy=proxy or None, impersonate="chrome136")
+
+    headers = {
+        "Accept": "*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+        "Origin": "https://chatgpt.com",
+        "Referer": "https://chatgpt.com/",
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-origin",
+        "Sec-Ch-Ua": '"Chromium";v="136", "Not.A/Brand";v="24"',
+        "Sec-Ch-Ua-Mobile": "?0",
+        "Sec-Ch-Ua-Platform": '"Windows"',
+    }
+    if cookie_header:
+        headers["Cookie"] = cookie_header
+    elif st:
+        headers["Cookie"] = f"__Secure-next-auth.session-token={st}"
+
+    resp = session.get("https://chatgpt.com/api/auth/session", headers=headers, timeout=timeout)
+    if resp.status_code != 200:
+        raise RuntimeError(f"Session 响应状态码 HTTP {resp.status_code}")
+
+    data = resp.json() or {}
+    new_at = data.get("accessToken") or ""
+    if not new_at:
+        raise RuntimeError("Session 响应未包含 accessToken")
+
+    new_st = session.cookies.get("__Secure-next-auth.session-token", "") or st
+    return {
+        "access_token": new_at,
+        "session_token": new_st,
+        "user": data.get("user") or {},
+        "expires": data.get("expires") or "",
+    }
+
+
 def execute_token_refresh_flow(
     email: str,
     mail_provider: Any,
@@ -122,7 +169,8 @@ def execute_token_refresh_flow(
 
     优先级：
       1. 优先尝试 RT 快速置换 (Fast RT Refresh)
-      2. RT 失效或不存在时，自动回退到 Full OAuth 登录重获
+      2. 尝试 Session Token 极速刷新 (Fast ST Refresh)
+      3. RT / ST 失效时，自动使用 ChatGPT Web 官方协议登录重获 (密码 + 2FA TOTP 自动算码 / 邮箱取码，无需手机接码)
     """
     def _log(msg: str):
         if log_fn:
@@ -134,6 +182,8 @@ def execute_token_refresh_flow(
 
     account_info = account_info or {}
     existing_rt = str(account_info.get("refresh_token") or "").strip()
+    existing_st = str(account_info.get("session_token") or "").strip()
+    existing_cookies = str(account_info.get("cookie_header") or "").strip()
 
     # ──────────────── 阶段 1: 尝试 RT 快速刷新 ────────────────
     if existing_rt and not force_full_login:
@@ -147,7 +197,6 @@ def execute_token_refresh_flow(
             new_at = data.get("access_token") or ""
             new_rt = data.get("refresh_token") or existing_rt
             new_it = data.get("id_token") or ""
-            expires_in = data.get("expires_in") or 864000
 
             claims = _get_account_claims(new_at)
             _log(f"✅ [RT 极速置换成功] 耗时 {elapsed_ms}ms, access_token 长度={len(new_at)}, 有效期至={claims.get('exp_iso') or '未知'}")
@@ -198,27 +247,159 @@ def execute_token_refresh_flow(
                 "sub2api": sub2_doc,
             }
         except Exception as e:
-            _log(f"⚠️ Refresh Token 置换未成功 ({e})，自动回退到完整 OAuth 登录重获流程...")
+            _log(f"⚠️ Refresh Token 置换未成功 ({e})，尝试后续刷新策略...")
 
-    # ──────────────── 阶段 2: 完整 OAuth 登录重获 ────────────────
-    _step("full_oauth", "[2/2] 启动完整 OAuth 流程重新获取 Token...")
-    _log("启动独立 OAuth 鉴权流程重新登录获取凭证...")
+    # ──────────────── 阶段 2: 尝试 Session Token 极速刷新 ────────────────
+    if (existing_st or existing_cookies) and not force_full_login:
+        _step("st_fast", "[1/2] 正在尝试使用 Session Token 极速刷新...")
+        _log("尝试通过 ChatGPT Web Session 接口直接刷新 Access Token...")
+        try:
+            t0 = time.time()
+            s_data = refresh_session_token_fast(
+                session_token=existing_st,
+                cookie_header=existing_cookies,
+                proxy=proxy,
+                timeout=min(20.0, timeout),
+            )
+            elapsed_ms = int((time.time() - t0) * 1000)
+            new_at = s_data.get("access_token") or ""
+            new_st = s_data.get("session_token") or existing_st
 
-    res = execute_codex_oauth_flow(
-        email=email,
-        mail_provider=mail_provider,
-        proxy=proxy,
-        target_country=target_country,
-        account_info=account_info,
-        log_fn=_log,
-        step_fn=_step,
-        skip_sms=False,
-        timeout=timeout,
+            claims = _get_account_claims(new_at)
+            _log(f"🎉 [Session 极速刷新成功] 耗时 {elapsed_ms}ms, access_token 长度={len(new_at)}, 用户={s_data.get('user', {}).get('email') or email}")
+
+            cpa_doc = {
+                "access_token": new_at,
+                "refresh_token": existing_rt,
+                "session_token": new_st,
+                "email": email,
+                "name": claims.get("name") or s_data.get("user", {}).get("name") or "",
+                "user_id": claims.get("user_id") or s_data.get("user", {}).get("id") or "",
+                "account_id": claims.get("account_id") or "",
+                "plan_type": claims.get("plan_type") or "free",
+                "expires_at": claims.get("exp_iso") or s_data.get("expires"),
+                "token_type": "Bearer",
+                "last_refreshed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                "refresh_method": "st_fast",
+            }
+            sub2_doc = cpa_credential_to_sub2_account(cpa_doc)
+
+            db.update_registered_oauth(
+                email=email,
+                access_token=new_at,
+                refresh_token=existing_rt,
+                session_token=new_st,
+                cookie_header=existing_cookies,
+                extra_data={
+                    "oauth_export": {
+                        "status": "success",
+                        "updated_at": time.time(),
+                        "method": "st_fast",
+                        "claims": claims,
+                    }
+                },
+            )
+
+            return {
+                "status": "success",
+                "method": "st_fast",
+                "label": "✅ Session极速刷新成功",
+                "access_token_len": len(new_at),
+                "refresh_token_len": len(existing_rt),
+                "expires_at": claims.get("exp_iso"),
+                "plan_type": claims.get("plan_type") or "free",
+                "cpa": cpa_doc,
+                "sub2api": sub2_doc,
+            }
+        except Exception as e:
+            _log(f"⚠️ Session Token 刷新提示: {e}，自动转入官方 Web 协议登录重获...")
+
+    # ──────────────── 阶段 3: 官方 Web 协议登录重登 ────────────────
+    _step("full_oauth", "[2/2] 启动官方 Web 登录流程重新获取全套凭证...")
+    _log("正在启动 ChatGPT 官方 Web 认证流程重新登录 (密码 + 2FA TOTP 自动算码)...")
+
+    from config import Config
+    from auth_flow import AuthFlow
+
+    cfg = Config()
+    cfg.proxy = proxy or None
+    env_overrides = {
+        "TARGET_COUNTRY": target_country,
+        "OTP_TIMEOUT": str(int(timeout)),
+        "OAUTH_CODEX_RT_EXCHANGE": "1",
+        "OAUTH_CODEX_RT_BEFORE_CALLBACK": "1",
+    }
+
+    login_flow = AuthFlow(
+        cfg,
+        env_overrides=env_overrides,
+        account_callback=lambda em: {
+            "password": account_info.get("password") or "",
+            "totp_secret": account_info.get("totp_secret") or "",
+        },
     )
-    if res.get("status") == "success":
-        res["method"] = "full_oauth"
-        res["label"] = "✅ OAuth重登成功"
-    return res
+
+    result = login_flow.run_protocol_login(
+        mail_provider=mail_provider,
+        email=email,
+        password=account_info.get("password") or "",
+    )
+
+    if not result or not (result.access_token or result.session_token or result.refresh_token):
+        raise RuntimeError("登录完成，但未获取到有效 Access Token 或 Session Token")
+
+    new_at = result.access_token or ""
+    new_rt = result.refresh_token or existing_rt
+    new_st = result.session_token or ""
+    new_it = result.id_token or ""
+
+    claims = _get_account_claims(new_at)
+    cpa_doc = {
+        "access_token": new_at,
+        "refresh_token": new_rt,
+        "id_token": new_it,
+        "session_token": new_st,
+        "email": email,
+        "name": claims.get("name") or "",
+        "user_id": claims.get("user_id") or "",
+        "account_id": claims.get("account_id") or "",
+        "plan_type": claims.get("plan_type") or "free",
+        "expires_at": claims.get("exp_iso"),
+        "token_type": "Bearer",
+        "last_refreshed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "refresh_method": "full_login",
+    }
+    sub2_doc = cpa_credential_to_sub2_account(cpa_doc)
+
+    db.update_registered_oauth(
+        email=email,
+        access_token=new_at,
+        refresh_token=new_rt,
+        session_token=new_st,
+        id_token=new_it,
+        cookie_header=result.cookie_header or "",
+        extra_data={
+            "oauth_export": {
+                "status": "success",
+                "updated_at": time.time(),
+                "method": "full_login",
+                "claims": claims,
+            }
+        },
+    )
+
+    _log(f"🎉 [Web 登录重获成功] access_token(len={len(new_at)}), session_token(len={len(new_st)}) 已自动更新落库")
+    return {
+        "status": "success",
+        "method": "full_login",
+        "label": "✅ Web重登成功",
+        "access_token_len": len(new_at),
+        "refresh_token_len": len(new_rt),
+        "expires_at": claims.get("exp_iso"),
+        "plan_type": claims.get("plan_type") or "free",
+        "cpa": cpa_doc,
+        "sub2api": sub2_doc,
+    }
 
 
 class TokenRefreshTask:
@@ -372,32 +553,61 @@ def _worker_loop(task: TokenRefreshTask, email: str):
 
     account = db.get_account(email) or {"email": email}
     registered_cred = db.get_registered(email) or {}
-    combined_info = {**account, **registered_cred}
 
-    # 合并 SMS 接码配置
-    combined_info["sms_config"] = {
-        "sms_enabled": task.config.get("sms_enabled", False),
-        "sms_provider": task.config.get("sms_provider") or "smsbower",
-        "sms_api_key": task.config.get("sms_api_key") or "",
-        "sms_country": task.config.get("sms_country") or "52",
-        "sms_max_price": task.config.get("sms_max_price") or "",
-        "sms_max_attempts": task.config.get("sms_max_attempts") or 3,
-        "sms_timeout": task.config.get("sms_timeout") or 80,
+    # 1. 邮箱底层提供商凭证（严格保留号池原本的邮箱密码、MS client_id、MS refresh_token）
+    mail_account_info = {
+        "email": email,
+        "password": account.get("password") or "",
+        "client_id": account.get("client_id") or "",
+        "refresh_token": account.get("refresh_token") or "",
+        "relay_url": account.get("relay_url") or "",
+        "kind": account.get("kind") or "outlook",
+    }
+
+    # 2. GPT 认证信息（GPT 密码、OpenAI 2FA TOTP、OpenAI Refresh Token）
+    openai_cred_info = {
+        "email": email,
+        "password": registered_cred.get("password") or account.get("password") or "",
+        "totp_secret": registered_cred.get("totp_secret") or "",
+        "totp_factor_id": registered_cred.get("totp_factor_id") or "",
+        "access_token": registered_cred.get("access_token") or "",
+        "refresh_token": registered_cred.get("refresh_token") or "",
+        "device_id": registered_cred.get("device_id") or "",
+        "cookie_header": registered_cred.get("cookie_header") or "",
+        "reg_country": registered_cred.get("reg_country") or "JP",
+        "sms_config": {
+            "sms_enabled": task.config.get("sms_enabled", False),
+            "sms_provider": task.config.get("sms_provider") or "smsbower",
+            "sms_api_key": task.config.get("sms_api_key") or "",
+            "sms_country": task.config.get("sms_country") or "52",
+            "sms_max_price": task.config.get("sms_max_price") or "",
+            "sms_max_attempts": task.config.get("sms_max_attempts") or 3,
+            "sms_timeout": task.config.get("sms_timeout") or 80,
+        },
     }
 
     raw_proxy = (task.next_proxy() or task.config.get("proxy") or "").strip()
-    raw_country = (task.config.get("proxy_country") or combined_info.get("reg_country") or "").strip().upper()
+    raw_country = (task.config.get("proxy_country") or openai_cred_info.get("reg_country") or "").strip().upper()
     target_country = resolve_target_country(raw_country) or "JP"
     proxy = raw_proxy
 
     if raw_proxy and target_country:
         proxy = route_proxy_country(raw_proxy, target_country, new_proxy_session_id())
 
-    mail_source = db.get_setting("mail_source", "outlook")
+    # 自动识别邮箱提供商渠道
+    mail_source = (mail_account_info.get("kind") or db.get_setting("mail_source", "") or "").strip().lower()
+    if not mail_source or mail_source not in ("outlook", "cf_temp", "icloud_relay"):
+        if any(dom in email for dom in ("@outlook.", "@hotmail.", "@live.", "@msn.")):
+            mail_source = "outlook"
+        elif any(dom in email for dom in ("@icloud.", "@me.", "@mac.")):
+            mail_source = "icloud_relay"
+        else:
+            mail_source = "cf_temp"
+
     try:
-        mail_provider = create_mail_provider(mail_source, db.get_mail_settings(), combined_info)
+        mail_provider = create_mail_provider(mail_source, db.get_mail_settings(), mail_account_info)
     except Exception as e:
-        task.add_email_log(email, f"邮箱 Provider 初始化失败: {e}")
+        task.add_email_log(email, f"邮箱 Provider ({mail_source}) 初始化提示: {e}")
         mail_provider = None
 
     timeout = float(task.config.get("timeout") or 45.0)
@@ -409,7 +619,7 @@ def _worker_loop(task: TokenRefreshTask, email: str):
             mail_provider=mail_provider,
             proxy=proxy,
             target_country=target_country,
-            account_info=combined_info,
+            account_info=openai_cred_info,
             log_fn=lambda msg: task.add_email_log(email, msg),
             step_fn=lambda k, t: task.set_step(email, k, t),
             force_full_login=force_full_login,

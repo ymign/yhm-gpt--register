@@ -127,6 +127,26 @@ export const downloadTokenRefreshExport = (taskId, format = 'txt') =>
     responseType: 'blob',
   })
 
+// ──────────────── 2FA TOTP 动态码 & 邮箱 OTP & 补密补2FA ────────────────
+export const getAccountTotp = (email) =>
+  http.get(`/api/registered/${encodeURIComponent(email)}/totp`)
+
+export const fetchMailOtp = (email, payload = {}) =>
+  http.post(`/api/registered/${encodeURIComponent(email)}/fetch_otp`, payload)
+
+export const bindAccount2fa = (email, payload = {}) =>
+  http.post(`/api/registered/${encodeURIComponent(email)}/bind_2fa`, payload)
+
+export const setAccountPassword = (email, payload = {}) =>
+  http.post(`/api/registered/${encodeURIComponent(email)}/set_password`, payload)
+
+export const bulkBind2fa = (payload) =>
+  http.post('/api/registered/bulk_bind_2fa', payload)
+
+export const bulkSetPassword = (payload) =>
+  http.post('/api/registered/bulk_set_password', payload)
+
+
 // ──────────────── 自动跑号 auto-loop ────────────────
 export const autoStart = (payload) => http.post('/api/auto/start', payload)
 export const autoPause = () => http.post('/api/auto/pause')

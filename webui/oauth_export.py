@@ -311,8 +311,8 @@ def execute_codex_oauth_flow(
 
     # 生成与目标国家对齐的一致性浏览器指纹
     fp = generate_fingerprint(country_code=country_code)
-    ua = fp.get("user_agent") or "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15"
-    impersonate = fp.get("impersonate") or "safari18_0"
+    ua = fp.get("user_agent") or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
+    impersonate = fp.get("impersonate") or "chrome136"
 
     client_id = "app_EMoamEEZ73f0CkXaXp7hrann"
     redirect_uri = "http://localhost:1455/auth/callback"
@@ -338,20 +338,58 @@ def execute_codex_oauth_flow(
     # 采用自带 _TlsRetrySession 和代理标准化的安全会话
     session = create_http_session(proxy=proxy or None, impersonate=impersonate, user_agent=ua)
 
-    # ──────────────── 阶段 1: 建立会话 ────────────────
+    # ──────────────── 阶段 1: 建立会话与预热 ────────────────
     _step("1", "[1/6] 发起鉴权 (建立会话)")
     _log(f"[1/6] 发起 Codex OAuth 鉴权 (模拟 {impersonate}, 国别: {country_code})...")
+
+    # 构造完整导航头（必须包含 client hints 以避免被 Cloudflare 403 拦截）
     nav_headers = {
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
         "Accept-Language": lang_full,
+        "Accept-Encoding": "gzip, deflate, br, zstd",
         "User-Agent": ua,
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "cross-site",
+        "Sec-Fetch-User": "?1",
+        "Upgrade-Insecure-Requests": "1",
+        "Priority": "u=0, i",
         "Referer": "https://chatgpt.com/",
     }
+    if fp.get("sec_ch_ua"):
+        nav_headers["Sec-Ch-Ua"] = fp["sec_ch_ua"]
+        nav_headers["Sec-Ch-Ua-Mobile"] = fp.get("sec_ch_ua_mobile") or "?0"
+        nav_headers["Sec-Ch-Ua-Platform"] = fp["sec_ch_ua_platform"]
+        for key, name in (
+            ("sec_ch_ua_full_version_list", "Sec-Ch-Ua-Full-Version-List"),
+            ("sec_ch_ua_arch", "Sec-Ch-Ua-Arch"),
+            ("sec_ch_ua_bitness", "Sec-Ch-Ua-Bitness"),
+            ("sec_ch_ua_model", "Sec-Ch-Ua-Model"),
+            ("sec_ch_ua_platform_version", "Sec-Ch-Ua-Platform-Version"),
+        ):
+            if fp.get(key):
+                nav_headers[name] = fp[key]
+
+    # 先对 chatgpt.com 进行预热，建立 oai-did 与 Cloudflare 信任态
+    try:
+        session.get("https://chatgpt.com/", headers=nav_headers, timeout=min(20.0, timeout))
+    except Exception as e:
+        logger.debug(f"[oauth_export] warmup 提示: {e}")
+
     try:
         t0 = time.time()
         resp = session.get(auth_url, headers=nav_headers, allow_redirects=True, timeout=timeout)
         t_hop = int((time.time() - t0) * 1000)
-        _log(f"[1/6] 授权会话建立成功 ({t_hop}ms): status={getattr(resp, 'status_code', 'OK')}")
+        status_code = getattr(resp, "status_code", 0)
+        if status_code in (401, 403):
+            _log(f"[1/6] ⚠️ 授权服务器响应 {status_code}，正在切换备选会话重试...")
+            time.sleep(2)
+            session = create_http_session(proxy=proxy or None, impersonate="chrome136", user_agent=ua)
+            resp = session.get(auth_url, headers=nav_headers, allow_redirects=True, timeout=timeout)
+            status_code = getattr(resp, "status_code", 0)
+            if status_code in (401, 403):
+                raise RuntimeError(f"OpenAI 授权服务器返回 HTTP {status_code}，当前网络/代理节点受限")
+        _log(f"[1/6] 授权会话建立成功 ({t_hop}ms): status={status_code or 'OK'}")
     except Exception as e:
         raise RuntimeError(f"连接 OpenAI 授权服务器失败: {e}")
 
@@ -368,7 +406,25 @@ def execute_codex_oauth_flow(
             device_id=device_id,
             flow="authorize_continue",
             user_agent=ua,
+            sec_ch_ua=fp.get("sec_ch_ua", ""),
+            sec_ch_ua_platform=fp.get("sec_ch_ua_platform", ""),
+            sec_ch_ua_mobile=fp.get("sec_ch_ua_mobile", ""),
+            sec_ch_ua_full_version_list=fp.get("sec_ch_ua_full_version_list", ""),
+            sec_ch_ua_arch=fp.get("sec_ch_ua_arch", ""),
+            sec_ch_ua_bitness=fp.get("sec_ch_ua_bitness", ""),
+            sec_ch_ua_model=fp.get("sec_ch_ua_model", ""),
+            sec_ch_ua_platform_version=fp.get("sec_ch_ua_platform_version", ""),
+            screen=fp.get("screen", ""),
+            lang=fp.get("lang", ""),
             lang_full=lang_full,
+            browser_type=fp.get("browser_type", ""),
+            navigator_platform=fp.get("navigator_platform", ""),
+            navigator_vendor=fp.get("navigator_vendor"),
+            hardware_concurrency=fp.get("hardware_concurrency", 0),
+            device_memory=fp.get("device_memory"),
+            max_touch_points=fp.get("max_touch_points", 0),
+            device_pixel_ratio=fp.get("device_pixel_ratio", 0.0),
+            timezone=fp.get("timezone", ""),
         )
         t_pow = int((time.time() - t_pow0) * 1000)
         _log(f"[2/6] Sentinel PoW 计算完成 ({t_pow}ms, token_len={len(st_token)}, so={'有' if so_token else '无'})")
@@ -383,7 +439,14 @@ def execute_codex_oauth_flow(
         "Origin": "https://auth.openai.com",
         "Referer": "https://auth.openai.com/log-in",
         "oai-device-id": device_id,
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-origin",
     }
+    if fp.get("sec_ch_ua"):
+        post_headers["Sec-Ch-Ua"] = fp["sec_ch_ua"]
+        post_headers["Sec-Ch-Ua-Mobile"] = fp.get("sec_ch_ua_mobile") or "?0"
+        post_headers["Sec-Ch-Ua-Platform"] = fp["sec_ch_ua_platform"]
     if st_token:
         post_headers["openai-sentinel-token"] = st_token
     if so_token:
@@ -397,6 +460,81 @@ def execute_codex_oauth_flow(
         timeout=timeout,
     )
     if step_resp.status_code != 200:
+        err_msg = (step_resp.text or "")[:200]
+        # 如果遇到 409 invalid_state，自动切换至标准 AuthFlow.run_protocol_login 作为强健兜底
+        if step_resp.status_code == 409 or "invalid_state" in err_msg:
+            _log(f"[2/6] ⚠️ 触发 409 会话刷新态，正在自动调用 AuthFlow 全链路登录引擎兜底重登...")
+            from auth_flow import AuthFlow
+            cfg = Config()
+            cfg.proxy = proxy or None
+            env_overrides = {
+                "TARGET_COUNTRY": country_code,
+                "OTP_TIMEOUT": str(int(timeout)),
+                "OAUTH_CODEX_RT_EXCHANGE": "1",
+                "OAUTH_CODEX_RT_BEFORE_CALLBACK": "1",
+            }
+            login_flow = AuthFlow(
+                cfg,
+                env_overrides=env_overrides,
+                account_callback=lambda em: {
+                    "password": account_info.get("password") or "",
+                    "totp_secret": account_info.get("totp_secret") or "",
+                },
+            )
+            login_res = login_flow.run_protocol_login(
+                mail_provider=mail_provider,
+                email=email,
+                password=account_info.get("password") or "",
+            )
+            if not login_res or not (login_res.access_token or login_res.refresh_token):
+                raise RuntimeError("AuthFlow 兜底重登未获取到有效凭证")
+
+            new_at = login_res.access_token or ""
+            new_rt = login_res.refresh_token or ""
+            new_it = login_res.id_token or ""
+            claims = _get_account_claims(new_at)
+            cpa_doc = {
+                "access_token": new_at,
+                "refresh_token": new_rt,
+                "id_token": new_it,
+                "email": email,
+                "name": claims.get("name") or "",
+                "user_id": claims.get("user_id") or "",
+                "account_id": claims.get("account_id") or "",
+                "plan_type": claims.get("plan_type") or "free",
+                "expires_at": claims.get("exp_iso"),
+                "token_type": "Bearer",
+                "last_refreshed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                "refresh_method": "full_oauth",
+            }
+            sub2_doc = cpa_credential_to_sub2_account(cpa_doc)
+            db.update_registered_oauth(
+                email=email,
+                access_token=new_at,
+                refresh_token=new_rt,
+                id_token=new_it,
+                cookie_header=login_res.cookie_header or "",
+                extra_data={
+                    "oauth_export": {
+                        "status": "success",
+                        "updated_at": time.time(),
+                        "claims": claims,
+                    }
+                },
+            )
+            _log(f"🎉 [AuthFlow 兜底重登成功] access_token(len={len(new_at)}), refresh_token(len={len(new_rt)}) 已自动写入数据库")
+            return {
+                "status": "success",
+                "label": "✅ 登录成功",
+                "access_token_len": len(new_at),
+                "refresh_token_len": len(new_rt),
+                "expires_at": claims.get("exp_iso"),
+                "plan_type": claims.get("plan_type") or "free",
+                "cpa": cpa_doc,
+                "sub2api": sub2_doc,
+            }
+
+        raise RuntimeError(f"提交邮箱失败: HTTP {step_resp.status_code} - {err_msg}")
         raise RuntimeError(f"提交邮箱失败: HTTP {step_resp.status_code} - {(step_resp.text or '')[:150]}")
 
     step_data = step_resp.json() if step_resp.status_code == 200 else {}
@@ -411,6 +549,10 @@ def execute_codex_oauth_flow(
         password = str(account_info.get("password") or "").strip()
         if password:
             _log("正在提交密码进行登录验证...")
+            try:
+                session.get(f"https://auth.openai.com/log-in/password?email={quote(email)}", headers=nav_headers, timeout=timeout)
+            except Exception:
+                pass
             pw_headers = dict(post_headers)
             pw_headers["Referer"] = "https://auth.openai.com/log-in/password"
             pw_resp = session.post(
@@ -837,8 +979,20 @@ def _run_one_oauth_export(task: OAuthExportTask, email: str) -> None:
 
     # 2. 邮箱取码准备
     mail_account = db.get_account(email) or {"email": email}
-    mail_source = mail_account.get("kind") or db.get_setting("mail_source", "outlook")
-    mail = create_mail_provider(mail_source, db.get_mail_settings(), mail_account)
+    mail_source = (mail_account.get("kind") or cred.get("kind") or db.get_setting("mail_source", "") or "").strip().lower()
+    if not mail_source or mail_source not in ("outlook", "cf_temp", "icloud_relay"):
+        if any(dom in email for dom in ("@outlook.", "@hotmail.", "@live.", "@msn.")):
+            mail_source = "outlook"
+        elif any(dom in email for dom in ("@icloud.", "@me.", "@mac.")):
+            mail_source = "icloud_relay"
+        else:
+            mail_source = "cf_temp"
+
+    try:
+        mail = create_mail_provider(mail_source, db.get_mail_settings(), {**cred, **mail_account})
+    except Exception as e:
+        task.add_email_log(email, f"邮箱 Provider ({mail_source}) 初始化提示: {e}")
+        mail = None
 
     sms_cfg = task.config.get("sms_config") or {}
     sms_enabled = bool(sms_cfg.get("sms_enabled", False))

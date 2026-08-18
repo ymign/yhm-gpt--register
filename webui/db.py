@@ -600,10 +600,11 @@ def update_registered_oauth(
     access_token: str = "",
     refresh_token: str = "",
     id_token: str = "",
+    session_token: str = "",
     cookie_header: str = "",
     extra_data: Optional[dict] = None,
 ) -> bool:
-    """OAuth 导出成功后回写 access_token / refresh_token / id_token / cookie_header 及 extra_json。"""
+    """OAuth 导出与 Token 刷新成功后回写 access_token / refresh_token / id_token / session_token / cookie_header 及 extra_json。"""
     email = (email or "").strip().lower()
     if not email:
         return False
@@ -620,12 +621,13 @@ def update_registered_oauth(
         new_at = access_token.strip() or d.get("access_token") or ""
         new_rt = refresh_token.strip() or d.get("refresh_token") or ""
         new_it = id_token.strip() or d.get("id_token") or ""
+        new_st = session_token.strip() or d.get("session_token") or ""
         new_cookie = cookie_header.strip() or d.get("cookie_header") or ""
 
         con.execute(
-            "UPDATE registered SET access_token=?, refresh_token=?, id_token=?, "
+            "UPDATE registered SET access_token=?, refresh_token=?, id_token=?, session_token=?, "
             "cookie_header=?, oauth_status='success', oauth_updated_at=?, extra_json=? WHERE email=?",
-            (new_at, new_rt, new_it, new_cookie, time.time(), json.dumps(extra, ensure_ascii=False), email),
+            (new_at, new_rt, new_it, new_st, new_cookie, time.time(), json.dumps(extra, ensure_ascii=False), email),
         )
         con.commit()
         return True
@@ -899,6 +901,19 @@ def _registered_where(filt: str, search: str = "") -> tuple[str, list]:
         conditions.append("(oauth_status = 'failed' OR oauth_status = 'error')")
     elif filt == "oauth_unchecked":
         conditions.append("(oauth_status IS NULL OR oauth_status = '')")
+    # ── 密码与 2FA 安全状态筛选 ──
+    elif filt == "no_password":
+        conditions.append("(password IS NULL OR password = '')")
+    elif filt == "has_password":
+        conditions.append("(password IS NOT NULL AND password != '')")
+    elif filt == "no_2fa":
+        conditions.append("(totp_secret IS NULL OR totp_secret = '')")
+    elif filt == "has_2fa":
+        conditions.append("(totp_secret IS NOT NULL AND totp_secret != '')")
+    elif filt == "missing_security":
+        conditions.append("((password IS NULL OR password = '') OR (totp_secret IS NULL OR totp_secret = ''))")
+    elif filt == "both_secured":
+        conditions.append("(password IS NOT NULL AND password != '' AND totp_secret IS NOT NULL AND totp_secret != '')")
     # ── 提链状态筛选 ──
     elif filt == "extract_eligible":
         conditions.append("(extra_json LIKE '%\"plus_eligible\"%' AND (extra_json NOT LIKE '%\"extract_link\"%' OR extra_json NOT LIKE '%\"status\":\"success\"%'))")

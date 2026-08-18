@@ -70,6 +70,163 @@ def verify_totp(secret_b32: str, code: str) -> bool:
     return code in {hotp(secret_b32, c + d) for d in (-1, 0, 1)}
 
 
+def generate_random_password(length: int = 16) -> str:
+    """生成包含大小写字母、数字和特殊字符的强随机密码。"""
+    import secrets
+    import string
+    alphabet = string.ascii_letters + string.digits + "!@#$%^&*"
+    chars = [
+        secrets.choice(string.ascii_uppercase),
+        secrets.choice(string.ascii_lowercase),
+        secrets.choice(string.digits),
+        secrets.choice("!@#$%^&*"),
+    ]
+    chars += [secrets.choice(alphabet) for _ in range(length - 4)]
+    secrets.SystemRandom().shuffle(chars)
+    return "".join(chars)
+
+
+def bind_totp_2fa_by_token(access_token: str, proxy: str = "") -> dict:
+    """使用 access_token 独立打官方接口执行 2FA 绑定。
+
+    请求 OpenAI 官方 mfa/enroll + activate_enrollment 接口，
+    确保 mfa_enabled 真正生效并返回 secret。
+    """
+    try:
+        from curl_cffi.requests import Session as CffiSession
+        session = CffiSession(impersonate="chrome136")
+        session.trust_env = False
+        if proxy:
+            session.proxies = {"http": proxy, "https": proxy}
+
+        headers = {
+            "Accept": "application/json",
+            "Authorization": f"Bearer {access_token}",
+            "Origin": "https://chatgpt.com",
+            "Referer": "https://chatgpt.com/",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+            "Sec-Ch-Ua": '"Not?A_Brand";v="99", "Chromium";v="136", "Google Chrome";v="136"',
+            "Sec-Ch-Ua-Mobile": "?0",
+            "Sec-Ch-Ua-Platform": '"Windows"',
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "same-origin",
+        }
+
+        # 1. 检查是否已绑
+        r2 = session.get("https://chatgpt.com/backend-api/accounts/mfa_info", headers=headers, timeout=30)
+        if r2.status_code == 200:
+            info = r2.json() or {}
+            if info.get("mfa_enabled") and (info.get("factors", {}) or {}).get("totp"):
+                return {"ok": True, "already_bound": True, "message": "该账号已在 OpenAI 官方服务端绑定 2FA"}
+        elif r2.status_code in (401, 403):
+            raise RuntimeError(f"Access Token 已过期或未授权 (HTTP {r2.status_code})")
+
+        # 2. enroll
+        headers["Content-Type"] = "application/json"
+        r3 = session.post("https://chatgpt.com/backend-api/accounts/mfa/enroll", headers=headers, json={"factor_type": "totp"}, timeout=30)
+        if r3.status_code != 200:
+            raise RuntimeError(f"OpenAI 官方 enroll 失败 ({r3.status_code}): {(r3.text or '')[:200]}")
+        en = r3.json() or {}
+        secret = en.get("secret", "")
+        session_id = en.get("session_id", "")
+        factor_id = (en.get("factor", {}) or {}).get("id", "")
+        if not secret or not session_id:
+            raise RuntimeError(f"OpenAI 官方 enroll 响应缺少 secret 或 session_id: {en}")
+
+        # 3. 计算 6 位当前动态码并 activate
+        code = totp_now(secret)
+        r4 = session.post(
+            "https://chatgpt.com/backend-api/accounts/mfa/user/activate_enrollment",
+            headers=headers,
+            json={"code": code, "factor_type": "totp", "session_id": session_id},
+            timeout=30,
+        )
+        if r4.status_code != 200:
+            raise RuntimeError(f"OpenAI 官方 activate_enrollment 失败 ({r4.status_code}): {(r4.text or '')[:200]}")
+
+        # 4. 激活成功后复核 mfa_info 确保服务端 mfa_enabled 为 True
+        time.sleep(1)
+        r5 = session.get("https://chatgpt.com/backend-api/accounts/mfa_info", headers=headers, timeout=30)
+        mfa_confirmed = False
+        if r5.status_code == 200:
+            info5 = r5.json() or {}
+            mfa_confirmed = bool(info5.get("mfa_enabled"))
+
+        return {
+            "ok": True,
+            "secret": secret,
+            "code": code,
+            "factor_id": factor_id,
+            "session_id": session_id,
+            "mfa_enabled": mfa_confirmed,
+        }
+    except Exception as e:
+        logger.warning(f"bind_totp_2fa_by_token 失败: {e}")
+        raise
+
+
+def bind_totp_2fa_adaptive(row: dict, proxy: str = "") -> dict:
+    """智能自适应 2FA 绑定：
+    1. 若已有 access_token 则尝试直接打官方接口绑定；
+    2. 若 access_token 过期且有 refresh_token，自动通过 RT 极速换取新 access_token 后继续绑定；
+    3. 成功后自动回写数据库。
+    """
+    from . import db
+    from .token_refresh_service import refresh_token_fast
+
+    email = (row.get("email") or "").strip().lower()
+    if not email:
+        raise ValueError("缺少邮箱")
+
+    # 如果已有 totp_secret，先复核是否已绑
+    current_secret = (row.get("totp_secret") or "").strip()
+    if current_secret:
+        return {
+            "ok": True,
+            "already_bound": True,
+            "secret": current_secret,
+            "code": totp_now(current_secret),
+            "message": "该账号已在数据库中登记 2FA",
+        }
+
+    token = (row.get("access_token") or "").strip()
+    refresh_token = (row.get("refresh_token") or "").strip()
+
+    # 优先尝试现有 access_token
+    if token:
+        try:
+            res = bind_totp_2fa_by_token(token, proxy=proxy)
+            if res.get("secret"):
+                db.update_registered_manual(email, totp_secret=res["secret"])
+            return res
+        except Exception as e:
+            err_msg = str(e)
+            logger.info(f"[2fa-adaptive] 账号 {email} 使用现有 AT 绑定失败 ({err_msg})，尝试 RT 换取新 Token...")
+            if not refresh_token:
+                raise
+
+    # 尝试使用 refresh_token 刷新 access_token
+    if refresh_token:
+        try:
+            logger.info(f"[2fa-adaptive] 正在使用 Refresh Token 为 {email} 刷新凭证...")
+            rf_res = refresh_token_fast(refresh_token, proxy=proxy)
+            new_at = rf_res.get("access_token") or ""
+            new_rt = rf_res.get("refresh_token") or refresh_token
+            if new_at:
+                db.update_registered_manual(email, access_token=new_at, refresh_token=new_rt)
+                logger.info(f"[2fa-adaptive] 凭证刷新成功，正在为 {email} 提交官方 2FA 绑定...")
+                res = bind_totp_2fa_by_token(new_at, proxy=proxy)
+                if res.get("secret"):
+                    db.update_registered_manual(email, totp_secret=res["secret"])
+                return res
+        except Exception as e2:
+            logger.warning(f"[2fa-adaptive] RT 刷新后绑定 2FA 仍失败: {e2}")
+            raise RuntimeError(f"Token 已失效且刷新失败: {e2}")
+
+    raise RuntimeError("该账号无可用 Access Token 或 Refresh Token，无法向 OpenAI 官方申请绑定 2FA")
+
+
 # ── 真正干活的三步：查已绑 → enroll → activate ────────────────────
 def _enroll_and_activate(flow: AuthFlow, at: str) -> dict | None:
     """拿 flow.session + access_token 完成 enroll/activate，成功返回 dict。
