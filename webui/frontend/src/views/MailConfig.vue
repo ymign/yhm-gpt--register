@@ -86,6 +86,7 @@ async function handleFetchDomains(silent = false) {
       if (!silent) ElMessage.success(`成功探测到 ${discoveredDomains.value.length} 个可用域名`)
       if (!form.value.cf_domain) {
         form.value.cf_domain = discoveredDomains.value[0]
+        await save(false)
       }
     } else if (!silent) {
       ElMessage.info('Worker 未返回可用域名，可手动输入收件域名')
@@ -97,12 +98,19 @@ async function handleFetchDomains(silent = false) {
   }
 }
 
-function selectDomain(dom) {
+async function selectDomain(dom) {
   form.value.cf_domain = dom
-  ElMessage.success(`已选用收件域名: ${dom}`)
+  await save(false)
+  ElMessage.success(`已切换并自动保存生效: ${dom}`)
 }
 
-async function save() {
+async function handleSourceChange(val) {
+  source.value = val
+  await save(false)
+  ElMessage.success(`接信渠道已切换为: ${current.value?.display_name || val}`)
+}
+
+async function save(notify = true) {
   const payload = { mail_source: source.value }
   for (const f of fields.value) {
     const v = (form.value[f.key] ?? '').trim()
@@ -113,17 +121,19 @@ async function save() {
     .filter((f) => f.required)
     .filter((f) => !(form.value[f.key] ?? '').trim())
   if (missing.length) {
-    ElMessage.warning('请填写必填项：' + missing.map((f) => f.label).join('、'))
-    return
+    if (notify) ElMessage.warning('请填写必填项：' + missing.map((f) => f.label).join('、'))
+    return false
   }
 
   saving.value = true
   try {
-    await saveMailConfig(payload)
-    ElMessage.success('邮箱配置已保存')
-    await load()
+    const res = await saveMailConfig(payload)
+    saved.value = res.config || payload
+    if (notify) ElMessage.success('邮箱配置已保存并生效！')
+    return true
   } catch (e) {
     ElMessage.error(e.message)
+    return false
   } finally {
     saving.value = false
   }
@@ -172,7 +182,7 @@ load()
         <div class="macos-settings-card">
           <div class="card-section">
             <span class="section-heading">选择验证码接信渠道</span>
-            <el-radio-group v-model="source" class="macos-radio-group">
+            <el-radio-group v-model="source" class="macos-radio-group" @change="handleSourceChange">
               <el-radio-button
                 v-for="p in providers"
                 :key="p.kind"
