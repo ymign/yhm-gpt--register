@@ -2278,9 +2278,76 @@ async function submitRepair2FA() {
   }
 }
 
-// 5. 行内更多操作菜单处理
+// 5. 单元格与凭证单项复制
+async function copyCell(email, field = 'access_token') {
+  try {
+    const { data } = await getRegistered(email)
+    const val = data?.[field]
+    const fieldName = field === 'access_token' ? 'Access Token' : field === 'session_token' ? 'Session Token' : 'Refresh Token'
+    if (!val) {
+      ElMessage.warning(`该账号暂无 ${fieldName}`)
+      return
+    }
+    const label = field === 'access_token' ? 'Access Token (AT) 已复制' : field === 'session_token' ? 'Session Token (ST) 已复制' : 'Refresh Token (RT) 已复制'
+    copyText(val, label)
+  } catch (e) {
+    ElMessage.error('获取凭证失败: ' + e.message)
+  }
+}
+
+// 批量复制 AT 处理器
+async function handleCopyAtCommand(cmd) {
+  try {
+    let payload = {}
+    let modeLabel = ''
+    if (cmd === 'copy_at_selected') {
+      const emails = selected.value.map((r) => r.email)
+      if (!emails.length) {
+        ElMessage.warning('请先勾选要复制 AT 的账号')
+        return
+      }
+      payload = { format: 'at', emails }
+      modeLabel = `已复制选中的 ${emails.length} 个账号 Access Token`
+    } else if (cmd === 'copy_at_page') {
+      const pageEmails = rows.value.filter((r) => r.at_len > 0).map((r) => r.email)
+      if (!pageEmails.length) {
+        ElMessage.warning('当前页没有拥有 Access Token 的账号')
+        return
+      }
+      payload = { format: 'at', emails: pageEmails }
+      modeLabel = `已复制当前页 ${pageEmails.length} 个账号 Access Token`
+    } else if (cmd === 'copy_at_all') {
+      payload = { format: 'at', all: true }
+      modeLabel = '已全量复制所有账号 Access Token'
+    } else if (cmd === 'copy_at_with_email') {
+      const emails = selected.value.map((r) => r.email)
+      if (!emails.length) {
+        ElMessage.warning('请先勾选要复制的账号')
+        return
+      }
+      payload = { format: 'email_at', emails }
+      modeLabel = `已复制选中的 ${emails.length} 个「邮箱----AT」`
+    }
+
+    const r = await exportRegistered(payload)
+    const text = (r.text || '').trim()
+    if (!text) {
+      ElMessage.warning('未能提取到有效的 Access Token 数据')
+      return
+    }
+    const count = text.split('\n').filter((l) => l.trim().length > 0).length
+    copyText(text, `${modeLabel} (共 ${count} 条)`)
+  } catch (e) {
+    ElMessage.error('批量复制 AT 失败: ' + (e.response?.data?.detail || e.message))
+  }
+}
+
+// 6. 行内更多操作菜单处理
 function handleRowMoreCommand(cmd, row) {
   if (cmd === 'edit') openEdit(row)
+  else if (cmd === 'copy_at') copyCell(row.email, 'access_token')
+  else if (cmd === 'copy_st') copyCell(row.email, 'session_token')
+  else if (cmd === 'copy_rt') copyCell(row.email, 'refresh_token')
   else if (cmd === 'repair_pwd') openRepairPassword(row)
   else if (cmd === 'repair_2fa') openRepair2FA(row)
   else if (cmd === 'totp_code') openTotpModal(row)
@@ -2497,6 +2564,31 @@ onUnmounted(() => {
           >
             <el-icon><Refresh /></el-icon>OAuth 导出 ({{ selected.length }})
           </el-button>
+
+          <!-- 核心功能：批量复制 AT -->
+          <el-dropdown trigger="click" @command="handleCopyAtCommand">
+            <el-button type="primary" class="oa-action-btn copy-at-action-btn">
+              <el-icon><CopyDocument /></el-icon>📋 复制 AT <span v-if="selected.length">({{ selected.length }})</span>
+              <el-icon class="el-icon--right"><ArrowDown /></el-icon>
+            </el-button>
+            <template #dropdown>
+              <el-dropdown-menu class="extract-dropdown-menu">
+                <div class="dropdown-group-title">🔑 Access Token (AT) 批量复制</div>
+                <el-dropdown-item command="copy_at_selected" :disabled="!selected.length">
+                  📋 复制选中账号 AT ({{ selected.length }})
+                </el-dropdown-item>
+                <el-dropdown-item command="copy_at_page">
+                  📑 复制当前页所有有效 AT ({{ rows.filter((r) => r.at_len).length }})
+                </el-dropdown-item>
+                <el-dropdown-item command="copy_at_all" divided>
+                  🌐 全量复制所有账号 AT (全库)
+                </el-dropdown-item>
+                <el-dropdown-item command="copy_at_with_email" :disabled="!selected.length">
+                  📧 复制选中为「邮箱----AT」格式 ({{ selected.length }})
+                </el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
 
           <!-- 核心功能：Token 重新获取与刷新 -->
           <el-dropdown trigger="click" @command="handleRefreshCommand">
@@ -2740,28 +2832,28 @@ onUnmounted(() => {
             </template>
           </el-table-column>
 
-          <el-table-column label="AT" width="75" align="center">
+          <el-table-column label="AT" width="82" align="center">
             <template #default="{ row }">
-              <span v-if="row.at_len" class="mono token-len-cell link" title="点击复制 AT" @click="copyCell(row.email, 'access_token')">
-                {{ row.at_len }}
+              <span v-if="row.at_len" class="mono token-len-cell link" title="点击直接复制 Access Token (AT)" @click="copyCell(row.email, 'access_token')">
+                <el-icon class="cell-copy-ico"><CopyDocument /></el-icon>{{ row.at_len }}
               </span>
               <span v-else class="hint">—</span>
             </template>
           </el-table-column>
 
-          <el-table-column label="ST" width="75" align="center">
+          <el-table-column label="ST" width="82" align="center">
             <template #default="{ row }">
-              <span v-if="row.st_len" class="mono token-len-cell link" title="点击复制 ST" @click="copyCell(row.email, 'session_token')">
-                {{ row.st_len }}
+              <span v-if="row.st_len" class="mono token-len-cell link st-cell" title="点击直接复制 Session Token (ST)" @click="copyCell(row.email, 'session_token')">
+                <el-icon class="cell-copy-ico"><CopyDocument /></el-icon>{{ row.st_len }}
               </span>
               <span v-else class="hint">—</span>
             </template>
           </el-table-column>
 
-          <el-table-column label="RT" width="75" align="center">
+          <el-table-column label="RT" width="82" align="center">
             <template #default="{ row }">
-              <span v-if="row.rt_len" class="mono token-len-cell link" title="点击复制 RT" @click="copyCell(row.email, 'refresh_token')">
-                {{ row.rt_len }}
+              <span v-if="row.rt_len" class="mono token-len-cell link rt-cell" title="点击直接复制 Refresh Token (RT)" @click="copyCell(row.email, 'refresh_token')">
+                <el-icon class="cell-copy-ico"><CopyDocument /></el-icon>{{ row.rt_len }}
               </span>
               <span v-else class="hint">—</span>
             </template>
@@ -2773,12 +2865,12 @@ onUnmounted(() => {
             </template>
           </el-table-column>
 
-          <el-table-column label="操作" width="220" fixed="right" align="center">
+          <el-table-column label="操作" width="230" fixed="right" align="center">
             <template #default="{ row }">
               <div class="row-actions">
                 <el-button size="small" text @click="viewCred(row.email)">凭证</el-button>
                 <el-button v-if="row.totp_secret" size="small" text type="success" @click="openTotpModal(row)">2FA码</el-button>
-                <el-button size="small" text type="primary" @click="openMailOtpModal(row)">收件码</el-button>
+                <el-button size="small" text type="primary" @click="openMailOtpModal(row)">✉️ 查验证码</el-button>
 
                 <el-dropdown trigger="click" @command="(cmd) => handleRowMoreCommand(cmd, row)">
                   <el-button size="small" text type="info" class="more-btn">
@@ -2787,11 +2879,14 @@ onUnmounted(() => {
                   <template #dropdown>
                     <el-dropdown-menu class="extract-dropdown-menu">
                       <el-dropdown-item command="edit">编辑凭证</el-dropdown-item>
+                      <el-dropdown-item v-if="row.at_len" command="copy_at">🔑 复制 Access Token (AT)</el-dropdown-item>
+                      <el-dropdown-item v-if="row.st_len" command="copy_st">🎫 复制 Session Token (ST)</el-dropdown-item>
+                      <el-dropdown-item v-if="row.rt_len" command="copy_rt">🔄 复制 Refresh Token (RT)</el-dropdown-item>
+                      <el-dropdown-item command="fetch_mail">✉️ 检索/获取邮箱验证码</el-dropdown-item>
                       <el-dropdown-item v-if="!row.password" command="repair_pwd">🔑 补设密码</el-dropdown-item>
                       <el-dropdown-item v-if="!row.totp_secret" command="repair_2fa">🛡️ 补绑 2FA</el-dropdown-item>
                       <el-dropdown-item v-if="!row.totp_secret" command="totp_code" disabled>无 2FA 动态码</el-dropdown-item>
                       <el-dropdown-item v-else command="totp_code">🔑 查看 2FA 动态码</el-dropdown-item>
-                      <el-dropdown-item command="fetch_mail">✉️ 检索邮箱验证码</el-dropdown-item>
                       <el-dropdown-item v-if="row.password" command="copy_pwd">复制密码</el-dropdown-item>
                       <el-dropdown-item v-if="row.totp_secret" command="copy_2fa">复制 2FA Secret</el-dropdown-item>
                       <el-dropdown-item divided command="delete" style="color: var(--el-color-danger)">删除账号</el-dropdown-item>
@@ -4812,6 +4907,14 @@ onUnmounted(() => {
   background: linear-gradient(135deg, #059669, #047857);
 }
 
+.copy-at-action-btn {
+  background: linear-gradient(135deg, #3b82f6, #2563eb) !important;
+  box-shadow: 0 2px 6px rgba(37, 99, 235, 0.25) !important;
+}
+.copy-at-action-btn:hover:not(:disabled) {
+  background: linear-gradient(135deg, #2563eb, #1d4ed8) !important;
+}
+
 /* ──────────── 中间表格区域 ──────────── */
 .macos-table-container {
   flex: 1;
@@ -4893,9 +4996,42 @@ onUnmounted(() => {
 .token-len-cell.link {
   color: var(--el-color-primary);
   cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--el-color-primary-light-9);
+  transition: all 0.15s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
 }
 .token-len-cell.link:hover {
-  text-decoration: underline;
+  background: var(--el-color-primary-light-8);
+  color: var(--el-color-primary-dark-2);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.08);
+}
+.token-len-cell.st-cell {
+  color: var(--el-color-success);
+  background: var(--el-color-success-light-9);
+}
+.token-len-cell.st-cell:hover {
+  background: var(--el-color-success-light-8);
+  color: var(--el-color-success-dark-2);
+}
+.token-len-cell.rt-cell {
+  color: var(--el-color-warning);
+  background: var(--el-color-warning-light-9);
+}
+.token-len-cell.rt-cell:hover {
+  background: var(--el-color-warning-light-8);
+  color: var(--el-color-warning-dark-2);
+}
+.cell-copy-ico {
+  font-size: 11px;
+  opacity: 0.6;
+}
+.token-len-cell.link:hover .cell-copy-ico {
+  opacity: 1;
 }
 
 .mono-date {

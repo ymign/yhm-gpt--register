@@ -58,6 +58,12 @@ FORMATS: list[ExportFormat] = [
         render=lambda r: _s(r, "access_token"),
     ),
     ExportFormat(
+        id="email_at",
+        label="邮箱----AT",
+        filename="邮箱AT.txt",
+        render=lambda r: f'{_s(r, "email")}----{_s(r, "access_token")}',
+    ),
+    ExportFormat(
         id="email_pw",
         label="邮箱----密码",
         filename="账号密码.txt",

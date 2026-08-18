@@ -895,7 +895,16 @@ def api_fetch_mail_otp(email: str, req: Optional[FetchMailOtpReq] = None):
 
     settings = db.get_mail_settings()
     account_row = db.get_account(email_clean)
-    kind = (account_row.get("kind") if account_row else None) or settings.get("mail_source") or "cf_temp"
+    registered_row = db.get_registered(email_clean) or {}
+    kind = (registered_row.get("kind") or (account_row.get("kind") if account_row else None) or "").strip().lower()
+
+    if not kind or kind not in ("outlook", "cf_temp", "icloud_relay"):
+        if any(dom in email_clean for dom in ("@outlook.", "@hotmail.", "@live.", "@msn.")):
+            kind = "outlook"
+        elif any(dom in email_clean for dom in ("@icloud.", "@me.", "@mac.")):
+            kind = "icloud_relay"
+        else:
+            kind = "cf_temp"
 
     try:
         provider = create_mail_provider(kind, settings, account_row)
@@ -906,7 +915,7 @@ def api_fetch_mail_otp(email: str, req: Optional[FetchMailOtpReq] = None):
     otp_code = None
 
     try:
-        otp_code = provider.peek_otp(email_clean, wait=1.5)
+        otp_code = provider.peek_otp(email_clean, wait=2.0)
     except Exception:
         pass
 

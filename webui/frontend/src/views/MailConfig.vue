@@ -1,7 +1,7 @@
 <script setup>
 import { computed, onActivated, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Setting, Message, Check, Connection, Search, InfoFilled } from '@element-plus/icons-vue'
+import { Setting, Message, Check, Connection, Search, InfoFilled, View, Hide } from '@element-plus/icons-vue'
 import { getMailConfig, getMailProviders, saveMailConfig, testMail, fetchCfDomains } from '@/api/settings'
 import FooterToolbar from '@/components/FooterToolbar.vue'
 
@@ -22,10 +22,21 @@ const current = computed(
 const fields = computed(() => current.value?.config_fields || [])
 const canTest = computed(() => !!current.value && !current.value.pooled)
 
-function phFor(f) {
-  if (f.type === 'password' && saved.value[f.key] === '***') {
-    return '已设置（留空则不修改）'
+const domainPresets = computed(() => {
+  const list = [
+    { label: '🌟 yhmsiming.site (主推荐)', value: 'yhmsiming.site' },
+    { label: '🌐 shaosiming.online (备用)', value: 'shaosiming.online' },
+    { label: '🔀 双域名自动轮换', value: 'yhmsiming.site, shaosiming.online' },
+  ]
+  for (const d of discoveredDomains.value) {
+    if (!list.some((p) => p.value === d)) {
+      list.push({ label: `🌐 ${d}`, value: d })
+    }
   }
+  return list
+})
+
+function phFor(f) {
   return f.placeholder || ''
 }
 
@@ -41,10 +52,15 @@ async function load() {
     const next = {}
     for (const p of providers.value) {
       for (const f of p.config_fields) {
-        next[f.key] = f.type === 'password' ? '' : (saved.value[f.key] ?? '')
+        next[f.key] = saved.value[f.key] ?? ''
       }
     }
     form.value = next
+
+    // 如果是 cf_temp 且配置了 API，自动预热拉取可用域名列表
+    if (source.value === 'cf_temp' && (form.value.cf_api_url || '').trim()) {
+      handleFetchDomains(true)
+    }
   } catch (e) {
     ElMessage.error(e.message)
   } finally {
@@ -52,11 +68,11 @@ async function load() {
   }
 }
 
-async function handleFetchDomains() {
+async function handleFetchDomains(silent = false) {
   const apiUrl = (form.value.cf_api_url || saved.value.cf_api_url || '').trim()
   const token = (form.value.cf_admin_token || '').trim()
   if (!apiUrl) {
-    ElMessage.warning('请先填写 Worker API 地址')
+    if (!silent) ElMessage.warning('请先填写 Worker API 地址')
     return
   }
   fetchingDomains.value = true
@@ -67,15 +83,15 @@ async function handleFetchDomains() {
     })
     discoveredDomains.value = res.domains || []
     if (discoveredDomains.value.length > 0) {
-      ElMessage.success(`探测到 ${discoveredDomains.value.length} 个可用域名`)
+      if (!silent) ElMessage.success(`成功探测到 ${discoveredDomains.value.length} 个可用域名`)
       if (!form.value.cf_domain) {
         form.value.cf_domain = discoveredDomains.value[0]
       }
-    } else {
+    } else if (!silent) {
       ElMessage.info('Worker 未返回可用域名，可手动输入收件域名')
     }
   } catch (e) {
-    ElMessage.error('探测域名失败: ' + e.message)
+    if (!silent) ElMessage.error('探测域名失败: ' + e.message)
   } finally {
     fetchingDomains.value = false
   }
@@ -83,25 +99,19 @@ async function handleFetchDomains() {
 
 function selectDomain(dom) {
   form.value.cf_domain = dom
-  ElMessage.success(`已选用域名: ${dom}`)
+  ElMessage.success(`已选用收件域名: ${dom}`)
 }
 
 async function save() {
   const payload = { mail_source: source.value }
   for (const f of fields.value) {
     const v = (form.value[f.key] ?? '').trim()
-    if (f.type === 'password' && !v) {
-      if (saved.value[f.key] === '***') continue
-    }
     payload[f.key] = v
   }
 
   const missing = fields.value
     .filter((f) => f.required)
-    .filter((f) => {
-      const v = (form.value[f.key] ?? '').trim()
-      return !v && !(f.type === 'password' && saved.value[f.key] === '***')
-    })
+    .filter((f) => !(form.value[f.key] ?? '').trim())
   if (missing.length) {
     ElMessage.warning('请填写必填项：' + missing.map((f) => f.label).join('、'))
     return
@@ -200,7 +210,7 @@ load()
                 type="primary"
                 plain
                 :loading="fetchingDomains"
-                @click="handleFetchDomains"
+                @click="handleFetchDomains(false)"
               >
                 <el-icon><Search /></el-icon>探测可用域名
               </el-button>
@@ -213,35 +223,59 @@ load()
                 :label="f.label"
                 :required="f.required"
               >
+                <!-- 针对收件域名的专属快捷切换与多域名轮换交互 -->
                 <div v-if="f.key === 'cf_domain'" class="domain-input-wrapper">
+                  <!-- 快捷域名切换胶囊群 -->
+                  <div class="domain-presets-row">
+                    <span class="preset-title">⚡ 快捷选用域名:</span>
+                    <div class="preset-buttons">
+                      <el-button
+                        v-for="preset in domainPresets"
+                        :key="preset.value"
+                        size="small"
+                        :type="form[f.key] === preset.value ? 'primary' : 'default'"
+                        class="preset-btn"
+                        @click="selectDomain(preset.value)"
+                      >
+                        {{ preset.label }}
+                      </el-button>
+                    </div>
+                  </div>
+
                   <el-input
                     v-model="form[f.key]"
-                    :type="f.type === 'password' ? 'password' : 'text'"
-                    :placeholder="phFor(f)"
+                    placeholder="输入单个域名（如 yhmsiming.site）或多域名逗号分隔（如 yhmsiming.site, shaosiming.online）"
+                    clearable
                   />
+
                   <div v-if="discoveredDomains.length > 0" class="discovered-domains-list">
-                    <span class="hint-label">探测到的域名:</span>
+                    <span class="hint-label">Worker 探测到的所有域名:</span>
                     <el-tag
                       v-for="d in discoveredDomains"
                       :key="d"
                       size="small"
-                      :type="form[f.key] === d ? 'primary' : 'info'"
+                      :type="form[f.key]?.includes(d) ? 'primary' : 'info'"
                       class="domain-tag"
+                      effect="plain"
                       @click="selectDomain(d)"
                     >
                       {{ d }}
                     </el-tag>
                   </div>
+                  <div class="hint-text">支持填写单个收件域名；若填写多个域名（以英文逗号分隔），系统将在批量注册时自动随机轮询选用，避免单域名频率受限。</div>
                 </div>
 
-                <el-input
-                  v-else
-                  v-model="form[f.key]"
-                  :type="f.type === 'password' ? 'password' : 'text'"
-                  :show-password="f.type === 'password'"
-                  :placeholder="phFor(f)"
-                />
-                <div v-if="f.help" class="hint-text">{{ f.help }}</div>
+                <!-- 密钥类与常规字段：支持眼睛图标随时切换明文/密文 -->
+                <div v-else class="generic-input-wrapper">
+                  <el-input
+                    v-model="form[f.key]"
+                    :type="f.type === 'password' ? 'password' : 'text'"
+                    :show-password="f.type === 'password'"
+                    :placeholder="phFor(f)"
+                    clearable
+                  />
+                  <div v-if="f.help" class="hint-text">{{ f.help }}</div>
+                </div>
               </el-form-item>
             </el-form>
           </div>
@@ -379,11 +413,37 @@ load()
   gap: 8px;
 }
 
-.domain-input-wrapper {
+.domain-input-wrapper, .generic-input-wrapper {
   width: 100%;
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+
+.domain-presets-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 2px;
+}
+
+.preset-title {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--el-text-color-secondary);
+}
+
+.preset-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.preset-btn {
+  font-size: 11.5px;
+  padding: 4px 10px;
+  border-radius: 6px;
 }
 
 .discovered-domains-list {

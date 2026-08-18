@@ -1166,32 +1166,19 @@ def set_setting(key: str, value) -> None:
 
 
 def get_mail_config() -> dict:
-    """返回邮箱来源配置（密码类字段隐藏明文）。
-
-    provider 声明的配置项自动带出来 —— 加新邮箱时这里不用改，
-    新 provider 的 config_fields 会自动出现在返回值里。
-    """
+    """返回邮箱来源配置（支持明文查看密钥）。"""
     from mail_providers import list_providers
 
     out = {"mail_source": get_setting("mail_source", "outlook")}
     for p in list_providers():
         for f in p["config_fields"]:
             key = f["key"]
-            if f.get("type") == "password":
-                out[key] = "***" if get_setting(key) else ""
-            else:
-                out[key] = get_setting(key, "")
+            out[key] = get_setting(key, "")
     return out
 
 
 def save_mail_config(data: dict) -> None:
-    """保存邮箱配置。password 类字段传 '***' 表示不修改。
-
-    mail_source 校验改成查 mail_providers 注册表：
-        以前是写死的白名单 ("outlook", "cf_temp")，选了别的会被
-        **静默改回 outlook** —— 用户看到的是"保存成功但选择没生效"。
-        现在未知来源直接抛错，问题当场暴露。
-    """
+    """保存邮箱配置。"""
     from mail_providers import get_provider_class, list_providers
 
     if "mail_source" in data:
@@ -1206,9 +1193,8 @@ def save_mail_config(data: dict) -> None:
             if key not in data:
                 continue
             val = data[key]
-            if f.get("type") == "password":
-                if not val or val == "***":
-                    continue  # 没填 / 是掩码 → 保持原值
+            if f.get("type") == "password" and (val is None or val == "***"):
+                continue
             set_setting(key, str(val).strip())
 
 
