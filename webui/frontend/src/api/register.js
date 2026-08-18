@@ -146,6 +146,22 @@ export const bulkBind2fa = (payload) =>
 export const bulkSetPassword = (payload) =>
   http.post('/api/registered/bulk_set_password', payload)
 
+// ──────────────── 安全加固任务台 (批量补密码 & 批量补2FA 控制台) ────────────────
+export const startSecurityTask = (payload) =>
+  http.post('/api/registered/security_task/start', payload)
+
+export const stopSecurityTask = (taskId) =>
+  http.post(`/api/registered/security_task/${encodeURIComponent(taskId)}/stop`)
+
+export const retrySecurityTask = (taskId, payload = {}) =>
+  http.post(`/api/registered/security_task/${encodeURIComponent(taskId)}/retry`, payload)
+
+export const securityTaskStreamUrl = (taskId) =>
+  `/api/registered/security_task/${encodeURIComponent(taskId)}/stream`
+
+export const getSecurityTaskLog = (taskId, email) =>
+  http.get(`/api/registered/security_task/${encodeURIComponent(taskId)}/log`, { params: { email } })
+
 
 // ──────────────── 自动跑号 auto-loop ────────────────
 export const autoStart = (payload) => http.post('/api/auto/start', payload)

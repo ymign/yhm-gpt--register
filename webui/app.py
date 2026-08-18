@@ -2529,6 +2529,140 @@ def api_paypal_pay_task_input(task_id: str, req: SubmitPayPalPayInputReq):
         raise HTTPException(400, str(e))
 
 
+# ──────────────────────── 账号安全加固任务台 (批量补密码 & 批量补2FA) ────────────────────────
+
+
+class StartSecurityTaskReq(BaseModel):
+    action: str = Field("password", description="任务类型: password / 2fa")
+    emails: list[str] = Field(..., description="要处理的账号邮箱列表")
+    workers: int = Field(3, ge=1, le=10, description="并发 worker 数")
+    timeout: int = Field(60, ge=10, le=180, description="单账号超时秒数")
+    official_reset: bool = Field(True, description="是否走官方服务端全自动生效 (密码模式)")
+    proxy: Optional[str] = Field("", description="指定代理")
+    proxies: Optional[str] = Field("", description="代理池")
+
+
+def _safe_get_sec_task(q, timeout: float = 2.0):
+    try:
+        return q.get(timeout=timeout)
+    except Exception as e:
+        if type(e).__name__ == "Empty":
+            return "__TIMEOUT__"
+        return None
+
+
+@app.post("/api/registered/security_task/start")
+def api_security_task_start(req: StartSecurityTaskReq):
+    """启动安全加固批量任务 (批量补设密码 / 批量补绑 2FA)。"""
+    from . import security_task_service
+
+    emails = [e.strip().lower() for e in (req.emails or []) if e and e.strip()]
+    if not emails:
+        raise HTTPException(400, "请提供目标账号邮箱列表")
+
+    proxies = []
+    if req.proxies and req.proxies.strip():
+        proxies = [p.strip() for p in req.proxies.split("\n") if p.strip()]
+    elif req.proxy and req.proxy.strip():
+        proxies = [req.proxy.strip()]
+
+    cfg = {
+        "workers": req.workers,
+        "timeout": req.timeout,
+        "official_reset": req.official_reset,
+        "proxies": proxies,
+    }
+
+    try:
+        res = security_task_service.start_security_task(action=req.action, emails=emails, config=cfg)
+        return res
+    except Exception as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/registered/security_task/{task_id}/stop")
+def api_security_task_stop(task_id: str):
+    """停止指定的安全加固任务。"""
+    from . import security_task_service
+    try:
+        return security_task_service.stop_security_task(task_id)
+    except Exception as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/registered/security_task/{task_id}/retry")
+def api_security_task_retry(task_id: str, req: Optional[dict] = None):
+    """重试失败账号或指定账号。"""
+    from . import security_task_service
+    emails = req.get("emails") if isinstance(req, dict) else None
+    try:
+        return security_task_service.retry_security_task(task_id, emails=emails)
+    except Exception as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/registered/security_task/{task_id}/stream")
+async def api_security_task_stream(task_id: str, request: Request):
+    """SSE 实时推送安全加固任务进度与日志。"""
+    from . import security_task_service
+    task = security_task_service.get_security_task(task_id)
+    if not task:
+        raise HTTPException(404, "任务未找到")
+
+    async def event_gen():
+        loop = asyncio.get_event_loop()
+        init_data = {
+            "task_id": task_id,
+            "action": task.action,
+            "total": len(task.items),
+            "items": task.items,
+            "stats": task.stats,
+        }
+        yield f"event: init\ndata: {json.dumps(init_data, ensure_ascii=False)}\n\n"
+        while True:
+            if await request.is_disconnected():
+                break
+            msg = await loop.run_in_executor(None, _safe_get_sec_task, task.queue, 2.0)
+            if msg is None:
+                break
+            if msg == "__TIMEOUT__":
+                yield ": keep-alive\n\n"
+                continue
+            kind = msg.get("kind") or "progress"
+            data_str = json.dumps(msg, ensure_ascii=False)
+            if kind == "done":
+                yield f"event: done\ndata: {data_str}\n\n"
+                break
+            elif kind == "log":
+                yield f"event: log\ndata: {data_str}\n\n"
+            else:
+                yield f"event: progress\ndata: {data_str}\n\n"
+
+    return StreamingResponse(
+        event_gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
+@app.get("/api/registered/security_task/{task_id}/log")
+def api_security_task_log(task_id: str, email: str = ""):
+    """获取安全加固任务中单个账号的完整日志。"""
+    from . import security_task_service
+    task = security_task_service.get_security_task(task_id)
+    if not task:
+        raise HTTPException(404, "任务未找到")
+    email = email.strip().lower()
+    item = task.items.get(email)
+    if not item:
+        return {"ok": True, "email": email, "lines": ["未找到该账号的执行日志"]}
+    return {"ok": True, "email": email, "lines": item.get("logs", []), "status": item.get("status")}
+
+
 # ──────────────────────── auto-loop ────────────────────────
 
 

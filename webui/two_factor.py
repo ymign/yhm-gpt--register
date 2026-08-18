@@ -166,7 +166,12 @@ def bind_totp_2fa_by_token(access_token: str, proxy: str = "") -> dict:
         raise
 
 
-def bind_totp_2fa_adaptive(row: dict, proxy: str = "") -> dict:
+def bind_totp_2fa_adaptive(
+    row: dict,
+    proxy: str = "",
+    step_cb: Optional[Callable[[str], None]] = None,
+    log_cb: Optional[Callable[[str], None]] = None,
+) -> dict:
     """智能自适应 2FA 绑定：
     1. 若已有 access_token 则尝试直接打官方接口绑定；
     2. 若 access_token 过期且有 refresh_token，自动通过 RT 极速换取新 access_token 后继续绑定；
@@ -175,6 +180,21 @@ def bind_totp_2fa_adaptive(row: dict, proxy: str = "") -> dict:
     from . import db
     from .token_refresh_service import refresh_token_fast
 
+    def _log(msg: str):
+        logger.info(f"[2fa-adaptive] {msg}")
+        if log_cb:
+            try:
+                log_cb(msg)
+            except Exception:
+                pass
+
+    def _step(step_name: str):
+        if step_cb:
+            try:
+                step_cb(step_name)
+            except Exception:
+                pass
+
     email = (row.get("email") or "").strip().lower()
     if not email:
         raise ValueError("缺少邮箱")
@@ -182,6 +202,7 @@ def bind_totp_2fa_adaptive(row: dict, proxy: str = "") -> dict:
     # 如果已有 totp_secret，先复核是否已绑
     current_secret = (row.get("totp_secret") or "").strip()
     if current_secret:
+        _log("该账号在本地已登记有 2FA Secret，复用现有配置")
         return {
             "ok": True,
             "already_bound": True,
@@ -196,32 +217,38 @@ def bind_totp_2fa_adaptive(row: dict, proxy: str = "") -> dict:
     # 优先尝试现有 access_token
     if token:
         try:
+            _step("正在通过现有 Access Token 请求官方 mfa/enroll...")
+            _log("使用现有 Access Token 打官方 mfa_info 检查...")
             res = bind_totp_2fa_by_token(token, proxy=proxy)
             if res.get("secret"):
                 db.update_registered_manual(email, totp_secret=res["secret"])
+                _log(f"🎉 2FA 绑定成功！Secret={res['secret']}")
             return res
         except Exception as e:
             err_msg = str(e)
-            logger.info(f"[2fa-adaptive] 账号 {email} 使用现有 AT 绑定失败 ({err_msg})，尝试 RT 换取新 Token...")
+            _log(f"⚠️ 账号使用现有 AT 绑定失败 ({err_msg})，尝试 RT 换取新 Token...")
             if not refresh_token:
                 raise
 
     # 尝试使用 refresh_token 刷新 access_token
     if refresh_token:
         try:
-            logger.info(f"[2fa-adaptive] 正在使用 Refresh Token 为 {email} 刷新凭证...")
+            _step("正在通过 Refresh Token 换取新凭证...")
+            _log(f"正在使用 Refresh Token 极速刷新凭证...")
             rf_res = refresh_token_fast(refresh_token, proxy=proxy)
             new_at = rf_res.get("access_token") or ""
             new_rt = rf_res.get("refresh_token") or refresh_token
             if new_at:
                 db.update_registered_manual(email, access_token=new_at, refresh_token=new_rt)
-                logger.info(f"[2fa-adaptive] 凭证刷新成功，正在为 {email} 提交官方 2FA 绑定...")
+                _step("新 Token 换取成功，正在提交官方 2FA 激活...")
+                _log(f"凭证刷新成功，正在向 OpenAI 官方提交 2FA 激活...")
                 res = bind_totp_2fa_by_token(new_at, proxy=proxy)
                 if res.get("secret"):
                     db.update_registered_manual(email, totp_secret=res["secret"])
+                    _log(f"🎉 2FA 绑定成功！Secret={res['secret']}")
                 return res
         except Exception as e2:
-            logger.warning(f"[2fa-adaptive] RT 刷新后绑定 2FA 仍失败: {e2}")
+            _log(f"❌ RT 刷新后绑定 2FA 仍失败: {e2}")
             raise RuntimeError(f"Token 已失效且刷新失败: {e2}")
 
     raise RuntimeError("该账号无可用 Access Token 或 Refresh Token，无法向 OpenAI 官方申请绑定 2FA")

@@ -65,6 +65,11 @@ import {
   tokenRefreshStreamUrl,
   getTokenRefreshLog,
   downloadTokenRefreshExport,
+  startSecurityTask,
+  stopSecurityTask,
+  retrySecurityTask,
+  securityTaskStreamUrl,
+  getSecurityTaskLog,
 } from '@/api/register'
 import { saveSmsConfig } from '@/api/settings'
 import { copyText, fmtTime, createSSE } from '@/api/request'
@@ -2357,64 +2362,427 @@ function handleRowMoreCommand(cmd, row) {
   else if (cmd === 'delete') deleteOne(row.email)
 }
 
-// 6. 顶部安全加固批量操作
-async function handleSecurityCommand(cmd) {
+// ════════════════════════ 安全加固任务台 (批量补密码 & 批量补2FA 控制台) ════════════════════════
+const securityVisible = ref(false)
+const securityRunning = ref(false)
+const securityTaskId = ref('')
+const securityEs = ref(null)
+const securityConfigCollapsed = ref(true)
+const securityTargetEmails = ref([])
+const securityItems = ref({})
+const securityLogs = ref([])
+const securityAction = ref('password') // 'password' | '2fa'
+const securityForm = reactive({
+  action: 'password', // 'password' | '2fa'
+  officialReset: true, // 走官方服务端全自动生效 (密码模式)
+  proxy: '__POOL__',
+  proxyCountry: 'BR',
+  workers: 5,
+  timeout: 60,
+})
+
+// 弹窗内单账号日志终端
+const securityLogModalVisible = ref(false)
+const currentSecurityLogItem = ref(null)
+const securityLogLines = ref([])
+const securityLogLoading = ref(false)
+const securityModalLogBoxRef = ref(null)
+
+// 实时耗时秒表
+const securityElapsed = ref(0)
+let securityLiveTimer = null
+
+// ── 安全加固高性能分页、状态筛选与批量节流更新 ──
+const securityPage = ref(1)
+const securityPageSize = ref(50)
+const securityFilter = ref('all') // 'all' | 'running' | 'failed' | 'success' | 'pending'
+const securitySearch = ref('')
+
+function isSecurityFailedRow(item) {
+  if (!item) return false
+  if (item.status === 'failed') return true
+  if (item.result && (item.result.status === 'failed' || item.result.status === 'error')) return true
+  return false
+}
+
+const securityFilteredRows = computed(() => {
+  const list = Object.values(securityItems.value)
+  const kw = securitySearch.value.trim().toLowerCase()
+  const f = securityFilter.value
+  return list.filter((item) => {
+    if (kw && !item.email.toLowerCase().includes(kw)) return false
+    if (f === 'all') return true
+    if (f === 'running') return item.status === 'running'
+    if (f === 'pending') return item.status === 'pending'
+    if (f === 'failed') return isSecurityFailedRow(item)
+    if (f === 'success') return item.status === 'success' || (item.status === 'done' && !isSecurityFailedRow(item))
+    return true
+  })
+})
+
+const securityDisplayRows = computed(() => {
+  const rows = securityFilteredRows.value
+  const start = (securityPage.value - 1) * securityPageSize.value
+  return rows.slice(start, start + securityPageSize.value)
+})
+
+let securityUpdateTimer = null
+let securityPendingUpdates = {}
+let securityPendingLogs = []
+
+function flushSecurityUpdates() {
+  if (securityUpdateTimer) {
+    cancelAnimationFrame(securityUpdateTimer)
+    securityUpdateTimer = null
+  }
+  if (Object.keys(securityPendingUpdates).length > 0) {
+    const copy = { ...securityItems.value }
+    for (const [em, up] of Object.entries(securityPendingUpdates)) {
+      if (!copy[em]) {
+        copy[em] = { email: em, action: securityAction.value, status: 'pending', step_text: '排队中...', result: null, elapsed: 0 }
+      }
+      Object.assign(copy[em], up)
+    }
+    securityItems.value = copy
+    securityPendingUpdates = {}
+  }
+  if (securityPendingLogs.length > 0) {
+    securityLogs.value.push(...securityPendingLogs)
+    if (securityLogs.value.length > 200) {
+      securityLogs.value = securityLogs.value.slice(-200)
+    }
+    securityPendingLogs = []
+  }
+}
+
+function scheduleSecurityUpdate() {
+  if (securityUpdateTimer) return
+  securityUpdateTimer = requestAnimationFrame(() => {
+    securityUpdateTimer = null
+    flushSecurityUpdates()
+  })
+}
+
+const securityStats = computed(() => {
+  const items = Object.values(securityItems.value)
+  const tot = items.length || securityTargetEmails.value.length || 0
+  const success = items.filter((i) => i.status === 'success').length
+  const fail = items.filter((i) => isSecurityFailedRow(i)).length
+  const skipped = items.filter((i) => i.status === 'skipped').length
+  const done = success + fail + skipped
+  const running = items.filter((i) => i.status === 'running').length
+  const pending = items.filter((i) => i.status === 'pending').length
+  const percent = tot > 0 ? Math.round((done / tot) * 100) : 0
+  return {
+    total: tot, done, running, pending,
+    success, fail, skipped,
+    percent,
+  }
+})
+
+async function openSecurityTask(action = 'password', scope = 'selected') {
+  let emails = []
+  if (scope === 'selected') {
+    if (!selected.value.length) {
+      ElMessage.warning('请先在表格中勾选要处理的账号')
+      return
+    }
+    emails = selected.value.map((r) => r.email)
+  } else if (scope === 'all_missing_pwd') {
+    loading.value = true
+    try {
+      const res = await listRegisteredEmails('no_password')
+      emails = res.emails || []
+      if (!emails.length) {
+        ElMessage.info('当前没有未设置密码的账号')
+        loading.value = false
+        return
+      }
+    } catch (e) {
+      ElMessage.error('获取账号列表失败: ' + e.message)
+      loading.value = false
+      return
+    } finally {
+      loading.value = false
+    }
+  } else if (scope === 'all_missing_2fa') {
+    loading.value = true
+    try {
+      const res = await listRegisteredEmails('no_2fa')
+      emails = res.emails || []
+      if (!emails.length) {
+        ElMessage.info('当前没有未绑定 2FA 的账号')
+        loading.value = false
+        return
+      }
+    } catch (e) {
+      ElMessage.error('获取账号列表失败: ' + e.message)
+      loading.value = false
+      return
+    } finally {
+      loading.value = false
+    }
+  } else if (scope === 'all') {
+    loading.value = true
+    try {
+      const res = await listRegisteredEmails('all')
+      emails = res.emails || []
+    } catch (e) {
+      ElMessage.error('获取账号列表失败: ' + e.message)
+      loading.value = false
+      return
+    } finally {
+      loading.value = false
+    }
+  }
+
+  securityAction.value = action
+  securityForm.action = action
+  securityTargetEmails.value = emails
+  securityVisible.value = true
+  await startSecurityTaskRunner()
+}
+
+function closeSecurityTask() {
+  flushSecurityUpdates()
+  if (securityRunning.value) {
+    ElMessage.info('安全加固任务在后台继续运行，可随时重新打开查看进度')
+  }
+  if (securityEs.value && !securityRunning.value) {
+    securityEs.value.close()
+    securityEs.value = null
+  }
+  if (!securityRunning.value && securityLiveTimer) {
+    clearInterval(securityLiveTimer)
+    securityLiveTimer = null
+  }
+  securityVisible.value = false
+}
+
+async function stopSecurityTaskRunner() {
+  if (!securityTaskId.value) {
+    securityRunning.value = false
+    return
+  }
+  try {
+    await stopSecurityTask(securityTaskId.value)
+    ElMessage.success('已发送停止指令')
+  } catch (_) {
+    ElMessage.info('任务已结束')
+  } finally {
+    flushSecurityUpdates()
+    securityRunning.value = false
+    if (securityLiveTimer) {
+      clearInterval(securityLiveTimer)
+      securityLiveTimer = null
+    }
+  }
+}
+
+async function startSecurityTaskRunner() {
+  const emails = securityTargetEmails.value
+  if (!emails.length) {
+    ElMessage.warning('没有待处理的账号列表')
+    return
+  }
+
+  if (securityEs.value) {
+    securityEs.value.close()
+    securityEs.value = null
+  }
+  if (securityLiveTimer) {
+    clearInterval(securityLiveTimer)
+    securityLiveTimer = null
+  }
+
+  flushSecurityUpdates()
+  securityRunning.value = true
+  securityLogs.value = []
+  securityPage.value = 1
+  securityFilter.value = 'all'
+  securitySearch.value = ''
+  securityConfigCollapsed.value = true
+  securityElapsed.value = 0
+
+  const secStartTime = Date.now()
+  securityLiveTimer = setInterval(() => {
+    if (securityRunning.value) {
+      securityElapsed.value = Math.max(0, Math.floor((Date.now() - secStartTime) / 1000))
+    }
+  }, 1000)
+
+  const initMap = Object.create(null)
+  for (const em of emails) {
+    initMap[em] = { email: em, action: securityAction.value, status: 'pending', step_text: '排队中...', result: null, elapsed: 0 }
+  }
+  securityItems.value = initMap
+
+  let proxiesParam = ''
+  let proxyParam = ''
+  if (securityForm.proxy === '__POOL__') {
+    proxiesParam = proxyList.value.join('\n')
+  } else {
+    proxyParam = (securityForm.proxy || '').trim()
+  }
+
+  try {
+    const res = await startSecurityTask({
+      action: securityAction.value,
+      emails,
+      proxies: proxiesParam,
+      proxy: proxyParam,
+      official_reset: securityForm.officialReset,
+      workers: securityForm.workers || 5,
+      timeout: securityForm.timeout || 60,
+    })
+    const taskId = res.taskId || res.task_id
+    if (!taskId) throw new Error('未获取到任务 ID')
+    securityTaskId.value = taskId
+
+    securityEs.value = createSSE(securityTaskStreamUrl(taskId), {
+      init: (ev) => {
+        try {
+          const snap = JSON.parse(ev.data)
+          if (snap.items) {
+            securityItems.value = snap.items
+          }
+        } catch (_) {}
+      },
+      progress: (ev) => {
+        try {
+          const msg = JSON.parse(ev.data)
+          if (msg.email) {
+            if (!securityPendingUpdates[msg.email]) securityPendingUpdates[msg.email] = {}
+            if (msg.status !== undefined) securityPendingUpdates[msg.email].status = msg.status
+            if (msg.step_text !== undefined) securityPendingUpdates[msg.email].step_text = msg.step_text
+            if (msg.result !== undefined) securityPendingUpdates[msg.email].result = msg.result
+            if (msg.error !== undefined) securityPendingUpdates[msg.email].error = msg.error
+            if (msg.elapsed !== undefined) securityPendingUpdates[msg.email].elapsed = msg.elapsed
+            scheduleSecurityUpdate()
+          }
+        } catch (_) {}
+      },
+      log: (ev) => {
+        try {
+          const msg = JSON.parse(ev.data)
+          if (msg.line) {
+            securityPendingLogs.push(msg.line)
+            scheduleSecurityUpdate()
+            if (securityLogModalVisible.value && currentSecurityLogItem.value) {
+              const targetEmail = currentSecurityLogItem.value.email
+              if (!msg.email || msg.email === targetEmail || msg.line.includes(targetEmail)) {
+                securityLogLines.value.push(msg.line)
+                scrollSecurityModalLog()
+              }
+            }
+          }
+        } catch (_) {}
+      },
+      done: () => {
+        flushSecurityUpdates()
+        securityRunning.value = false
+        if (securityLiveTimer) {
+          clearInterval(securityLiveTimer)
+          securityLiveTimer = null
+        }
+        ElMessage.success('安全加固任务已全部完成！')
+        load(false)
+      },
+      end: () => {
+        flushSecurityUpdates()
+        securityRunning.value = false
+        if (securityLiveTimer) {
+          clearInterval(securityLiveTimer)
+          securityLiveTimer = null
+        }
+        load(false)
+      },
+      error: () => {
+        flushSecurityUpdates()
+        securityRunning.value = false
+        if (securityLiveTimer) {
+          clearInterval(securityLiveTimer)
+          securityLiveTimer = null
+        }
+      },
+    })
+  } catch (e) {
+    securityRunning.value = false
+    if (securityLiveTimer) {
+      clearInterval(securityLiveTimer)
+      securityLiveTimer = null
+    }
+    ElMessage.error('启动任务失败: ' + (e.response?.data?.detail || e.message))
+  }
+}
+
+async function retrySecurityTaskRunner(targetEmails = null) {
+  if (!securityTaskId.value) {
+    ElMessage.warning('任务未初始化，请先启动任务')
+    return
+  }
+  let toRetry = []
+  if (Array.isArray(targetEmails) && targetEmails.length) {
+    toRetry = targetEmails
+  } else {
+    toRetry = Object.values(securityItems.value).filter(isSecurityFailedRow).map((i) => i.email)
+  }
+  if (!toRetry.length) {
+    ElMessage.info('没有需要重试的失败账号')
+    return
+  }
+
+  try {
+    flushSecurityUpdates()
+    for (const em of toRetry) {
+      if (securityItems.value[em]) {
+        securityItems.value[em].status = 'pending'
+        securityItems.value[em].step_text = '排队重试中...'
+        securityItems.value[em].error = ''
+      }
+    }
+    securityRunning.value = true
+    const res = await retrySecurityTask(securityTaskId.value, { emails: toRetry })
+    ElMessage.success(`已开始重试 ${res.retrying_count || toRetry.length} 个账号`)
+  } catch (e) {
+    ElMessage.error('重试失败: ' + (e.response?.data?.detail || e.message))
+  }
+}
+
+function scrollSecurityModalLog() {
+  nextTick(() => {
+    if (securityModalLogBoxRef.value) {
+      securityModalLogBoxRef.value.scrollTop = securityModalLogBoxRef.value.scrollHeight
+    }
+  })
+}
+
+async function openSecurityItemLog(row) {
+  currentSecurityLogItem.value = row
+  securityLogLines.value = []
+  securityLogModalVisible.value = true
+  securityLogLoading.value = true
+  try {
+    const res = await getSecurityTaskLog(securityTaskId.value, row.email)
+    securityLogLines.value = res.lines || []
+    scrollSecurityModalLog()
+  } catch (e) {
+    securityLogLines.value = row.logs || ['暂无日志']
+  } finally {
+    securityLogLoading.value = false
+  }
+}
+
+// 6. 顶部安全加固批量操作菜单跳转
+function handleSecurityCommand(cmd) {
   if (cmd === 'batch_pwd_selected') {
-    const emails = selected.value.map((r) => r.email)
-    if (!emails.length) { ElMessage.warning('请先勾选要补设密码的账号'); return }
-    try {
-      await ElMessageBox.confirm(
-        `将为选中的 ${emails.length} 个账号全自动向 OpenAI 官方申请重置邮件并在服务端真正设置密码并落库，确定？`,
-        '批量官方设置密码确认',
-        { type: 'info', confirmButtonText: '确定官方设置', cancelButtonText: '取消' }
-      )
-      loading.value = true
-      const res = await bulkSetPassword({ emails, official_reset: true, proxy: proxyText(form.value) })
-      ElMessage.success(`批量设置密码完成：成功 ${res.updated_count} 个，失败 ${res.fail_count || 0} 个`)
-      load(false)
-    } catch (_) {} finally { loading.value = false }
+    openSecurityTask('password', 'selected')
   } else if (cmd === 'batch_pwd_all_missing') {
-    try {
-      await ElMessageBox.confirm(
-        '将为号池中所有未设置密码的账号全量向 OpenAI 官方申请重置邮件并完成官方设密，确定？',
-        '全量官方设置密码确认',
-        { type: 'warning', confirmButtonText: '确定全量设置', cancelButtonText: '取消' }
-      )
-      loading.value = true
-      const resEmails = await listRegisteredEmails('no_password')
-      const emails = resEmails.emails || []
-      if (!emails.length) {
-        ElMessage.info('当前没有缺少密码的账号')
-        return
-      }
-      const res = await bulkSetPassword({ emails, official_reset: true, proxy: proxyText(form.value) })
-      ElMessage.success(`全量官方设密完成！成功 ${res.updated_count} 个，失败 ${res.fail_count || 0} 个`)
-      load(false)
-    } catch (_) {} finally { loading.value = false }
+    openSecurityTask('password', 'all_missing_pwd')
   } else if (cmd === 'batch_2fa_selected') {
-    const emails = selected.value.map((r) => r.email)
-    if (!emails.length) { ElMessage.warning('请先勾选要补绑 2FA 的账号'); return }
-    try {
-      await ElMessageBox.confirm(`将调用官方 API 为选中的 ${emails.length} 个账号批量补绑 2FA，确定？`, '批量补绑 2FA 确认', { type: 'info' })
-      loading.value = true
-      const res = await bulkBind2fa({ emails, proxy: proxyText(form.value) })
-      ElMessage.success(`批量 2FA 绑定完成：成功 ${res.success_count} 个，失败 ${res.fail_count} 个，已绑定 ${res.already_count} 个`)
-      load(false)
-    } catch (_) {} finally { loading.value = false }
+    openSecurityTask('2fa', 'selected')
   } else if (cmd === 'batch_2fa_all_missing') {
-    try {
-      await ElMessageBox.confirm('将为所有未绑定 2FA 且拥有 Token 的账号全量补绑 2FA，确定？', '全量补绑 2FA 确认', { type: 'warning' })
-      loading.value = true
-      const resEmails = await listRegisteredEmails('no_2fa')
-      const emails = resEmails.emails || []
-      if (!emails.length) {
-        ElMessage.info('当前没有缺少 2FA 的账号')
-        return
-      }
-      const res = await bulkBind2fa({ emails, proxy: proxyText(form.value) })
-      ElMessage.success(`全量 2FA 绑定完成：成功 ${res.success_count} 个，失败 ${res.fail_count} 个，已绑定 ${res.already_count} 个`)
-      load(false)
-    } catch (_) {} finally { loading.value = false }
+    openSecurityTask('2fa', 'all_missing_2fa')
   }
 }
 
@@ -2433,6 +2801,14 @@ onUnmounted(() => {
   if (oauthEs.value) {
     oauthEs.value.close()
     oauthEs.value = null
+  }
+  if (securityEs.value) {
+    securityEs.value.close()
+    securityEs.value = null
+  }
+  if (securityLiveTimer) {
+    clearInterval(securityLiveTimer)
+    securityLiveTimer = null
   }
 })
 </script>
@@ -4411,6 +4787,338 @@ onUnmounted(() => {
       </template>
     </el-dialog>
 
+    <!-- ──────────────── 安全加固任务控制台 (批量补密码 & 批量补2FA 任务台) ──────────────── -->
+    <el-dialog
+      v-model="securityVisible"
+      width="920px"
+      top="5vh"
+      class="oa-custom-dialog plus-dialog sec-dialog"
+      :close-on-click-modal="false"
+      @closed="closeSecurityTask"
+    >
+      <template #header>
+        <div class="oa-header">
+          <div class="oa-header-title">
+            <span class="oa-title-badge sec-badge">SECURITY</span>
+            <span class="oa-title-text">账号安全加固任务台</span>
+            <el-tag size="small" :type="securityAction === 'password' ? 'primary' : 'success'" round effect="dark">
+              {{ securityAction === 'password' ? '🔑 批量官方设密/重置' : '🛡️ 批量自适应补绑 2FA' }}
+            </el-tag>
+            <el-tag size="small" type="info" round effect="plain">{{ securityTargetEmails.length }} 个目标账号</el-tag>
+          </div>
+          <div class="oa-header-extra">
+            <el-button size="small" text @click="securityConfigCollapsed = !securityConfigCollapsed">
+              <el-icon><Setting /></el-icon>{{ securityConfigCollapsed ? '展开参数配置' : '收起参数配置' }}
+            </el-button>
+          </div>
+        </div>
+      </template>
+
+      <div class="oa-dialog-container">
+        <!-- 参数配置卡片 -->
+        <el-collapse-transition>
+          <div v-show="!securityConfigCollapsed" class="oa-config-card">
+            <el-form label-position="top" :disabled="securityRunning" size="small">
+              <el-row :gutter="12">
+                <el-col :xs="24" :sm="12" :md="6">
+                  <el-form-item label="任务模式选择">
+                    <el-select v-model="securityAction" style="width: 100%">
+                      <el-option label="🔑 官方设密 / 补设登录密码" value="password" />
+                      <el-option label="🛡️ 官方自适应补绑 2FA" value="2fa" />
+                    </el-select>
+                  </el-form-item>
+                </el-col>
+                <el-col :xs="24" :sm="12" :md="8">
+                  <el-form-item label="网络代理 (支持全局代理池轮询/直连)">
+                    <el-select
+                      v-model="securityForm.proxy"
+                      filterable
+                      clearable
+                      allow-create
+                      default-first-option
+                      placeholder="选择或输入代理"
+                      style="width: 100%"
+                    >
+                      <el-option
+                        v-if="proxyList.length"
+                        label="🌐 全局代理池轮询 (自动多Worker分配)"
+                        value="__POOL__"
+                      />
+                      <el-option v-for="p in proxyList" :key="p" :label="p" :value="p" />
+                    </el-select>
+                  </el-form-item>
+                </el-col>
+                <el-col :xs="12" :sm="6" :md="3">
+                  <el-form-item label="并发 Worker">
+                    <el-input-number v-model="securityForm.workers" :min="1" :max="10" style="width: 100%" />
+                  </el-form-item>
+                </el-col>
+                <el-col :xs="12" :sm="6" :md="3">
+                  <el-form-item label="超时 (秒)">
+                    <el-input-number v-model="securityForm.timeout" :min="10" :max="180" style="width: 100%" />
+                  </el-form-item>
+                </el-col>
+                <el-col v-if="securityAction === 'password'" :xs="24" :sm="12" :md="4">
+                  <el-form-item label="服务端生效">
+                    <el-checkbox v-model="securityForm.officialReset" label="官方全自动生效" />
+                  </el-form-item>
+                </el-col>
+              </el-row>
+              <div style="font-size: 11.5px; color: var(--el-text-color-secondary); line-height: 1.5; margin-top: 2px">
+                💡 <b>模式说明</b>：<b>官方设密</b> 将自动向 OpenAI 官方申请重置邮件、收信获取验证码并在官方服务端生效；<b>补绑 2FA</b> 将打官方 MFA enroll/activate 激活 TOTP 并持久化 Secret。
+              </div>
+            </el-form>
+          </div>
+        </el-collapse-transition>
+
+        <!-- KPI 统计看板 -->
+        <div class="plus-kpi-grid">
+          <div class="plus-kpi-card">
+            <span class="kpi-label">已处理 / 总数</span>
+            <span class="kpi-num">{{ securityStats.done }} / {{ securityStats.total }}</span>
+          </div>
+          <div class="plus-kpi-card hit-active">
+            <span class="kpi-label">✅ 成功生效</span>
+            <span class="kpi-num text-primary">{{ securityStats.success }}</span>
+          </div>
+          <div class="plus-kpi-card hit-fail">
+            <span class="kpi-label">❌ 失败 / 异常</span>
+            <span class="kpi-num" :class="securityStats.fail > 0 ? 'text-danger' : ''">{{ securityStats.fail }}</span>
+          </div>
+          <div class="plus-kpi-card">
+            <span class="kpi-label">⚡ 任务耗时</span>
+            <span class="kpi-num mono">{{ securityElapsed }}s</span>
+          </div>
+        </div>
+
+        <!-- 进度条 -->
+        <div class="plus-progress-row">
+          <el-progress
+            :percentage="securityStats.percent"
+            :stroke-width="6"
+            :status="securityStats.percent === 100 ? (securityStats.fail > 0 ? 'warning' : 'success') : ''"
+          />
+        </div>
+
+        <!-- 操作工具栏 & 筛选 -->
+        <div class="plus-actions-toolbar">
+          <div class="toolbar-left">
+            <el-radio-group v-model="securityFilter" size="small" class="macos-radio-group">
+              <el-radio-button value="all">全部 ({{ securityStats.total }})</el-radio-button>
+              <el-radio-button value="running">进行中 ({{ securityStats.running }})</el-radio-button>
+              <el-radio-button value="success">成功 ({{ securityStats.success }})</el-radio-button>
+              <el-radio-button value="failed">失败 ({{ securityStats.fail }})</el-radio-button>
+              <el-radio-button value="pending">排队中 ({{ securityStats.pending }})</el-radio-button>
+            </el-radio-group>
+
+            <!-- 核心功能：一键重试所有失败账号 -->
+            <el-button
+              size="small"
+              type="danger"
+              plain
+              :disabled="securityStats.fail === 0 || securityRunning"
+              @click="retrySecurityTaskRunner()"
+            >
+              <el-icon><Refresh /></el-icon>🔄 一键重试失败账号 ({{ securityStats.fail }})
+            </el-button>
+          </div>
+
+          <div class="toolbar-right">
+            <el-input
+              v-model="securitySearch"
+              placeholder="搜索当前列表邮箱..."
+              prefix-icon="Search"
+              size="small"
+              clearable
+              style="width: 190px"
+            />
+          </div>
+        </div>
+
+        <!-- 账号处理表格 -->
+        <div class="oa-table-box">
+          <el-table
+            :data="securityDisplayRows"
+            size="small"
+            style="width: 100%"
+            height="320"
+            class="macos-table"
+            empty-text="暂无账号数据"
+          >
+            <el-table-column label="账号邮箱" min-width="190" show-overflow-tooltip>
+              <template #default="{ row }">
+                <button
+                  type="button"
+                  class="macos-tag-btn copy-btn"
+                  title="点击复制邮箱"
+                  @click="copyText(row.email)"
+                >
+                  <span class="mono">{{ row.email }}</span>
+                  <el-icon class="copy-ico"><CopyDocument /></el-icon>
+                </button>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="状态" width="100" align="center">
+              <template #default="{ row }">
+                <el-tag v-if="row.status === 'running'" size="small" type="primary" effect="dark">
+                  <el-icon class="is-loading"><Loading /></el-icon> 执行中
+                </el-tag>
+                <el-tag v-else-if="row.status === 'success'" size="small" type="success" effect="dark">
+                  ✅ 成功
+                </el-tag>
+                <el-tag v-else-if="isSecurityFailedRow(row)" size="small" type="danger" effect="dark">
+                  ❌ 失败
+                </el-tag>
+                <el-tag v-else-if="row.status === 'skipped'" size="small" type="warning" effect="plain">
+                  ⚪ 跳过
+                </el-tag>
+                <el-tag v-else size="small" type="info" effect="plain">
+                  排队中
+                </el-tag>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="步骤与处理结果" min-width="240" show-overflow-tooltip>
+              <template #default="{ row }">
+                <div v-if="row.result?.password" class="mono text-success link" style="cursor: pointer" @click="copyText(row.result.password, '密码已复制')">
+                  🔑 密码: {{ row.result.password }}
+                  <el-tag v-if="row.result.official_applied" size="small" type="success" style="margin-left: 4px">官方生效</el-tag>
+                </div>
+                <div v-else-if="row.result?.totp_secret" class="mono text-success link" style="cursor: pointer" @click="copyText(row.result.totp_secret, '2FA Secret 已复制')">
+                  🛡️ Secret: {{ row.result.totp_secret }}
+                </div>
+                <div v-else-if="row.error" class="text-danger" style="font-size: 11.5px">
+                  {{ row.error }}
+                </div>
+                <div v-else style="font-size: 11.5px; color: var(--el-text-color-secondary)">
+                  {{ row.step_text || '—' }}
+                </div>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="耗时" width="80" align="center">
+              <template #default="{ row }">
+                <span class="mono" style="font-size: 11px">{{ row.elapsed ? row.elapsed + 's' : '—' }}</span>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="操作" width="130" align="center" fixed="right">
+              <template #default="{ row }">
+                <div class="row-actions">
+                  <el-button size="small" text type="primary" @click="openSecurityItemLog(row)">
+                    📜 日志
+                  </el-button>
+                  <el-button
+                    v-if="isSecurityFailedRow(row)"
+                    size="small"
+                    text
+                    type="warning"
+                    :disabled="securityRunning"
+                    @click="retrySecurityTaskRunner([row.email])"
+                  >
+                    🔄 重试
+                  </el-button>
+                </div>
+              </template>
+            </el-table-column>
+          </el-table>
+        </div>
+      </div>
+
+      <template #footer>
+        <div class="oa-dialog-footer">
+          <div class="footer-left">
+            <el-pagination
+              v-model:current-page="securityPage"
+              v-model:page-size="securityPageSize"
+              :page-sizes="[20, 50, 100, 200]"
+              :total="securityFilteredRows.length"
+              layout="total, sizes, prev, pager, next"
+              size="small"
+            />
+          </div>
+          <div class="footer-right">
+            <el-button size="small" @click="closeSecurityTask">关闭窗口</el-button>
+            <el-button
+              v-if="securityRunning"
+              size="small"
+              type="danger"
+              plain
+              @click="stopSecurityTaskRunner"
+            >
+              <el-icon><SwitchButton /></el-icon>停止任务
+            </el-button>
+            <el-button
+              v-else
+              type="primary"
+              class="start-gradient-btn"
+              :loading="securityRunning"
+              :disabled="!securityTargetEmails.length"
+              @click="startSecurityTaskRunner"
+            >
+              <el-icon><VideoPlay /></el-icon>{{ securityTaskId ? '重新执行' : '启动安全加固' }}
+            </el-button>
+          </div>
+        </div>
+      </template>
+    </el-dialog>
+
+    <!-- ──────────────── 单账号安全加固详细日志终端弹窗 ──────────────── -->
+    <el-dialog
+      v-model="securityLogModalVisible"
+      width="780px"
+      top="8vh"
+      class="macos-terminal-dialog"
+      :close-on-click-modal="false"
+    >
+      <template #header>
+        <div class="modal-header">
+          <div class="window-dots">
+            <span class="dot red"></span>
+            <span class="dot yellow"></span>
+            <span class="dot green"></span>
+          </div>
+          <div class="modal-title-info">
+            <span class="modal-email">{{ currentSecurityLogItem?.email }}</span>
+            <el-tag size="small" :type="currentSecurityLogItem?.action === 'password' ? 'primary' : 'success'" effect="plain" class="modal-run-tag">
+              {{ currentSecurityLogItem?.action === 'password' ? '🔑 设密任务日志' : '🛡️ 2FA 绑定日志' }}
+            </el-tag>
+          </div>
+        </div>
+      </template>
+
+      <div class="modal-terminal-wrap">
+        <div ref="securityModalLogBoxRef" class="modal-terminal-body">
+          <div
+            v-for="(line, idx) in securityLogLines"
+            :key="idx"
+            class="terminal-line"
+            :class="getLogClass(line)"
+          >
+            {{ line }}
+          </div>
+          <div v-if="!securityLogLines.length" class="terminal-empty">
+            {{ securityLogLoading ? '正在加载日志...' : '暂无详细日志' }}
+          </div>
+        </div>
+      </div>
+
+      <template #footer>
+        <div class="modal-footer">
+          <span class="log-count-tip">共 {{ securityLogLines.length }} 行日志</span>
+          <div class="modal-footer-btns">
+            <el-button size="small" @click="copyText(securityLogLines.join('\n'))">
+              <el-icon><CopyDocument /></el-icon>复制全部日志
+            </el-button>
+            <el-button size="small" type="primary" @click="securityLogModalVisible = false">
+              关闭
+            </el-button>
+          </div>
+        </div>
+      </template>
+    </el-dialog>
+
     <!-- 批量导出弹窗 -->
     <el-dialog v-model="exportVisible" width="720px" top="8vh" class="macos-custom-dialog">
       <template #header>
@@ -5114,6 +5822,9 @@ onUnmounted(() => {
 }
 .oa-title-badge.health-badge {
   background: linear-gradient(135deg, #0ea5e9, #0284c7);
+}
+.oa-title-badge.sec-badge {
+  background: linear-gradient(135deg, #10b981, #059669);
 }
 .health-action-btn {
   background: linear-gradient(135deg, #0ea5e9, #0284c7) !important;
