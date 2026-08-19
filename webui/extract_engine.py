@@ -576,13 +576,22 @@ def _extract_oaics_flow(
     log_fn(f"[oaics] 获得 Stripe 中转地址: {stripe_redirect[:50]}...")
 
     # 6. 跟踪重定向获取最终 Provider URL (如 PayPal BA Token)
+    is_setup_intent = intent_id.startswith("seti_")
     if channel == "paypal":
-        log_fn("[oaics] 正在追踪解析 PayPal 最终 BA 授权链接...")
+        log_fn(f"[oaics] 正在追踪解析 PayPal 最终 BA 授权链接 ({'0元SetupIntent' if is_setup_intent else '实付PaymentIntent'})...")
         provider_url = _resolve_paypal_agreements_url(stripe_client, stripe_redirect)
         if "ba_token=" not in provider_url:
             provider_url = _resolve_paypal_agreements_url(client, stripe_redirect)
-        return provider_url
-    return stripe_redirect
+        return {
+            "url": provider_url,
+            "is_zero_trial": is_setup_intent,
+            "intent_id": intent_id,
+        }
+    return {
+        "url": stripe_redirect,
+        "is_zero_trial": is_setup_intent,
+        "intent_id": intent_id,
+    }
 
 
 class PipelinePayPalFlowAdapter(PayPalFlow):
@@ -944,6 +953,8 @@ def _execute_account_extract(task: ExtractJobTask, email: str) -> None:
                 return
 
             final_link = ""
+            is_zero_trial = False
+            intent_id = ""
 
             # 3. 处理 OAICS 自建会话 (无论何种渠道，统一走标准 OAICS 协议栈)
             if checkout_session_id.startswith("oaics_"):
@@ -953,7 +964,7 @@ def _execute_account_extract(task: ExtractJobTask, email: str) -> None:
                     task.set_running(email, f"正在执行 OAICS 深度协议解析 ({task.channel.upper()})...")
                     task.add_email_log(email, f"OAICS 会话：启动 Stripe 确认令牌与意图确认协议 ({task.channel.upper()})...")
                     try:
-                        final_link = _extract_oaics_flow(
+                        res_oaics = _extract_oaics_flow(
                             client=client,
                             headers=headers,
                             proxy=proxy,
@@ -964,6 +975,13 @@ def _execute_account_extract(task: ExtractJobTask, email: str) -> None:
                             currency=active_currency,
                             log_fn=lambda m: task.add_email_log(email, m),
                         )
+                        if isinstance(res_oaics, dict):
+                            final_link = res_oaics.get("url", "")
+                            is_zero_trial = bool(res_oaics.get("is_zero_trial"))
+                            intent_id = res_oaics.get("intent_id", "")
+                        else:
+                            final_link = str(res_oaics)
+                            is_zero_trial = "seti_" in final_link
                         if final_link:
                             task.add_email_log(email, f"🎉 OAICS 成功解析出 {task.channel.upper()} 跳转: {final_link}")
                     except Exception as exc:
@@ -1020,6 +1038,7 @@ def _execute_account_extract(task: ExtractJobTask, email: str) -> None:
                         )
                         if paypal_url:
                             final_link = paypal_url
+                            is_zero_trial = True
                             task.add_email_log(email, f"🎉 成功解析出官方 0元 PayPal 授权链接: {paypal_url}")
                     except Exception as e:
                         task.add_email_log(email, f"PayPal 深度协议解析失败: {e}")
@@ -1174,17 +1193,17 @@ def _execute_account_extract(task: ExtractJobTask, email: str) -> None:
                         if hosted_raw and "#fidnandh" in hosted_raw:
                             final_link = hosted_raw
 
-            # 6. 链接校验与零元断言 (非0元/无有效协议必须阻断为失败)
+            # 6. 链接校验与零元断言
             if task.channel == "paypal":
                 if not final_link or "ba_token=" not in final_link:
-                    raise RuntimeError("未能生成合法的 0 元 PayPal 授权签约协议 (未获取到 BA-token 或非 0 元)")
+                    raise RuntimeError("未能生成合法的 PayPal 授权签约协议 (未获取到 BA-token)")
             elif not final_link:
                 if task.channel == "gcash":
                     final_link = f"https://chatgpt.com/checkout/{processor_entity}/{checkout_session_id}"
                 elif task.channel == "upi":
                     final_link = f"https://payments.stripe.com/upi/instructions/{checkout_session_id}"
                 else:
-                    raise RuntimeError(f"未能生成合法的 0 元 {task.channel.upper()} 支付链接")
+                    raise RuntimeError(f"未能生成合法的 {task.channel.upper()} 支付链接")
 
             # 解析 ba_token 方便展示
             ba_token = ""
@@ -1193,25 +1212,46 @@ def _execute_account_extract(task: ExtractJobTask, email: str) -> None:
                 ba_token = m_ba.group(1)
 
             req_ms = int((time.time() - start_ts) * 1000)
-            task.add_email_log(email, f"🎉 0元提链成功 ({req_ms}ms): {final_link}")
+            if is_zero_trial:
+                task.add_email_log(email, f"🎉 0元试用提链成功 (SetupIntent 0元免扣款, {req_ms}ms): {final_link}")
+            else:
+                task.add_email_log(email, f"⚠️ 实付提链完成 (PaymentIntent: {intent_id or 'pi_...'}, 应付 €23.00, {req_ms}ms): {final_link}")
 
-            # 回写数据库 (仅 100% 验证为 0 元的有效链接才回写为 success)
+            # 回写数据库
             db.update_registered_extract(
                 email=email,
                 extract_data={
-                    "status": "success",
+                    "status": "success" if is_zero_trial else "paid_order",
                     "channel": task.channel,
                     "link_type": task.channel,
                     "link_url": final_link,
                     "cs_id": checkout_session_id,
                     "ba_token": ba_token,
-                    "is_zero_trial": True,
+                    "is_zero_trial": is_zero_trial,
                     "extracted_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 },
             )
 
             # 7. 一条龙模式：无缝接力执行 PayPal 协议代付 (同 IP 同环境)
             if task.channel == "paypal" and task.auto_pay and ba_token and (PayPalFlow is not None):
+                # 🛑 0元安全拦截保护：若检测到非 0 元免扣款协议 (即普通 23 欧元扣款单)，直接拦截，避免浪费手机号与短信
+                if not is_zero_trial:
+                    task.add_email_log(email, "🛑 0元安全拦截: 该账号未命中 OpenAI 官方 0 元试用 (当前为 €23.00 实付扣款单，非 SetupIntent 0元免扣款协议)。已自动终止代付流程，为您保护手机号与短信额度！")
+                    res = {
+                        "status": "warning",
+                        "label": "未命中0元试用(已保护拦截)",
+                        "link_url": final_link,
+                        "cs_id": checkout_session_id,
+                        "channel": task.channel,
+                        "ba_token": ba_token,
+                        "is_zero_trial": False,
+                        "is_paid": False,
+                        "req_ms": req_ms,
+                        "error": "该账号未命中官方 0 元试用 (PaymentIntent 实付单)，协议代付已安全终止以节省接码费用",
+                    }
+                    task.mark_done(email, res)
+                    return
+
                 _execute_pipeline_paypal_pay(
                     task=task,
                     email=email,
@@ -1227,7 +1267,16 @@ def _execute_account_extract(task: ExtractJobTask, email: str) -> None:
                 return
 
             res = {
-                "status": "success",
+                "status": "success" if is_zero_trial else "warning",
+                "label": "0元试用生效" if is_zero_trial else "实付单(非0元)",
+                "link_url": final_link,
+                "cs_id": checkout_session_id,
+                "channel": task.channel,
+                "ba_token": ba_token,
+                "is_zero_trial": is_zero_trial,
+                "is_paid": False,
+                "req_ms": req_ms,
+            }
                 "label": "0元生效",
                 "link_url": final_link,
                 "cs_id": checkout_session_id,

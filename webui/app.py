@@ -924,12 +924,17 @@ def api_get_account_totp(email: str):
 
 class FetchMailOtpReq(BaseModel):
     timeout: int = 15
+    # 可选：直接传入 4 段式凭证或单项凭证进行即时查询/自动修复号池
+    raw_line: Optional[str] = None
+    password: Optional[str] = None
+    client_id: Optional[str] = None
+    refresh_token: Optional[str] = None
 
 
 @app.post("/api/registered/{email}/fetch_otp")
 def api_fetch_mail_otp(email: str, req: Optional[FetchMailOtpReq] = None):
     """从邮箱渠道实时抓取/检索该邮箱最新的邮件和 6 位 OTP 验证码。"""
-    from mail_providers import create_mail_provider, extract_otp
+    from mail_providers import create_mail_provider, extract_otp, parse_import_line
     email_clean = (email or "").strip().lower()
     if not email_clean:
         raise HTTPException(400, "email 不能为空")
@@ -937,7 +942,44 @@ def api_fetch_mail_otp(email: str, req: Optional[FetchMailOtpReq] = None):
     settings = db.get_mail_settings()
     account_row = db.get_account(email_clean)
     registered_row = db.get_registered(email_clean) or {}
-    kind = (registered_row.get("kind") or (account_row.get("kind") if account_row else None) or "").strip().lower()
+
+    # 若前端传入了补充凭证，即时写入号池并装载
+    if req and (req.raw_line or req.refresh_token or req.password):
+        try:
+            if req.raw_line and "----" in req.raw_line:
+                parsed = parse_import_line(req.raw_line)
+                if parsed and parsed.get("email") == email_clean:
+                    account_row = parsed
+                    db.import_accounts(req.raw_line, kind=parsed.get("kind", "outlook"))
+            else:
+                account_row = account_row or {"email": email_clean, "kind": "outlook"}
+                if req.password:
+                    account_row["password"] = req.password
+                if req.client_id:
+                    account_row["client_id"] = req.client_id
+                if req.refresh_token:
+                    account_row["refresh_token"] = req.refresh_token
+        except Exception as e:
+            logger.warning(f"[fetch_otp] 动态解析补充凭证异常: {e}")
+
+    # 若号池中未找到，尝试从已注册账号的 extra.mail_oauth 中恢复
+    if not account_row and registered_row.get("extra"):
+        saved_oauth = registered_row["extra"].get("mail_oauth")
+        if isinstance(saved_oauth, dict) and (saved_oauth.get("refresh_token") or saved_oauth.get("password")):
+            account_row = {
+                "email": email_clean,
+                "password": saved_oauth.get("password", ""),
+                "client_id": saved_oauth.get("client_id", ""),
+                "refresh_token": saved_oauth.get("refresh_token", ""),
+                "kind": saved_oauth.get("kind", "outlook"),
+            }
+
+    # 确定邮箱类型
+    kind = (
+        (account_row.get("kind") if account_row else None)
+        or registered_row.get("kind")
+        or ""
+    ).strip().lower()
 
     if not kind or kind not in ("outlook", "cf_temp", "icloud_relay"):
         if any(dom in email_clean for dom in ("@outlook.", "@hotmail.", "@live.", "@msn.")):
@@ -947,9 +989,31 @@ def api_fetch_mail_otp(email: str, req: Optional[FetchMailOtpReq] = None):
         else:
             kind = "cf_temp"
 
+    # 若是 Outlook 邮箱，但无任何凭证，绝对不能静默降级为 cf_temp（会导致前端标签显示 cf_temp 且永远查不到邮件）
+    if kind == "outlook" and (not account_row or (not account_row.get("refresh_token") and not account_row.get("password"))):
+        return {
+            "ok": False,
+            "email": email_clean,
+            "provider": "outlook",
+            "otp": None,
+            "found": False,
+            "messages": [],
+            "error": "未在号池或记录中找到该 Outlook 邮箱的微软 OAuth 凭证(client_id/refresh_token)或密码。请在下方补充 4 段式凭证或前往「号池管理」重新导入。",
+        }
+
     try:
         provider = create_mail_provider(kind, settings, account_row)
-    except Exception:
+    except Exception as e:
+        if kind == "outlook":
+            return {
+                "ok": False,
+                "email": email_clean,
+                "provider": "outlook",
+                "otp": None,
+                "found": False,
+                "messages": [],
+                "error": f"初始化 Outlook 邮箱 Provider 异常: {e}",
+            }
         provider = create_mail_provider("cf_temp", settings)
 
     recent_mails = []
@@ -963,7 +1027,7 @@ def api_fetch_mail_otp(email: str, req: Optional[FetchMailOtpReq] = None):
     try:
         if hasattr(provider, "_get_mails"):
             raw_mails = provider._get_mails(email_clean)
-            for m in raw_mails[:10]:
+            for m in raw_mails[:15]:
                 raw_text = str(m.get("raw") or m.get("content") or m.get("text") or m.get("html") or "")
                 c = extract_otp(raw_text) or extract_otp(str(m.get("subject") or ""))
                 if not otp_code and c:
@@ -978,7 +1042,7 @@ def api_fetch_mail_otp(email: str, req: Optional[FetchMailOtpReq] = None):
                 })
         elif hasattr(provider, "_load"):
             raw_mails = provider._load()
-            for m in raw_mails[:10]:
+            for m in raw_mails[:15]:
                 c = m.get("otp") or extract_otp(m.get("body", ""))
                 if not otp_code and c:
                     otp_code = c

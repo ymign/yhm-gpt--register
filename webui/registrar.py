@@ -532,6 +532,14 @@ def _do_register(
         if target_country:
             d["target_country"] = target_country
 
+        if is_pooled and account:
+            d["mail_oauth"] = {
+                "client_id": account.get("client_id", ""),
+                "refresh_token": account.get("refresh_token", ""),
+                "password": account.get("password", ""),
+                "kind": account.get("kind", mail_source),
+            }
+
         # 落库（密码已在 2FA 之前回读补齐，这里 d 里该有的都有了）
         db.save_registered(d)
         # 非池化 provider 的 email 是虚拟占位（xxx_placeholder_N@placeholder.local），

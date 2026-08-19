@@ -718,18 +718,55 @@ class OutlookMailProvider(MailProvider):
     def peek_otp(self, email_addr: str = "", wait: float = 3.0) -> Optional[str]:
         """快速探针：只看一眼邮箱里有没有当前 OTP，超时立刻返回 None。"""
         try:
-            return self.wait_for_otp(email_addr=email_addr, timeout=int(max(2, wait)), threshold_ts=time.time() - 300)
+            return self.wait_for_otp(email_addr=email_addr, timeout=int(max(2, wait)), issued_after=time.time() - 300)
         except Exception:
             return None
 
     def _get_mails(self, email_addr: str = "") -> list[dict]:
-        """获取最近邮件列表，供 WebUI 收件箱 / 实时取码弹窗展示。"""
+        """获取最近邮件列表，供 WebUI 收件箱 / 实时取码弹窗展示。支持 Graph API 优先 + IMAP 兜底。"""
         results = []
         has_oauth = bool(self.client_id and self.refresh_token)
         has_password = bool(self.password)
         if not has_oauth and not has_password:
             return []
 
+        # ── 1. Graph API 优先 (HTTPS 443，速度快且不受 IMAP 端口封锁影响) ──
+        if has_oauth:
+            try:
+                data = _request_access_token(self.refresh_token, self.client_id, GRAPH_SCOPE)
+                token = data.get("access_token")
+                if token:
+                    seen_ids = set()
+                    for folder in GRAPH_FOLDERS:
+                        try:
+                            msgs = _graph_list_messages(token, folder, timeout=6.0)
+                            for m in msgs:
+                                msg_id = str(m.get("id") or "")
+                                if msg_id and msg_id in seen_ids:
+                                    continue
+                                if msg_id:
+                                    seen_ids.add(msg_id)
+                                body_obj = m.get("body") or {}
+                                body_content = body_obj.get("content", "") or m.get("bodyPreview", "") or ""
+                                from_obj = m.get("from") or {}
+                                from_addr = (from_obj.get("emailAddress") or {}).get("address", "") or (from_obj.get("emailAddress") or {}).get("name", "OpenAI")
+                                received = m.get("receivedDateTime", "")
+                                results.append({
+                                    "id": msg_id,
+                                    "subject": str(m.get("subject") or "(无主题)"),
+                                    "from": str(from_addr),
+                                    "date": str(received),
+                                    "content": body_content,
+                                    "raw": body_content,
+                                })
+                        except Exception as e:
+                            logger.debug(f"[outlook-graph] 拉取文件夹 {folder} 异常: {e}")
+                    if results:
+                        return results
+            except Exception as e:
+                logger.debug(f"[outlook] Graph API 获取邮件失败，尝试 IMAP: {e}")
+
+        # ── 2. IMAP 兜底 (XOAUTH2 / 密码) ──
         try:
             cached_token = ""
             if has_oauth:

@@ -84,7 +84,26 @@ def official_set_account_password(
     _log(f"开始为 {email_clean} 检索收信渠道凭证...")
     row = db.get_registered(email_clean) or {}
     account_row = db.get_account(email_clean) or {}
-    mail_source = (row.get("kind") or account_row.get("kind") or db.get_setting("mail_source", "") or "").strip().lower()
+
+    # 若号池无记录，尝试从 registered.extra.mail_oauth 中恢复
+    if not account_row and row.get("extra"):
+        saved_oauth = row["extra"].get("mail_oauth")
+        if isinstance(saved_oauth, dict) and (saved_oauth.get("refresh_token") or saved_oauth.get("password")):
+            account_row = {
+                "email": email_clean,
+                "password": saved_oauth.get("password", ""),
+                "client_id": saved_oauth.get("client_id", ""),
+                "refresh_token": saved_oauth.get("refresh_token", ""),
+                "kind": saved_oauth.get("kind", "outlook"),
+            }
+
+    mail_source = (
+        (account_row.get("kind") if account_row else None)
+        or row.get("kind")
+        or db.get_setting("mail_source", "")
+        or ""
+    ).strip().lower()
+
     if not mail_source or mail_source not in ("outlook", "cf_temp", "icloud_relay"):
         if any(dom in email_clean for dom in ("@outlook.", "@hotmail.", "@live.", "@msn.")):
             mail_source = "outlook"
@@ -93,10 +112,17 @@ def official_set_account_password(
         else:
             mail_source = "cf_temp"
 
+    if mail_source == "outlook" and (not account_row or (not account_row.get("refresh_token") and not account_row.get("password"))):
+        raise RuntimeError(
+            f"未在号池中找到 {email_clean} 的微软 OAuth 凭证或密码。若该账号为外部导入或号池已清空，请先在「号池管理」中导入 4 段式凭证以支持官方自动改密收信。"
+        )
+
     settings = db.get_mail_settings()
     try:
         mail_provider = create_mail_provider(mail_source, settings, account_row)
     except Exception as e:
+        if mail_source == "outlook":
+            raise RuntimeError(f"初始化 Outlook 邮箱 Provider 异常: {e}")
         _log(f"⚠️ 邮箱 Provider 初始化异常: {e}，回退到 cf_temp")
         mail_provider = create_mail_provider("cf_temp", settings)
 
