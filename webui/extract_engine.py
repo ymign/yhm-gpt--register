@@ -1277,15 +1277,6 @@ def _execute_account_extract(task: ExtractJobTask, email: str) -> None:
                 "is_paid": False,
                 "req_ms": req_ms,
             }
-                "label": "0元生效",
-                "link_url": final_link,
-                "cs_id": checkout_session_id,
-                "channel": task.channel,
-                "ba_token": ba_token,
-                "is_zero_trial": True,
-                "is_paid": False,
-                "req_ms": req_ms,
-            }
             task.mark_done(email, res)
             return
 
