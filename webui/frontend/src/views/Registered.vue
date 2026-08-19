@@ -1875,6 +1875,57 @@ async function downloadSub2Json() {
   }
 }
 
+// 下载单账号 CPA / Codex JSON
+async function downloadSingleOAuthJson(email) {
+  if (!email) return
+  try {
+    const taskId = oauthTaskId.value || 'single'
+    const res = await downloadOAuthExportCpa(taskId, email)
+    const blob = new Blob([res.data || res], { type: 'application/json' })
+    const url = window.URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `codex-${email}.json`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    window.URL.revokeObjectURL(url)
+    ElMessage.success(`账号 ${email} 的 CPA JSON 下载成功`)
+  } catch (e) {
+    ElMessage.error('下载 JSON 失败: ' + (e.response?.data?.detail || e.message))
+  }
+}
+
+// 下载单账号 Sub2API JSON
+async function downloadSingleSub2Json(email) {
+  if (!email) return
+  try {
+    const taskId = oauthTaskId.value || 'single'
+    const res = await downloadOAuthExportSub2(taskId, email)
+    const blob = new Blob([res.data || res], { type: 'application/json' })
+    const url = window.URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `sub2api-${email}.json`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    window.URL.revokeObjectURL(url)
+    ElMessage.success(`账号 ${email} 的 Sub2API JSON 下载成功`)
+  } catch (e) {
+    ElMessage.error('下载 Sub2API JSON 失败: ' + (e.response?.data?.detail || e.message))
+  }
+}
+
+// 单账号发起 OAuth 导出 / 手机接码弹窗
+function openOAuthExportForSingle(email) {
+  if (!email) return
+  oauthTargetEmails.value = [email]
+  oauthTaskId.value = ''
+  initOAuthRows([email])
+  oauthVisible.value = true
+}
+
 // ════════════════════════ 数据加载与分页 ════════════════════════
 async function load(resetPage = false) {
   if (resetPage) page.value = 1
@@ -2424,6 +2475,9 @@ function handleRowMoreCommand(cmd, row) {
   else if (cmd === 'copy_at') copyCell(row.email, 'access_token')
   else if (cmd === 'copy_st') copyCell(row.email, 'session_token')
   else if (cmd === 'copy_rt') copyCell(row.email, 'refresh_token')
+  else if (cmd === 'download_cpa') downloadSingleOAuthJson(row.email)
+  else if (cmd === 'download_sub2') downloadSingleSub2Json(row.email)
+  else if (cmd === 'oauth_export') openOAuthExportForSingle(row.email)
   else if (cmd === 'repair_pwd') openRepairPassword(row)
   else if (cmd === 'repair_2fa') openRepair2FA(row)
   else if (cmd === 'totp_code') openTotpModal(row)
@@ -3386,6 +3440,9 @@ onUnmounted(() => {
                       <el-dropdown-item v-if="row.at_len" command="copy_at">🔑 复制 Access Token (AT)</el-dropdown-item>
                       <el-dropdown-item v-if="row.st_len" command="copy_st">🎫 复制 Session Token (ST)</el-dropdown-item>
                       <el-dropdown-item v-if="row.rt_len" command="copy_rt">🔄 复制 Refresh Token (RT)</el-dropdown-item>
+                      <el-dropdown-item command="download_cpa">📥 下载 CPA JSON 凭证</el-dropdown-item>
+                      <el-dropdown-item command="download_sub2">📥 下载 Sub2API JSON 凭证</el-dropdown-item>
+                      <el-dropdown-item command="oauth_export">📱 OAuth 导出 / 手机接码</el-dropdown-item>
                       <el-dropdown-item command="fetch_mail">✉️ 检索/获取邮箱验证码</el-dropdown-item>
                       <el-dropdown-item v-if="!row.password" command="repair_pwd">🔑 补设密码</el-dropdown-item>
                       <el-dropdown-item v-if="!row.totp_secret" command="repair_2fa">🛡️ 补绑 2FA</el-dropdown-item>
@@ -4174,11 +4231,22 @@ onUnmounted(() => {
               </template>
             </el-table-column>
 
-            <el-table-column label="日志" width="80" align="center">
+            <el-table-column label="操作" width="150" align="center">
               <template #default="{ row }">
-                <el-button size="small" text type="primary" @click="openOAuthItemLog(row)">
-                  查看
-                </el-button>
+                <div style="display: flex; gap: 4px; justify-content: center; align-items: center">
+                  <el-button size="small" text type="primary" @click="openOAuthItemLog(row)">
+                    日志
+                  </el-button>
+                  <el-button
+                    v-if="row.result?.status === 'success' || row.result?.refresh_token_len"
+                    size="small"
+                    text
+                    type="success"
+                    @click="downloadSingleOAuthJson(row.email)"
+                  >
+                    <el-icon><Download /></el-icon>下载JSON
+                  </el-button>
+                </div>
               </template>
             </el-table-column>
           </el-table>
