@@ -372,18 +372,59 @@ def api_run_log(run_id: str):
 
 
 @app.get("/api/registered")
-def api_registered(limit: int = 20, offset: int = 0, filter: str = "all", q: str = "", search: str = ""):
+def api_registered(
+    limit: int = 20,
+    offset: int = 0,
+    filter: str = "all",
+    q: str = "",
+    search: str = "",
+    filter_plan: str = "",
+    filter_sec: str = "",
+    filter_extract: str = "",
+    filter_oauth: str = "",
+):
     query_str = (q or search).strip()
-    items = db.list_registered(limit=limit, offset=offset, filter_rt=filter, search=query_str)
-    total = db.count_registered(filter_rt=filter, search=query_str)
+    items = db.list_registered(
+        limit=limit,
+        offset=offset,
+        filter_rt=filter,
+        search=query_str,
+        filter_plan=filter_plan,
+        filter_sec=filter_sec,
+        filter_extract=filter_extract,
+        filter_oauth=filter_oauth,
+    )
+    total = db.count_registered(
+        filter_rt=filter,
+        search=query_str,
+        filter_plan=filter_plan,
+        filter_sec=filter_sec,
+        filter_extract=filter_extract,
+        filter_oauth=filter_oauth,
+    )
     return {"ok": True, "items": items, "total": total}
 
 
 @app.get("/api/registered_emails")
-def api_registered_emails(filter: str = "all", q: str = "", search: str = ""):
+def api_registered_emails(
+    filter: str = "all",
+    q: str = "",
+    search: str = "",
+    filter_plan: str = "",
+    filter_sec: str = "",
+    filter_extract: str = "",
+    filter_oauth: str = "",
+):
     """返回当前过滤条件下的所有账号邮箱列表（用于批量检测未检/全检）。"""
     query_str = (q or search).strip()
-    emails = db.list_registered_emails(filter_rt=filter, search=query_str)
+    emails = db.list_registered_emails(
+        filter_rt=filter,
+        search=query_str,
+        filter_plan=filter_plan,
+        filter_sec=filter_sec,
+        filter_extract=filter_extract,
+        filter_oauth=filter_oauth,
+    )
     return {"ok": True, "emails": emails, "total": len(emails)}
 
 

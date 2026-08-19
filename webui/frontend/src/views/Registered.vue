@@ -102,23 +102,51 @@ async function openExtractChannel(channelKey) {
         '一键提炼任务确认',
         { confirmButtonText: '确定', cancelButtonText: '取消', type: 'info' }
       )
-      const res = await listRegisteredEmails(filter.value)
+      const res = await listRegisteredEmails({
+        filter_plan: filterPlan.value,
+        filter_sec: filterSec.value,
+        filter_extract: filterExtract.value,
+        filter_oauth: filterOAuth.value,
+        search: searchKeyword.value.trim(),
+      })
       extractModalEmails.value = res.emails || []
       extractModalVisible.value = true
     } catch (_) {}
   }
 }
 
-// 分页与数据
+// 分页与多维度结构化筛选
 const rows = ref([])
 const total = ref(0)
 const page = ref(1)
 const pageSize = ref(20)
-const filter = ref('all')
+const filterPlan = ref('all')
+const filterSec = ref('all')
+const filterExtract = ref('all')
+const filterOAuth = ref('all')
 const searchKeyword = ref('')
 const selected = ref([])
 const loading = ref(false)
 let searchTimer = null
+
+const hasActiveFilter = computed(() => {
+  return (
+    searchKeyword.value.trim() !== '' ||
+    filterPlan.value !== 'all' ||
+    filterSec.value !== 'all' ||
+    filterExtract.value !== 'all' ||
+    filterOAuth.value !== 'all'
+  )
+})
+
+function clearAllFilters() {
+  searchKeyword.value = ''
+  filterPlan.value = 'all'
+  filterSec.value = 'all'
+  filterExtract.value = 'all'
+  filterOAuth.value = 'all'
+  load(true)
+}
 
 function onSearchInput() {
   if (searchTimer) clearTimeout(searchTimer)
@@ -1834,7 +1862,11 @@ async function load(resetPage = false) {
     const { items, total: t } = await listRegistered({
       limit: pageSize.value,
       offset: (page.value - 1) * pageSize.value,
-      filter: filter.value,
+      filter: 'all',
+      filter_plan: filterPlan.value,
+      filter_sec: filterSec.value,
+      filter_extract: filterExtract.value,
+      filter_oauth: filterOAuth.value,
       search: searchKeyword.value.trim(),
     })
     rows.value = items || []
@@ -2539,8 +2571,24 @@ async function openSecurityTask(action = 'password', scope = 'selected') {
   securityAction.value = action
   securityForm.action = action
   securityTargetEmails.value = emails
+  securityTaskId.value = ''
+  securityRunning.value = false
+  securityElapsed.value = 0
+  securityLogs.value = []
+  securityPage.value = 1
+  securityFilter.value = 'all'
+  securitySearch.value = ''
+  if (securityLiveTimer) {
+    clearInterval(securityLiveTimer)
+    securityLiveTimer = null
+  }
+
+  const initMap = Object.create(null)
+  for (const em of emails) {
+    initMap[em] = { email: em, action, status: 'pending', step_text: '待启动...', result: null, elapsed: 0 }
+  }
+  securityItems.value = initMap
   securityVisible.value = true
-  await startSecurityTaskRunner()
 }
 
 function closeSecurityTask() {
@@ -2829,6 +2877,7 @@ onUnmounted(() => {
             <el-icon><Refresh /></el-icon>刷新
           </el-button>
 
+          <!-- 1. 搜索框 -->
           <el-input
             v-model="searchKeyword"
             placeholder="搜索邮箱..."
@@ -2841,39 +2890,96 @@ onUnmounted(() => {
             @keyup.enter="load(true)"
           />
 
-          <el-select v-model="filter" class="macos-select filter-select" @change="load(true)">
-            <el-option label="全部" value="all" />
+          <!-- 2. 套餐/订阅状态维度 -->
+          <el-select
+            v-model="filterPlan"
+            placeholder="套餐订阅"
+            class="macos-select filter-select plan-filter"
+            size="small"
+            @change="load(true)"
+          >
+            <el-option label="🌟 全部套餐" value="all" />
+            <el-option label="★ Plus / 试用" value="plus" />
+            <el-option label="🎁 可领Plus免单" value="extract_eligible" />
+            <el-option label="👑 Pro 账号 (20x/5x)" value="pro" />
+            <el-option label="💎 Team 团队号" value="team" />
+            <el-option label="⚪ Free 普通号" value="free" />
+            <el-option label="🚫 已封号" value="banned" />
+            <el-option label="⚠️ 凭证失效" value="token_invalid" />
+            <el-option label="❓ 未检测" value="unchecked" />
+          </el-select>
+
+          <!-- 3. 密码与2FA安全维度 -->
+          <el-select
+            v-model="filterSec"
+            placeholder="密码/2FA"
+            class="macos-select filter-select sec-filter"
+            size="small"
+            @change="load(true)"
+          >
+            <el-option label="🛡️ 全部安全" value="all" />
             <el-option label="🔑 缺少密码" value="no_password" />
             <el-option label="🛡️ 缺少 2FA" value="no_2fa" />
             <el-option label="⚠️ 密码/2FA 不全" value="missing_security" />
-            <el-option label="✅ 已绑 2FA" value="has_2fa" />
             <el-option label="🔐 已设密码" value="has_password" />
+            <el-option label="✅ 已绑 2FA" value="has_2fa" />
             <el-option label="🛡️ 密码与2FA双全" value="both_secured" />
-            <el-option label="👑 Pro 账号 (含20x/5x)" value="pro" />
-            <el-option label="💎 Team 团队号" value="team" />
-            <el-option label="★ Plus / 试用" value="plus" />
-            <el-option label="🎁 Plus试用" value="extract_eligible" />
-            <el-option label="⚗️ 提链成功" value="extract_success" />
-            <el-option label="❌ 提链失败" value="extract_failed" />
-            <el-option label="Free 普通号" value="free" />
-            <el-option label="有 RT" value="has_rt" />
-            <el-option label="无 RT" value="no_rt" />
-            <el-option label="未检测" value="unchecked" />
-            <el-option label="已封号" value="banned" />
-            <el-option label="凭证失效" value="token_invalid" />
-            <el-option label="OA未检" value="oa_unchecked" />
-            <el-option label="OA命中" value="oa_hit" />
-            <el-option label="OA未中" value="oa_miss" />
-            <el-option label="OAuth 成功" value="oauth_success" />
-            <el-option label="需接码 (已跳过)" value="oauth_need_phone" />
-            <el-option label="OAuth 失败" value="oauth_failed" />
-            <el-option label="OAuth 未检" value="oauth_unchecked" />
           </el-select>
 
+          <!-- 4. 提炼与代付状态维度 -->
           <el-select
-            v-model="form.proxy" filterable clearable allow-create default-first-option
-            :reserve-keyword="false" placeholder="检测代理（留空直连）"
+            v-model="filterExtract"
+            placeholder="提炼状态"
+            class="macos-select filter-select extract-filter"
+            size="small"
+            @change="load(true)"
+          >
+            <el-option label="⚗️ 全部提炼" value="all" />
+            <el-option label="🎁 待提链资格" value="extract_eligible" />
+            <el-option label="✅ 提链成功" value="extract_success" />
+            <el-option label="❌ 提链失败" value="extract_failed" />
+          </el-select>
+
+          <!-- 5. 授权与OAICS维度 -->
+          <el-select
+            v-model="filterOAuth"
+            placeholder="授权状态"
+            class="macos-select filter-select oauth-filter"
+            size="small"
+            @change="load(true)"
+          >
+            <el-option label="🏷️ 全部授权" value="all" />
+            <el-option label="🟢 OAuth 成功" value="oauth_success" />
+            <el-option label="🟡 需接码 (已跳过)" value="oauth_need_phone" />
+            <el-option label="🔴 OAuth 失败" value="oauth_failed" />
+            <el-option label="⚡ OAICS 命中" value="oa_hit" />
+            <el-option label="⚪ OAICS 未中" value="oa_miss" />
+          </el-select>
+
+          <!-- 6. 快捷清除筛选条件按钮 -->
+          <el-button
+            v-if="hasActiveFilter"
+            size="small"
+            type="danger"
+            plain
+            class="clear-filter-btn"
+            title="清空当前所有搜索与筛选条件"
+            @click="clearAllFilters"
+          >
+            ✕ 重置筛选
+          </el-button>
+
+          <!-- 检测代理选择 -->
+          <el-select
+            v-model="form.proxy"
+            filterable
+            clearable
+            allow-create
+            default-first-option
+            :reserve-keyword="false"
+            placeholder="检测代理（留空直连）"
             class="macos-select proxy-select"
+            size="small"
           >
             <el-option v-for="p in proxyList" :key="p" :label="p" :value="p" />
           </el-select>
@@ -3204,33 +3310,6 @@ onUnmounted(() => {
               >
                 失败: {{ (row.extract_link.error || '提链失败').slice(0, 8) }}
               </el-tag>
-              <span v-else class="hint">—</span>
-            </template>
-          </el-table-column>
-
-          <el-table-column label="AT" width="82" align="center">
-            <template #default="{ row }">
-              <span v-if="row.at_len" class="mono token-len-cell link" title="点击直接复制 Access Token (AT)" @click="copyCell(row.email, 'access_token')">
-                <el-icon class="cell-copy-ico"><CopyDocument /></el-icon>{{ row.at_len }}
-              </span>
-              <span v-else class="hint">—</span>
-            </template>
-          </el-table-column>
-
-          <el-table-column label="ST" width="82" align="center">
-            <template #default="{ row }">
-              <span v-if="row.st_len" class="mono token-len-cell link st-cell" title="点击直接复制 Session Token (ST)" @click="copyCell(row.email, 'session_token')">
-                <el-icon class="cell-copy-ico"><CopyDocument /></el-icon>{{ row.st_len }}
-              </span>
-              <span v-else class="hint">—</span>
-            </template>
-          </el-table-column>
-
-          <el-table-column label="RT" width="82" align="center">
-            <template #default="{ row }">
-              <span v-if="row.rt_len" class="mono token-len-cell link rt-cell" title="点击直接复制 Refresh Token (RT)" @click="copyCell(row.email, 'refresh_token')">
-                <el-icon class="cell-copy-ico"><CopyDocument /></el-icon>{{ row.rt_len }}
-              </span>
               <span v-else class="hint">—</span>
             </template>
           </el-table-column>
@@ -5057,7 +5136,7 @@ onUnmounted(() => {
               :disabled="!securityTargetEmails.length"
               @click="startSecurityTaskRunner"
             >
-              <el-icon><VideoPlay /></el-icon>{{ securityTaskId ? '重新执行' : '启动安全加固' }}
+              <el-icon><VideoPlay /></el-icon>{{ securityTaskId ? '重新执行' : (securityAction === 'password' ? '🚀 启动官方设密' : '🛡️ 启动补绑 2FA') }}
             </el-button>
           </div>
         </div>
@@ -5569,10 +5648,34 @@ onUnmounted(() => {
 }
 
 .macos-select.filter-select {
-  width: 115px;
+  width: 126px;
+}
+.macos-select.filter-select.plan-filter {
+  width: 130px;
+}
+.macos-select.filter-select.sec-filter {
+  width: 122px;
+}
+.macos-select.filter-select.extract-filter {
+  width: 120px;
+}
+.macos-select.filter-select.oauth-filter {
+  width: 120px;
 }
 .macos-select.proxy-select {
-  width: 175px;
+  width: 165px;
+}
+
+.clear-filter-btn {
+  font-size: 11.5px;
+  padding: 4px 8px;
+  height: 28px;
+  border-radius: 6px;
+  font-weight: 600;
+  transition: all 0.2s ease;
+}
+.clear-filter-btn:hover {
+  transform: translateY(-1px);
 }
 
 /* 按钮组 */

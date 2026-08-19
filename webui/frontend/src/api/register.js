@@ -38,8 +38,10 @@ export const exportRegistered = (payload) => http.post('/api/registered/export',
 export const checkPlus = (emails, proxy = '') =>
   http.post('/api/registered/check_plus', { emails, proxy })
 
-export const listRegisteredEmails = (filter = 'all') =>
-  http.get('/api/registered_emails', { params: { filter } })
+export const listRegisteredEmails = (params = 'all') => {
+  const p = typeof params === 'string' ? { filter: params } : params
+  return http.get('/api/registered_emails', { params: p })
+}
 
 // ──────────────── Plus 状态并发检测任务 ────────────────
 export const startPlusCheck = (payload) =>

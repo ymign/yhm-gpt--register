@@ -862,65 +862,93 @@ def update_registered_extract(email: str, extract_data: dict) -> bool:
         return True
 
 
-def _registered_where(filt: str, search: str = "") -> tuple[str, list]:
+def _parse_single_filter_clause(filt: str) -> Optional[str]:
+    """将单个过滤代码转换为 SQL 片段。"""
+    f = (filt or "").strip().lower()
+    if not f or f == "all":
+        return None
+    if f == "has_rt":
+        return "length(refresh_token) > 0"
+    if f == "no_rt":
+        return "coalesce(length(refresh_token),0) = 0"
+    if f == "unchecked":
+        return "(extra_json IS NULL OR extra_json NOT LIKE '%\"plus_check\"%')"
+    if f == "pro":
+        return "(extra_json LIKE '%\"pro_20x\"%' OR extra_json LIKE '%\"pro_5x\"%' OR extra_json LIKE '%\"pro_active\"%' OR extra_json LIKE '%\"pro_eligible\"%')"
+    if f == "team":
+        return "extra_json LIKE '%\"team_active\"%'"
+    if f == "plus":
+        return "(extra_json LIKE '%\"plus_eligible\"%' OR extra_json LIKE '%\"plus_active\"%')"
+    if f == "free":
+        return "extra_json LIKE '%\"free\"%'"
+    if f == "banned":
+        return "extra_json LIKE '%\"banned\"%'"
+    if f == "token_invalid":
+        return "extra_json LIKE '%\"token_invalid\"%'"
+    # ── OAICS 资格检测筛选 ──
+    if f == "oa_unchecked":
+        return "(oa_check IS NULL OR oa_check = '')"
+    if f == "oa_hit":
+        return "oa_check LIKE '%\"state\":\"OAICS\"%'"
+    if f == "oa_miss":
+        return "(oa_check IS NOT NULL AND oa_check != '' AND oa_check NOT LIKE '%\"state\":\"OAICS\"%')"
+    # ── OAuth 授权状态筛选 ──
+    if f == "oauth_success":
+        return "oauth_status = 'success'"
+    if f == "oauth_need_phone":
+        return "oauth_status = 'need_phone'"
+    if f == "oauth_failed":
+        return "(oauth_status = 'failed' OR oauth_status = 'error')"
+    if f == "oauth_unchecked":
+        return "(oauth_status IS NULL OR oauth_status = '')"
+    # ── 密码与 2FA 安全状态筛选 ──
+    if f == "no_password":
+        return "(password IS NULL OR password = '')"
+    if f == "has_password":
+        return "(password IS NOT NULL AND password != '')"
+    if f == "no_2fa":
+        return "(totp_secret IS NULL OR totp_secret = '')"
+    if f == "has_2fa":
+        return "(totp_secret IS NOT NULL AND totp_secret != '')"
+    if f == "missing_security":
+        return "((password IS NULL OR password = '') OR (totp_secret IS NULL OR totp_secret = ''))"
+    if f == "both_secured":
+        return "(password IS NOT NULL AND password != '' AND totp_secret IS NOT NULL AND totp_secret != '')"
+    # ── 提链状态筛选 ──
+    if f == "extract_eligible":
+        return "(extra_json LIKE '%\"plus_eligible\"%' AND (extra_json NOT LIKE '%\"extract_link\"%' OR extra_json NOT LIKE '%\"status\":\"success\"%'))"
+    if f == "extract_success":
+        return "(extra_json LIKE '%\"extract_link\"%' AND (extra_json LIKE '%\"status\":\"success\"%' OR extra_json LIKE '%\"status\": \"success\"%'))"
+    if f == "extract_failed":
+        return "(extra_json LIKE '%\"extract_link\"%' AND (extra_json LIKE '%\"status\":\"failed\"%' OR extra_json LIKE '%\"status\":\"error\"%' OR extra_json LIKE '%\"status\": \"failed\"%'))"
+    return None
+
+
+def _registered_where(
+    filt: str = "all",
+    search: str = "",
+    filter_plan: str = "",
+    filter_sec: str = "",
+    filter_extract: str = "",
+    filter_oauth: str = "",
+) -> tuple[str, list]:
     conditions = []
     args = []
-    if filt == "has_rt":
-        conditions.append("length(refresh_token) > 0")
-    elif filt == "no_rt":
-        conditions.append("coalesce(length(refresh_token),0) = 0")
-    elif filt == "unchecked":
-        conditions.append("(extra_json IS NULL OR extra_json NOT LIKE '%\"plus_check\"%')")
-    elif filt == "pro":
-        conditions.append("(extra_json LIKE '%\"pro_20x\"%' OR extra_json LIKE '%\"pro_5x\"%' OR extra_json LIKE '%\"pro_active\"%' OR extra_json LIKE '%\"pro_eligible\"%')")
-    elif filt == "team":
-        conditions.append("extra_json LIKE '%\"team_active\"%'")
-    elif filt == "plus":
-        conditions.append("(extra_json LIKE '%\"plus_eligible\"%' OR extra_json LIKE '%\"plus_active\"%')")
-    elif filt == "free":
-        conditions.append("extra_json LIKE '%\"free\"%'")
-    elif filt == "banned":
-        conditions.append("extra_json LIKE '%\"banned\"%'")
-    elif filt == "token_invalid":
-        # token_invalid 从 2026-08-10 起会写库，得能筛出来，否则等于埋了：
-        # 它既不在 unchecked 里（已有结论），又不在 free/plus/banned 里。
-        conditions.append("extra_json LIKE '%\"token_invalid\"%'")
-    # ── OAICS 资格检测筛选 ──
-    elif filt == "oa_unchecked":
-        conditions.append("(oa_check IS NULL OR oa_check = '')")
-    elif filt == "oa_hit":
-        conditions.append("oa_check LIKE '%\"state\":\"OAICS\"%'")
-    elif filt == "oa_miss":
-        conditions.append("(oa_check IS NOT NULL AND oa_check != '' AND oa_check NOT LIKE '%\"state\":\"OAICS\"%')")
-    # ── OAuth 授权状态筛选 ──
-    elif filt == "oauth_success":
-        conditions.append("oauth_status = 'success'")
-    elif filt == "oauth_need_phone":
-        conditions.append("oauth_status = 'need_phone'")
-    elif filt == "oauth_failed":
-        conditions.append("(oauth_status = 'failed' OR oauth_status = 'error')")
-    elif filt == "oauth_unchecked":
-        conditions.append("(oauth_status IS NULL OR oauth_status = '')")
-    # ── 密码与 2FA 安全状态筛选 ──
-    elif filt == "no_password":
-        conditions.append("(password IS NULL OR password = '')")
-    elif filt == "has_password":
-        conditions.append("(password IS NOT NULL AND password != '')")
-    elif filt == "no_2fa":
-        conditions.append("(totp_secret IS NULL OR totp_secret = '')")
-    elif filt == "has_2fa":
-        conditions.append("(totp_secret IS NOT NULL AND totp_secret != '')")
-    elif filt == "missing_security":
-        conditions.append("((password IS NULL OR password = '') OR (totp_secret IS NULL OR totp_secret = ''))")
-    elif filt == "both_secured":
-        conditions.append("(password IS NOT NULL AND password != '' AND totp_secret IS NOT NULL AND totp_secret != '')")
-    # ── 提链状态筛选 ──
-    elif filt == "extract_eligible":
-        conditions.append("(extra_json LIKE '%\"plus_eligible\"%' AND (extra_json NOT LIKE '%\"extract_link\"%' OR extra_json NOT LIKE '%\"status\":\"success\"%'))")
-    elif filt == "extract_success":
-        conditions.append("(extra_json LIKE '%\"extract_link\"%' AND (extra_json LIKE '%\"status\":\"success\"%' OR extra_json LIKE '%\"status\": \"success\"%'))")
-    elif filt == "extract_failed":
-        conditions.append("(extra_json LIKE '%\"extract_link\"%' AND (extra_json LIKE '%\"status\":\"failed\"%' OR extra_json LIKE '%\"status\":\"error\"%' OR extra_json LIKE '%\"status\": \"failed\"%'))")
+
+    # 支持单一老参数（逗号或单一code）
+    if filt and filt != "all":
+        parts = [p.strip() for p in filt.split(",") if p.strip()]
+        for p in parts:
+            c = _parse_single_filter_clause(p)
+            if c:
+                conditions.append(c)
+
+    # 支持多维度组合参数
+    for sub in (filter_plan, filter_sec, filter_extract, filter_oauth):
+        if sub and sub != "all":
+            c = _parse_single_filter_clause(sub)
+            if c and c not in conditions:
+                conditions.append(c)
 
     search_cleaned = (search or "").strip().lower()
     if search_cleaned:
@@ -932,17 +960,40 @@ def _registered_where(filt: str, search: str = "") -> tuple[str, list]:
     return "", args
 
 
-def count_registered(filter_rt: str = "all", search: str = "") -> int:
+def count_registered(
+    filter_rt: str = "all",
+    search: str = "",
+    filter_plan: str = "",
+    filter_sec: str = "",
+    filter_extract: str = "",
+    filter_oauth: str = "",
+) -> int:
     con = _conn()
-    where, args = _registered_where(filter_rt, search)
+    where, args = _registered_where(
+        filter_rt, search,
+        filter_plan=filter_plan, filter_sec=filter_sec,
+        filter_extract=filter_extract, filter_oauth=filter_oauth,
+    )
     cur = con.execute(f"SELECT COUNT(*) FROM registered {where}", args)
     return cur.fetchone()[0]
 
 
-def list_registered_emails(filter_rt: str = "all", search: str = "", limit: int = 100000) -> list[str]:
+def list_registered_emails(
+    filter_rt: str = "all",
+    search: str = "",
+    limit: int = 100000,
+    filter_plan: str = "",
+    filter_sec: str = "",
+    filter_extract: str = "",
+    filter_oauth: str = "",
+) -> list[str]:
     """返回符合过滤条件的所有注册邮箱列表。"""
     con = _conn()
-    where, args = _registered_where(filter_rt, search)
+    where, args = _registered_where(
+        filter_rt, search,
+        filter_plan=filter_plan, filter_sec=filter_sec,
+        filter_extract=filter_extract, filter_oauth=filter_oauth,
+    )
     cur = con.execute(
         f"SELECT email FROM registered {where} ORDER BY created_at DESC LIMIT ?",
         args + [limit],
@@ -950,9 +1001,22 @@ def list_registered_emails(filter_rt: str = "all", search: str = "", limit: int 
     return [r[0] for r in cur.fetchall()]
 
 
-def list_registered(limit: int = 20, offset: int = 0, filter_rt: str = "all", search: str = "") -> list[dict]:
+def list_registered(
+    limit: int = 20,
+    offset: int = 0,
+    filter_rt: str = "all",
+    search: str = "",
+    filter_plan: str = "",
+    filter_sec: str = "",
+    filter_extract: str = "",
+    filter_oauth: str = "",
+) -> list[dict]:
     con = _conn()
-    where, args = _registered_where(filter_rt, search)
+    where, args = _registered_where(
+        filter_rt, search,
+        filter_plan=filter_plan, filter_sec=filter_sec,
+        filter_extract=filter_extract, filter_oauth=filter_oauth,
+    )
     cur = con.execute(
         f"SELECT email, password, totp_secret, reg_country, reg_city, reg_ip, "
         f"length(access_token) AS at_len, length(session_token) AS st_len, "
