@@ -47,6 +47,54 @@ def _s(row: dict, key: str) -> str:
     return str(v).strip()
 
 
+def _render_cpa_json_all(rows: list[dict]) -> bytes:
+    import json
+    from datetime import datetime, timezone
+    items = []
+    for r in rows or []:
+        email = _s(r, "email")
+        at = _s(r, "access_token")
+        rt = _s(r, "refresh_token")
+        it = _s(r, "id_token")
+        items.append({
+            "type": "codex",
+            "email": email,
+            "access_token": at,
+            "refresh_token": rt,
+            "id_token": it,
+            "account_id": "",
+            "plan_type": "free",
+            "last_refresh": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "expired": "",
+        })
+    return json.dumps(items, ensure_ascii=False, indent=2).encode("utf-8")
+
+
+def _render_sub2api_json_all(rows: list[dict]) -> bytes:
+    import json
+    from datetime import datetime, timezone
+    items = []
+    for r in rows or []:
+        email = _s(r, "email")
+        at = _s(r, "access_token")
+        rt = _s(r, "refresh_token")
+        it = _s(r, "id_token")
+        items.append({
+            "name": email.split("@")[0] if "@" in email else email,
+            "platform": "openai",
+            "type": "oauth",
+            "email": email,
+            "credentials": {
+                "access_token": at,
+                "refresh_token": rt,
+                "id_token": it,
+            },
+            "status": 1,
+            "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        })
+    return json.dumps(items, ensure_ascii=False, indent=2).encode("utf-8")
+
+
 # ──────────────────────── 注册表 ────────────────────────
 
 
@@ -95,6 +143,25 @@ FORMATS: list[ExportFormat] = [
             f'{_s(r, "totp_secret")}----{_s(r, "relay_url")}'
         ),
         note="取件链接含 token，等同收件权限，妥善保管",
+    ),
+    # 📦 面板 JSON 格式 (支持直接下载为 CPA / Sub2API 标准 JSON 文件)
+    ExportFormat(
+        id="cpa_json",
+        label="📦 CPA JSON (Codex凭证)",
+        filename="cpa_accounts.json",
+        mode="download",
+        mime="application/json; charset=utf-8",
+        render_all=_render_cpa_json_all,
+        note="Codex OAuth 格式，适用于各类 CPA 面板",
+    ),
+    ExportFormat(
+        id="sub2api_json",
+        label="📦 Sub2API JSON (账号导入)",
+        filename="sub2api_accounts.json",
+        mode="download",
+        mime="application/json; charset=utf-8",
+        render_all=_render_sub2api_json_all,
+        note="Sub2API 标准账号导入 JSON",
     ),
 ]
 

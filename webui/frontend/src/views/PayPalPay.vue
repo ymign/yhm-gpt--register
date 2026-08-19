@@ -130,12 +130,21 @@ function handleConfirmPaste() {
       return { email: parts[0].trim(), ba_token: parts[1].trim(), phone: parts[2].trim() }
     }
     if (parts.length === 2) {
-      if (parts[1].startsWith('+') || /^\d{8,}$/.test(parts[1])) {
-        return { email: '', ba_token: parts[0].trim(), phone: parts[1].trim() }
+      const p0 = parts[0].trim()
+      const p1 = parts[1].trim()
+      if (p1.startsWith('+') || /^\d{8,}$/.test(p1)) {
+        if (p0.includes('@') && !p0.includes('ba_token=')) {
+          return { email: p0, ba_token: '', phone: p1 }
+        }
+        return { email: '', ba_token: p0, phone: p1 }
       }
-      return { email: parts[0].trim(), ba_token: parts[1].trim(), phone: form.default_phone }
+      return { email: p0, ba_token: p1, phone: form.default_phone }
     }
-    return { email: '', ba_token: l, phone: form.default_phone }
+    const single = l.trim()
+    if (single.includes('@') && !single.includes('ba_token=')) {
+      return { email: single, ba_token: '', phone: form.default_phone }
+    }
+    return { email: '', ba_token: single, phone: form.default_phone }
   })
 
   // 如果原本只有一条空行，先清空

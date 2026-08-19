@@ -89,9 +89,17 @@ const { dataVersion } = storeToRefs(runtime)
 const extractModalVisible = ref(false)
 const extractModalChannel = ref('paypal')
 const extractModalEmails = ref([])
+const extractModalAutoPay = ref(false)
 
 async function openExtractChannel(channelKey) {
-  extractModalChannel.value = channelKey
+  let targetChannel = channelKey
+  let autoPay = false
+  if (channelKey === 'paypal_pipeline') {
+    targetChannel = 'paypal'
+    autoPay = true
+  }
+  extractModalChannel.value = targetChannel
+  extractModalAutoPay.value = autoPay
   if (selected.value.length > 0) {
     extractModalEmails.value = selected.value.map((r) => r.email)
     extractModalVisible.value = true
@@ -1626,8 +1634,21 @@ async function openOAuthExport(target = 'selected') {
     oauthLogs.value = []
     oauthConfigCollapsed.value = true
     const initMap = {}
+    const rowMap = new Map(rows.value.map((r) => [r.email, r]))
     for (const em of emails) {
-      initMap[em] = { email: em, status: 'pending', result: null, elapsed: 0 }
+      const r = rowMap.get(em)
+      const hasOauth = r && (r.oauth_status === 'success' || (r.refresh_token && r.refresh_token.length > 10))
+      if (hasOauth) {
+        initMap[em] = {
+          email: em,
+          status: 'done',
+          step_text: '已拥有 OAuth 凭证',
+          result: { status: 'success', label: '已授权' },
+          elapsed: 0,
+        }
+      } else {
+        initMap[em] = { email: em, status: 'pending', result: null, elapsed: 0 }
+      }
     }
     oauthItems.value = initMap
   }
@@ -3019,7 +3040,12 @@ onUnmounted(() => {
             </el-button>
             <template #dropdown>
               <el-dropdown-menu class="extract-dropdown-menu">
-                <div class="dropdown-group-title">资格检测</div>
+                <div class="dropdown-group-title">⚡ 一体化一条龙流水线</div>
+                <el-dropdown-item command="paypal_pipeline" class="pipeline-menu-item">
+                  ⚡ PayPal 提链+代付一条龙 (同IP)
+                </el-dropdown-item>
+
+                <div class="dropdown-group-title divider-title">资格检测</div>
                 <el-dropdown-item command="gcash_check">批量 GCash 检测</el-dropdown-item>
                 <el-dropdown-item command="oaics_check">批量 OAICS 检测</el-dropdown-item>
                 <el-dropdown-item command="plus_check">批量 Plus 状态检测</el-dropdown-item>
@@ -3027,7 +3053,7 @@ onUnmounted(() => {
                 <div class="dropdown-group-title divider-title">提链 / 出码</div>
                 <el-dropdown-item command="gcash">批量 GCash 提链</el-dropdown-item>
                 <el-dropdown-item command="pix">批量 PIX 出码</el-dropdown-item>
-                <el-dropdown-item command="paypal">批量 PayPal 提链</el-dropdown-item>
+                <el-dropdown-item command="paypal">批量 PayPal 提链 (仅提链)</el-dropdown-item>
                 <el-dropdown-item command="ideal">批量 iDEAL 提链</el-dropdown-item>
                 <el-dropdown-item command="upi">批量 UPI 提链</el-dropdown-item>
                 <el-dropdown-item command="kakao">批量 Kakao 提链</el-dropdown-item>
@@ -3922,6 +3948,25 @@ onUnmounted(() => {
         <!-- 参数配置卡片 (Tab 选项卡折叠卡片) -->
         <el-collapse-transition>
           <div v-show="!oauthConfigCollapsed" class="oa-config-card" style="padding: 10px 14px 12px">
+            <!-- 手机号接码策略全局快捷切换栏 -->
+            <div style="display: flex; align-items: center; justify-content: space-between; padding: 6px 10px; background: rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.25); border-radius: 6px; margin-bottom: 10px; flex-wrap: wrap; gap: 8px">
+              <div style="display: flex; align-items: center; gap: 8px">
+                <span style="font-weight: 600; font-size: 12.5px; color: var(--el-text-color-primary)">手机号策略：</span>
+                <el-radio-group v-model="oauthForm.smsEnabled" size="small" :disabled="oauthRunning">
+                  <el-radio-button :value="false">⏩ 跳过短信接码 (识别到直接跳过)</el-radio-button>
+                  <el-radio-button :value="true">📱 自动短信接码 (SmsBower)</el-radio-button>
+                </el-radio-group>
+              </div>
+              <div style="font-size: 12px">
+                <span v-if="!oauthForm.smsEnabled" style="color: #10b981; font-weight: 500">
+                  🛡️ 遇到需手机号验证（add-phone）直接安全跳过，零费用消耗
+                </span>
+                <span v-else style="color: #3b82f6; font-weight: 500">
+                  📱 遇到手机号验证时自动租号接码 (未接通自动退款)
+                </span>
+              </div>
+            </div>
+
             <el-tabs v-model="oauthActiveTab" class="oa-config-tabs">
               <!-- Tab 1: 网络与代理 -->
               <el-tab-pane label="🌐 网络代理 & 并发设置" name="network">
@@ -3970,17 +4015,8 @@ onUnmounted(() => {
               </el-tab-pane>
 
               <!-- Tab 2: 短信接码设置 -->
-              <el-tab-pane label="📱 手机号短信接码 (SmsBower)" name="sms">
+              <el-tab-pane label="📱 手机号短信接码参数" name="sms">
                 <el-form label-position="top" :disabled="oauthRunning" size="small" style="margin-top: 6px">
-                  <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; flex-wrap: wrap; gap: 6px">
-                    <el-checkbox v-model="oauthForm.smsEnabled" style="font-weight: 600">
-                      启用自动短信接码 (遇到 add-phone 自动收码推进)
-                    </el-checkbox>
-                    <span style="font-size: 11.5px; color: var(--el-color-success)">
-                      🛡️ 自动退款保障：未接码成功的手机号均会自动向平台取消退款
-                    </span>
-                  </div>
-
                   <div v-show="oauthForm.smsEnabled">
                     <el-row :gutter="12">
                       <el-col :xs="24" :sm="12" :md="6">
@@ -4020,8 +4056,8 @@ onUnmounted(() => {
                       </el-col>
                     </el-row>
                   </div>
-                  <div v-show="!oauthForm.smsEnabled" style="padding: 10px 0; color: var(--el-text-color-secondary); font-size: 12px">
-                    当前未开启接码。遇到手机号验证（add-phone）将<b>直接安全跳过</b>，不会产生任何扣费。
+                  <div v-show="!oauthForm.smsEnabled" style="padding: 12px; background: var(--el-fill-color-light); border-radius: 6px; color: var(--el-text-color-secondary); font-size: 12.5px; line-height: 1.6">
+                    当前处于 <b>⏩ 跳过接码模式</b>。OpenAI 遇到需手机号验证（add-phone）时将<b>直接安全跳过</b>并标记为「需接码」，不会产生任何接码扣费。如需自动接码推进，请在上方切换为「📱 自动短信接码」。
                   </div>
                 </el-form>
               </el-tab-pane>
@@ -4131,17 +4167,17 @@ onUnmounted(() => {
           <div class="footer-left" style="display: flex; gap: 8px">
             <el-button
               type="primary" plain size="small"
-              :disabled="oauthStats.success === 0"
+              :disabled="oauthStats.success === 0 && !oauthTargetEmails.length"
               @click="downloadCpaJson"
             >
-              <el-icon><Download /></el-icon>下载 CPA JSON ({{ oauthStats.success }})
+              <el-icon><Download /></el-icon>下载 CPA JSON ({{ oauthStats.success || oauthTargetEmails.length }})
             </el-button>
             <el-button
               type="success" size="small"
-              :disabled="oauthStats.success === 0"
+              :disabled="oauthStats.success === 0 && !oauthTargetEmails.length"
               @click="downloadSub2Json"
             >
-              <el-icon><Download /></el-icon>下载 SUB2 JSON ({{ oauthStats.success }})
+              <el-icon><Download /></el-icon>下载 SUB2 JSON ({{ oauthStats.success || oauthTargetEmails.length }})
             </el-button>
           </div>
           <div class="footer-right">
@@ -5546,6 +5582,7 @@ onUnmounted(() => {
       v-model="extractModalVisible"
       :channel="extractModalChannel"
       :emails="extractModalEmails"
+      :auto-pay="extractModalAutoPay"
       @finished="load(false)"
     />
   </div>

@@ -2353,8 +2353,16 @@ class StartNativeExtractTaskReq(BaseModel):
     currency: Optional[str] = Field("", description="币种 (PHP/BRL/EUR/USD等)")
     workers: int = Field(3, ge=1, le=20, description="并发 worker 线程数")
     retries: int = Field(3, ge=1, le=10, description="每号尝试次数")
-    allow_fallback: bool = Field(True, description="允许账单回退")
+    allow_fallback: bool = Field(False, description="允许账单回退")
     proxy_pool: Optional[str] = Field("", description="指定代理池")
+    # 一条龙代付配置扩展 (同 IP 同环境)
+    auto_pay: Optional[bool] = Field(False, description="是否自动接力执行 PayPal 协议代付开通 Plus")
+    pay_phone: Optional[str] = Field("", description="全局默认代付手机号")
+    account_phones: Optional[dict[str, str]] = Field(None, description="每个账号单独指定的手机号字典 {email: phone}")
+    pay_flow_mode: Optional[str] = Field("elevation", description="代付协议模式: elevation / standard")
+    sms_provider_name: Optional[str] = Field("", description="接码平台")
+    sms_api_key: Optional[str] = Field("", description="接码平台 Key")
+    sms_country: Optional[str] = Field("52", description="接码国家")
 
 
 @app.post("/api/extract/task/start")
@@ -2378,6 +2386,13 @@ def api_extract_task_start(req: StartNativeExtractTaskReq):
         "retries": req.retries,
         "allow_fallback": req.allow_fallback,
         "proxy_pool": pool_str,
+        "auto_pay": bool(req.auto_pay),
+        "pay_phone": req.pay_phone or "",
+        "account_phones": req.account_phones or {},
+        "pay_flow_mode": req.pay_flow_mode or "elevation",
+        "sms_provider_name": req.sms_provider_name or "",
+        "sms_api_key": req.sms_api_key or "",
+        "sms_country": req.sms_country or "52",
     }
 
     try:
@@ -2385,7 +2400,7 @@ def api_extract_task_start(req: StartNativeExtractTaskReq):
     except ValueError as e:
         raise HTTPException(400, str(e))
 
-    logger.info(f"[native_extract] 任务 {task_id} 启动: channel={req.channel}, total={len(emails)}, workers={req.workers}")
+    logger.info(f"[native_extract] 任务 {task_id} 启动: channel={req.channel}, total={len(emails)}, workers={req.workers}, auto_pay={req.auto_pay}")
     return {"ok": True, "task_id": task_id, "taskId": task_id, "total": len(emails), "channel": req.channel}
 
 
@@ -2449,6 +2464,46 @@ def api_extract_task_log(task_id: str, email: str = ""):
 
     lines = extract_engine.get_task_logs(task_id, email)
     return {"ok": True, "email": email, "lines": lines}
+
+
+class RetryExtractTaskReq(BaseModel):
+    emails: Optional[list[str]] = None
+
+
+@app.post("/api/extract/task/{task_id}/retry")
+def api_extract_task_retry(task_id: str, req: Optional[RetryExtractTaskReq] = None):
+    """重试提炼任务中失败或指定的账号。"""
+    from . import extract_engine
+
+    emails = req.emails if req else None
+    try:
+        res = extract_engine.retry_extract_job(task_id, emails)
+        return res
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"重试提炼失败: {e}")
+
+
+class SubmitExtractTaskInputReq(BaseModel):
+    email: str = Field(..., description="账号邮箱")
+    value: str = Field(..., description="6位短信验证码或新手机号")
+
+
+@app.post("/api/extract/task/{task_id}/input")
+def api_extract_task_input(task_id: str, req: SubmitExtractTaskInputReq):
+    """向一条龙提炼代付任务提交 2FA 短信验证码或新手机号。"""
+    from . import extract_engine
+
+    try:
+        extract_engine.submit_extract_input(task_id, req.email, req.value)
+        return {"ok": True}
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    except Exception as e:
+        raise HTTPException(400, str(e))
+
+
 
 
 # ──────────────────────── PayPal 协议支付 (自动代付开通) ────────────────────────

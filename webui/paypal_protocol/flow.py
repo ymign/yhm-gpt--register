@@ -115,6 +115,14 @@ COUNTRY_PROFILES = {
         "locale": "nl_NL", "lang": "nl", "phone_code": "+31",
         "accept_language": "nl-NL,nl;q=0.9,en-US;q=0.7,en;q=0.5",
     },
+    "TR": {
+        "locale": "tr_TR", "lang": "tr", "phone_code": "+90",
+        "accept_language": "tr-TR,tr;q=0.9,en-US;q=0.7,en;q=0.5",
+    },
+    "DE": {
+        "locale": "de_DE", "lang": "de", "phone_code": "+49",
+        "accept_language": "de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7",
+    },
 }
 
 
@@ -146,6 +154,8 @@ class PayPalFlow:
             calling_code = "+"
             try:
                 catalog_path = Path(__file__).resolve().parents[1] / "data" / "paypal_supported_countries.json"
+                if not catalog_path.exists():
+                    catalog_path = Path(__file__).resolve().parents[1] / "paypal_protocol_data" / "paypal_supported_countries.json"
                 catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
                 row = next(
                     (
@@ -554,31 +564,17 @@ class PayPalFlow:
 
     def _update_user_phone(self, phone: str):
         """Update country-specific phone fields used by signup/2FA calls."""
-        raw = (phone or "").strip()
-        if raw.lower().startswith("phone:"):
-            raw = raw.split(":", 1)[1].strip()
-
-        digits = "".join(ch for ch in raw if ch.isdigit())
-        if len(digits) < 8:
+        from .models import resolve_phone_and_country
+        calling_code, phone_country_iso, local, full = resolve_phone_and_country(phone, fallback_country=self.country)
+        if len(local) < 6:
             raise ValueError("phone number is too short")
 
-        calling_code = self.phone_code.lstrip("+")
-        if digits.startswith(calling_code) and len(digits) > len(calling_code) + 7:
-            country_code = self.phone_code
-            local = digits[len(calling_code):]
-            full = f"+{digits}"
-        else:
-            country_code = self.phone_code
-            local = digits[1:] if self.country in {"GB", "JP", "TH", "ID", "PH", "TW", "MX", "AE", "AU"} and digits.startswith("0") else digits
-            full = f"{self.phone_code}{local}"
-
-        if len(local) < 8:
-            raise ValueError("local phone number is too short")
-
         self.user.phone = full
-        self.user.phone_country_code = country_code
+        self.user.phone_country_code = calling_code
+        self.user.phone_country_iso = phone_country_iso
         self.user.phone_local = local
-        logger.info("Phone updated for OTP retry: {}", self._masked_phone())
+        self.phone_code = calling_code
+        logger.info("Phone updated for OTP retry: {} (phoneCountry={})", self._masked_phone(), phone_country_iso)
 
     def _initiate_2fa_phone_confirmation(self, token: str, signup_url: str) -> tuple[str, str]:
         """Send a new 2FA SMS and return authId/challengeId."""
@@ -595,13 +591,14 @@ class PayPalFlow:
             country=self.address.country,
             lang=self.lang,
         )
+        phone_country = getattr(self.user, "phone_country_iso", "") or self.country
         initiate_result = self.session.graphql(
             "InitiateRiskBasedTwoFactorPhoneConfirmationMutation",
             INITIATE_2FA_PHONE_MUTATION,
             {
                 "phoneNumber": self.user.phone_local,
                 "locale": {"country": self.country, "lang": self.lang},
-                "phoneCountry": self.country,
+                "phoneCountry": phone_country,
                 "token": token,
             },
         )
@@ -967,7 +964,10 @@ class PayPalFlow:
         if not isinstance(normalized, dict) or not normalized:
             return
         normalized_line1 = str(normalized.get("line1") or "").strip()
-        if normalized_line1:
+
+        # 严格过滤 Packstation / Postfach / PO Box，杜绝触发 RESIDENTIAL_ADDRESS_VALIDATION_ERROR
+        pobox_markers = ("packstation", "postfach", "po box", "p.o. box", "p.o box", "parcel locker", "postbox", "box ")
+        if normalized_line1 and not any(p in normalized_line1.lower() for p in pobox_markers):
             if self.country in {"GB", "US", "TH", "ID", "PH", "TW", "AE", "AU", "CA", "BA", "BH"}:
                 match = re.match(
                     r"^([0-9]+(?:/[0-9A-Za-z-]+)?[A-Za-z]?(?:-[0-9]+[A-Za-z]?)?)\s+(.+)$",
@@ -992,10 +992,16 @@ class PayPalFlow:
                     self.address.street = normalized_line1
             else:
                 self.address.street = normalized_line1
-        self.address.district = str(normalized.get("line2") or "").strip()
-        self.address.city = normalized.get("city") or self.address.city
-        self.address.state = normalized.get("state") or self.address.state
-        self.address.postal_code = normalized.get("postalCode") or self.address.postal_code
+
+        line2 = str(normalized.get("line2") or "").strip()
+        if line2 and not any(p in line2.lower() for p in pobox_markers) and line2.lower() != "none":
+            self.address.district = line2
+        if normalized.get("city"):
+            self.address.city = normalized.get("city")
+        if normalized.get("state"):
+            self.address.state = normalized.get("state")
+        if normalized.get("postalCode"):
+            self.address.postal_code = normalized.get("postalCode")
         self._address_normalized_by_paypal = True
 
     def _normalize_address_with_paypal(self, token: str) -> None:
@@ -1022,6 +1028,11 @@ class PayPalFlow:
         result_obj = address_result[0] if isinstance(address_result, list) else address_result
         normalized = result_obj.get("data", {}).get("addressNormalization") or {}
         if normalized:
+            line1_raw = str(normalized.get("line1") or "").strip()
+            pobox_markers = ("packstation", "postfach", "po box", "p.o. box", "p.o box", "parcel locker", "postbox", "box ")
+            if any(p in line1_raw.lower() for p in pobox_markers):
+                logger.info("Ignoring PO Box/Packstation in PayPal autocomplete: {} (preserving residential street)", line1_raw)
+                return
             logger.info(
                 "Address normalized by PayPal: {}, {}, {} {}",
                 normalized.get("line1"),

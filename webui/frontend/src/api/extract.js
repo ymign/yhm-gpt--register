@@ -41,3 +41,11 @@ export const nativeExtractStreamUrl = (taskId) =>
 export const getNativeExtractTaskLog = (taskId, email) =>
   http.get(`/api/extract/task/${encodeURIComponent(taskId)}/log`, { params: { email } })
 
+export const retryNativeExtractTask = (taskId, payload = {}) =>
+  http.post(`/api/extract/task/${encodeURIComponent(taskId)}/retry`, payload)
+
+export const submitNativeExtractTaskInput = (taskId, email, value) =>
+  http.post(`/api/extract/task/${encodeURIComponent(taskId)}/input`, { email, value })
+
+
+

@@ -16,7 +16,10 @@ CATALOG_PATH = Path(__file__).resolve().parents[1] / "data" / "country_discovery
 
 @lru_cache(maxsize=1)
 def load_country_catalog() -> dict[str, dict[str, Any]]:
-    raw = json.loads(CATALOG_PATH.read_text(encoding="utf-8"))
+    p = CATALOG_PATH
+    if not p.exists():
+        p = Path(__file__).resolve().parents[1] / "paypal_protocol_data" / "country_discovery" / "country_field_catalog.json"
+    raw = json.loads(p.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
         raise ValueError("country field catalog must be an object")
     return {str(key).upper(): value for key, value in raw.items() if isinstance(value, dict)}

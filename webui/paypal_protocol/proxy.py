@@ -84,6 +84,16 @@ class ProxyConfig:
     enabled: bool
     entry: ProxyEntry | None = None
 
+    @classmethod
+    def from_url(cls, raw: str | None) -> "ProxyConfig":
+        if not raw or not str(raw).strip():
+            return cls(enabled=False)
+        try:
+            entry = ProxyEntry.parse(str(raw).strip())
+            return cls(enabled=True, entry=entry)
+        except Exception:
+            return cls(enabled=False)
+
     @property
     def url(self) -> str | None:
         return self.entry.url if self.enabled and self.entry else None

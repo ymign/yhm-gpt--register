@@ -65,7 +65,10 @@ def _country_lock(code: str) -> threading.Lock:
 
 def _country_name(code: str) -> str:
     try:
-        catalog = json.loads((ROOT / "data" / "paypal_supported_countries.json").read_text(encoding="utf-8"))
+        p = ROOT / "data" / "paypal_supported_countries.json"
+        if not p.exists():
+            p = ROOT / "paypal_protocol_data" / "paypal_supported_countries.json"
+        catalog = json.loads(p.read_text(encoding="utf-8"))
         row = next(
             (item for item in (catalog.get("countries") or []) if str(item.get("code") or "").upper() == code),
             {},

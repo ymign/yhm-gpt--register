@@ -22,7 +22,7 @@ import ExtractTaskModal from '@/components/ExtractTaskModal.vue'
 
 // ── 渠道卡片元数据 ──
 const CHANNELS = [
-  { key: 'paypal', name: 'PayPal', flag: '💳', exit: 'DE 德国', billing: 'DE 德国 / EUR', desc: 'PayPal 授权与支付提链', hot: true, tag: 'DE/EUR' },
+  { key: 'paypal', name: 'PayPal 提链 / 一条龙', flag: '💳', exit: 'DE 德国', billing: 'DE 德国 / EUR', desc: 'PayPal 0元提链 + 协议代付一条龙', hot: true, tag: 'DE/EUR' },
   { key: 'pix', name: 'PIX 出码', flag: '🇧🇷', exit: 'BR 巴西', billing: 'BR 巴西 / BRL', desc: '巴西 PIX 二维码与银行跳转', hot: true, tag: 'BR/BRL' },
   { key: 'gcash', name: 'GCash', flag: '🇵🇭', exit: 'US 美国', billing: 'PH 菲律宾 / PHP', desc: '菲律宾 GCash 短链接直提', tag: 'PH/PHP' },
   { key: 'ideal', name: 'iDEAL', flag: '🇳🇱', exit: 'NL 荷兰', billing: 'NL 荷兰 / EUR', desc: '荷兰及欧洲银行跳转扫码', tag: 'NL/EUR' },
@@ -47,12 +47,14 @@ const loading = ref(false)
 const taskModalVisible = ref(false)
 const taskModalChannel = ref('paypal')
 const taskModalEmails = ref([])
+const taskModalAutoPay = ref(false)
 
 // 是否展示顶层紧凑渠道横条
 const showChannelBar = ref(true)
 
-async function openChannelTask(channelKey) {
+async function openChannelTask(channelKey, autoPay = false) {
   taskModalChannel.value = channelKey
+  taskModalAutoPay.value = autoPay
   if (selected.value.length > 0) {
     taskModalEmails.value = selected.value.map((r) => r.email)
     taskModalVisible.value = true
@@ -206,13 +208,18 @@ onActivated(() => {
             </el-button>
             <template #dropdown>
               <el-dropdown-menu class="extract-menu-dropdown">
-                <div class="dropdown-group-header">资格检测</div>
+                <div class="dropdown-group-header">⚡ 一体化一条龙流水线</div>
+                <el-dropdown-item command="paypal_pipeline">
+                  ⚡ PayPal 提链+代付一条龙 (同IP)
+                </el-dropdown-item>
+
+                <div class="dropdown-group-header divider">资格检测</div>
                 <el-dropdown-item command="gcash_check">批量 GCash 检测</el-dropdown-item>
                 <el-dropdown-item command="oaics_check">批量 OAICS 资格检测</el-dropdown-item>
                 <el-dropdown-item command="plus_check">批量 Plus 状态检测</el-dropdown-item>
 
                 <div class="dropdown-group-header divider">提链 / 出码</div>
-                <el-dropdown-item command="paypal">批量 PayPal 提链 (DE/EU)</el-dropdown-item>
+                <el-dropdown-item command="paypal">批量 PayPal 提链 (仅提链)</el-dropdown-item>
                 <el-dropdown-item command="pix">批量 PIX 出码 (BR)</el-dropdown-item>
                 <el-dropdown-item command="gcash">批量 GCash 提链 (PH)</el-dropdown-item>
                 <el-dropdown-item command="ideal">批量 iDEAL 提链 (NL)</el-dropdown-item>
@@ -353,6 +360,7 @@ onActivated(() => {
       v-model="taskModalVisible"
       :channel="taskModalChannel"
       :emails="taskModalEmails"
+      :auto-pay="taskModalAutoPay"
       @finished="loadData"
     />
   </div>

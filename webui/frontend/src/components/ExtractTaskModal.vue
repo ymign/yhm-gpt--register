@@ -14,12 +14,15 @@ import {
   Link,
   Close,
   CreditCard,
+  ArrowDown,
 } from '@element-plus/icons-vue'
 import {
   startNativeExtractTask,
   stopNativeExtractTask,
+  retryNativeExtractTask,
   nativeExtractStreamUrl,
   getNativeExtractTaskLog,
+  submitNativeExtractTaskInput,
 } from '@/api/extract'
 import { copyText, createSSE } from '@/api/request'
 import { useProxyStore } from '@/stores/proxy'
@@ -31,6 +34,7 @@ const props = defineProps({
   modelValue: { type: Boolean, default: false },
   channel: { type: String, default: 'paypal' },
   emails: { type: Array, default: () => [] },
+  autoPay: { type: Boolean, default: false },
 })
 
 const emit = defineEmits(['update:modelValue', 'finished'])
@@ -158,8 +162,8 @@ const CHANNEL_CONFIGS = {
 
 // ── 国家 / 币种字典 ──
 const COUNTRY_OPTIONS = [
-  { value: 'DE', label: 'DE · 德国 (PayPal高爆 ★★★★★)', currency: 'EUR' },
   { value: 'BR', label: 'BR · 巴西 (Plus试用高爆 ★★★★★)', currency: 'BRL' },
+  { value: 'DE', label: 'DE · 德国 (PayPal高爆 ★★★★★)', currency: 'EUR' },
   { value: 'US', label: 'US · 美国 (标准通用 ★★★)', currency: 'USD' },
   { value: 'NL', label: 'NL · 荷兰 (欧洲推荐 ★★★★)', currency: 'EUR' },
   { value: 'FR', label: 'FR · 法国 (欧洲推荐 ★★★★)', currency: 'EUR' },
@@ -172,7 +176,7 @@ const COUNTRY_OPTIONS = [
   { value: 'PL', label: 'PL · 波兰 (BLIK推荐 ★★★★)', currency: 'PLN' },
   { value: 'KR', label: 'KR · 韩国 (Kakao推荐 ★★★★)', currency: 'KRW' },
   { value: 'TH', label: 'TH · 泰国 (接码注册)', currency: 'THB' },
-  { value: 'TR', label: 'TR · 土耳其', currency: 'TRY' },
+  { value: 'TR', label: 'TR · 土耳其 (USD结算)', currency: 'USD' },
   { value: 'ID', label: 'ID · 印尼', currency: 'IDR' },
   { value: 'MY', label: 'MY · 马来西亚', currency: 'MYR' },
   { value: 'SG', label: 'SG · 新加坡', currency: 'SGD' },
@@ -181,19 +185,18 @@ const COUNTRY_OPTIONS = [
 ]
 
 const CURRENCY_OPTIONS = [
-  { value: 'EUR', label: 'EUR · 欧元' },
-  { value: 'USD', label: 'USD · 美元' },
+  { value: 'USD', label: 'USD · 美元 (官方全区通用)' },
+  { value: 'EUR', label: 'EUR · 欧元 (欧洲地区)' },
+  { value: 'BRL', label: 'BRL · 巴西雷亚尔 (0元高爆)' },
+  { value: 'GBP', label: 'GBP · 英镑' },
+  { value: 'JPY', label: 'JPY · 日元' },
   { value: 'THB', label: 'THB · 泰铢' },
-  { value: 'BRL', label: 'BRL · 巴西雷亚尔' },
   { value: 'PHP', label: 'PHP · 菲律宾比索' },
   { value: 'INR', label: 'INR · 印度卢比' },
   { value: 'KRW', label: 'KRW · 韩元' },
   { value: 'VND', label: 'VND · 越南盾' },
   { value: 'CHF', label: 'CHF · 瑞士法郎' },
   { value: 'PLN', label: 'PLN · 波兰兹罗提' },
-  { value: 'TRY', label: 'TRY · 土耳其里拉' },
-  { value: 'JPY', label: 'JPY · 日元' },
-  { value: 'GBP', label: 'GBP · 英镑' },
   { value: 'IDR', label: 'IDR · 印尼盾' },
   { value: 'MYR', label: 'MYR · 马来西亚林吉特' },
   { value: 'SGD', label: 'SGD · 新加坡元' },
@@ -210,7 +213,10 @@ const form = reactive({
   exit_country: 'BR',
   billing_country: 'DE',
   currency: 'EUR',
-  allow_fallback: true,
+  allow_fallback: false,
+  auto_pay: false,
+  pay_phone: '+66812345678',
+  pay_flow_mode: 'elevation',
 })
 
 // ── 任务运行状态 ──
@@ -220,9 +226,14 @@ const es = ref(null)
 const taskMap = reactive({})
 const taskItems = computed(() => Object.values(taskMap))
 
+// 等待 2FA 短信验证码的账号列表
+const awaitingOtpItems = computed(() => {
+  return taskItems.value.filter((i) => i.status === 'awaiting_otp')
+})
+
 // 统计卡片指标
 const selectedCount = computed(() => props.emails.length)
-const inProgressCount = computed(() => taskItems.value.filter((i) => i.status === 'running').length)
+const inProgressCount = computed(() => taskItems.value.filter((i) => i.status === 'running' || i.status === 'awaiting_otp').length)
 const successCount = computed(() => taskItems.value.filter((i) => i.status === 'success').length)
 const errorCount = computed(() => taskItems.value.filter((i) => i.status === 'error').length)
 const stoppedCount = computed(() => taskItems.value.filter((i) => i.status === 'cancelled').length)
@@ -253,16 +264,26 @@ function initFormFromChannel() {
   form.currency = meta.defaultCurrency
   form.workers = 2
   form.retries = 3
-  form.allow_fallback = true
+  form.allow_fallback = false
+  if (props.channel === 'paypal') {
+    form.auto_pay = props.autoPay || false
+    form.pay_phone = '+66812345678'
+    form.pay_flow_mode = 'elevation'
+  }
 
   // 初始化 taskMap
   for (const k of Object.keys(taskMap)) delete taskMap[k]
   for (const em of props.emails) {
     taskMap[em] = {
       email: em,
+      phone: form.pay_phone || '',
       status: 'pending',
       step_text: '待启动',
       link_url: '',
+      prompt: '',
+      is_paid: false,
+      otpInput: '',
+      submittingOtp: false,
       started_at: 0,
       elapsed: 0,
     }
@@ -284,6 +305,76 @@ watch(
   },
   { immediate: true },
 )
+
+// 批量粘贴手机号对话框
+const pastePhoneVisible = ref(false)
+const pastePhoneText = ref('')
+
+function openPastePhoneDialog() {
+  pastePhoneText.value = ''
+  pastePhoneVisible.value = true
+}
+
+function handleConfirmPastePhone() {
+  const lines = pastePhoneText.value
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean)
+  if (!lines.length) {
+    ElMessage.warning('请先粘贴手机号内容')
+    return
+  }
+
+  const emailsList = props.emails || []
+  let filledCount = 0
+
+  let isKeyValue = false
+  lines.forEach((line) => {
+    let parts = []
+    if (line.includes('----')) parts = line.split('----')
+    else if (line.includes('\t')) parts = line.split('\t')
+    else if (line.includes(':') && line.includes('@')) parts = line.split(':')
+    else if (line.includes(' ') && line.includes('@')) parts = line.split(/\s+/)
+
+    if (parts.length >= 2) {
+      const em = parts[0].trim().toLowerCase()
+      const ph = parts[1].trim()
+      if (taskMap[em]) {
+        taskMap[em].phone = ph
+        filledCount++
+        isKeyValue = true
+      }
+    }
+  })
+
+  if (!isKeyValue) {
+    emailsList.forEach((em, idx) => {
+      if (idx < lines.length && taskMap[em]) {
+        taskMap[em].phone = lines[idx]
+        filledCount++
+      }
+    })
+  }
+
+  ElMessage.success(`已为 ${filledCount} 个账号批量填入专属手机号`)
+  pastePhoneVisible.value = false
+}
+
+function handleApplyDefaultPhoneToAll() {
+  const ph = (form.pay_phone || '').trim()
+  if (!ph) {
+    ElMessage.warning('请先填写默认手机号')
+    return
+  }
+  let count = 0
+  for (const em of props.emails) {
+    if (taskMap[em]) {
+      taskMap[em].phone = ph
+      count++
+    }
+  }
+  ElMessage.success(`已将手机号 ${ph} 一键同步至所有 ${count} 个账号`)
+}
 
 function onExitCountryChange(c) {
   form.billing_country = c
@@ -307,13 +398,20 @@ async function handleStart() {
     return
   }
 
-  // 重置 taskMap
+  const accountPhones = {}
   for (const em of props.emails) {
+    const ph = taskMap[em]?.phone || form.pay_phone || ''
+    if (ph) accountPhones[em] = ph.trim()
     taskMap[em] = {
       email: em,
+      phone: ph,
       status: 'pending',
       step_text: '排队中...',
       link_url: '',
+      prompt: '',
+      is_paid: false,
+      otpInput: '',
+      submittingOtp: false,
       started_at: 0,
       elapsed: 0,
     }
@@ -330,13 +428,45 @@ async function handleStart() {
       retries: form.retries,
       allow_fallback: form.allow_fallback,
       proxy_pool: proxyStore.text,
+      auto_pay: props.channel === 'paypal' ? form.auto_pay : false,
+      pay_phone: form.pay_phone,
+      account_phones: accountPhones,
+      pay_flow_mode: form.pay_flow_mode,
     })
     taskId.value = res.task_id
     running.value = true
-    ElMessage.success(`【${currentMeta.value.name}】已启动: 共 ${props.emails.length} 个账号`)
+    const modeDesc = (props.channel === 'paypal' && form.auto_pay) ? '【PayPal 提炼+代付一条龙(同IP)】' : `【${currentMeta.value.name}】`
+    ElMessage.success(`${modeDesc}已启动: 共 ${props.emails.length} 个账号`)
     connectStream(res.task_id)
   } catch (e) {
     ElMessage.error(e.message || '启动提炼任务失败')
+  }
+}
+
+// ── 行内 2FA 验证码输入与提交 (一条龙代付交互) ──
+async function handleInlineOtpSubmit(row) {
+  const email = (row.email || '').trim()
+  const code = (row.otpInput || '').trim()
+  if (!code) {
+    ElMessage.warning('请输入 6 位短信验证码或新手机号')
+    return
+  }
+  row.submittingOtp = true
+  try {
+    await submitNativeExtractTaskInput(taskId.value || 'latest', email, code)
+    ElMessage.success(`[${email}] 验证码已提交，正在继续执行协议代付...`)
+    row.otpInput = ''
+    row.status = 'running'
+    row.step_text = '已收到验证码，正在继续授权...'
+    if (taskMap[email]) {
+      taskMap[email].status = 'running'
+      taskMap[email].step_text = '已收到验证码，正在继续授权...'
+      taskMap[email].prompt = ''
+    }
+  } catch (e) {
+    ElMessage.error(e.message || '提交验证码失败')
+  } finally {
+    row.submittingOtp = false
   }
 }
 
@@ -348,6 +478,59 @@ async function handleStop() {
     ElMessage.info('已发送中止请求')
   } catch (e) {
     ElMessage.error(e.message || '中止失败')
+  }
+}
+
+// ── 一键重试所有失败项 ──
+async function handleRetryFailed() {
+  if (!taskId.value) {
+    ElMessage.warning('当前无任务实例，请直接点击开始提炼')
+    return
+  }
+  const failedEmails = taskItems.value
+    .filter((i) => i.status === 'error' || i.status === 'cancelled')
+    .map((i) => i.email)
+
+  if (!failedEmails.length) {
+    ElMessage.info('当前没有失败或已停止的账号')
+    return
+  }
+
+  try {
+    const res = await retryNativeExtractTask(taskId.value, { emails: failedEmails })
+    running.value = true
+    for (const em of failedEmails) {
+      if (taskMap[em]) {
+        taskMap[em].status = 'pending'
+        taskMap[em].step_text = '排队重试中...'
+        taskMap[em].result = null
+      }
+    }
+    ElMessage.success(`已开始重试 ${failedEmails.length} 个失败账号`)
+    connectStream(taskId.value)
+  } catch (e) {
+    ElMessage.error(e.message || '重试失败')
+  }
+}
+
+// ── 单个账号重试 ──
+async function handleRetrySingle(email) {
+  if (!taskId.value) {
+    ElMessage.warning('当前无任务实例，请直接点击开始提炼')
+    return
+  }
+  try {
+    await retryNativeExtractTask(taskId.value, { emails: [email] })
+    running.value = true
+    if (taskMap[email]) {
+      taskMap[email].status = 'pending'
+      taskMap[email].step_text = '排队重试中...'
+      taskMap[email].result = null
+    }
+    ElMessage.success(`已开始重试账号: ${email}`)
+    connectStream(taskId.value)
+  } catch (e) {
+    ElMessage.error(e.message || '重试失败')
   }
 }
 
@@ -369,6 +552,8 @@ function connectStream(id) {
               status: it.status,
               step_text: it.step_text || it.status,
               link_url: it.link_url || '',
+              prompt: it.prompt || '',
+              is_paid: it.is_paid || false,
               started_at: it.started_at || 0,
               elapsed: it.elapsed || 0,
             }
@@ -387,6 +572,8 @@ function connectStream(id) {
           if (data.status !== undefined) taskMap[em].status = data.status
           if (data.step_text !== undefined) taskMap[em].step_text = data.step_text
           if (data.link_url !== undefined) taskMap[em].link_url = data.link_url
+          if (data.prompt !== undefined) taskMap[em].prompt = data.prompt
+          if (data.is_paid !== undefined) taskMap[em].is_paid = data.is_paid
           if (data.result !== undefined) taskMap[em].result = data.result
           if (data.started_at !== undefined) taskMap[em].started_at = data.started_at
           if (data.elapsed !== undefined) taskMap[em].elapsed = data.elapsed
@@ -420,16 +607,20 @@ async function handleViewLog(email) {
   }
 }
 
-// ── 复制所有成功链接 ──
-function handleCopySuccessLinks() {
-  const links = taskItems.value
-    .filter((i) => i.status === 'success' && i.link_url)
-    .map((i) => i.link_url)
-  if (!links.length) {
-    ElMessage.warning('暂无提链成功的 URL')
+// ── 复制成功提炼结果 (支持携带邮箱或仅纯链接) ──
+function handleCopySuccessLinks(mode = 'email_link') {
+  const items = taskItems.value.filter((i) => i.status === 'success' && i.link_url)
+  if (!items.length) {
+    ElMessage.warning('暂无提链成功的记录')
     return
   }
-  copyText(links.join('\n'), `已复制 ${links.length} 条提链 URL`)
+  if (mode === 'pure_link') {
+    const text = items.map((i) => i.link_url).join('\n')
+    copyText(text, `已复制 ${items.length} 条纯提链链接`)
+  } else {
+    const text = items.map((i) => `${i.email}----${i.link_url}`).join('\n')
+    copyText(text, `已复制 ${items.length} 条「邮箱----提链链接」`)
+  }
 }
 
 // ── 导出为 TXT / JSON ──
@@ -594,9 +785,11 @@ onUnmounted(() => {
             </el-select>
           </div>
 
-          <el-checkbox v-model="form.allow_fallback" size="small" class="fallback-check">
-            允许账单回退
-          </el-checkbox>
+          <el-tooltip content="若当前账单国家未命中0元试用优惠，将自动切换为BR(巴西)高爆0元区通道提链" placement="top">
+            <el-checkbox v-model="form.allow_fallback" size="small" class="fallback-check">
+              允许账单回退
+            </el-checkbox>
+          </el-tooltip>
         </div>
 
         <div class="param-buttons">
@@ -611,6 +804,47 @@ onUnmounted(() => {
           >
             {{ currentMeta.actionText }}
           </el-button>
+        </div>
+      </div>
+
+      <!-- 一条龙代付配置卡片 (仅 PayPal 渠道可用) -->
+      <div v-if="channel === 'paypal'" class="pipeline-switch-card">
+        <div class="pipeline-header">
+          <el-checkbox v-model="form.auto_pay" class="pipeline-checkbox">
+            <span class="pipeline-title">⚡ 开启 PayPal 提链 + 协议代付「一条龙」全链路 (100% 同 IP 同环境)</span>
+          </el-checkbox>
+          <div class="pipeline-header-actions">
+            <el-button v-if="form.auto_pay" size="small" type="primary" plain :icon="Document" @click="openPastePhoneDialog">
+              📋 批量粘贴/分配手机号
+            </el-button>
+            <el-tag size="small" type="success" effect="light" class="pipeline-badge">
+              无缝接力开通 · 避免跨IP风控
+            </el-tag>
+          </div>
+        </div>
+        <div v-if="form.auto_pay" class="pipeline-config-row">
+          <div class="pipeline-field">
+            <span class="pipeline-field-label">默认手机号:</span>
+            <el-input
+              v-model="form.pay_phone"
+              placeholder="如 +905301847167 / +55... (自动对齐签约国)"
+              size="small"
+              style="width: 220px"
+            />
+            <el-button size="small" link type="primary" @click="handleApplyDefaultPhoneToAll">
+              应用到表格所有账号
+            </el-button>
+          </div>
+          <div class="pipeline-field">
+            <span class="pipeline-field-label">协议模式:</span>
+            <el-select v-model="form.pay_flow_mode" size="small" style="width: 140px">
+              <el-option label="身份提升 (2FA接码)" value="elevation" />
+              <el-option label="标准原版" value="standard" />
+            </el-select>
+          </div>
+          <div class="pipeline-desc text-xs">
+            💡 提示：提链成功后直接沿用同一代理 Session 执行代付；各账号可在下方表格直接录入不同手机号，收到 2FA 短信可实时行内输入验证码！
+          </div>
         </div>
       </div>
 
@@ -645,7 +879,7 @@ onUnmounted(() => {
       <!-- 进度条 -->
       <div class="progress-section">
         <div class="progress-status-tip">
-          <span>{{ running ? '正在极速提链中...' : doneTotal > 0 ? '提炼任务完成' : '等待开始...' }}</span>
+          <span>{{ running ? '正在执行提炼与代付流水线中...' : doneTotal > 0 ? '提炼任务完成' : '等待开始...' }}</span>
           <span class="mono">{{ progressPercent }}%</span>
         </div>
         <el-progress
@@ -658,28 +892,89 @@ onUnmounted(() => {
         />
       </div>
 
+      <!-- 🚨 2FA 短信验证码输入浮动横幅 (当触发 2FA 短信时即刻高亮展示) -->
+      <div v-if="awaitingOtpItems.length > 0" class="otp-floating-banner">
+        <div class="otp-banner-header">
+          <span class="otp-banner-title">🔑 正在等待短信验证码 ({{ awaitingOtpItems.length }} 个账号):</span>
+          <span class="otp-banner-subtitle text-xs">手机收到 6 位验证码后，直接在下方输入并点击提交或按回车</span>
+        </div>
+        <div class="otp-banner-list">
+          <div v-for="item in awaitingOtpItems" :key="item.email" class="otp-banner-item">
+            <span class="otp-email mono">{{ item.email }}</span>
+            <el-input
+              v-model="item.otpInput"
+              size="small"
+              placeholder="输入 6 位 2FA 码"
+              class="mono otp-banner-input"
+              style="width: 160px"
+              @keyup.enter="handleInlineOtpSubmit(item)"
+            />
+            <el-button
+              size="small"
+              type="warning"
+              :loading="item.submittingOtp"
+              @click="handleInlineOtpSubmit(item)"
+            >
+              提交验证码
+            </el-button>
+            <span v-if="item.prompt" class="text-xs text-warning mono otp-prompt-text">{{ item.prompt }}</span>
+          </div>
+        </div>
+      </div>
+
       <!-- 账号表格 -->
       <div class="table-container">
         <el-table
           :data="taskItems"
           size="small"
-          height="280px"
+          height="220px"
           row-key="email"
           stripe
           class="extract-modal-table"
         >
-          <el-table-column type="index" label="#" width="45" align="center" />
+          <el-table-column type="index" label="#" width="40" align="center" />
 
-          <el-table-column label="邮箱" min-width="180" show-overflow-tooltip>
+          <el-table-column label="邮箱" min-width="170" show-overflow-tooltip>
             <template #default="{ row }">
               <span class="mono email-text" @click="copyText(row.email, '已复制邮箱')">{{ row.email }}</span>
             </template>
           </el-table-column>
 
-          <el-table-column label="状态" width="165" align="center">
+          <!-- 一条龙模式下支持每个账号单独编辑不同手机号 -->
+          <el-table-column v-if="channel === 'paypal' && form.auto_pay" label="代付手机号" width="165">
+            <template #default="{ row }">
+              <el-input
+                v-model="row.phone"
+                size="small"
+                placeholder="如 +90530..."
+                class="mono phone-inline-input"
+                :disabled="running"
+              />
+            </template>
+          </el-table-column>
+
+          <el-table-column label="状态" width="175" align="center">
             <template #default="{ row }">
               <el-tag
-                v-if="row.result && row.result.state"
+                v-if="row.status === 'awaiting_otp'"
+                size="small"
+                type="warning"
+                effect="dark"
+                class="status-tag status-awaiting"
+              >
+                🔑 待输入 2FA 验证码
+              </el-tag>
+              <el-tag
+                v-else-if="row.is_paid || (row.result && row.result.is_paid)"
+                size="small"
+                type="success"
+                effect="dark"
+                class="status-tag status-paid"
+              >
+                🎉 Plus 已生效
+              </el-tag>
+              <el-tag
+                v-else-if="row.result && row.result.state"
                 size="small"
                 :type="row.result.state === 'OAICS' ? 'success' : row.result.state === 'CS' ? 'warning' : row.result.state === 'OAIC' ? 'primary' : row.status === 'error' ? 'danger' : 'info'"
                 effect="light"
@@ -701,7 +996,29 @@ onUnmounted(() => {
 
           <el-table-column :label="currentMeta.resultColumn" min-width="300" show-overflow-tooltip>
             <template #default="{ row }">
-              <div v-if="row.link_url" class="link-cell">
+              <!-- 当处于等待 2FA 验证码时，直接呈现行内输入与提交 -->
+              <div v-if="row.status === 'awaiting_otp'" class="inline-otp-wrapper">
+                <el-input
+                  v-model="row.otpInput"
+                  size="small"
+                  placeholder="输入 6 位验证码"
+                  class="mono inline-otp-input"
+                  style="width: 130px"
+                  @keyup.enter="handleInlineOtpSubmit(row)"
+                />
+                <el-button
+                  size="small"
+                  type="warning"
+                  :loading="row.submittingOtp"
+                  @click="handleInlineOtpSubmit(row)"
+                >
+                  提交 2FA
+                </el-button>
+                <span v-if="row.prompt" class="inline-otp-prompt text-xs mono">
+                  {{ row.prompt }}
+                </span>
+              </div>
+              <div v-else-if="row.link_url" class="link-cell">
                 <el-link
                   :href="row.link_url"
                   target="_blank"
@@ -711,12 +1028,14 @@ onUnmounted(() => {
                 >
                   {{ row.link_url }}
                 </el-link>
-                <el-button
-                  size="small"
-                  link
-                  :icon="CopyDocument"
-                  @click="copyText(row.link_url, '链接已复制')"
-                />
+                <el-tooltip content="点击复制：邮箱----提链链接" placement="top">
+                  <el-button
+                    size="small"
+                    link
+                    :icon="CopyDocument"
+                    @click="copyText(`${row.email}----${row.link_url}`, '已复制：邮箱----链接')"
+                  />
+                </el-tooltip>
               </div>
               <span v-else-if="row.result?.error" class="text-danger text-xs mono">
                 {{ row.result.error }}
@@ -725,11 +1044,23 @@ onUnmounted(() => {
             </template>
           </el-table-column>
 
-          <el-table-column label="操作" width="70" align="center">
+          <el-table-column label="操作" width="130" align="center">
             <template #default="{ row }">
-              <el-button size="small" link type="primary" @click="handleViewLog(row.email)">
-                日志
-              </el-button>
+              <div class="row-actions">
+                <el-button size="small" link type="primary" @click="handleViewLog(row.email)">
+                  日志
+                </el-button>
+                <el-button
+                  v-if="(row.status === 'error' || row.status === 'cancelled') && !running"
+                  size="small"
+                  link
+                  type="warning"
+                  :icon="Refresh"
+                  @click="handleRetrySingle(row.email)"
+                >
+                  重试
+                </el-button>
+              </div>
             </template>
           </el-table-column>
         </el-table>
@@ -750,12 +1081,35 @@ onUnmounted(() => {
             批量停止
           </el-button>
           <el-button
+            v-if="errorCount > 0 && !running"
             size="small"
-            :icon="CopyDocument"
-            @click="handleCopySuccessLinks"
+            type="warning"
+            :icon="Refresh"
+            @click="handleRetryFailed"
           >
-            复制全部成功链接
+            一键重试失败 ({{ errorCount }})
           </el-button>
+          <el-dropdown
+            split-button
+            size="small"
+            type="default"
+            :disabled="successCount === 0"
+            @click="handleCopySuccessLinks('email_link')"
+            @command="handleCopySuccessLinks"
+          >
+            <el-icon><CopyDocument /></el-icon>
+            复制成功 (邮箱----链接)
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item command="email_link">
+                  📋 复制：邮箱----提链链接 (默认)
+                </el-dropdown-item>
+                <el-dropdown-item command="pure_link">
+                  🔗 复制：仅纯链接
+                </el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
           <el-button size="small" :icon="Download" @click="handleExportTxt">
             导出 TXT
           </el-button>
@@ -802,22 +1156,59 @@ onUnmounted(() => {
         </el-button>
       </template>
     </el-dialog>
+
+    <!-- 批量粘贴手机号弹窗 -->
+    <el-dialog
+      v-model="pastePhoneVisible"
+      title="📋 批量分配/粘贴代付手机号"
+      width="520px"
+      append-to-body
+    >
+      <div style="margin-bottom: 8px; font-size: 12px; color: var(--el-text-color-secondary); line-height: 1.5;">
+        每行输入一个手机号（自动按顺序匹配已选账号），或按 <code>邮箱----手机号</code> 格式精准匹配：
+      </div>
+      <el-input
+        v-model="pastePhoneText"
+        type="textarea"
+        :rows="7"
+        placeholder="+905301847167&#10;+905301847168&#10;或&#10;user1@outlook.com----+905301847167&#10;user2@outlook.com----+905301847168"
+        class="mono"
+      />
+      <template #footer>
+        <el-button size="small" @click="pastePhoneVisible = false">取消</el-button>
+        <el-button size="small" type="primary" @click="handleConfirmPastePhone">
+          确认填入
+        </el-button>
+      </template>
+    </el-dialog>
   </el-dialog>
 </template>
 
 <style scoped>
+.extract-modal-dialog :deep(.el-dialog) {
+  max-height: 94vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
 .extract-modal-dialog :deep(.el-dialog__header) {
-  padding: 14px 20px 10px;
+  padding: 12px 18px 8px;
   border-bottom: 1px solid var(--el-border-color-lighter);
   margin-right: 0;
 }
 
 .extract-modal-dialog :deep(.el-dialog__body) {
-  padding: 14px 20px;
+  padding: 10px 18px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
 }
 
 .extract-modal-dialog :deep(.el-dialog__footer) {
-  padding: 10px 20px 14px;
+  padding: 8px 18px 12px;
   border-top: 1px solid var(--el-border-color-lighter);
 }
 
@@ -828,15 +1219,15 @@ onUnmounted(() => {
 }
 
 .main-title {
-  font-size: 16px;
+  font-size: 15px;
   font-weight: 700;
   color: var(--el-text-color-primary);
 }
 
 .sub-title {
-  font-size: 12px;
+  font-size: 11px;
   color: var(--el-text-color-secondary);
-  margin-top: 2px;
+  margin-top: 1px;
 }
 
 .highlight-num {
@@ -850,17 +1241,17 @@ onUnmounted(() => {
   justify-content: space-between;
   background: var(--el-fill-color-light);
   border: 1px solid var(--el-border-color-lighter);
-  border-radius: 8px;
-  padding: 8px 12px;
-  margin-bottom: 12px;
+  border-radius: 6px;
+  padding: 6px 10px;
+  margin-bottom: 8px;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 6px;
 }
 
 .param-inputs {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   flex-wrap: wrap;
 }
 
@@ -876,12 +1267,12 @@ onUnmounted(() => {
 }
 
 .field-title {
-  font-size: 12px;
+  font-size: 11px;
   color: var(--el-text-color-secondary);
 }
 
 .fallback-check {
-  margin-left: 4px;
+  margin-left: 2px;
 }
 
 .param-buttons {
@@ -900,31 +1291,84 @@ onUnmounted(() => {
   border-color: #157347;
 }
 
+.pipeline-switch-card {
+  background: linear-gradient(135deg, rgba(25, 135, 84, 0.05) 0%, rgba(13, 110, 253, 0.05) 100%);
+  border: 1px dashed rgba(25, 135, 84, 0.35);
+  border-radius: 6px;
+  padding: 6px 10px;
+  margin-bottom: 8px;
+}
+
+.pipeline-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.pipeline-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pipeline-title {
+  font-weight: 600;
+  font-size: 12px;
+  color: #198754;
+}
+
+.pipeline-config-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed rgba(25, 135, 84, 0.2);
+}
+
+.pipeline-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pipeline-field-label {
+  font-size: 11px;
+  color: var(--el-text-color-regular);
+  font-weight: 500;
+}
+
+.pipeline-desc {
+  color: var(--el-text-color-secondary);
+  width: 100%;
+}
+
 .stat-cards {
   display: grid;
   grid-template-columns: repeat(6, 1fr);
-  gap: 8px;
-  margin-bottom: 12px;
+  gap: 6px;
+  margin-bottom: 8px;
 }
 
 .stat-card {
   background: var(--el-bg-color-overlay);
   border: 1px solid var(--el-border-color-lighter);
-  border-radius: 8px;
-  padding: 8px 10px;
+  border-radius: 6px;
+  padding: 4px 6px;
   text-align: center;
 }
 
 .stat-label {
-  font-size: 11px;
+  font-size: 10px;
   color: var(--el-text-color-secondary);
 }
 
 .stat-num {
-  font-size: 18px;
+  font-size: 16px;
   font-weight: 700;
   font-family: ui-monospace, monospace;
-  margin-top: 2px;
+  margin-top: 1px;
 }
 
 .text-default { color: var(--el-text-color-primary); }
@@ -935,7 +1379,7 @@ onUnmounted(() => {
 .text-primary { color: #409eff; }
 
 .progress-section {
-  margin-bottom: 12px;
+  margin-bottom: 8px;
 }
 
 .progress-status-tip {
@@ -943,13 +1387,68 @@ onUnmounted(() => {
   justify-content: space-between;
   font-size: 11px;
   color: var(--el-text-color-secondary);
-  margin-bottom: 4px;
+  margin-bottom: 3px;
+}
+
+.otp-floating-banner {
+  background: #fffbe6;
+  border: 1px solid #ffe58f;
+  border-left: 4px solid #faad14;
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin-bottom: 8px;
+  box-shadow: 0 2px 8px rgba(250, 173, 20, 0.15);
+}
+
+.otp-banner-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.otp-banner-title {
+  font-weight: 700;
+  color: #d48806;
+  font-size: 12px;
+}
+
+.otp-banner-subtitle {
+  color: #8c6b1f;
+}
+
+.otp-banner-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.otp-banner-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  background: #ffffff;
+  padding: 4px 8px;
+  border-radius: 4px;
+  border: 1px solid #ffe58f;
+}
+
+.otp-email {
+  font-weight: 600;
+  font-size: 11px;
+  color: #333;
+}
+
+.otp-prompt-text {
+  color: #d48806;
 }
 
 .table-container {
   border: 1px solid var(--el-border-color-lighter);
   border-radius: 6px;
   overflow: hidden;
+  margin-bottom: 2px;
 }
 
 .email-text {
@@ -960,6 +1459,10 @@ onUnmounted(() => {
   text-decoration: underline;
 }
 
+.phone-inline-input {
+  font-size: 11px;
+}
+
 .link-cell {
   display: flex;
   align-items: center;
@@ -968,10 +1471,43 @@ onUnmounted(() => {
 
 .link-text {
   font-size: 11px;
-  max-width: 270px;
+  max-width: 250px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.status-awaiting {
+  animation: pulse-orange 1.6s infinite ease-in-out;
+}
+
+.status-paid {
+  font-weight: 700;
+}
+
+@keyframes pulse-orange {
+  0% { opacity: 0.85; transform: scale(0.98); }
+  50% { opacity: 1; transform: scale(1.02); }
+  100% { opacity: 0.85; transform: scale(0.98); }
+}
+
+.inline-otp-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.inline-otp-prompt {
+  color: #e6a23c;
+  width: 100%;
+}
+
+.row-actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
 }
 
 .modal-footer {
@@ -984,7 +1520,8 @@ onUnmounted(() => {
 .footer-left {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+  flex-wrap: wrap;
 }
 
 .log-container {

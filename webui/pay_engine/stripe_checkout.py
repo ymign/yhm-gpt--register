@@ -960,12 +960,15 @@ def extract_redirect_url(confirm_data: dict) -> str:
     url = str(rt.get("url") or "")
     if url:
         return url
-    # 兜底：整个 confirm JSON 里正则找 PayPal/pm-redirects 跳转地址
+    # 兜底：整个 confirm JSON 里正则找 PayPal/pm-redirects/hooks 跳转地址
     raw = json.dumps(confirm_data)
+    m = re.search(r"https?://(?:www\.)?paypal\.com/(?:agreements/approve|checkoutnow)\?[^\s\"'<>\\]+", raw)
+    if m:
+        return m.group(0).replace("\\u0026", "&").replace("\\/", "/")
     m = re.search(r"https?://pm-redirects\.stripe\.com/authorize/[^\s\"'<>\\]+", raw)
     if m:
         return m.group(0).replace("\\u0026", "&").replace("\\/", "/")
-    m = re.search(r"https?://(?:www\.)?paypal\.com/agreements/approve\?[^\s\"'<>\\]+", raw)
+    m = re.search(r"https?://hooks\.stripe\.com/redirect/[^\s\"'<>\\]+", raw)
     if m:
         return m.group(0).replace("\\u0026", "&").replace("\\/", "/")
     return ""
@@ -1365,9 +1368,7 @@ def stripe_to_paypal_redirect(
         sub = confirm_data.get("submission_attempt") or {}
         if sub.get("state") == "requires_approval" and chatgpt_http is not None and access_token:
             pe = _processor_entity(confirm_data) or processor_entity
-            # Preserve the first confirmed submission.  Probe both Stripe's
-            # compact /poll view and one complete payment_pages snapshot before
-            # merchant approval; neither request creates a second submission.
+            # 优先探测 pre-approve 阶段是否已有 redirect，无需重复调 ChatGPT approve 触发风控
             pre_approve_redirect = poll_paypal_redirect_light(
                 payment_http, pk, session_id, log,
                 max_attempts=1, stage="pre-approve",
@@ -1376,22 +1377,29 @@ def stripe_to_paypal_redirect(
                 pre_approve_redirect = poll_redirect_after_approve(
                     payment_http, pk, session_id, log, ctx=ctx, max_attempts=1,
                 )
-            log(f"[stripe] manual_approval（requires_approval）→ 调 ChatGPT approve（processor_entity={pe}）…")
-            if approve_callback:
-                approve_callback(pe)
+
+            if pre_approve_redirect:
+                log(f"[stripe] 已在 pre-approve 阶段直接捕获 PayPal 跳转: {pre_approve_redirect[:60]}...")
+                redirect_url = pre_approve_redirect
             else:
-                approve_submission(chatgpt_http, access_token, session_id, pe, log)
-            # Reuse an early redirect if Stripe already exposed one. Otherwise
-            # read the approved submission once through /poll, then once through
-            # the full payment_pages representation. Never re-confirm here.
-            redirect_url = pre_approve_redirect or poll_paypal_redirect_light(
-                payment_http, pk, session_id, log,
-                max_attempts=1, stage="post-approve",
-            )
-            if not redirect_url:
-                redirect_url = poll_redirect_after_approve(
-                    payment_http, pk, session_id, log, ctx=ctx, max_attempts=1,
+                log(f"[stripe] manual_approval（requires_approval）→ 调 ChatGPT approve（processor_entity={pe}）…")
+                try:
+                    if approve_callback:
+                        approve_callback(pe)
+                    else:
+                        approve_submission(chatgpt_http, access_token, session_id, pe, log)
+                except Exception as exc:
+                    log(f"[stripe] ChatGPT approve 提示: {exc}（继续从 Stripe 轮询跳转链接）")
+
+                # 无论 approve 结果如何，继续从 Stripe 轮询读取 redirect
+                redirect_url = poll_paypal_redirect_light(
+                    payment_http, pk, session_id, log,
+                    max_attempts=2, stage="post-approve",
                 )
+                if not redirect_url:
+                    redirect_url = poll_redirect_after_approve(
+                        payment_http, pk, session_id, log, ctx=ctx, max_attempts=3,
+                    )
             if not redirect_url:
                 raise RuntimeError("PayPal buyer redirect 未生成，正在废弃当前 Checkout 并更换代理重试")
 
