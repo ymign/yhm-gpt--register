@@ -362,6 +362,40 @@ def _extract_oaics_flow(
         except Exception as e:
             log_fn(f"[oaics] Elements Session 提示: {e}")
 
+    # 1.5. 应用 0 元首月优惠促销 (checkout/update)
+    log_fn("[oaics] 正在应用 0 元首月试用优惠 (checkout/update)...")
+    try:
+        promo_body = {
+            "checkout_session_id": checkout_session_id,
+            "processor_entity": processor_entity,
+            "plan_name": "chatgptplusplan",
+            "price_interval": "month",
+            "seat_quantity": 1,
+            "discount_code": None,
+            "promo_campaign": {
+                "promo_campaign_id": "plus-1-month-free",
+                "is_coupon_from_query_param": False,
+            },
+        }
+        r_promo = client.post(
+            "https://chatgpt.com/backend-api/payments/checkout/update",
+            json=promo_body,
+            headers={
+                **headers,
+                "Origin": "https://chatgpt.com",
+                "Referer": f"https://chatgpt.com/checkout/{processor_entity}/{checkout_session_id}",
+                "x-openai-target-path": "/backend-api/payments/checkout/update",
+                "x-openai-target-route": "/backend-api/payments/checkout/update",
+            },
+            timeout=20,
+        )
+        if r_promo.status_code == 200:
+            log_fn("[oaics] ✅ 0 元首月优惠促销应用成功 (checkout/update HTTP 200)")
+        else:
+            log_fn(f"[oaics] 优惠应用提示: HTTP {r_promo.status_code} {r_promo.text[:120]}")
+    except Exception as e:
+        log_fn(f"[oaics] 优惠应用异常: {e}")
+
     # 2. 提交 Taxes 校验
     log_fn("[oaics] 正在提交 Taxes 账单数据...")
     tax_body = {
@@ -1193,10 +1227,12 @@ def _execute_account_extract(task: ExtractJobTask, email: str) -> None:
                         if hosted_raw and "#fidnandh" in hosted_raw:
                             final_link = hosted_raw
 
-            # 6. 链接校验与零元断言
+            # 6. 链接校验与 0 元试用强断言 (非 0 元试用强制判定失败，杜绝付费单混淆)
             if task.channel == "paypal":
                 if not final_link or "ba_token=" not in final_link:
                     raise RuntimeError("未能生成合法的 PayPal 授权签约协议 (未获取到 BA-token)")
+                if not is_zero_trial:
+                    raise RuntimeError(f"未能生成 0 元免扣款试用协议 (当前账号未命中 OpenAI 官方 0 元优惠，Stripe 返回实付单 {intent_id or 'pi_...'})")
             elif not final_link:
                 if task.channel == "gcash":
                     final_link = f"https://chatgpt.com/checkout/{processor_entity}/{checkout_session_id}"
@@ -1212,46 +1248,25 @@ def _execute_account_extract(task: ExtractJobTask, email: str) -> None:
                 ba_token = m_ba.group(1)
 
             req_ms = int((time.time() - start_ts) * 1000)
-            if is_zero_trial:
-                task.add_email_log(email, f"🎉 0元试用提链成功 (SetupIntent 0元免扣款, {req_ms}ms): {final_link}")
-            else:
-                task.add_email_log(email, f"⚠️ 实付提链完成 (PaymentIntent: {intent_id or 'pi_...'}, 应付 €23.00, {req_ms}ms): {final_link}")
+            task.add_email_log(email, f"🎉 0元试用提链成功 (SetupIntent 0元免扣款, {req_ms}ms): {final_link}")
 
             # 回写数据库
             db.update_registered_extract(
                 email=email,
                 extract_data={
-                    "status": "success" if is_zero_trial else "paid_order",
+                    "status": "success",
                     "channel": task.channel,
                     "link_type": task.channel,
                     "link_url": final_link,
                     "cs_id": checkout_session_id,
                     "ba_token": ba_token,
-                    "is_zero_trial": is_zero_trial,
+                    "is_zero_trial": True,
                     "extracted_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 },
             )
 
             # 7. 一条龙模式：无缝接力执行 PayPal 协议代付 (同 IP 同环境)
             if task.channel == "paypal" and task.auto_pay and ba_token and (PayPalFlow is not None):
-                # 🛑 0元安全拦截保护：若检测到非 0 元免扣款协议 (即普通 23 欧元扣款单)，直接拦截，避免浪费手机号与短信
-                if not is_zero_trial:
-                    task.add_email_log(email, "🛑 0元安全拦截: 该账号未命中 OpenAI 官方 0 元试用 (当前为 €23.00 实付扣款单，非 SetupIntent 0元免扣款协议)。已自动终止代付流程，为您保护手机号与短信额度！")
-                    res = {
-                        "status": "warning",
-                        "label": "未命中0元试用(已保护拦截)",
-                        "link_url": final_link,
-                        "cs_id": checkout_session_id,
-                        "channel": task.channel,
-                        "ba_token": ba_token,
-                        "is_zero_trial": False,
-                        "is_paid": False,
-                        "req_ms": req_ms,
-                        "error": "该账号未命中官方 0 元试用 (PaymentIntent 实付单)，协议代付已安全终止以节省接码费用",
-                    }
-                    task.mark_done(email, res)
-                    return
-
                 _execute_pipeline_paypal_pay(
                     task=task,
                     email=email,
@@ -1267,13 +1282,13 @@ def _execute_account_extract(task: ExtractJobTask, email: str) -> None:
                 return
 
             res = {
-                "status": "success" if is_zero_trial else "warning",
-                "label": "0元试用生效" if is_zero_trial else "实付单(非0元)",
+                "status": "success",
+                "label": "0元试用生效",
                 "link_url": final_link,
                 "cs_id": checkout_session_id,
                 "channel": task.channel,
                 "ba_token": ba_token,
-                "is_zero_trial": is_zero_trial,
+                "is_zero_trial": True,
                 "is_paid": False,
                 "req_ms": req_ms,
             }
