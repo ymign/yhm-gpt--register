@@ -193,8 +193,8 @@ load()
 
             <el-row :gutter="12">
               <el-col :span="12">
-                <el-form-item label="号码最高单价（卢布，空表示不限）">
-                  <el-input v-model="maxPrice" placeholder="如 0.5" />
+                <el-form-item label="接码金额要求 (如 0.008 锁定指定金额 / 空表示不限)">
+                  <el-input v-model="maxPrice" placeholder="输入 0.008 锁定指定金额 或 0.007-0.01 区间" />
                 </el-form-item>
               </el-col>
               <el-col :span="12">

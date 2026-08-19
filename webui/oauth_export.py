@@ -855,16 +855,13 @@ def execute_codex_oauth_flow(
             }
 
         # ── 开启接码：执行 SmsBower 自动租号、发码、收码与验证 ──
-        from sms_provider import PhoneCallbackController
+        from sms_provider import PhoneCallbackController, parse_price_spec
 
         provider_key = str(sms_cfg.get("sms_provider") or "smsbower").strip().lower()
         api_key = str(sms_cfg.get("sms_api_key") or "").strip()
         country = str(sms_cfg.get("sms_country") or "52").strip()
-        max_price_raw = sms_cfg.get("sms_max_price")
-        try:
-            max_price = float(max_price_raw) if max_price_raw not in (None, "") else -1.0
-        except Exception:
-            max_price = -1.0
+        max_price_raw = sms_cfg.get("sms_max_price") or sms_cfg.get("sms_price")
+        min_p, max_p, exact_p = parse_price_spec(max_price_raw)
         max_attempts = max(1, min(10, int(sms_cfg.get("sms_max_attempts") or 3)))
         per_phone_timeout = max(20, int(sms_cfg.get("sms_timeout") or 80))
 
@@ -878,8 +875,18 @@ def execute_codex_oauth_flow(
             auto_select_country = False
             primary_country = country
 
+        price_desc = "不限"
+        if exact_p > 0:
+            price_desc = f"锁定指定金额 {exact_p}"
+        elif min_p > 0 and max_p > 0:
+            price_desc = f"金额区间 {min_p}~{max_p}"
+        elif min_p > 0:
+            price_desc = f"最低金额 {min_p}"
+        elif max_p > 0:
+            price_desc = f"最高限价 {max_p}"
+
         _step("5_sms", f"[5/6] 手机号接码 ({provider_key})")
-        _log(f"[5/6] 遇到手机验证，已启用 {provider_key} 接码 (国家={country}, 最多换号={max_attempts}次, 超时={per_phone_timeout}s)...")
+        _log(f"[5/6] 遇到手机验证，已启用 {provider_key} 接码 (国家={country}, 金额要求={price_desc}, 最多换号={max_attempts}次, 超时={per_phone_timeout}s)...")
 
         ctrl = PhoneCallbackController(
             provider_key=provider_key,
@@ -888,7 +895,10 @@ def execute_codex_oauth_flow(
                 "sms_country": primary_country,
                 "sms_allowed_countries": allowed_countries,
                 "sms_service": "dr",
-                "sms_max_price": max_price,
+                "sms_price": max_price_raw,
+                "sms_max_price": max_p,
+                "sms_min_price": min_p,
+                "sms_exact_price": exact_p,
                 "sms_per_phone_timeout": str(per_phone_timeout),
                 "sms_max_phone_attempts": str(max_attempts),
                 "proxy": proxy or None,

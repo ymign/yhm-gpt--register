@@ -191,6 +191,89 @@ def _smsbower_cache_file() -> Path:
     return _project_cache_dir() / ".smsbower_phone_cache.json"
 
 
+def parse_price_spec(spec) -> tuple[float, float, float]:
+    """解析价格字符串或数值配置。
+    返回 (min_price, max_price, exact_price)
+    - 留空 / -1 / 0 -> (-1.0, -1.0, -1.0) 不限
+    - "0.008" 或 "=0.008" -> (0.008, 0.008, 0.008) 锁定指定金额
+    - "0.008-0.01" 或 "0.008~0.01" -> (0.008, 0.01, -1.0) 价格区间
+    - ">=0.008" 或 ">0.008" -> (0.008, -1.0, -1.0) 最低金额限制
+    - "<=0.25" 或 "<0.25" -> (-1.0, 0.25, -1.0) 最高金额限制
+    """
+    if spec is None or spec == "":
+        return -1.0, -1.0, -1.0
+    if isinstance(spec, (int, float)):
+        val = float(spec)
+        if val <= 0:
+            return -1.0, -1.0, -1.0
+        return val, val, val
+    s = str(spec).strip()
+    if not s or s.lower() in ("-1", "0", "不限", "none", "null"):
+        return -1.0, -1.0, -1.0
+
+    # 区间格式: 0.008-0.01 / 0.008~0.01 / 0.008..0.01 / 0.008,0.01
+    for sep in ("..", "-", "~", ","):
+        if sep in s:
+            parts = s.split(sep, 1)
+            try:
+                min_p = float(parts[0].strip()) if parts[0].strip() else -1.0
+            except ValueError:
+                min_p = -1.0
+            try:
+                max_p = float(parts[1].strip()) if parts[1].strip() else -1.0
+            except ValueError:
+                max_p = -1.0
+            exact_p = min_p if (min_p > 0 and min_p == max_p) else -1.0
+            return min_p, max_p, exact_p
+
+    # >= / >
+    if s.startswith(">="):
+        try:
+            return float(s[2:].strip()), -1.0, -1.0
+        except ValueError:
+            return -1.0, -1.0, -1.0
+    if s.startswith(">"):
+        try:
+            return float(s[1:].strip()), -1.0, -1.0
+        except ValueError:
+            return -1.0, -1.0, -1.0
+
+    # <= / <
+    if s.startswith("<="):
+        try:
+            return -1.0, float(s[2:].strip()), -1.0
+        except ValueError:
+            return -1.0, -1.0, -1.0
+    if s.startswith("<"):
+        try:
+            return -1.0, float(s[1:].strip()), -1.0
+        except ValueError:
+            return -1.0, -1.0, -1.0
+
+    # = / ==
+    if s.startswith("=="):
+        try:
+            v = float(s[2:].strip())
+            return v, v, v
+        except ValueError:
+            return -1.0, -1.0, -1.0
+    if s.startswith("="):
+        try:
+            v = float(s[1:].strip())
+            return v, v, v
+        except ValueError:
+            return -1.0, -1.0, -1.0
+
+    # 单纯数值: 如 "0.008" 或 "0.01"
+    try:
+        val = float(s)
+        if val <= 0:
+            return -1.0, -1.0, -1.0
+        return val, val, val
+    except ValueError:
+        return -1.0, -1.0, -1.0
+
+
 def _parse_sms_status_text(text: str) -> dict:
     text = str(text or "").strip()
     if not text or text == "STATUS_WAIT_CODE":
@@ -251,6 +334,9 @@ class SmsBowerProvider(BaseSmsProvider):
         default_service: str = SMS_DEFAULT_SERVICE,
         default_country: str = SMS_DEFAULT_COUNTRY,
         max_price: float = -1,
+        min_price: float = -1,
+        exact_price: float = -1,
+        price_spec=None,
         proxy: Optional[str] = None,
         reuse_phone_to_max: bool = True,
         phone_success_max: int = 3,
@@ -259,7 +345,12 @@ class SmsBowerProvider(BaseSmsProvider):
         self.base_url = str(base_url or "").strip() or self.DEFAULT_BASE_URL
         self.default_service = str(default_service or SMS_DEFAULT_SERVICE).strip()
         self.default_country = str(default_country or SMS_DEFAULT_COUNTRY).strip()
-        self.max_price = float(max_price or -1)
+
+        parsed_min, parsed_max, parsed_exact = parse_price_spec(price_spec)
+        self.min_price = parsed_min if parsed_min > 0 else float(min_price or -1)
+        self.max_price = parsed_max if parsed_max > 0 else float(max_price or -1)
+        self.exact_price = parsed_exact if parsed_exact > 0 else float(exact_price or -1)
+
         self._proxy = (proxy or "").strip() or None
         self._proxies = {"http": self._proxy, "https": self._proxy} if self._proxy else None
         self.reuse_phone_to_max = bool(reuse_phone_to_max)
@@ -489,14 +580,19 @@ class SmsBowerProvider(BaseSmsProvider):
     # ---- 租号 ----
 
     def _request_number_single_action(self, action: str, service: str, country: str) -> dict:
-        """单次调用 getNumberV2 或 getNumber（不自己 fallback，由调用方双重 for 控制）。
+        """单次调用 getNumberV2 或 getNumber（严格按价格要求筛选）。
 
         优化逻辑：
-          1. 若用户指定了 max_price，传入该值；
-          2. 若用户未指定 max_price，自动尝试获取当前余额作为上限（避免平台只尝试 0 库存的最低档位返回 NO_NUMBERS）；
-          3. 若带 maxPrice 失败则 fallback 不带参数重试。
+          1. 若设置了 exact_price / min_price / max_price，向平台接口传入参数；
+          2. 若平台分配了不符合设定价格的号码（如设置0.008却返回了0.007劣质号），
+             在 0.1 秒内自动 cancel 免费退号，并在单次租号流程中自动向平台重试索要指定价格号；
+          3. 上层调用方与 OpenAI 验证链路将仅接收 100% 符合金额的号码，绝不浪费时间在非目标号码上！
         """
-        effective_max = self.max_price
+        min_p = self.min_price
+        max_p = self.max_price
+        exact_p = self.exact_price
+
+        effective_max = max_p
         if effective_max <= 0:
             try:
                 bal = self.get_balance()
@@ -506,50 +602,94 @@ class SmsBowerProvider(BaseSmsProvider):
                 effective_max = -1
 
         param_attempts = []
+        payload_with_price = {"action": action, "service": service, "country": country}
         if effective_max > 0:
-            param_attempts.append({"action": action, "service": service, "country": country, "maxPrice": effective_max})
-        param_attempts.append({"action": action, "service": service, "country": country})
+            payload_with_price["maxPrice"] = effective_max
+        if min_p > 0:
+            payload_with_price["minPrice"] = min_p
+            payload_with_price["min_price"] = min_p
+        if exact_p > 0:
+            payload_with_price["price"] = exact_p
+        param_attempts.append(payload_with_price)
+
+        if exact_p <= 0 and min_p <= 0:
+            param_attempts.append({"action": action, "service": service, "country": country})
 
         last_resp_text = ""
-        for params in param_attempts:
-            logger.info("SmsBower %s: service=%s country=%s maxPrice=%s",
-                        action, service, country, params.get("maxPrice", "未设置"))
-            try:
-                resp = self._request(params)
-                resp_text = resp.text.strip()
-                last_resp_text = resp_text
-                logger.info("SmsBower %s resp: status=%s text=%s", action, resp.status_code, resp_text[:500])
+        # 若指定了最低价或精准锁定金额，最多在 0.1s 级别快速向平台重试索要 6 次
+        max_price_retries = 6 if (min_p > 0 or exact_p > 0) else 1
 
-                # V2 返回 JSON
-                if action == "getNumberV2":
-                    try:
-                        data = resp.json()
-                        if isinstance(data, dict) and data.get("activationId"):
-                            return data
-                    except ValueError:
-                        pass
+        for retry_idx in range(max_price_retries):
+            for params in param_attempts:
+                price_desc_list = []
+                if exact_p > 0:
+                    price_desc_list.append(f"锁定={exact_p}")
+                elif min_p > 0:
+                    price_desc_list.append(f"最低={min_p}")
+                if effective_max > 0 and exact_p <= 0:
+                    price_desc_list.append(f"最高={effective_max}")
+                price_desc = ", ".join(price_desc_list) or "不限"
+
+                logger.info("SmsBower %s: service=%s country=%s 金额限制=%s (尝试 %d/%d)",
+                            action, service, country, price_desc, retry_idx + 1, max_price_retries)
+                try:
+                    resp = self._request(params)
+                    resp_text = resp.text.strip()
+                    last_resp_text = resp_text
+                    logger.info("SmsBower %s resp: status=%s text=%s", action, resp.status_code, resp_text[:500])
+
+                    # V2 返回 JSON
+                    if action == "getNumberV2":
+                        try:
+                            data = resp.json()
+                            if isinstance(data, dict) and data.get("activationId"):
+                                aid = str(data.get("activationId"))
+                                cost_raw = data.get("activationCost") or data.get("cost") or data.get("price")
+                                if cost_raw is not None:
+                                    try:
+                                        actual_cost = float(cost_raw)
+                                        # 严格校验最低金额与指定金额
+                                        if min_p > 0 and actual_cost < min_p - 1e-5:
+                                            logger.warning(
+                                                "SmsBower: 租到号码 %s 实际金额 %.4f 低于目标要求 %.4f，正在 0.1s 内秒退换号...",
+                                                aid, actual_cost, min_p
+                                            )
+                                            self.cancel(aid)
+                                            break  # break param_attempts, continue retry_idx
+                                        if max_p > 0 and actual_cost > max_p + 1e-5:
+                                            logger.warning(
+                                                "SmsBower: 租到号码 %s 实际金额 %.4f 高于目标要求 %.4f，正在 0.1s 内秒退换号...",
+                                                aid, actual_cost, max_p
+                                            )
+                                            self.cancel(aid)
+                                            break
+                                    except (ValueError, TypeError):
+                                        pass
+                                return data
+                        except ValueError:
+                            pass
+                        if "NO_NUMBERS" in resp_text and len(param_attempts) > 1 and "maxPrice" in params:
+                            continue
+                        raise RuntimeError(resp_text[:200] or "empty response")
+
+                    # V1 返回纯文本 ACCESS_NUMBER:id:phone
+                    if resp_text.startswith("ACCESS_NUMBER:"):
+                        parts = resp_text.split(":", 2)
+                        if len(parts) == 3:
+                            return {
+                                "activationId": parts[1],
+                                "phoneNumber": parts[2],
+                                "countryPhoneCode": "",
+                            }
                     if "NO_NUMBERS" in resp_text and len(param_attempts) > 1 and "maxPrice" in params:
                         continue
                     raise RuntimeError(resp_text[:200] or "empty response")
+                except Exception as e:
+                    if "NO_NUMBERS" in str(e) and len(param_attempts) > 1 and "maxPrice" in params:
+                        continue
+                    raise
 
-                # V1 返回纯文本 ACCESS_NUMBER:id:phone
-                if resp_text.startswith("ACCESS_NUMBER:"):
-                    parts = resp_text.split(":", 2)
-                    if len(parts) == 3:
-                        return {
-                            "activationId": parts[1],
-                            "phoneNumber": parts[2],
-                            "countryPhoneCode": "",
-                        }
-                if "NO_NUMBERS" in resp_text and len(param_attempts) > 1 and "maxPrice" in params:
-                    continue
-                raise RuntimeError(resp_text[:200] or "empty response")
-            except Exception as e:
-                if "NO_NUMBERS" in str(e) and len(param_attempts) > 1 and "maxPrice" in params:
-                    continue
-                raise
-
-        raise RuntimeError(last_resp_text[:200] or "empty response")
+        raise RuntimeError(f"未租到符合指定金额({min_p} ~ {max_p})的号码: {last_resp_text[:200] or 'empty response'}")
 
     @staticmethod
     def _format_phone(info: dict) -> str:
@@ -852,7 +992,7 @@ def create_sms_provider(provider_key: str, config: dict) -> BaseSmsProvider:
     """从配置创建 provider 实例。
 
     provider_key: smsbower / herosms
-    config 字段：sms_api_key / sms_country / sms_service / sms_max_price /
+    config 字段：sms_api_key / sms_country / sms_service / sms_max_price / sms_price /
                 sms_reuse_phone / sms_phone_success_max
     """
     pk = (provider_key or "").lower().strip()
@@ -864,7 +1004,14 @@ def create_sms_provider(provider_key: str, config: dict) -> BaseSmsProvider:
     # 接码 API 请求走的代理：复用全局 proxy（registrar 注入注册流程的代理），
     # 也允许调用方显式传 sms_proxy 覆盖（保留扩展点，目前 WebUI 不暴露）。
     proxy = (str(config.get("sms_proxy") or config.get("proxy") or "")).strip() or None
-    max_price = _safe_float(config.get("sms_max_price"), -1)
+
+    price_spec = config.get("sms_price") or config.get("sms_max_price") or config.get("sms_price_spec")
+    min_p, max_p, exact_p = parse_price_spec(price_spec)
+    if "sms_min_price" in config:
+        min_p = _safe_float(config.get("sms_min_price"), min_p)
+    if "sms_exact_price" in config:
+        exact_p = _safe_float(config.get("sms_exact_price"), exact_p)
+
     reuse = _safe_bool(config.get("sms_reuse_phone"), False)
     succ_max = max(0, _safe_int(config.get("sms_phone_success_max"), 3))
 
@@ -872,7 +1019,10 @@ def create_sms_provider(provider_key: str, config: dict) -> BaseSmsProvider:
         return SmsBowerProvider(api_key=api_key,
                                 default_service=service,
                                 default_country=country or SMS_DEFAULT_COUNTRY,
-                                max_price=max_price,
+                                max_price=max_p,
+                                min_price=min_p,
+                                exact_price=exact_p,
+                                price_spec=price_spec,
                                 proxy=proxy,
                                 reuse_phone_to_max=reuse,
                                 phone_success_max=succ_max)
@@ -881,7 +1031,10 @@ def create_sms_provider(provider_key: str, config: dict) -> BaseSmsProvider:
                                 base_url="https://hero-sms.com/stubs/handler_api.php",
                                 default_service=service,
                                 default_country=country or SMS_DEFAULT_COUNTRY,
-                                max_price=max_price,
+                                max_price=max_p,
+                                min_price=min_p,
+                                exact_price=exact_p,
+                                price_spec=price_spec,
                                 proxy=proxy,
                                 reuse_phone_to_max=reuse,
                                 phone_success_max=succ_max)

@@ -4115,8 +4115,8 @@ onUnmounted(() => {
                         </el-form-item>
                       </el-col>
                       <el-col :xs="12" :sm="6" :md="5">
-                        <el-form-item label="最高金额限制 (留空不限，建议留空或≥0.2)">
-                          <el-input v-model="oauthForm.smsMaxPrice" placeholder="留空不限 / 如 0.25" clearable />
+                        <el-form-item label="接码金额要求 (如 0.008 锁定指定金额 / 留空不限)">
+                          <el-input v-model="oauthForm.smsMaxPrice" placeholder="输入 0.008 (仅要0.008) 或 0.007-0.01" clearable />
                         </el-form-item>
                       </el-col>
                       <el-col :xs="12" :sm="6" :md="5">
@@ -4144,7 +4144,7 @@ onUnmounted(() => {
             </el-tabs>
 
             <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 6px; padding-top: 8px; border-top: 1px dashed var(--el-border-color-lighter); font-size: 11.5px; color: var(--el-text-color-secondary)">
-              <span>💡 提示：若设置最高金额（如 0.03），若该档位缺货可能报 NO_NUMBERS，建议留空或设为 0.25+。</span>
+              <span>💡 提示：支持<b>精准锁定金额</b>（如输入 <code>0.008</code>，若平台分配 0.007 等非目标价格号将在 0.1 秒内自动免费退单重租，绝不浪费时间）、<b>价格区间</b>（如 <code>0.007-0.01</code>）或留空不限。</span>
               <el-button size="small" type="primary" plain @click="saveOAuthFormDefault">
                 <el-icon><Check /></el-icon> 保存为默认配置
               </el-button>
