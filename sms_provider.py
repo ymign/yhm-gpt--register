@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import threading
 import time
 from abc import ABC, abstractmethod
@@ -192,16 +193,33 @@ def _smsbower_cache_file() -> Path:
 
 def _parse_sms_status_text(text: str) -> dict:
     text = str(text or "").strip()
-    if text == "STATUS_WAIT_CODE":
+    if not text or text == "STATUS_WAIT_CODE":
         return {"status": "wait_code"}
-    if text.startswith("STATUS_WAIT_RETRY"):
-        return {"status": "wait_retry", "raw": text}
-    if text == "STATUS_WAIT_RESEND":
-        return {"status": "wait_resend"}
-    if text.startswith("STATUS_OK:"):
-        return {"status": "ok", "code": text.split(":", 1)[1]}
     if text == "STATUS_CANCEL":
         return {"status": "cancel"}
+
+    # 1. 优先提取冒号后的内容（兼容 STATUS_OK / STATUS_WAIT_RETRY / STATUS_WAIT_RESEND 等任意前缀携带的验证码）
+    if ":" in text:
+        parts = text.split(":", 1)
+        prefix = parts[0].strip().upper()
+        rest = parts[1].strip()
+        m = re.search(r"(?<!\d)(\d{6})(?!\d)", rest)
+        if m:
+            return {"status": "ok", "code": m.group(1), "raw": text}
+        if prefix in ("STATUS_OK", "ACCESS_ACTIVATION"):
+            return {"status": "ok", "code": rest, "raw": text}
+
+    # 2. 如果包含 6 位连续数字且不是错误响应
+    if not text.startswith("ERROR") and not text.startswith("BAD") and not text.startswith("NO_"):
+        m = re.search(r"(?<!\d)(\d{6})(?!\d)", text)
+        if m:
+            return {"status": "ok", "code": m.group(1), "raw": text}
+
+    if text.startswith("STATUS_WAIT_RETRY"):
+        return {"status": "wait_retry", "raw": text}
+    if text.startswith("STATUS_WAIT_RESEND"):
+        return {"status": "wait_resend", "raw": text}
+
     return {"status": "unknown", "raw": text}
 
 
@@ -628,28 +646,33 @@ class SmsBowerProvider(BaseSmsProvider):
         return _parse_sms_status_text(text)
 
     def get_status_v2(self, activation_id: str) -> dict:
-        resp = self._request({"action": "getStatusV2", "id": activation_id})
-        text = resp.text.strip()
         try:
-            data = resp.json()
-        except ValueError:
-            return _parse_sms_status_text(text)
-        if isinstance(data, str):
-            return _parse_sms_status_text(data)
-        if not isinstance(data, dict):
+            resp = self._request({"action": "getStatusV2", "id": activation_id})
+            text = resp.text.strip()
+            try:
+                data = resp.json()
+            except ValueError:
+                return _parse_sms_status_text(text)
+            if isinstance(data, str):
+                return _parse_sms_status_text(data)
+            if not isinstance(data, dict):
+                return {"status": "unknown"}
+            if "error" in data:
+                return {"status": "error", "error": str(data.get("error"))}
+            raw_status = data.get("status")
+            if isinstance(raw_status, str):
+                parsed = _parse_sms_status_text(raw_status)
+                if parsed.get("status") != "unknown":
+                    return parsed
+            for channel in ("sms", "call"):
+                item = data.get(channel)
+                if isinstance(item, dict):
+                    candidate = _make_sms_candidate(activation_id, f"getStatusV2.{channel}", item.get("code"))
+                    if candidate:
+                        return candidate
+            return {"status": "wait_code"}
+        except Exception:
             return {"status": "unknown"}
-        raw_status = data.get("status")
-        if isinstance(raw_status, str):
-            parsed = _parse_sms_status_text(raw_status)
-            if parsed.get("status") != "unknown":
-                return parsed
-        for channel in ("sms", "call"):
-            item = data.get(channel)
-            if isinstance(item, dict):
-                candidate = _make_sms_candidate(activation_id, f"getStatusV2.{channel}", item.get("code"))
-                if candidate:
-                    return candidate
-        return {"status": "wait_code"}
 
     def request_resend_sms(self, activation_id: str) -> bool:
         try:
@@ -659,26 +682,25 @@ class SmsBowerProvider(BaseSmsProvider):
             return False
 
     def wait_for_code(self, activation_id: str, *, timeout: int = 80, poll: int = 3,
-                       openai_resend_interval: int = 20,
-                       openai_resend_max: int = 3) -> Optional[dict]:
-        """等 SMS 验证码：每 `openai_resend_interval` 秒触发一次 OpenAI 端 resend，
-        最多 `openai_resend_max` 次。超过 timeout 仍没收到 → 返回 None（由上层 cancel 换号）。
+                       openai_resend_interval: int = 30,
+                       openai_resend_max: int = 2) -> Optional[dict]:
+        """等 SMS 验证码：优先从标准 getStatus 解析 6 位数字验证码。
+        超过 timeout 仍没收到 → 返回 None（由上层 cancel 换号）。
         """
         deadline = time.time() + timeout
         start = time.time()
         openai_resend_count = 0
-        last_smsbower_resend = start
         with _SMS_CACHE_LOCK:
             cache = _SMS_CACHE or {}
             used_codes = set(cache.get("used_codes") or [])
 
         while time.time() < deadline:
-            for src in ("v2", "v1"):
+            for src in ("v1", "v2"):
                 try:
-                    if src == "v2":
-                        result = self.get_status_v2(activation_id)
-                    else:
+                    if src == "v1":
                         result = self.get_status(activation_id)
+                    else:
+                        result = self.get_status_v2(activation_id)
                     if result.get("status") == "cancel":
                         return None
                     if result.get("status") == "ok":
@@ -690,7 +712,7 @@ class SmsBowerProvider(BaseSmsProvider):
                     logger.debug("SmsBower status %s 失败: %s", src, e)
 
             elapsed = time.time() - start
-            # OpenAI 端 resend：固定间隔触发，最多 N 次
+            # OpenAI 端 resend：仅在明确配置了回调时触发
             expected_resend_count = min(openai_resend_max, int(elapsed // openai_resend_interval))
             if expected_resend_count > openai_resend_count and self._resend_callback:
                 try:
@@ -700,15 +722,9 @@ class SmsBowerProvider(BaseSmsProvider):
                         "SmsBower: 已请求 OpenAI 端 resend (第 %d/%d 次, elapsed=%ds)",
                         openai_resend_count, openai_resend_max, int(elapsed),
                     )
+                    self.request_resend_sms(activation_id)
                 except Exception as e:
                     logger.warning("OpenAI resend callback 失败: %s", e)
-                # 同步请求 SmsBower 端 resend
-                self.request_resend_sms(activation_id)
-                last_smsbower_resend = time.time()
-            elif time.time() - last_smsbower_resend >= openai_resend_interval:
-                # 平时也间歇请求 SmsBower 端 resend，跟 OpenAI 同节奏
-                self.request_resend_sms(activation_id)
-                last_smsbower_resend = time.time()
 
             time.sleep(poll)
         return None
