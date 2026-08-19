@@ -2228,21 +2228,38 @@ const mailOtpFound = ref(false)
 const mailOtpProvider = ref('')
 const mailOtpMessages = ref([])
 const mailOtpLoading = ref(false)
+const mailOtpError = ref('')
+const mailOtpCustomLine = ref('')
 
 async function openMailOtpModal(row) {
   mailOtpEmail.value = row.email
   mailOtpCode.value = ''
   mailOtpFound.value = false
   mailOtpMessages.value = []
+  mailOtpError.value = ''
+  mailOtpCustomLine.value = ''
   mailOtpModalVisible.value = true
   await doFetchMailOtp()
 }
 
-async function doFetchMailOtp() {
+async function doFetchMailOtp(customPayload = {}) {
   if (!mailOtpEmail.value) return
   mailOtpLoading.value = true
+  mailOtpError.value = ''
   try {
-    const res = await fetchMailOtp(mailOtpEmail.value)
+    const payload = { ...customPayload }
+    if (mailOtpCustomLine.value.trim()) {
+      payload.raw_line = mailOtpCustomLine.value.trim()
+    }
+    const res = await fetchMailOtp(mailOtpEmail.value, payload)
+    if (res.ok === false && res.error) {
+      mailOtpError.value = res.error
+      mailOtpProvider.value = res.provider || ''
+      mailOtpCode.value = ''
+      mailOtpFound.value = false
+      mailOtpMessages.value = []
+      return
+    }
     mailOtpCode.value = res.otp || ''
     mailOtpFound.value = Boolean(res.found && res.otp)
     mailOtpProvider.value = res.provider || ''
@@ -2253,7 +2270,8 @@ async function doFetchMailOtp() {
       ElMessage.info('暂未检索到包含验证码的新邮件')
     }
   } catch (e) {
-    ElMessage.error('抓取邮箱验证码失败: ' + (e.response?.data?.detail || e.message))
+    mailOtpError.value = e.response?.data?.detail || e.message
+    ElMessage.error('抓取邮箱验证码失败: ' + mailOtpError.value)
   } finally {
     mailOtpLoading.value = false
   }
@@ -5431,19 +5449,55 @@ onUnmounted(() => {
     <el-dialog
       v-model="mailOtpModalVisible"
       title="检索邮箱实时验证码 · Mailbox OTP"
-      width="620px"
-      top="12vh"
+      width="640px"
+      top="10vh"
       class="macos-custom-dialog"
     >
       <div v-loading="mailOtpLoading" style="min-height: 180px">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px">
           <div>
             <span style="font-size: 13px; font-weight: 700; color: var(--app-title)">{{ mailOtpEmail }}</span>
-            <el-tag size="small" type="info" style="margin-left: 8px">{{ mailOtpProvider || 'mailbox' }}</el-tag>
+            <el-tag size="small" :type="mailOtpProvider === 'outlook' ? 'primary' : 'info'" style="margin-left: 8px">
+              {{ mailOtpProvider || 'mailbox' }}
+            </el-tag>
           </div>
-          <el-button size="small" type="primary" plain :loading="mailOtpLoading" @click="doFetchMailOtp">
+          <el-button size="small" type="primary" plain :loading="mailOtpLoading" @click="() => doFetchMailOtp()">
             <el-icon><Refresh /></el-icon>重新检索
           </el-button>
+        </div>
+
+        <!-- 错误或无凭证提示 -->
+        <el-alert
+          v-if="mailOtpError"
+          type="warning"
+          :closable="false"
+          show-icon
+          style="margin-bottom: 14px"
+          :title="mailOtpError"
+        />
+
+        <!-- 针对 Outlook/Hotmail 缺少凭证时提供一键补绑卡片 -->
+        <div
+          v-if="mailOtpError && (mailOtpEmail.includes('@outlook.') || mailOtpEmail.includes('@hotmail.') || mailOtpEmail.includes('@live.') || mailOtpEmail.includes('@msn.'))"
+          style="background: rgba(255,255,255,0.03); border: 1px dashed var(--el-border-color); border-radius: 8px; padding: 12px; margin-bottom: 14px"
+        >
+          <div style="font-size: 12px; font-weight: 600; color: var(--app-title); margin-bottom: 6px">
+            🔑 补充/绑定该账号的微软邮箱凭证 (单行 4 段式或密码)
+          </div>
+          <div style="display: flex; gap: 8px">
+            <el-input
+              v-model="mailOtpCustomLine"
+              class="mono"
+              size="small"
+              placeholder="邮箱----密码----ClientID----RefreshToken"
+            />
+            <el-button size="small" type="primary" :loading="mailOtpLoading" @click="() => doFetchMailOtp()">
+              保存并检索
+            </el-button>
+          </div>
+          <div style="font-size: 11px; color: var(--el-text-color-secondary); margin-top: 4px">
+            💡 提示：录入后将自动同步回写号池并保存至账号记录，以后查询无需重复输入。
+          </div>
         </div>
 
         <div v-if="mailOtpCode" class="otp-hero-result">
@@ -5456,7 +5510,7 @@ onUnmounted(() => {
           </div>
         </div>
         <el-alert
-          v-else-if="!mailOtpLoading"
+          v-else-if="!mailOtpLoading && !mailOtpError"
           type="info"
           :closable="false"
           show-icon
