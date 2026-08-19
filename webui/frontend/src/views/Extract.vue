@@ -109,8 +109,12 @@ function handleSelectionChange(val) {
 function getExtractStatus(row) {
   if (row.extract_link) {
     if (row.extract_link.status === 'success') {
+      if (row.extract_link.is_zero_trial === false) {
+        return { type: 'warning', label: '非0元实付' }
+      }
       return { type: 'success', label: '0元生效' }
     }
+    if (row.extract_link.status === 'paid_order') return { type: 'warning', label: '非0元实付' }
     if (row.extract_link.status === 'failed') return { type: 'danger', label: '提链失败' }
   }
   return { type: 'info', label: '未提链' }

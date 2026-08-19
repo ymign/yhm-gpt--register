@@ -3326,8 +3326,13 @@ onUnmounted(() => {
           <el-table-column label="提链结果" min-width="160" show-overflow-tooltip>
             <template #default="{ row }">
               <div v-if="row.extract_link?.link_url" class="extract-link-cell">
-                <el-tag size="small" type="success" effect="light" class="extract-pill-tag">
-                  {{ (row.extract_link.channel || row.extract_link.link_type || '提链').toUpperCase() }}
+                <el-tag
+                  size="small"
+                  :type="row.extract_link.is_zero_trial === false ? 'warning' : 'success'"
+                  effect="light"
+                  class="extract-pill-tag"
+                >
+                  {{ (row.extract_link.channel || row.extract_link.link_type || '提链').toUpperCase() }}{{ row.extract_link.is_zero_trial === false ? ' (非0元)' : ' (0元)' }}
                 </el-tag>
                 <el-link
                   :href="row.extract_link.link_url"

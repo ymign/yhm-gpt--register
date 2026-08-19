@@ -983,9 +983,18 @@ onUnmounted(() => {
                 {{ row.result.label || row.step_text || row.status }}
               </el-tag>
               <el-tag
+                v-else-if="row.result && row.result.is_zero_trial === false"
+                size="small"
+                type="warning"
+                effect="light"
+                class="status-tag"
+              >
+                ⚠️ 非0元实付单
+              </el-tag>
+              <el-tag
                 v-else
                 size="small"
-                :type="row.status === 'success' ? 'success' : row.status === 'error' ? 'danger' : row.status === 'running' ? 'warning' : 'info'"
+                :type="row.status === 'success' ? 'success' : row.status === 'error' ? 'danger' : row.status === 'warning' ? 'warning' : row.status === 'running' ? 'warning' : 'info'"
                 effect="light"
                 class="status-tag"
               >
