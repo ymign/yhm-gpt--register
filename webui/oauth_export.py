@@ -77,6 +77,196 @@ def _decode_jwt_payload(token: str) -> dict:
         return {}
 
 
+def _extract_workspace_id_from_session(session, html_text: str = "") -> str:
+    """从 session cookie 或 HTML 中全面提取 workspace_id。"""
+    try:
+        auth_session = session.cookies.get("oai-client-auth-session", "")
+        if not auth_session:
+            for c in getattr(session.cookies, "jar", []):
+                if getattr(c, "name", "") == "oai-client-auth-session":
+                    auth_session = getattr(c, "value", "")
+                    break
+        if auth_session:
+            parts = auth_session.split(".")
+            for segment in parts[:3]:
+                seg = (segment or "").strip()
+                if not seg:
+                    continue
+                try:
+                    padded = seg + "=" * ((4 - len(seg) % 4) % 4)
+                    decoded = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8", errors="replace"))
+                    if isinstance(decoded, dict):
+                        wid = (decoded.get("workspace_id", "") or "").strip()
+                        if wid:
+                            return wid
+                        workspaces = decoded.get("workspaces", [])
+                        if isinstance(workspaces, list) and workspaces:
+                            for it in workspaces:
+                                if isinstance(it, dict):
+                                    wid = (it.get("id", "") or "").strip()
+                                    if wid:
+                                        return wid
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    if html_text:
+        try:
+            text = html_text.replace('\\"', '"')
+            patterns = [
+                r'workspaces".{0,1600}?"id","([0-9a-fA-F-]{36})"',
+                r'"workspace_id"\s*:\s*"([0-9a-fA-F-]{36})"',
+                r'"workspaceId"\s*:\s*"([0-9a-fA-F-]{36})"',
+                r'["\']workspace_id["\']\s*[:=]\s*["\']([0-9a-fA-F-]{36})["\']',
+            ]
+            for p in patterns:
+                m = re.search(p, text, flags=re.DOTALL | re.IGNORECASE)
+                if m:
+                    return (m.group(1) or "").strip()
+        except Exception:
+            pass
+    return ""
+
+
+def _handle_choose_account_page(session, html_text: str, current_url: str, post_headers: dict) -> str:
+    """处理 /choose-an-account 多账号选择页。"""
+    m = re.search(r"us_[A-Za-z0-9]{16,}", html_text or "")
+    if not m:
+        return ""
+    session_id = m.group(0)
+    headers = dict(post_headers)
+    headers["Origin"] = "https://auth.openai.com"
+    headers["Referer"] = "https://auth.openai.com/choose-an-account"
+    headers["Content-Type"] = "application/json"
+    headers["Accept"] = "application/json"
+    try:
+        resp = session.post(
+            "https://auth.openai.com/api/accounts/session/select",
+            headers=headers,
+            json={"session_id": session_id},
+            timeout=30,
+        )
+        if resp.status_code == 200:
+            data = resp.json() or {}
+            return (data.get("continue_url") or data.get("redirect_url") or "").strip()
+    except Exception:
+        pass
+    return ""
+
+
+def _follow_oauth_callback(
+    session,
+    start_urls: list[str],
+    redirect_uri: str,
+    nav_headers: dict,
+    post_headers: dict,
+    device_id: str,
+    timeout: int = 30,
+    log_fn: Optional[Callable[[str], None]] = None,
+) -> str:
+    """全自动跟踪 OAuth 重定向链，智能处理 302 重定向、workspace_select、choose-an-account 等中间步骤，直达 callback_url。"""
+    def _log(msg: str):
+        if log_fn:
+            try:
+                log_fn(msg)
+            except Exception:
+                pass
+
+    for start_idx, start_url in enumerate(start_urls):
+        if not start_url:
+            continue
+        curr = start_url
+        if curr.startswith("/"):
+            curr = "https://auth.openai.com" + curr
+
+        _log(f"[5/6] 正在跟踪授权跳转链路 (尝试 {start_idx+1}/{len(start_urls)})...")
+
+        for hop in range(15):
+            if "code=" in curr and ("localhost:1455" in curr or "127.0.0.1" in curr or redirect_uri in curr):
+                return curr
+
+            try:
+                r = session.get(curr, headers=nav_headers, allow_redirects=False, timeout=timeout)
+            except Exception as e:
+                _log(f"[5/6] 链路请求异常: {e}")
+                break
+
+            status = r.status_code
+            loc = (r.headers.get("Location") or r.headers.get("location") or "").strip()
+            if loc:
+                if loc.startswith("/"):
+                    loc = "https://auth.openai.com" + loc
+                if "code=" in loc and ("localhost:1455" in loc or "127.0.0.1" in loc or redirect_uri in loc):
+                    return loc
+                curr = loc
+                continue
+
+            # 处理 HTTP 200 页面
+            if status == 200:
+                html_text = r.text or ""
+                # 1. 检查是否是 workspace / consent 页面
+                is_workspace_like = (
+                    ("/workspace" in curr)
+                    or ("/sign-in-with-chatgpt/" in curr)
+                    or ("/consent" in curr)
+                    or ("workspace" in html_text.lower())
+                )
+                if is_workspace_like:
+                    wid = _extract_workspace_id_from_session(session, html_text)
+                    if wid:
+                        _log(f"[5/6] 发现授权工作空间 (workspace_id={wid[:8]}...)，正在提交选择...")
+                        ws_headers = dict(post_headers)
+                        ws_headers["Origin"] = "https://auth.openai.com"
+                        ws_headers["Referer"] = curr
+                        ws_headers["Content-Type"] = "application/json"
+                        if device_id:
+                            ws_headers["oai-device-id"] = device_id
+                        try:
+                            ws_resp = session.post(
+                                "https://auth.openai.com/api/accounts/workspace/select",
+                                headers=ws_headers,
+                                json={"workspace_id": wid},
+                                allow_redirects=False,
+                                timeout=timeout,
+                            )
+                            ws_loc = (ws_resp.headers.get("Location") or ws_resp.headers.get("location") or "").strip()
+                            if ws_loc:
+                                if ws_loc.startswith("/"):
+                                    ws_loc = "https://auth.openai.com" + ws_loc
+                                if "code=" in ws_loc and ("localhost:1455" in ws_loc or redirect_uri in ws_loc):
+                                    return ws_loc
+                                curr = ws_loc
+                                continue
+                            ws_data = ws_resp.json() if ws_resp.status_code == 200 else {}
+                            next_url = (ws_data.get("continue_url") or ws_data.get("redirect_url") or "").strip()
+                            if next_url:
+                                if next_url.startswith("/"):
+                                    next_url = "https://auth.openai.com" + next_url
+                                curr = next_url
+                                continue
+                        except Exception as e:
+                            _log(f"[5/6] workspace/select 异常: {e}")
+
+                # 2. 检查是否是 /choose-an-account 页面
+                if "/choose-an-account" in curr or "choose-an-account" in html_text:
+                    next_url = _handle_choose_account_page(session, html_text, curr, post_headers)
+                    if next_url:
+                        if next_url.startswith("/"):
+                            next_url = "https://auth.openai.com" + next_url
+                        curr = next_url
+                        continue
+
+                # 若是其它 200 页面，尝试搜索 HTML 中是否包含跳转 URL 或 callback code
+                m_code = re.search(r"http://localhost:1455/auth/callback\?[^\s\"'<>]+", html_text)
+                if m_code:
+                    return m_code.group(0)
+
+                break
+
+    return ""
+
+
 def _get_account_claims(access_token: str) -> dict:
     payload = _decode_jwt_payload(access_token)
     auth = payload.get("https://api.openai.com/auth") or {}
@@ -810,82 +1000,23 @@ def execute_codex_oauth_flow(
 
     # ──────────────── 阶段 5: 选择工作区与捕获回调 ────────────────
     _step("5", "[5/6] 选工作区 (提取回调)")
-    auth_sess_cookie = session.cookies.get("oai-client-auth-session")
-    if not auth_sess_cookie:
-        try:
-            for c in getattr(session.cookies, "jar", []):
-                if getattr(c, "name", "") == "oai-client-auth-session":
-                    auth_sess_cookie = c.value
-                    break
-        except Exception:
-            pass
 
-    workspace_id = ""
-    if auth_sess_cookie:
-        try:
-            payload = _decode_jwt_payload(auth_sess_cookie)
-            workspaces = payload.get("workspaces") or []
-            if workspaces:
-                workspace_id = workspaces[0].get("id") or ""
-        except Exception:
-            pass
+    start_candidates = [
+        continue_url,
+        auth_url.replace("&prompt=login", "").replace("prompt=login&", "").replace("prompt=login", ""),
+        auth_url,
+    ]
 
-    callback_url = ""
-    if workspace_id:
-        _log(f"[5/6] 选择授权工作空间 (workspace_id={workspace_id[:8]}...)...")
-        ws_headers = {
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-            "User-Agent": ua,
-            "Accept-Language": lang_full,
-            "Origin": "https://auth.openai.com",
-            "Referer": "https://auth.openai.com/sign-in-with-chatgpt/codex/consent",
-            "oai-device-id": device_id,
-        }
-        ws_resp = session.post(
-            "https://auth.openai.com/api/accounts/workspace/select",
-            headers=ws_headers,
-            json={"workspace_id": workspace_id},
-            allow_redirects=False,
-            timeout=timeout,
-        )
-        loc = ws_resp.headers.get("Location") or ws_resp.headers.get("location")
-        if loc and "localhost:1455/auth/callback" in loc:
-            callback_url = loc
-        else:
-            ws_data = ws_resp.json() if ws_resp.status_code == 200 else {}
-            next_url = ws_data.get("continue_url") or ws_data.get("redirect_url") or loc or ""
-            if next_url:
-                if next_url.startswith("/"):
-                    next_url = "https://auth.openai.com" + next_url
-                curr = next_url
-                for _ in range(12):
-                    if "localhost:1455/auth/callback" in curr:
-                        callback_url = curr
-                        break
-                    r = session.get(curr, headers=nav_headers, allow_redirects=False, timeout=timeout)
-                    l = r.headers.get("Location") or r.headers.get("location")
-                    if not l:
-                        break
-                    if l.startswith("/"):
-                        l = "https://auth.openai.com" + l
-                    curr = l
-
-    # 兜底：再次请求 auth_url
-    if not callback_url or "code=" not in callback_url:
-        no_prompt_url = auth_url.replace("&prompt=login", "")
-        r = session.get(no_prompt_url, headers=nav_headers, allow_redirects=False, timeout=timeout)
-        loc = r.headers.get("Location") or r.headers.get("location") or ""
-        curr = loc if loc.startswith("http") else ("https://auth.openai.com" + loc)
-        for _ in range(10):
-            if "localhost:1455/auth/callback" in curr:
-                callback_url = curr
-                break
-            r = session.get(curr, headers=nav_headers, allow_redirects=False, timeout=timeout)
-            l = r.headers.get("Location") or r.headers.get("location")
-            if not l:
-                break
-            curr = l if l.startswith("http") else ("https://auth.openai.com" + l)
+    callback_url = _follow_oauth_callback(
+        session=session,
+        start_urls=start_candidates,
+        redirect_uri=redirect_uri,
+        nav_headers=nav_headers,
+        post_headers=post_headers,
+        device_id=device_id,
+        timeout=timeout,
+        log_fn=_log,
+    )
 
     if not callback_url or "code=" not in callback_url:
         raise RuntimeError("未能在 OAuth 授权链路中获取到 callback authorization code")
@@ -1223,125 +1354,3 @@ def export_sub2_bundle(task_id: str, emails: Optional[list[str]] = None) -> dict
     cpa_list = export_cpa_bundle(task_id, emails)
     return build_sub2api_payload(cpa_list)
 
-
-
-def _worker_loop(task: OAuthExportTask, email_queue: queue.Queue) -> None:
-    while not task.cancelled:
-        try:
-            email = email_queue.get_nowait()
-        except queue.Empty:
-            break
-        try:
-            _run_one_oauth_export(task, email)
-        finally:
-            email_queue.task_done()
-
-
-def start(emails: list[str], config: dict) -> str:
-    """启动 OAuth 导出任务。"""
-    unique_emails = list(dict.fromkeys(e.strip().lower() for e in emails if e and e.strip()))
-    if not unique_emails:
-        raise ValueError("请提供至少一个要导出的账号邮箱")
-
-    task_id = str(uuid.uuid4())[:12]
-    task = OAuthExportTask(task_id, unique_emails, config)
-
-    with _tasks_lock:
-        _prune_tasks_locked()
-        _tasks[task_id] = task
-
-    workers = max(1, min(20, int(config.get("workers") or 5)))
-    email_queue: queue.Queue = queue.Queue()
-    for em in unique_emails:
-        email_queue.put(em)
-
-    def _run():
-        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix=f"oauth_export_{task_id}") as pool:
-            futures = [pool.submit(_worker_loop, task, email_queue) for _ in range(workers)]
-            for f in futures:
-                try:
-                    f.result()
-                except Exception as e:
-                    logger.warning(f"[oauth_export] Worker 异常: {e}")
-
-        task.finished_at = time.time()
-        try:
-            task.queue.put({"kind": "end", "task_id": task_id, "stats": task.stats})
-        except Exception:
-            pass
-
-    t = threading.Thread(target=_run, daemon=True, name=f"OAuthExportTaskRunner-{task_id}")
-    t.start()
-    return task_id
-
-
-def stop(task_id: str) -> bool:
-    """停止指定的任务。"""
-    with _tasks_lock:
-        task = _tasks.get(task_id)
-        if task:
-            task.cancelled = True
-            try:
-                task.queue.put({"kind": "end", "task_id": task_id, "cancelled": True})
-            except Exception:
-                pass
-            return True
-    return False
-
-
-def snapshot(task_id: str) -> Optional[dict]:
-    """获取任务当前的快照。"""
-    with _tasks_lock:
-        task = _tasks.get(task_id)
-        if not task:
-            return None
-        with task._lock:
-            return {
-                "task_id": task.task_id,
-                "started_at": task.started_at,
-                "finished_at": task.finished_at,
-                "cancelled": task.cancelled,
-                "done_count": task.done_count,
-                "total": len(task.items),
-                "stats": dict(task.stats),
-                "items": {k: dict(v) for k, v in task.items.items()},
-            }
-
-
-def get_queue(task_id: str) -> Optional[queue.Queue]:
-    with _tasks_lock:
-        task = _tasks.get(task_id)
-        return task.queue if task else None
-
-
-def get_logs(task_id: str, email: str) -> list[str]:
-    with _tasks_lock:
-        task = _tasks.get(task_id)
-        if not task:
-            return []
-        with task._lock:
-            it = task.items.get(email.lower().strip())
-            return list(it["logs"]) if it else []
-
-
-def export_cpa_bundle(task_id: str, emails: Optional[list[str]] = None) -> list[dict]:
-    """获取指定任务中所有成功的 CPA 凭证列表。"""
-    with _tasks_lock:
-        task = _tasks.get(task_id)
-        if not task:
-            return []
-        with task._lock:
-            cpa_list = []
-            target_set = set(e.lower().strip() for e in emails) if emails else None
-            for em, it in task.items.items():
-                if target_set and em not in target_set:
-                    continue
-                if it.get("cpa"):
-                    cpa_list.append(it["cpa"])
-            return cpa_list
-
-
-def export_sub2_bundle(task_id: str, emails: Optional[list[str]] = None) -> dict:
-    """获取指定任务中所有成功账号的 Sub2API 聚合 JSON 数据。"""
-    cpa_list = export_cpa_bundle(task_id, emails)
-    return build_sub2api_payload(cpa_list)
