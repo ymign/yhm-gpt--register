@@ -138,45 +138,72 @@ def official_set_account_password(
     auth_url = flow.get_auth_url(csrf, email=email_clean)
     dev_id = flow.auth_oauth_init(auth_url)
     st = flow.get_sentinel_token(dev_id)
-    step = flow.authorize_continue(email_clean, st, screen_hint="login")
-
-    # 2. 触发 password/send-otp
-    _step("向 OpenAI 官方申请发送重置密码邮件...")
-    _log("正在向 auth.openai.com/api/accounts/password/send-otp 发起重置发码请求...")
-    h = flow._common_headers("https://auth.openai.com/log-in/password")
-    h["Content-Type"] = "application/json"
-    if st:
-        h["openai-sentinel-token"] = st
-    if getattr(flow, "_last_sentinel_so_token", ""):
-        h["openai-sentinel-so-token"] = flow._last_sentinel_so_token
-
     t_sent = time.time()
-    r_otp = flow.session.post("https://auth.openai.com/api/accounts/password/send-otp", headers=h, json={}, timeout=25)
-    if r_otp.status_code != 200:
-        err_msg = (r_otp.text or "")[:200]
-        _log(f"❌ 向 OpenAI 申请发送验证码失败 (HTTP {r_otp.status_code}): {err_msg}")
-        raise RuntimeError(f"向 OpenAI 申请发送重置密码验证码失败 (HTTP {r_otp.status_code}): {err_msg}")
+    step_data = flow.authorize_continue(email_clean, st, screen_hint="login")
 
-    _step(f"正在从 {mail_provider.display_name} 收取重置 OTP...")
-    _log(f"官方已发码，正在轮询邮箱收取重置验证码 (超时 {timeout}s)...")
+    page = (step_data.get("page") or {}) if isinstance(step_data, dict) else {}
+    page_type = (page.get("type") or "").strip()
+    continue_url = (step_data.get("continue_url") or "").strip() if isinstance(step_data, dict) else ""
+
+    # 2. 发码/准备收码
+    # 若已经是 passwordless 免密流程 (email_otp_verification)，服务端在 authorize_continue 时已下发 OTP，直接收码
+    # 若在 log_in_password 密码页，则主动调用 password/send-otp 申请重置邮件
+    if page_type == "email_otp_verification" or "/email-verification" in continue_url:
+        _log("账号处于免密登录状态，服务端已在提交邮箱阶段下发 OTP，正在准备收信...")
+    else:
+        _step("向 OpenAI 官方申请发送重置密码邮件...")
+        _log("正在向 auth.openai.com/api/accounts/password/send-otp 发起重置发码请求...")
+        h = flow._common_headers("https://auth.openai.com/log-in/password")
+        h["Content-Type"] = "application/json"
+        if st:
+            h["openai-sentinel-token"] = st
+        if getattr(flow, "_last_sentinel_so_token", ""):
+            h["openai-sentinel-so-token"] = flow._last_sentinel_so_token
+
+        t_sent = time.time()
+        r_otp = flow.session.post("https://auth.openai.com/api/accounts/password/send-otp", headers=h, json={}, timeout=25)
+        if r_otp.status_code != 200:
+            err_msg = (r_otp.text or "")[:200]
+            _log(f"❌ 向 OpenAI 申请发送验证码失败 (HTTP {r_otp.status_code}): {err_msg}")
+            raise RuntimeError(f"向 OpenAI 申请发送重置密码验证码失败 (HTTP {r_otp.status_code}): {err_msg}")
+
+    _step(f"正在从 {mail_provider.display_name} 收取验证码...")
+    _log(f"正在轮询邮箱收取验证码 (超时 {timeout}s)...")
 
     # 3. 从邮箱收取验证码（强制要求在发码时间之后产生的新邮件）
-    time.sleep(3)
-    otp_code = mail_provider.wait_for_otp(email_clean, timeout=timeout, issued_after=t_sent)
+    time.sleep(2)
+    otp_code = mail_provider.wait_for_otp(email_clean, timeout=timeout, issued_after=t_sent - 10)
     if not otp_code:
-        _log("❌ 等待接收 OpenAI 官方重置验证码超时")
-        raise RuntimeError(f"等待接收 OpenAI 官方重置验证码超时 ({timeout}s)，未收到邮件")
+        _log("❌ 等待接收 OpenAI 官方验证码超时")
+        raise RuntimeError(f"等待接收 OpenAI 官方验证码超时 ({timeout}s)，未收到邮件")
 
     _step(f"已获取验证码 {otp_code}，正在提交校验...")
-    _log(f"✅ 成功抓取到重置 OTP: {otp_code}，正在进行官方核验...")
+    _log(f"✅ 成功抓取到 OTP: {otp_code}，正在进行官方核验...")
 
     # 4. 校验验证码
-    flow.verify_otp(otp_code)
-    _log("官方 OTP 核验通过，会话已进入 reset_password 阶段")
+    verify_resp = flow.verify_otp(otp_code)
+    _log("官方 OTP 核验通过")
 
-    # 5. 提交新密码到 /password/reset
+    # 若遇到 2FA TOTP 挑战，自动计算并提交 2FA
+    v_page = (verify_resp.get("page") or {}) if isinstance(verify_resp, dict) else {}
+    v_type = (v_page.get("type") or "").strip()
+    if v_type in ("mfa_challenge", "totp_verification"):
+        reg_info = db.get_registered(email_clean) or {}
+        totp_sec = reg_info.get("totp_secret", "")
+        if totp_sec:
+            import pyotp
+            totp_code = pyotp.TOTP(totp_sec).now()
+            _log(f"检测到 2FA 挑战，正在提交 TOTP 动态码: {totp_code} ...")
+            flow.session.post(
+                "https://auth.openai.com/api/accounts/mfa/validate",
+                headers=flow._common_headers("https://auth.openai.com/mfa-challenge"),
+                json={"code": totp_code, "type": "totp"},
+                timeout=25,
+            )
+
+    # 5. 提交新密码到 /password/reset 或 /user/register
     _step("正在向 OpenAI 官方服务端提交新密码...")
-    _log(f"正在向 /api/accounts/password/reset 提交新登录密码...")
+    _log(f"正在提交新登录密码...")
     st_p = flow.get_sentinel_token(dev_id)
     h_reset = flow._common_headers("https://auth.openai.com/create-account/password")
     h_reset["Content-Type"] = "application/json"
@@ -189,6 +216,15 @@ def official_set_account_password(
         json={"password": new_password},
         timeout=25,
     )
+    if r_set.status_code != 200:
+        # 尝试备用 user/register 设密接口
+        r_set = flow.session.post(
+            "https://auth.openai.com/api/accounts/user/register",
+            headers=h_reset,
+            json={"password": new_password, "username": email_clean},
+            timeout=25,
+        )
+
     if r_set.status_code != 200:
         err_text = (r_set.text or "")[:200]
         _log(f"❌ 向官方提交新密码失败 (HTTP {r_set.status_code}): {err_text}")
