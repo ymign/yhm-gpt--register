@@ -232,6 +232,22 @@ def import_accounts(text: str, kind: str = "") -> dict:
                 updated += 1
             else:
                 skipped += 1
+
+            # 若该邮箱在 registered（已注册库）中已存在，自动将 4 段取件凭证永久写入 extra_json，终身绑定
+            if client_id or refresh or password:
+                r_row = con.execute("SELECT extra_json FROM registered WHERE email=?", (r["email"],)).fetchone()
+                if r_row:
+                    try:
+                        ex = json.loads(r_row["extra_json"]) if r_row["extra_json"] else {}
+                    except Exception:
+                        ex = {}
+                    ex["mail_oauth"] = {
+                        "client_id": client_id,
+                        "refresh_token": refresh,
+                        "password": password,
+                        "kind": row_kind,
+                    }
+                    con.execute("UPDATE registered SET extra_json=? WHERE email=?", (json.dumps(ex, ensure_ascii=False), r["email"]))
         con.commit()
     return {"parsed": len(rows), "inserted": inserted, "updated": updated, "skipped": skipped}
 

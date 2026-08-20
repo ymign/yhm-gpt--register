@@ -200,6 +200,7 @@ def _follow_oauth_callback(
     device_id: str,
     timeout: int = 30,
     log_fn: Optional[Callable[[str], None]] = None,
+    fallback_workspace_id: str = "",
 ) -> str:
     """全自动跟踪 OAuth 重定向链，智能处理 302 重定向、workspace_select、choose-an-account 等中间步骤，直达 callback_url。"""
     def _log(msg: str):
@@ -216,7 +217,7 @@ def _follow_oauth_callback(
         if curr.startswith("/"):
             curr = "https://auth.openai.com" + curr
 
-        _log(f"[5/6] 正在跟踪授权跳转链路 (尝试 {start_idx+1}/{len(start_urls)})...")
+        _log(f"[5/6] 正在跟踪授权跳转链路 (尝试 {start_idx+1}/{len(start_urls)}: {curr[:65]}...)...")
 
         for hop in range(15):
             if _callback_has_code(curr, redirect_uri):
@@ -230,6 +231,8 @@ def _follow_oauth_callback(
 
             status = r.status_code
             loc = (r.headers.get("Location") or r.headers.get("location") or "").strip()
+            _log(f"[5/6] 跳转跟踪 hop {hop+1}: HTTP {status} -> {(loc or curr)[:75]}")
+
             if loc:
                 if loc.startswith("/"):
                     loc = urljoin("https://auth.openai.com", loc)
@@ -245,7 +248,28 @@ def _follow_oauth_callback(
                 if _callback_has_code(curr, redirect_uri):
                     return curr
 
-                # 1. 检查是否是 workspace / consent 页面
+                # 1. 检查 HTML 中是否有 meta refresh 或 JS location 重定向
+                m_meta = re.search(r'<meta[^>]+http-equiv=["\']refresh["\'][^>]+content=["\'][^"\']*url=([^"\']+)["\']', html_text, re.IGNORECASE)
+                if m_meta:
+                    meta_target = m_meta.group(1).strip()
+                    if meta_target.startswith("/"):
+                        meta_target = urljoin("https://auth.openai.com", meta_target)
+                    if _callback_has_code(meta_target, redirect_uri):
+                        return meta_target
+                    curr = meta_target
+                    continue
+
+                m_loc = re.search(r'(?:window\.location(?:\.href|\.replace)?|location\.href)\s*=\s*["\']([^"\']+)["\']', html_text)
+                if m_loc:
+                    loc_target = m_loc.group(1).strip()
+                    if loc_target.startswith("/"):
+                        loc_target = urljoin("https://auth.openai.com", loc_target)
+                    if _callback_has_code(loc_target, redirect_uri):
+                        return loc_target
+                    curr = loc_target
+                    continue
+
+                # 2. 检查是否是 workspace / consent 页面
                 is_workspace_like = (
                     ("/workspace" in curr)
                     or ("/sign-in-with-chatgpt/" in curr)
@@ -253,7 +277,7 @@ def _follow_oauth_callback(
                     or ("workspace" in html_text.lower())
                 )
                 if is_workspace_like:
-                    wid = _extract_workspace_id_from_session(session, html_text)
+                    wid = _extract_workspace_id_from_session(session, html_text) or fallback_workspace_id
                     if wid:
                         _log(f"[5/6] 发现授权工作空间 (workspace_id={wid[:8]}...)，正在提交选择...")
                     ws_headers = dict(post_headers)
@@ -291,7 +315,7 @@ def _follow_oauth_callback(
                     except Exception as e:
                         _log(f"[5/6] workspace/select 异常: {e}")
 
-                # 2. 检查是否是 /choose-an-account 页面
+                # 3. 检查是否是 /choose-an-account 页面
                 if "/choose-an-account" in curr or "choose-an-account" in html_text:
                     next_url = _handle_choose_account_page(session, html_text, curr, post_headers)
                     if next_url:
@@ -302,7 +326,7 @@ def _follow_oauth_callback(
                         curr = next_url
                         continue
 
-                # 3. HTML 正则提取
+                # 4. HTML 正则提取
                 m_code = re.search(r"http://localhost:1455/auth/callback\?[^\s\"'<>]+", html_text)
                 if m_code:
                     return m_code.group(0)
@@ -925,7 +949,8 @@ def execute_codex_oauth_flow(
             auto_select_country = True
             primary_country = "52"
         else:
-            allowed_countries = f"{country},6,10,73,15,16"
+            # 用户指定了固定国家：严格只使用固定国家，绝不轮询其它任何国家
+            allowed_countries = country
             auto_select_country = False
             primary_country = country
 
@@ -1065,11 +1090,38 @@ def execute_codex_oauth_flow(
     # ──────────────── 阶段 5: 选择工作区与捕获回调 ────────────────
     _step("5", "[5/6] 选工作区 (提取回调)")
 
-    start_candidates = [
+    # 提取已注册账号的 chatgpt_account_id 作为 workspace 兜底
+    fallback_wid = ""
+    if account_info:
+        fallback_wid = str(account_info.get("account_id") or account_info.get("chatgpt_account_id") or "").strip()
+        if not fallback_wid and account_info.get("access_token"):
+            try:
+                payload = _decode_jwt_payload(account_info["access_token"])
+                fallback_wid = str(payload.get("https://api.openai.com/auth", {}).get("chatgpt_account_id") or "").strip()
+            except Exception:
+                pass
+
+    # 规范化启动 candidate URLs（清除强制 prompt=login 阻断参数）
+    clean_continue = continue_url or ""
+    if clean_continue:
+        for p in ("&prompt=login", "prompt=login&", "prompt=login", "&prompt=select_account", "prompt=select_account&", "prompt=select_account"):
+            clean_continue = clean_continue.replace(p, "")
+
+    clean_auth = auth_url
+    for p in ("&prompt=login", "prompt=login&", "prompt=login", "&prompt=select_account", "prompt=select_account&", "prompt=select_account"):
+        clean_auth = clean_auth.replace(p, "")
+
+    raw_candidates = [
+        clean_continue,
+        clean_auth,
         continue_url,
-        auth_url.replace("&prompt=login", "").replace("prompt=login&", "").replace("prompt=login", ""),
         auth_url,
     ]
+    start_candidates = []
+    for u in raw_candidates:
+        u_str = (u or "").strip()
+        if u_str and u_str not in start_candidates:
+            start_candidates.append(u_str)
 
     callback_url = _follow_oauth_callback(
         session=session,
@@ -1080,6 +1132,7 @@ def execute_codex_oauth_flow(
         device_id=device_id,
         timeout=timeout,
         log_fn=_log,
+        fallback_workspace_id=fallback_wid,
     )
 
     if not callback_url or "code=" not in callback_url:

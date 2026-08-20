@@ -244,14 +244,3 @@ def official_set_account_password(
         "official_applied": True,
         "message": "密码已在 OpenAI 官方服务端成功生效并持久化到本地数据库",
     }
-
-    # 6. 回写本地数据库
-    db.update_registered_manual(email_clean, password=new_password)
-
-    return {
-        "ok": True,
-        "email": email_clean,
-        "password": new_password,
-        "official_applied": True,
-        "message": "密码已在 OpenAI 官方服务端成功生效并持久化到本地数据库",
-    }

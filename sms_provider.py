@@ -264,12 +264,12 @@ def parse_price_spec(spec) -> tuple[float, float, float]:
         except ValueError:
             return -1.0, -1.0, -1.0
 
-    # 单纯数值: 如 "0.008" 或 "0.01"
+    # 单纯数值: 如 "0.008" 或 "0.01"（按最高限价处理，允许 <= 设定值的号码）
     try:
         val = float(s)
         if val <= 0:
             return -1.0, -1.0, -1.0
-        return val, val, val
+        return -1.0, val, -1.0
     except ValueError:
         return -1.0, -1.0, -1.0
 
@@ -1094,25 +1094,27 @@ class PhoneCallbackController:
         effective_country = self.country
         country_candidates: list[str] = []
 
-        if self.auto_select_country and isinstance(provider, SmsBowerProvider):
-            if allowed_list:
-                country_candidates = list(allowed_list)
-            else:
-                try:
-                    best = provider.get_best_country(
-                        service=self.service,
-                        min_stock=_safe_int(self.config.get("sms_auto_min_stock"), 20),
-                        max_price=_safe_float(self.config.get("sms_auto_max_price"), 0),
-                        strict_whitelist=_safe_bool(self.config.get("sms_strict_whitelist"), False),
-                    )
-                    if best:
-                        country_candidates = [best]
-                except Exception:
-                    pass
+        if not self.auto_select_country and effective_country and str(effective_country).upper() != "AUTO":
+            # 用户指定了单一固定国家：严格锁定该国家，禁止轮询其它任何国家
+            country_candidates = [effective_country]
+        elif self.auto_select_country and allowed_list:
+            country_candidates = list(allowed_list)
+        elif self.auto_select_country and isinstance(provider, SmsBowerProvider):
+            try:
+                best = provider.get_best_country(
+                    service=self.service,
+                    min_stock=_safe_int(self.config.get("sms_auto_min_stock"), 20),
+                    max_price=_safe_float(self.config.get("sms_auto_max_price"), 0),
+                    strict_whitelist=_safe_bool(self.config.get("sms_strict_whitelist"), False),
+                )
+                if best:
+                    country_candidates = [best]
+            except Exception:
+                pass
+        elif effective_country and str(effective_country).upper() != "AUTO":
+            country_candidates = [effective_country]
         elif allowed_list:
             country_candidates = list(allowed_list)
-        elif effective_country:
-            country_candidates = [effective_country]
         else:
             country_candidates = [SMS_DEFAULT_COUNTRY]
 

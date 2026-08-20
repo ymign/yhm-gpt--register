@@ -4243,7 +4243,19 @@ onUnmounted(() => {
             :height="oauthConfigCollapsed ? '280px' : '170px'"
             class="plus-table"
           >
-            <el-table-column prop="email" label="账号" min-width="190" show-overflow-tooltip />
+            <el-table-column prop="email" label="账号" min-width="190" show-overflow-tooltip>
+              <template #default="{ row }">
+                <button
+                  type="button"
+                  class="macos-tag-btn copy-btn"
+                  title="点击复制邮箱"
+                  @click="copyText(row.email)"
+                >
+                  <span class="mono">{{ row.email }}</span>
+                  <el-icon class="copy-ico"><CopyDocument /></el-icon>
+                </button>
+              </template>
+            </el-table-column>
 
             <el-table-column label="实时进度 / 状态" min-width="210" align="left">
               <template #default="{ row }">

@@ -568,8 +568,18 @@ def _worker_loop(task: TokenRefreshTask, email: str):
     task.set_running(email, "正在准备刷新...")
     task.add_email_log(email, "▶ 启动 Token 刷新/重获任务")
 
-    account = db.get_account(email) or {"email": email}
+    account = db.get_account(email) or {}
     registered_cred = db.get_registered(email) or {}
+    if not account and registered_cred.get("extra"):
+        saved_oauth = registered_cred["extra"].get("mail_oauth")
+        if isinstance(saved_oauth, dict) and (saved_oauth.get("refresh_token") or saved_oauth.get("password")):
+            account = {
+                "email": email,
+                "password": saved_oauth.get("password", ""),
+                "client_id": saved_oauth.get("client_id", ""),
+                "refresh_token": saved_oauth.get("refresh_token", ""),
+                "kind": saved_oauth.get("kind", "outlook"),
+            }
 
     # 1. 邮箱底层提供商凭证（严格保留号池原本的邮箱密码、MS client_id、MS refresh_token）
     mail_account_info = {
