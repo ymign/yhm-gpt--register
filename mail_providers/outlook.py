@@ -715,10 +715,17 @@ class OutlookMailProvider(MailProvider):
                     raise TimeoutError(f"在 {method_timeout} 秒内未收到验证码邮件 ({email_addr})") from imap_error
             raise
 
-    def peek_otp(self, email_addr: str = "", wait: float = 3.0) -> Optional[str]:
+    def peek_otp(
+        self,
+        email_addr: str = "",
+        issued_after: Optional[float] = None,
+        wait: float = 3.0,
+        **kwargs,
+    ) -> Optional[str]:
         """快速探针：只看一眼邮箱里有没有当前 OTP，超时立刻返回 None。"""
         try:
-            return self.wait_for_otp(email_addr=email_addr, timeout=int(max(2, wait)), issued_after=time.time() - 300)
+            after = issued_after if issued_after is not None else (time.time() - 300)
+            return self.wait_for_otp(email_addr=email_addr, timeout=int(max(2, wait)), issued_after=after)
         except Exception:
             return None
 
