@@ -484,41 +484,80 @@ class SmsBowerProvider(BaseSmsProvider):
         return rows
 
     def get_country_price_tiers(self, country: str, service: Optional[str] = None) -> list[dict]:
-        """查询指定国家和业务在 SmsBower 的所有可用金额档位和实时库存（对应 getPricesV2）。"""
+        """查询指定国家和业务在 SmsBower 的所有可用供应商线路ID、金额与实时库存（优先 getPricesV3）。"""
         service_code = str(service or self.default_service or "dr").strip()
         country_id = str(country or self.default_country or "6").strip()
         try:
+            # 优先尝试 getPricesV3 获取完整 provider_id / 价格 / 数量
+            resp = self._request({
+                "action": "getPricesV3",
+                "service": service_code,
+                "country": country_id,
+            })
+            if resp.status_code == 200 and resp.text.startswith("{"):
+                data = resp.json()
+                country_dict = data.get(country_id, {}) if isinstance(data, dict) else {}
+                service_dict = country_dict.get(service_code, {}) if isinstance(country_dict, dict) else {}
+                if isinstance(service_dict, dict) and service_dict:
+                    tiers = []
+                    for k, item in service_dict.items():
+                        if not isinstance(item, dict):
+                            continue
+                        try:
+                            pid = str(item.get("provider_id") or item.get("id") or k).strip()
+                            p = float(item.get("price") or 0)
+                            c = int(item.get("count") or 0)
+                            if c > 0 and pid:
+                                c_str = f"{c}件" if c < 10000 else f"{round(c/10000, 2)}万件"
+                                tiers.append({
+                                    "id": pid,
+                                    "provider_id": pid,
+                                    "price": p,
+                                    "price_str": str(item.get("price")),
+                                    "count": c,
+                                    "label": f"{pid} · {p} $ (余 {c_str})",
+                                    "tag_label": f"{p} $ (余 {c_str})",
+                                })
+                        except (ValueError, TypeError):
+                            continue
+                    if tiers:
+                        tiers.sort(key=lambda x: (x["price"], -x["count"]))
+                        return tiers
+
+            # 备用 getPricesV2
             resp = self._request({
                 "action": "getPricesV2",
                 "service": service_code,
                 "country": country_id,
             })
-            if resp.status_code != 200:
-                return []
-            data = resp.json()
-            country_dict = data.get(country_id, {}) if isinstance(data, dict) else {}
-            service_dict = country_dict.get(service_code, {}) if isinstance(country_dict, dict) else {}
-            if not isinstance(service_dict, dict):
-                return []
-            tiers = []
-            for price_str, count_val in service_dict.items():
-                try:
-                    p = float(price_str)
-                    c = int(count_val)
-                    if c > 0:
-                        tiers.append({
-                            "price": p,
-                            "price_str": str(price_str),
-                            "count": c,
-                            "label": f"{price_str} $ ({c} 件)" if c < 10000 else f"{price_str} $ ({round(c/10000, 2)}万件)",
-                        })
-                except (ValueError, TypeError):
-                    continue
-            tiers.sort(key=lambda x: x["price"])
-            return tiers
+            if resp.status_code == 200 and resp.text.startswith("{"):
+                data = resp.json()
+                country_dict = data.get(country_id, {}) if isinstance(data, dict) else {}
+                service_dict = country_dict.get(service_code, {}) if isinstance(country_dict, dict) else {}
+                if isinstance(service_dict, dict):
+                    tiers = []
+                    for price_str, count_val in service_dict.items():
+                        try:
+                            p = float(price_str)
+                            c = int(count_val)
+                            if c > 0:
+                                c_str = f"{c}件" if c < 10000 else f"{round(c/10000, 2)}万件"
+                                tiers.append({
+                                    "id": "",
+                                    "provider_id": "",
+                                    "price": p,
+                                    "price_str": str(price_str),
+                                    "count": c,
+                                    "label": f"{price_str} $ (余 {c_str})",
+                                    "tag_label": f"{price_str} $ (余 {c_str})",
+                                })
+                        except (ValueError, TypeError):
+                            continue
+                    tiers.sort(key=lambda x: x["price"])
+                    return tiers
         except Exception as exc:
             logger.warning(f"SmsBower get_country_price_tiers 查询失败 (country={country_id}): {exc}")
-            return []
+        return []
 
     def get_best_country(self, service: Optional[str] = None, *,
                          min_stock: int = 20, max_price: float = 0,

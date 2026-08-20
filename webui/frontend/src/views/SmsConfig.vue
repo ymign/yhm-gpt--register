@@ -229,12 +229,12 @@ load()
                     <span style="font-size: 11.5px; color: var(--el-text-color-secondary)">实时号池档位(点击直选):</span>
                     <el-tag
                       v-for="t in priceTiers"
-                      :key="t.price_str"
+                      :key="t.id || t.price_str"
                       size="small"
-                      :type="maxPrice === t.price_str ? 'primary' : 'info'"
-                      :effect="maxPrice === t.price_str ? 'dark' : 'plain'"
+                      :type="providerIds === t.id || maxPrice === t.price_str ? 'primary' : 'info'"
+                      :effect="providerIds === t.id ? 'dark' : 'plain'"
                       style="cursor: pointer; user-select: none"
-                      @click="maxPrice = t.price_str"
+                      @click="() => { maxPrice = t.price_str; if (t.id) providerIds = t.id; }"
                     >
                       {{ t.label }}
                     </el-tag>
@@ -242,16 +242,48 @@ load()
                 </el-form-item>
               </el-col>
               <el-col :span="12">
-                <el-form-item label="指定供应商线路 ID（如 3237，留空不限）">
-                  <el-input v-model="providerIds" placeholder="输入线路 ID，如 3237 (多条用逗号分隔)" clearable />
+                <el-form-item label="指定供应商线路 ID（下拉直选带金额/库存）">
+                  <el-select
+                    v-model="providerIds"
+                    filterable
+                    allow-create
+                    clearable
+                    placeholder="下拉选择或输入线路 ID，如 3237"
+                    style="width: 100%"
+                    @change="(val) => {
+                      const found = priceTiers.find((x) => x.id === val)
+                      if (found && found.price_str) maxPrice = found.price_str
+                    }"
+                  >
+                    <el-option
+                      v-for="t in priceTiers"
+                      :key="t.id"
+                      :label="t.label"
+                      :value="t.id"
+                    />
+                  </el-select>
                 </el-form-item>
               </el-col>
             </el-row>
 
             <el-row :gutter="12">
               <el-col :span="12">
-                <el-form-item label="排除供应商线路 ID（如 3327 避开低质通道）">
-                  <el-input v-model="exceptProviderIds" placeholder="排除的线路 ID，如 3327" clearable />
+                <el-form-item label="排除供应商线路 ID（避开低质通道）">
+                  <el-select
+                    v-model="exceptProviderIds"
+                    filterable
+                    allow-create
+                    clearable
+                    placeholder="下拉选择或输入排除 ID，如 3327"
+                    style="width: 100%"
+                  >
+                    <el-option
+                      v-for="t in priceTiers"
+                      :key="t.id"
+                      :label="t.label"
+                      :value="t.id"
+                    />
+                  </el-select>
                 </el-form-item>
               </el-col>
               <el-col :span="12">

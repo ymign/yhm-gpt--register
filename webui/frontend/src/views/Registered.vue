@@ -4201,18 +4201,50 @@ onUnmounted(() => {
                         </el-form-item>
                       </el-col>
                       <el-col :xs="12" :sm="6" :md="5">
-                        <el-form-item label="接码金额要求 (如 0.008 锁定指定金额 / 留空不限)">
-                          <el-input v-model="oauthForm.smsMaxPrice" placeholder="输入 0.008 (仅要0.008) 或 0.007-0.01" clearable />
+                        <el-form-item label="接码金额要求 (如 0.008 / 留空不限)">
+                          <el-input v-model="oauthForm.smsMaxPrice" placeholder="输入 0.008 或 0.007-0.01" clearable />
                         </el-form-item>
                       </el-col>
                       <el-col :xs="12" :sm="6" :md="5">
-                        <el-form-item label="指定供应商 ID (如 3237 / 留空不限)">
-                          <el-input v-model="oauthForm.smsProviderIds" placeholder="输入 ID，如 3237" clearable />
+                        <el-form-item label="指定供应商 ID (下拉直选带金额/库存)">
+                          <el-select
+                            v-model="oauthForm.smsProviderIds"
+                            filterable
+                            allow-create
+                            clearable
+                            placeholder="选择或输入线路 ID，如 3237"
+                            style="width: 100%"
+                            @change="(val) => {
+                              const found = oauthPriceTiers.find((x) => x.id === val)
+                              if (found && found.price_str) oauthForm.smsMaxPrice = found.price_str
+                            }"
+                          >
+                            <el-option
+                              v-for="t in oauthPriceTiers"
+                              :key="t.id"
+                              :label="t.label"
+                              :value="t.id"
+                            />
+                          </el-select>
                         </el-form-item>
                       </el-col>
                       <el-col :xs="12" :sm="6" :md="5">
                         <el-form-item label="排除供应商 ID (如 3327 避开低质通道)">
-                          <el-input v-model="oauthForm.smsExceptProviderIds" placeholder="排除 ID，如 3327" clearable />
+                          <el-select
+                            v-model="oauthForm.smsExceptProviderIds"
+                            filterable
+                            allow-create
+                            clearable
+                            placeholder="选择或输入排除 ID，如 3327"
+                            style="width: 100%"
+                          >
+                            <el-option
+                              v-for="t in oauthPriceTiers"
+                              :key="t.id"
+                              :label="t.label"
+                              :value="t.id"
+                            />
+                          </el-select>
                         </el-form-item>
                       </el-col>
                       <el-col :xs="24" :sm="12" :md="14">
@@ -4235,12 +4267,12 @@ onUnmounted(() => {
                           <span style="font-size: 11.5px; color: var(--el-text-color-secondary)">当前国家实时号池档位(点击直选):</span>
                           <el-tag
                             v-for="t in oauthPriceTiers"
-                            :key="t.price_str"
+                            :key="t.id || t.price_str"
                             size="small"
-                            :type="oauthForm.smsMaxPrice === t.price_str ? 'primary' : 'info'"
-                            :effect="oauthForm.smsMaxPrice === t.price_str ? 'dark' : 'plain'"
+                            :type="oauthForm.smsProviderIds === t.id || oauthForm.smsMaxPrice === t.price_str ? 'primary' : 'info'"
+                            :effect="oauthForm.smsProviderIds === t.id ? 'dark' : 'plain'"
                             style="cursor: pointer; user-select: none"
-                            @click="oauthForm.smsMaxPrice = t.price_str"
+                            @click="() => { oauthForm.smsMaxPrice = t.price_str; if (t.id) oauthForm.smsProviderIds = t.id; }"
                           >
                             {{ t.label }}
                           </el-tag>
