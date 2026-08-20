@@ -897,9 +897,13 @@ def _parse_single_filter_clause(filt: str) -> Optional[str]:
         return "oauth_status = 'success'"
     if f == "oauth_need_phone":
         return "oauth_status = 'need_phone'"
-    if f == "oauth_failed":
+    if f in ("oauth_failed", "failed"):
+        return "(oauth_status = 'failed' AND (extra_json IS NULL OR (extra_json NOT LIKE '%CFTemp%' AND extra_json NOT LIKE '%Timeout%')))"
+    if f in ("oauth_error", "error", "oauth_exception"):
+        return "(oauth_status = 'error' OR (oauth_status = 'failed' AND (extra_json LIKE '%CFTemp%' OR extra_json LIKE '%Timeout%')))"
+    if f in ("oauth_all_failed", "oauth_failed_or_error"):
         return "(oauth_status = 'failed' OR oauth_status = 'error')"
-    if f == "oauth_unchecked":
+    if f in ("oauth_unchecked", "oauth_never", "never_oauth", "no_oauth", "unchecked_oauth"):
         return "(oauth_status IS NULL OR oauth_status = '')"
     # ── 密码与 2FA 安全状态筛选 ──
     if f == "no_password":

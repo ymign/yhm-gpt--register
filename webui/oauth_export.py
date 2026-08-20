@@ -1261,10 +1261,12 @@ def _run_one_oauth_export(task: OAuthExportTask, email: str) -> None:
             task.add_email_log(email, "检测到需要手机号验证 (未开启自动接码，已跳过)")
         else:
             is_sms_fail = sms_enabled and ("接码" in err_str or "NO_NUMBERS" in err_str or "短信" in err_str)
-            fail_label = "接码失败" if is_sms_fail else "异常失败"
-            res = {"status": "error", "label": fail_label, "error": err_str, "req_ms": req_ms}
-            db.update_registered_oauth_status(email, "failed", err_str)
-            task.add_email_log(email, f"OAuth 执行异常 ({req_ms}ms): {err_str}")
+            is_business_fail = is_sms_fail or any(k in err_str for k in ("密码", "password", "封禁", "banned", "取件凭证", "未找到", "400", "invalid_grant", "access_denied"))
+            fail_status = "failed" if is_business_fail else "error"
+            fail_label = "接码失败" if is_sms_fail else ("授权失败" if is_business_fail else "授权异常")
+            res = {"status": fail_status, "label": fail_label, "error": err_str, "req_ms": req_ms}
+            db.update_registered_oauth_status(email, fail_status, err_str)
+            task.add_email_log(email, f"OAuth {fail_label} ({req_ms}ms): {err_str}")
         task.mark_done(email, res)
 
 

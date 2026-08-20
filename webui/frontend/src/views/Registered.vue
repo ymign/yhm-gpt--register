@@ -205,7 +205,7 @@ const OAUTH_STATUS_META = {
   success:    { type: 'success', label: '✅ 成功', effect: 'light' },
   need_phone: { type: 'warning', label: '📱 需接码', effect: 'light' },
   failed:     { type: 'danger',  label: '❌ 失败', effect: 'light' },
-  error:      { type: 'danger',  label: '❌ 失败', effect: 'light' },
+  error:      { type: 'danger',  label: '⚠️ 异常', effect: 'light' },
 }
 
 function oauthMeta(row) {
@@ -3060,9 +3060,11 @@ onUnmounted(() => {
             @change="load(true)"
           >
             <el-option label="🏷️ 全部授权" value="all" />
-            <el-option label="🟢 OAuth 成功" value="oauth_success" />
+            <el-option label="🟢 授权成功" value="oauth_success" />
             <el-option label="🟡 需接码 (已跳过)" value="oauth_need_phone" />
-            <el-option label="🔴 OAuth 失败" value="oauth_failed" />
+            <el-option label="🔴 授权失败" value="oauth_failed" />
+            <el-option label="⚠️ 授权异常" value="oauth_error" />
+            <el-option label="⚪ 从未授权" value="oauth_unchecked" />
             <el-option label="⚡ OAICS 命中" value="oa_hit" />
             <el-option label="⚪ OAICS 未中" value="oa_miss" />
           </el-select>
@@ -5874,7 +5876,7 @@ onUnmounted(() => {
   width: 120px;
 }
 .macos-select.filter-select.oauth-filter {
-  width: 120px;
+  width: 130px;
 }
 .macos-select.filter-select.domain-filter {
   width: 155px;
