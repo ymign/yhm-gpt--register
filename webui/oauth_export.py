@@ -25,7 +25,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
-from urllib.parse import parse_qs, quote, urlencode, urlparse
+from urllib.parse import parse_qs, quote, urlencode, urljoin, urlparse
 
 from config import Config
 from fingerprint import generate_fingerprint
@@ -134,11 +134,9 @@ def _extract_workspace_id_from_session(session, html_text: str = "") -> str:
                 r'"workspaceId"\s*:\s*"([0-9a-fA-F-]{36})"',
                 r'"chatgpt_account_id"\s*:\s*"([0-9a-fA-F-]{36})"',
                 r'"account_id"\s*:\s*"([0-9a-fA-F-]{36})"',
-                r'"accountId"\s*:\s*"([0-9a-fA-F-]{36})"',
                 r'["\']workspace_id["\']\s*[:=]\s*["\']([0-9a-fA-F-]{36})["\']',
                 r'name="workspace_id"\s*value="([0-9a-fA-F-]{36})"',
                 r'data-workspace-id="([0-9a-fA-F-]{36})"',
-                r'[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}',
             ]
             for p in patterns:
                 m = re.search(p, text, flags=re.DOTALL | re.IGNORECASE)
@@ -149,6 +147,22 @@ def _extract_workspace_id_from_session(session, html_text: str = "") -> str:
         except Exception:
             pass
     return ""
+
+
+def _callback_has_code(url: str, redirect_uri: str) -> bool:
+    if not url:
+        return False
+    try:
+        if "code=" in url and ("localhost:1455" in url or "127.0.0.1" in url or (redirect_uri and redirect_uri.split("?")[0] in url)):
+            return True
+        cb_base = (redirect_uri or "").split("?", 1)[0].rstrip("/")
+        target = url.split("?", 1)[0].rstrip("/")
+        if cb_base and target == cb_base:
+            qs = parse_qs(urlparse(url).query)
+            return bool((qs.get("code", [""])[0] or "").strip())
+    except Exception:
+        pass
+    return False
 
 
 def _handle_choose_account_page(session, html_text: str, current_url: str, post_headers: dict) -> str:
@@ -205,7 +219,7 @@ def _follow_oauth_callback(
         _log(f"[5/6] 正在跟踪授权跳转链路 (尝试 {start_idx+1}/{len(start_urls)})...")
 
         for hop in range(15):
-            if "code=" in curr and ("localhost:1455" in curr or "127.0.0.1" in curr or redirect_uri in curr):
+            if _callback_has_code(curr, redirect_uri):
                 return curr
 
             try:
@@ -218,8 +232,8 @@ def _follow_oauth_callback(
             loc = (r.headers.get("Location") or r.headers.get("location") or "").strip()
             if loc:
                 if loc.startswith("/"):
-                    loc = "https://auth.openai.com" + loc
-                if "code=" in loc and ("localhost:1455" in loc or "127.0.0.1" in loc or redirect_uri in loc):
+                    loc = urljoin("https://auth.openai.com", loc)
+                if _callback_has_code(loc, redirect_uri):
                     return loc
                 curr = loc
                 continue
@@ -227,6 +241,10 @@ def _follow_oauth_callback(
             # 处理 HTTP 200 页面
             if status == 200:
                 html_text = r.text or ""
+
+                if _callback_has_code(curr, redirect_uri):
+                    return curr
+
                 # 1. 检查是否是 workspace / consent 页面
                 is_workspace_like = (
                     ("/workspace" in curr)
@@ -256,8 +274,8 @@ def _follow_oauth_callback(
                         ws_loc = (ws_resp.headers.get("Location") or ws_resp.headers.get("location") or "").strip()
                         if ws_loc:
                             if ws_loc.startswith("/"):
-                                ws_loc = "https://auth.openai.com" + ws_loc
-                            if "code=" in ws_loc and ("localhost:1455" in ws_loc or redirect_uri in ws_loc):
+                                ws_loc = urljoin("https://auth.openai.com", ws_loc)
+                            if _callback_has_code(ws_loc, redirect_uri):
                                 return ws_loc
                             curr = ws_loc
                             continue
@@ -265,7 +283,9 @@ def _follow_oauth_callback(
                         next_url = (ws_data.get("continue_url") or ws_data.get("redirect_url") or "").strip()
                         if next_url:
                             if next_url.startswith("/"):
-                                next_url = "https://auth.openai.com" + next_url
+                                next_url = urljoin("https://auth.openai.com", next_url)
+                            if _callback_has_code(next_url, redirect_uri):
+                                return next_url
                             curr = next_url
                             continue
                     except Exception as e:
@@ -276,11 +296,13 @@ def _follow_oauth_callback(
                     next_url = _handle_choose_account_page(session, html_text, curr, post_headers)
                     if next_url:
                         if next_url.startswith("/"):
-                            next_url = "https://auth.openai.com" + next_url
+                            next_url = urljoin("https://auth.openai.com", next_url)
+                        if _callback_has_code(next_url, redirect_uri):
+                            return next_url
                         curr = next_url
                         continue
 
-                # 若是其它 200 页面，尝试搜索 HTML 中是否包含跳转 URL 或 callback code
+                # 3. HTML 正则提取
                 m_code = re.search(r"http://localhost:1455/auth/callback\?[^\s\"'<>]+", html_text)
                 if m_code:
                     return m_code.group(0)
