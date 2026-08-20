@@ -78,33 +78,46 @@ def _decode_jwt_payload(token: str) -> dict:
 
 
 def _extract_workspace_id_from_session(session, html_text: str = "") -> str:
-    """从 session cookie 或 HTML 中全面提取 workspace_id。"""
+    """从 session cookie 或 HTML 中全面提取 workspace_id / account_id。"""
     try:
+        candidate_cookies = []
+        for c in getattr(session.cookies, "jar", []):
+            val = getattr(c, "value", "")
+            if val and "." in val:
+                candidate_cookies.append(val)
         auth_session = session.cookies.get("oai-client-auth-session", "")
-        if not auth_session:
-            for c in getattr(session.cookies, "jar", []):
-                if getattr(c, "name", "") == "oai-client-auth-session":
-                    auth_session = getattr(c, "value", "")
-                    break
         if auth_session:
-            parts = auth_session.split(".")
-            for segment in parts[:3]:
+            candidate_cookies.insert(0, auth_session)
+
+        for cookie_val in candidate_cookies:
+            parts = cookie_val.split(".")
+            for segment in parts:
                 seg = (segment or "").strip()
-                if not seg:
+                if len(seg) < 8:
                     continue
                 try:
                     padded = seg + "=" * ((4 - len(seg) % 4) % 4)
                     decoded = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8", errors="replace"))
                     if isinstance(decoded, dict):
-                        wid = (decoded.get("workspace_id", "") or "").strip()
-                        if wid:
-                            return wid
+                        # 直接字段
+                        for k in ("workspace_id", "workspaceId", "chatgpt_account_id", "account_id", "org_id"):
+                            v = str(decoded.get(k) or "").strip()
+                            if v and len(v) >= 16:
+                                return v
+                        # 嵌套 auth 字段
+                        auth_obj = decoded.get("https://api.openai.com/auth")
+                        if isinstance(auth_obj, dict):
+                            for k in ("chatgpt_account_id", "account_id", "workspace_id"):
+                                v = str(auth_obj.get(k) or "").strip()
+                                if v and len(v) >= 16:
+                                    return v
+                        # workspaces 数组
                         workspaces = decoded.get("workspaces", [])
                         if isinstance(workspaces, list) and workspaces:
                             for it in workspaces:
                                 if isinstance(it, dict):
-                                    wid = (it.get("id", "") or "").strip()
-                                    if wid:
+                                    wid = (it.get("id", "") or it.get("workspace_id", "") or "").strip()
+                                    if wid and len(wid) >= 16:
                                         return wid
                 except Exception:
                     pass
@@ -115,15 +128,24 @@ def _extract_workspace_id_from_session(session, html_text: str = "") -> str:
         try:
             text = html_text.replace('\\"', '"')
             patterns = [
+                r'workspaces".{0,1600}?"id"\s*:\s*"([0-9a-fA-F-]{36})"',
                 r'workspaces".{0,1600}?"id","([0-9a-fA-F-]{36})"',
                 r'"workspace_id"\s*:\s*"([0-9a-fA-F-]{36})"',
                 r'"workspaceId"\s*:\s*"([0-9a-fA-F-]{36})"',
+                r'"chatgpt_account_id"\s*:\s*"([0-9a-fA-F-]{36})"',
+                r'"account_id"\s*:\s*"([0-9a-fA-F-]{36})"',
+                r'"accountId"\s*:\s*"([0-9a-fA-F-]{36})"',
                 r'["\']workspace_id["\']\s*[:=]\s*["\']([0-9a-fA-F-]{36})["\']',
+                r'name="workspace_id"\s*value="([0-9a-fA-F-]{36})"',
+                r'data-workspace-id="([0-9a-fA-F-]{36})"',
+                r'[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}',
             ]
             for p in patterns:
                 m = re.search(p, text, flags=re.DOTALL | re.IGNORECASE)
                 if m:
-                    return (m.group(1) or "").strip()
+                    res = (m.group(1) if m.groups() else m.group(0)).strip()
+                    if res and len(res) >= 16:
+                        return res
         except Exception:
             pass
     return ""
@@ -216,37 +238,38 @@ def _follow_oauth_callback(
                     wid = _extract_workspace_id_from_session(session, html_text)
                     if wid:
                         _log(f"[5/6] 发现授权工作空间 (workspace_id={wid[:8]}...)，正在提交选择...")
-                        ws_headers = dict(post_headers)
-                        ws_headers["Origin"] = "https://auth.openai.com"
-                        ws_headers["Referer"] = curr
-                        ws_headers["Content-Type"] = "application/json"
-                        if device_id:
-                            ws_headers["oai-device-id"] = device_id
-                        try:
-                            ws_resp = session.post(
-                                "https://auth.openai.com/api/accounts/workspace/select",
-                                headers=ws_headers,
-                                json={"workspace_id": wid},
-                                allow_redirects=False,
-                                timeout=timeout,
-                            )
-                            ws_loc = (ws_resp.headers.get("Location") or ws_resp.headers.get("location") or "").strip()
-                            if ws_loc:
-                                if ws_loc.startswith("/"):
-                                    ws_loc = "https://auth.openai.com" + ws_loc
-                                if "code=" in ws_loc and ("localhost:1455" in ws_loc or redirect_uri in ws_loc):
-                                    return ws_loc
-                                curr = ws_loc
-                                continue
-                            ws_data = ws_resp.json() if ws_resp.status_code == 200 else {}
-                            next_url = (ws_data.get("continue_url") or ws_data.get("redirect_url") or "").strip()
-                            if next_url:
-                                if next_url.startswith("/"):
-                                    next_url = "https://auth.openai.com" + next_url
-                                curr = next_url
-                                continue
-                        except Exception as e:
-                            _log(f"[5/6] workspace/select 异常: {e}")
+                    ws_headers = dict(post_headers)
+                    ws_headers["Origin"] = "https://auth.openai.com"
+                    ws_headers["Referer"] = curr
+                    ws_headers["Content-Type"] = "application/json"
+                    if device_id:
+                        ws_headers["oai-device-id"] = device_id
+                    try:
+                        payload = {"workspace_id": wid} if wid else {}
+                        ws_resp = session.post(
+                            "https://auth.openai.com/api/accounts/workspace/select",
+                            headers=ws_headers,
+                            json=payload,
+                            allow_redirects=False,
+                            timeout=timeout,
+                        )
+                        ws_loc = (ws_resp.headers.get("Location") or ws_resp.headers.get("location") or "").strip()
+                        if ws_loc:
+                            if ws_loc.startswith("/"):
+                                ws_loc = "https://auth.openai.com" + ws_loc
+                            if "code=" in ws_loc and ("localhost:1455" in ws_loc or redirect_uri in ws_loc):
+                                return ws_loc
+                            curr = ws_loc
+                            continue
+                        ws_data = ws_resp.json() if ws_resp.status_code == 200 else {}
+                        next_url = (ws_data.get("continue_url") or ws_data.get("redirect_url") or "").strip()
+                        if next_url:
+                            if next_url.startswith("/"):
+                                next_url = "https://auth.openai.com" + next_url
+                            curr = next_url
+                            continue
+                    except Exception as e:
+                        _log(f"[5/6] workspace/select 异常: {e}")
 
                 # 2. 检查是否是 /choose-an-account 页面
                 if "/choose-an-account" in curr or "choose-an-account" in html_text:
@@ -261,6 +284,10 @@ def _follow_oauth_callback(
                 m_code = re.search(r"http://localhost:1455/auth/callback\?[^\s\"'<>]+", html_text)
                 if m_code:
                     return m_code.group(0)
+
+                m_code_only = re.search(r"[?&]code=([A-Za-z0-9_\-\.]{20,})", html_text)
+                if m_code_only:
+                    return f"http://localhost:1455/auth/callback?code={m_code_only.group(1)}"
 
                 break
 
