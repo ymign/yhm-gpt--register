@@ -1,5 +1,5 @@
 # ──────────────── 敏感数据（绝对不能提交！）────────────────
-# 注册后的账号凭证 / 接码号池 / OTP 日志
+# 注册后的账号凭证 / 接码号池 / OTP 日志 / 导出的 Token 凭证
 *.db
 *.db-shm
 *.db-wal
@@ -8,6 +8,7 @@ webui/webui.db
 webui/gpt_register.db
 webui/logs/
 webui/data/
+webui/exports/
 webui/paypal_protocol_data/
 webui.pid
 webui_*.log
