@@ -734,6 +734,20 @@ class SmsBowerProvider(BaseSmsProvider):
                     last_resp_text = resp_text
                     logger.info("SmsBower %s resp: status=%s text=%s", action, resp.status_code, resp_text[:500])
 
+                    # 若由于指定 providerIds 导致平台报 BANNED 限制，自动降级为纯金额模式重试
+                    if "BANNED:" in resp_text and ("providerIds" in params or "operator" in params):
+                        logger.warning(
+                            "SmsBower: 供应商 ID %s 受平台限制 (%s)，自动移除供应商限制降级为纯限价模式...",
+                            params.get("providerIds") or params.get("operator"), resp_text
+                        )
+                        clean_params = {k: v for k, v in params.items() if k not in ("providerIds", "operator", "exceptProviderIds")}
+                        try:
+                            resp = self._request(clean_params)
+                            resp_text = resp.text.strip()
+                            last_resp_text = resp_text
+                        except Exception:
+                            pass
+
                     # V2 返回 JSON
                     if action == "getNumberV2":
                         try:
