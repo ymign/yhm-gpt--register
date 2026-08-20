@@ -4278,6 +4278,17 @@ onUnmounted(() => {
                           </el-tag>
                         </div>
                       </el-col>
+                      <el-col :span="24">
+                        <div class="sms-guide-box">
+                          <div class="sms-guide-title">怎么填才和网页点选一样</div>
+                          <ol>
+                            <li>先选国家，再点下方档位（例 <code>3237 · 0.008 $</code>）。金额和线路会一起锁定。</li>
+                            <li>填 <code>0.008</code> = 只要这一档，<b>不会</b>拿到 0.007。没货就报 NO_NUMBERS，不会偷偷换便宜号。</li>
+                            <li>填 <code>0.007-0.008</code> 才允许两个档都要；填 <code>&lt;=0.008</code> 才会优先派更便宜的。</li>
+                            <li>指定线路若被平台 BANNED，会自动去掉线路参数，但仍排除更便宜档，继续按锁定金额租号。</li>
+                          </ol>
+                        </div>
+                      </el-col>
                     </el-row>
                   </div>
                   <div v-show="!oauthForm.smsEnabled" style="padding: 12px; background: var(--el-fill-color-light); border-radius: 6px; color: var(--el-text-color-secondary); font-size: 12.5px; line-height: 1.6">
@@ -6992,5 +7003,35 @@ onUnmounted(() => {
   color: var(--el-text-color-secondary);
   line-height: 1.4;
   word-break: break-all;
+}
+
+.sms-guide-box {
+  margin-top: 2px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(14, 165, 233, 0.07);
+  border: 1px solid rgba(14, 165, 233, 0.22);
+  color: var(--el-text-color-regular);
+  font-size: 12px;
+  line-height: 1.65;
+}
+.sms-guide-title {
+  font-weight: 700;
+  color: var(--app-title, var(--el-text-color-primary));
+  margin-bottom: 4px;
+}
+.sms-guide-box ol {
+  margin: 0;
+  padding-left: 18px;
+}
+.sms-guide-box li + li {
+  margin-top: 2px;
+}
+.sms-guide-box code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: rgba(15, 23, 42, 0.08);
 }
 </style>

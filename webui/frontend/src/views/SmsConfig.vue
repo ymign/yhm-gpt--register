@@ -339,6 +339,65 @@ load()
             </div>
           </div>
 
+          <!-- 配置教程 -->
+          <div class="card-section guide-section">
+            <span class="section-heading">接码金额 / 线路配置教程（对齐 SmsBower 网页点选）</span>
+            <p class="guide-lead">
+              目标：<b>点哪个价格，就只拿那个价格的号</b>。选 <code>0.008</code> 绝不会拿到 <code>0.007</code>。
+              该档没货会报 <code>NO_NUMBERS</code>，系统不会偷偷换成更便宜的号。
+            </p>
+            <ol class="guide-steps">
+              <li>先选国家（如印尼 <code>6</code>）。下方会实时列出该国档位：线路 ID · 金额 · 库存。</li>
+              <li><b>推荐操作：</b>直接点标签或下拉选 <code>3237 · 0.008 $ (余 1.2万件)</code>。金额和供应商 ID 会一起填上。</li>
+              <li>金额写法：
+                <ul>
+                  <li><code>0.008</code> 或 <code>=0.008</code> → 锁定该档，不含更便宜的号</li>
+                  <li><code>0.007-0.008</code> → 允许这个区间</li>
+                  <li><code>&lt;=0.008</code> → 最高限价，可能拿到 0.007</li>
+                  <li>留空 → 不限价</li>
+                </ul>
+              </li>
+              <li>「指定供应商 ID」优先向该线路要号。若平台对该参数返回 BANNED，会自动去掉指定线路，但<strong>仍排除更便宜档</strong>。</li>
+              <li>「排除供应商 ID」用来拉黑低质通道（如 <code>3327</code>）。锁定金额时系统也会自动排除更便宜线路。</li>
+            </ol>
+            <div class="guide-table-wrap">
+              <table class="guide-table">
+                <thead>
+                  <tr>
+                    <th>你想要的效果</th>
+                    <th>怎么填</th>
+                    <th>会不会拿到更便宜的号</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>只要网页上的 0.008 档</td>
+                    <td>点选 <code>0.008 $</code> 或填 <code>0.008</code></td>
+                    <td>不会</td>
+                  </tr>
+                  <tr>
+                    <td>只要指定线路 3237</td>
+                    <td>下拉选 <code>3237 · 0.008 $</code></td>
+                    <td>不会（金额一并锁定）</td>
+                  </tr>
+                  <tr>
+                    <td>0.007 和 0.008 都可以</td>
+                    <td>填 <code>0.007-0.008</code></td>
+                    <td>会，这是你主动允许的区间</td>
+                  </tr>
+                  <tr>
+                    <td>不超过 0.008 越便宜越好</td>
+                    <td>填 <code>&lt;=0.008</code></td>
+                    <td>会（平台优先派更便宜的）</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p class="guide-note">
+              保存后对「自动注册 / OAuth 导出」全局生效。OAuth 弹窗里也可单独改一次，点「保存为默认配置」会写回这里。
+            </p>
+          </div>
+
           <!-- 重试与超时 -->
           <div class="card-section">
             <span class="section-heading">接码重试与超时控制</span>
@@ -509,5 +568,68 @@ load()
 .footer-info-text {
   font-size: 12px;
   color: var(--app-text-secondary);
+}
+
+.guide-section {
+  background: rgba(14, 165, 233, 0.06);
+  border-color: rgba(14, 165, 233, 0.22);
+}
+.guide-lead {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: var(--app-title);
+}
+.guide-steps {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--app-text-regular);
+}
+.guide-steps li + li {
+  margin-top: 4px;
+}
+.guide-steps ul {
+  margin: 4px 0 0;
+  padding-left: 16px;
+}
+.guide-steps code,
+.guide-lead code,
+.guide-table code,
+.guide-note code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: rgba(15, 23, 42, 0.06);
+}
+.guide-table-wrap {
+  overflow-x: auto;
+}
+.guide-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+.guide-table th,
+.guide-table td {
+  border: 1px solid var(--app-border);
+  padding: 6px 8px;
+  text-align: left;
+  vertical-align: top;
+}
+.guide-table th {
+  background: rgba(15, 23, 42, 0.04);
+  font-weight: 700;
+  color: var(--app-title);
+  white-space: nowrap;
+}
+.guide-note {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--el-text-color-secondary);
 }
 </style>
