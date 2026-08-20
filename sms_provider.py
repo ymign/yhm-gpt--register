@@ -701,33 +701,32 @@ class SmsBowerProvider(BaseSmsProvider):
             min_p = exact_p
             max_p = exact_p
 
-        floor_price = exact_p if exact_p > 0 else min_p
-        cheaper_ids = ""
-        if floor_price > 0:
-            cheaper_ids = self._provider_ids_cheaper_than(country, service, floor_price)
+        wanted_ops = [x.strip() for x in str(self.provider_ids or "").replace(";", ",").split(",") if x.strip()]
+        lock_by_operator = bool(wanted_ops)
 
-        except_ids = ",".join(
-            x for x in (
-                str(self.except_provider_ids or "").strip(),
-                cheaper_ids,
-            ) if x
-        )
+        except_ids = str(self.except_provider_ids or "").strip()
+        # 没指定线路、只锁金额时才排除更便宜档。点选 3237 后按线路租，不再叠 minPrice。
+        if not lock_by_operator and (exact_p > 0 or min_p > 0):
+            floor_price = exact_p if exact_p > 0 else min_p
+            cheaper_ids = self._provider_ids_cheaper_than(country, service, floor_price)
+            except_ids = ",".join(x for x in (except_ids, cheaper_ids) if x)
 
         payload_with_price = {"action": action, "service": service, "country": country}
-        if self.provider_ids:
-            payload_with_price["providerIds"] = self.provider_ids
+        if wanted_ops:
+            payload_with_price["providerIds"] = ",".join(wanted_ops)
         if except_ids:
             payload_with_price["exceptProviderIds"] = except_ids
         if self.phone_exception:
             payload_with_price["phoneException"] = self.phone_exception
         if max_p > 0:
             payload_with_price["maxPrice"] = max_p
-        if min_p > 0:
+        if min_p > 0 and not lock_by_operator:
             payload_with_price["minPrice"] = min_p
 
         last_resp_text = ""
-        max_price_retries = 8 if (min_p > 0 or exact_p > 0 or except_ids) else 1
+        max_price_retries = 8 if (min_p > 0 or exact_p > 0 or except_ids or lock_by_operator) else 1
         extra_except: list[str] = []
+        tried_operator_fallback = False
 
         def _merged_except() -> str:
             parts = [x.strip() for x in except_ids.split(",") if x.strip()]
@@ -762,18 +761,20 @@ class SmsBowerProvider(BaseSmsProvider):
                 last_resp_text = resp_text
                 logger.info("SmsBower %s resp: status=%s text=%s", action, resp.status_code, resp_text[:500])
 
-                # providerIds 被平台 BANNED 时：去掉指定线路，但保留 exceptProviderIds（排除更便宜档）
-                if "BANNED:" in resp_text and "providerIds" in params:
+                if "BANNED:" in resp_text and "providerIds" in params and not tried_operator_fallback:
+                    tried_operator_fallback = True
+                    op_params = {k: v for k, v in params.items() if k != "providerIds"}
+                    if wanted_ops:
+                        op_params["operator"] = ",".join(wanted_ops)
                     logger.warning(
-                        "SmsBower: 供应商 ID %s 受平台限制 (%s)，去掉指定线路，保留排除更低价线路后重试...",
-                        params.get("providerIds"), resp_text
+                        "SmsBower: providerIds 被限制 (%s)，改用 operator=%s 重试...",
+                        resp_text[:80], op_params.get("operator"),
                     )
-                    clean_params = {k: v for k, v in params.items() if k not in ("providerIds", "operator")}
                     try:
-                        resp = self._request(clean_params)
+                        resp = self._request(op_params)
                         resp_text = resp.text.strip()
                         last_resp_text = resp_text
-                        logger.info("SmsBower 降级重试 resp: %s", resp_text[:300])
+                        logger.info("SmsBower operator 回退 resp: %s", resp_text[:300])
                     except Exception:
                         pass
 
@@ -786,22 +787,32 @@ class SmsBowerProvider(BaseSmsProvider):
                         aid = str(data.get("activationId"))
                         cost_raw = data.get("activationCost") or data.get("cost") or data.get("price")
                         op_id = str(data.get("activationOperator") or "").strip()
+                        actual_cost = None
                         if cost_raw is not None:
                             try:
                                 actual_cost = float(cost_raw)
-                                too_cheap = min_p > 0 and actual_cost < min_p - 1e-5
-                                too_expensive = max_p > 0 and actual_cost > max_p + 1e-5
-                                if too_cheap or too_expensive:
-                                    logger.warning(
-                                        "SmsBower: 租到号码 %s 实际金额 %.4f 不符合目标 %s~%s (线路=%s)，秒退换号...",
-                                        aid, actual_cost, min_p, max_p, op_id or "?"
-                                    )
-                                    self.cancel(aid)
-                                    if too_cheap and op_id and op_id not in extra_except:
-                                        extra_except.append(op_id)
-                                    continue
                             except (ValueError, TypeError):
-                                pass
+                                actual_cost = None
+                        operator_hit = bool(wanted_ops) and op_id in wanted_ops
+                        if actual_cost is not None:
+                            too_expensive = max_p > 0 and actual_cost > max_p + 1e-5
+                            too_cheap = (not lock_by_operator) and min_p > 0 and actual_cost < min_p - 1e-5
+                            if too_expensive or (too_cheap and not operator_hit):
+                                logger.warning(
+                                    "SmsBower: 租到号码 %s 实际金额 %.4f 不符合目标 %s~%s (线路=%s)，秒退换号...",
+                                    aid, actual_cost, min_p, max_p, op_id or "?"
+                                )
+                                self.cancel(aid)
+                                if too_cheap and op_id and op_id not in extra_except:
+                                    extra_except.append(op_id)
+                                continue
+                        if wanted_ops and op_id and op_id not in wanted_ops:
+                            logger.warning(
+                                "SmsBower: 租到号码 %s 线路=%s 不是指定线路 %s，秒退换号...",
+                                aid, op_id, ",".join(wanted_ops),
+                            )
+                            self.cancel(aid)
+                            continue
                         return data
                     if "NO_NUMBERS" in resp_text:
                         raise RuntimeError(resp_text[:200] or "empty response")
