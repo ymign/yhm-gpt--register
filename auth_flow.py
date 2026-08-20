@@ -3392,12 +3392,16 @@ class AuthFlow:
         #    实测 2026-08-06: 这类号照样能走 POST user/register 设密码并成功。
         want_password = str(self._get_env("WANT_PASSWORD", "0")).lower() in ("1", "true", "yes", "on")
         if is_new or self._existing_email_verification_mode == "passwordless_signup":
-            # 新账号流程：若开启设置密码且服务端处于密码阶段则先走 register_password，否则走 passwordless 免密 OTP 注册流
+            # 新账号流程：若开启设置密码则先尝试走 register_password 设密，否则/失败后走 passwordless 免密 OTP 注册流
             password_registered = False
             is_passwordless = (self._existing_email_verification_mode == "passwordless_signup")
 
-            if want_password and not is_passwordless:
-                password_registered = self.register_password(email)
+            if want_password:
+                try:
+                    password_registered = self.register_password(email)
+                except Exception as e:
+                    logger.warning("尝试设置登录密码异常，回退免密流程: %s", e)
+                    password_registered = False
 
             if password_registered:
                 otp_sent_at = time.time()
