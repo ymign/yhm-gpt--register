@@ -924,6 +924,63 @@ def _parse_single_filter_clause(filt: str) -> Optional[str]:
     return None
 
 
+def _parse_domain_filter_clause(domain_str: str) -> tuple[Optional[str], list]:
+    """解析邮箱格式/域名筛选。"""
+    d = (domain_str or "").strip().lower()
+    if not d or d == "all":
+        return None, []
+    if d in ("microsoft", "ms", "ms_all"):
+        return "(lower(email) LIKE '%@outlook.%' OR lower(email) LIKE '%@hotmail.%' OR lower(email) LIKE '%@live.%' OR lower(email) LIKE '%@msn.%')", []
+    if d in ("outlook", "outlook.com"):
+        return "lower(email) LIKE '%@outlook.%'", []
+    if d in ("hotmail", "hotmail.com"):
+        return "lower(email) LIKE '%@hotmail.%'", []
+    if d in ("live", "live.com"):
+        return "lower(email) LIKE '%@live.%'", []
+    if d in ("gmail", "gmail.com"):
+        return "lower(email) LIKE '%@gmail.%'", []
+    if d in ("yahoo", "yahoo.com"):
+        return "lower(email) LIKE '%@yahoo.%'", []
+    if d in ("icloud", "icloud.com"):
+        return "lower(email) LIKE '%@icloud.%'", []
+    if d in ("qq", "qq.com"):
+        return "lower(email) LIKE '%@qq.%'", []
+    if d in ("163", "163.com"):
+        return "lower(email) LIKE '%@163.%'", []
+    if d in ("custom", "custom_domain", "other", "self_domain"):
+        return (
+            "(lower(email) NOT LIKE '%@outlook.%' AND lower(email) NOT LIKE '%@hotmail.%' "
+            "AND lower(email) NOT LIKE '%@live.%' AND lower(email) NOT LIKE '%@msn.%' "
+            "AND lower(email) NOT LIKE '%@gmail.%' AND lower(email) NOT LIKE '%@yahoo.%' "
+            "AND lower(email) NOT LIKE '%@icloud.%' AND lower(email) NOT LIKE '%@qq.%' "
+            "AND lower(email) NOT LIKE '%@163.%')", []
+        )
+    # 具体后缀，如 "@shaosiming.online" 或 "shaosiming.online"
+    if d.startswith("@"):
+        return "lower(email) LIKE ?", [f"%{d}"]
+    elif "." in d:
+        return "lower(email) LIKE ?", [f"%@{d}"]
+    else:
+        return "(lower(email) LIKE ? OR lower(email) LIKE ?)", [f"%@{d}%", f"%{d}%"]
+
+
+def get_registered_domains() -> list[dict]:
+    """统计当前数据库中所有注册账号的邮箱后缀域名及数量。"""
+    con = _conn()
+    cur = con.execute("""
+        SELECT
+            CASE
+                WHEN instr(email, '@') > 0 THEN lower(substr(email, instr(email, '@')))
+                ELSE 'other'
+            END AS domain,
+            COUNT(*) AS count
+        FROM registered
+        GROUP BY domain
+        ORDER BY count DESC
+    """)
+    return [{"domain": r[0], "count": r[1]} for r in cur.fetchall() if r[0]]
+
+
 def _registered_where(
     filt: str = "all",
     search: str = "",
@@ -931,6 +988,7 @@ def _registered_where(
     filter_sec: str = "",
     filter_extract: str = "",
     filter_oauth: str = "",
+    filter_domain: str = "",
 ) -> tuple[str, list]:
     conditions = []
     args = []
@@ -950,9 +1008,15 @@ def _registered_where(
             if c and c not in conditions:
                 conditions.append(c)
 
+    if filter_domain and filter_domain != "all":
+        c, d_args = _parse_domain_filter_clause(filter_domain)
+        if c:
+            conditions.append(c)
+            args.extend(d_args)
+
     search_cleaned = (search or "").strip().lower()
     if search_cleaned:
-        conditions.append("email LIKE ?")
+        conditions.append("lower(email) LIKE ?")
         args.append(f"%{search_cleaned}%")
 
     if conditions:
@@ -967,12 +1031,14 @@ def count_registered(
     filter_sec: str = "",
     filter_extract: str = "",
     filter_oauth: str = "",
+    filter_domain: str = "",
 ) -> int:
     con = _conn()
     where, args = _registered_where(
         filter_rt, search,
         filter_plan=filter_plan, filter_sec=filter_sec,
         filter_extract=filter_extract, filter_oauth=filter_oauth,
+        filter_domain=filter_domain,
     )
     cur = con.execute(f"SELECT COUNT(*) FROM registered {where}", args)
     return cur.fetchone()[0]
@@ -986,6 +1052,7 @@ def list_registered_emails(
     filter_sec: str = "",
     filter_extract: str = "",
     filter_oauth: str = "",
+    filter_domain: str = "",
 ) -> list[str]:
     """返回符合过滤条件的所有注册邮箱列表。"""
     con = _conn()
@@ -993,6 +1060,7 @@ def list_registered_emails(
         filter_rt, search,
         filter_plan=filter_plan, filter_sec=filter_sec,
         filter_extract=filter_extract, filter_oauth=filter_oauth,
+        filter_domain=filter_domain,
     )
     cur = con.execute(
         f"SELECT email FROM registered {where} ORDER BY created_at DESC LIMIT ?",
@@ -1010,12 +1078,14 @@ def list_registered(
     filter_sec: str = "",
     filter_extract: str = "",
     filter_oauth: str = "",
+    filter_domain: str = "",
 ) -> list[dict]:
     con = _conn()
     where, args = _registered_where(
         filter_rt, search,
         filter_plan=filter_plan, filter_sec=filter_sec,
         filter_extract=filter_extract, filter_oauth=filter_oauth,
+        filter_domain=filter_domain,
     )
     cur = con.execute(
         f"SELECT email, password, totp_secret, reg_country, reg_city, reg_ip, "

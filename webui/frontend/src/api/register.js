@@ -43,6 +43,8 @@ export const listRegisteredEmails = (params = 'all') => {
   return http.get('/api/registered_emails', { params: p })
 }
 
+export const listRegisteredDomains = () => http.get('/api/registered/domains')
+
 // ──────────────── Plus 状态并发检测任务 ────────────────
 export const startPlusCheck = (payload) =>
   http.post('/api/registered/plus_check/start', payload) // { emails, proxies, workers, timeout }

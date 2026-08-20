@@ -382,6 +382,7 @@ def api_registered(
     filter_sec: str = "",
     filter_extract: str = "",
     filter_oauth: str = "",
+    filter_domain: str = "",
 ):
     query_str = (q or search).strip()
     items = db.list_registered(
@@ -393,6 +394,7 @@ def api_registered(
         filter_sec=filter_sec,
         filter_extract=filter_extract,
         filter_oauth=filter_oauth,
+        filter_domain=filter_domain,
     )
     total = db.count_registered(
         filter_rt=filter,
@@ -401,6 +403,7 @@ def api_registered(
         filter_sec=filter_sec,
         filter_extract=filter_extract,
         filter_oauth=filter_oauth,
+        filter_domain=filter_domain,
     )
     return {"ok": True, "items": items, "total": total}
 
@@ -414,6 +417,7 @@ def api_registered_emails(
     filter_sec: str = "",
     filter_extract: str = "",
     filter_oauth: str = "",
+    filter_domain: str = "",
 ):
     """返回当前过滤条件下的所有账号邮箱列表（用于批量检测未检/全检）。"""
     query_str = (q or search).strip()
@@ -424,8 +428,17 @@ def api_registered_emails(
         filter_sec=filter_sec,
         filter_extract=filter_extract,
         filter_oauth=filter_oauth,
+        filter_domain=filter_domain,
     )
     return {"ok": True, "emails": emails, "total": len(emails)}
+
+
+@app.get("/api/registered/domains")
+@app.get("/api/registered_domains")
+def api_registered_domains():
+    """获取所有已注册账号的邮箱后缀域名分布统计。"""
+    domains = db.get_registered_domains()
+    return {"ok": True, "domains": domains}
 
 
 @app.get("/api/registered/{email}")

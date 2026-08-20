@@ -28,6 +28,7 @@ import {
 import {
   listRegistered,
   listRegisteredEmails,
+  listRegisteredDomains,
   getRegistered,
   deleteRegistered,
   bulkDeleteRegistered,
@@ -115,6 +116,7 @@ async function openExtractChannel(channelKey) {
         filter_sec: filterSec.value,
         filter_extract: filterExtract.value,
         filter_oauth: filterOAuth.value,
+        filter_domain: filterDomain.value,
         search: searchKeyword.value.trim(),
       })
       extractModalEmails.value = res.emails || []
@@ -132,10 +134,21 @@ const filterPlan = ref('all')
 const filterSec = ref('all')
 const filterExtract = ref('all')
 const filterOAuth = ref('all')
+const filterDomain = ref('all')
+const domainOptions = ref([])
 const searchKeyword = ref('')
 const selected = ref([])
 const loading = ref(false)
 let searchTimer = null
+
+async function loadDomains() {
+  try {
+    const res = await listRegisteredDomains()
+    if (res && res.domains) {
+      domainOptions.value = res.domains || []
+    }
+  } catch (_) {}
+}
 
 const hasActiveFilter = computed(() => {
   return (
@@ -143,7 +156,8 @@ const hasActiveFilter = computed(() => {
     filterPlan.value !== 'all' ||
     filterSec.value !== 'all' ||
     filterExtract.value !== 'all' ||
-    filterOAuth.value !== 'all'
+    filterOAuth.value !== 'all' ||
+    filterDomain.value !== 'all'
   )
 })
 
@@ -153,6 +167,7 @@ function clearAllFilters() {
   filterSec.value = 'all'
   filterExtract.value = 'all'
   filterOAuth.value = 'all'
+  filterDomain.value = 'all'
   load(true)
 }
 
@@ -1532,6 +1547,7 @@ const oauthNowTime = ref(Date.now())
 let oauthLiveTimer = null
 
 onMounted(() => {
+  loadDomains()
   oauthLiveTimer = setInterval(() => {
     if (oauthRunning.value) {
       oauthNowTime.value = Date.now()
@@ -1930,6 +1946,7 @@ function openOAuthExportForSingle(email) {
 async function load(resetPage = false) {
   if (resetPage) page.value = 1
   loading.value = true
+  loadDomains()
   try {
     const { items, total: t } = await listRegistered({
       limit: pageSize.value,
@@ -1939,6 +1956,7 @@ async function load(resetPage = false) {
       filter_sec: filterSec.value,
       filter_extract: filterExtract.value,
       filter_oauth: filterOAuth.value,
+      filter_domain: filterDomain.value,
       search: searchKeyword.value.trim(),
     })
     rows.value = items || []
@@ -3049,7 +3067,39 @@ onUnmounted(() => {
             <el-option label="⚪ OAICS 未中" value="oa_miss" />
           </el-select>
 
-          <!-- 6. 快捷清除筛选条件按钮 -->
+          <!-- 6. 邮箱格式/域名维度 -->
+          <el-select
+            v-model="filterDomain"
+            placeholder="邮箱格式/域名"
+            class="macos-select filter-select domain-filter"
+            size="small"
+            filterable
+            allow-create
+            default-first-option
+            clearable
+            @change="load(true)"
+            @clear="filterDomain = 'all'; load(true)"
+          >
+            <el-option-group label="常用格式分类">
+              <el-option label="📧 全部邮箱格式" value="all" />
+              <el-option label="🟦 微软全系 (Outlook/Hotmail/Live)" value="microsoft" />
+              <el-option label="📮 Outlook 系 (@outlook.*)" value="outlook" />
+              <el-option label="📨 Hotmail 系 (@hotmail.*)" value="hotmail" />
+              <el-option label="💌 Live 系 (@live.*)" value="live" />
+              <el-option label="🔴 Gmail (@gmail.com)" value="gmail" />
+              <el-option label="🌐 其它 / 自建域名" value="custom_domain" />
+            </el-option-group>
+            <el-option-group v-if="domainOptions.length > 0" label="数据库现有域名">
+              <el-option
+                v-for="d in domainOptions"
+                :key="d.domain"
+                :label="`${d.domain} (${d.count})`"
+                :value="d.domain"
+              />
+            </el-option-group>
+          </el-select>
+
+          <!-- 7. 快捷清除筛选条件按钮 -->
           <el-button
             v-if="hasActiveFilter"
             size="small"
@@ -5825,6 +5875,9 @@ onUnmounted(() => {
 }
 .macos-select.filter-select.oauth-filter {
   width: 120px;
+}
+.macos-select.filter-select.domain-filter {
+  width: 155px;
 }
 .macos-select.proxy-select {
   width: 165px;
