@@ -870,14 +870,13 @@ def execute_codex_oauth_flow(
         max_attempts = max(1, min(10, int(sms_cfg.get("sms_max_attempts") or 3)))
         per_phone_timeout = max(20, int(sms_cfg.get("sms_timeout") or 80))
 
-        # 候选国家列表（首选用户配置国家，后备高放行率国家，去重）
+        # 候选国家列表
         if country == "AUTO":
-            allowed_countries = "52,10,73,15,16,12"
+            allowed_countries = "52,6,10,73,15,16,12"
             auto_select_country = True
             primary_country = "52"
         else:
-            cand_list = [country] + [c for c in ("52", "10", "73", "15", "16") if c != country]
-            allowed_countries = ",".join(cand_list)
+            allowed_countries = f"{country},6,10,73,15,16"
             auto_select_country = False
             primary_country = country
 

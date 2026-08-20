@@ -1075,7 +1075,6 @@ class PhoneCallbackController:
         self.activation: Optional[SmsActivation] = None
         self.completed = False
         self._verify_lock_acquired = False
-        self._failed_countries: set[str] = set()
 
     def _provider(self) -> BaseSmsProvider:
         if self.provider is None:
@@ -1119,18 +1118,6 @@ class PhoneCallbackController:
 
         if not country_candidates:
             country_candidates = [SMS_DEFAULT_COUNTRY]
-
-        # 去重并优先把未被 OpenAI 400 拒接过的国家排在最前面，被拒国家排到末尾
-        unique_cands = []
-        for c in country_candidates:
-            c_str = str(c).strip()
-            if c_str and c_str not in unique_cands:
-                unique_cands.append(c_str)
-
-        country_candidates = sorted(
-            unique_cands,
-            key=lambda c: (1 if c in self._failed_countries else 0)
-        )
 
         country_label_log = ",".join(
             f"{c}({SMS_COUNTRY_NAMES_CN.get(c, '?')})" for c in country_candidates[:5]
@@ -1194,8 +1181,6 @@ class PhoneCallbackController:
 
     def mark_send_failed(self, reason: str = "") -> None:
         if self.activation and self.provider:
-            if self.activation.country:
-                self._failed_countries.add(str(self.activation.country).strip())
             try:
                 self.provider.mark_send_failed(self.activation.activation_id, reason=reason)
             except Exception:
