@@ -8,7 +8,7 @@ import {
   Phone,
   Wallet,
 } from '@element-plus/icons-vue'
-import { getSmsConfig, saveSmsConfig, testSms, getSmsAllCountries } from '@/api/settings'
+import { getSmsConfig, saveSmsConfig, testSms, getSmsAllCountries, getSmsPriceTiers } from '@/api/settings'
 import FooterToolbar from '@/components/FooterToolbar.vue'
 
 const enabled = ref(false)
@@ -31,6 +31,8 @@ const allCountries = ref([])
 const countriesLoading = ref(false)
 const saving = ref(false)
 const testing = ref(false)
+const priceTiers = ref([])
+const priceTiersLoading = ref(false)
 
 const countryOptions = computed(() =>
   allCountries.value.map((c) => ({
@@ -39,6 +41,22 @@ const countryOptions = computed(() =>
     safe: c.openai_sms_safe,
   })),
 )
+
+async function loadPriceTiers() {
+  if (provider.value !== 'smsbower' || !country.value || country.value === 'AUTO') {
+    priceTiers.value = []
+    return
+  }
+  priceTiersLoading.value = true
+  try {
+    const res = await getSmsPriceTiers(country.value, service.value || 'dr', provider.value)
+    priceTiers.value = res.tiers || []
+  } catch (e) {
+    priceTiers.value = []
+  } finally {
+    priceTiersLoading.value = false
+  }
+}
 
 async function loadCountries(p) {
   countriesLoading.value = true
@@ -71,14 +89,20 @@ async function load() {
     allowed.value = (config.sms_allowed_countries || '').split(',').map((s) => s.trim()).filter(Boolean)
     maxPhoneAttempts.value = config.sms_max_phone_attempts || ''
     perPhoneTimeout.value = config.sms_per_phone_timeout || '80'
+    await loadPriceTiers()
   } catch (e) {
     ElMessage.error(e.message)
   }
 }
 
+async function onCountryChange() {
+  await loadPriceTiers()
+}
+
 async function onProviderChange() {
   allowed.value = []
   await loadCountries(provider.value)
+  await loadPriceTiers()
 }
 
 async function save() {
@@ -179,14 +203,14 @@ load()
             <el-row :gutter="12">
               <el-col :span="14">
                 <el-form-item label="默认首选国家（未开自动轮换时强制生效）">
-                  <el-select v-model="country" filterable :loading="countriesLoading" style="width: 100%">
+                  <el-select v-model="country" filterable :loading="countriesLoading" style="width: 100%" @change="onCountryChange">
                     <el-option v-for="o in countryOptions" :key="o.value" :label="o.label" :value="o.value" />
                   </el-select>
                 </el-form-item>
               </el-col>
               <el-col :span="10">
                 <el-form-item label="Service 服务代码（OpenAI 专属代码 = dr）">
-                  <el-input v-model="service" placeholder="dr" />
+                  <el-input v-model="service" placeholder="dr" @change="onCountryChange" />
                 </el-form-item>
               </el-col>
             </el-row>
@@ -194,7 +218,21 @@ load()
             <el-row :gutter="12">
               <el-col :span="12">
                 <el-form-item label="接码金额要求 (如 0.008 锁定指定金额 / 空表示不限)">
-                  <el-input v-model="maxPrice" placeholder="输入 0.008 锁定指定金额 或 0.007-0.01 区间" />
+                  <el-input v-model="maxPrice" placeholder="输入 0.008 锁定指定金额 或 0.007-0.01 区间" clearable />
+                  <div v-if="priceTiers.length" style="margin-top: 6px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center">
+                    <span style="font-size: 11.5px; color: var(--el-text-color-secondary)">实时号池档位(点击直选):</span>
+                    <el-tag
+                      v-for="t in priceTiers"
+                      :key="t.price_str"
+                      size="small"
+                      :type="maxPrice === t.price_str ? 'primary' : 'info'"
+                      :effect="maxPrice === t.price_str ? 'dark' : 'plain'"
+                      style="cursor: pointer; user-select: none"
+                      @click="maxPrice = t.price_str"
+                    >
+                      {{ t.label }}
+                    </el-tag>
+                  </div>
                 </el-form-item>
               </el-col>
               <el-col :span="12">

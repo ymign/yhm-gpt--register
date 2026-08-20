@@ -475,6 +475,43 @@ class SmsBowerProvider(BaseSmsProvider):
                     rows.append({"country": str(country_id), "price": price, "count": count})
         return rows
 
+    def get_country_price_tiers(self, country: str, service: Optional[str] = None) -> list[dict]:
+        """查询指定国家和业务在 SmsBower 的所有可用金额档位和实时库存（对应 getPricesV2）。"""
+        service_code = str(service or self.default_service or "dr").strip()
+        country_id = str(country or self.default_country or "6").strip()
+        try:
+            resp = self._request({
+                "action": "getPricesV2",
+                "service": service_code,
+                "country": country_id,
+            })
+            if resp.status_code != 200:
+                return []
+            data = resp.json()
+            country_dict = data.get(country_id, {}) if isinstance(data, dict) else {}
+            service_dict = country_dict.get(service_code, {}) if isinstance(country_dict, dict) else {}
+            if not isinstance(service_dict, dict):
+                return []
+            tiers = []
+            for price_str, count_val in service_dict.items():
+                try:
+                    p = float(price_str)
+                    c = int(count_val)
+                    if c > 0:
+                        tiers.append({
+                            "price": p,
+                            "price_str": str(price_str),
+                            "count": c,
+                            "label": f"{price_str} $ ({c} 件)" if c < 10000 else f"{price_str} $ ({round(c/10000, 2)}万件)",
+                        })
+                except (ValueError, TypeError):
+                    continue
+            tiers.sort(key=lambda x: x["price"])
+            return tiers
+        except Exception as exc:
+            logger.warning(f"SmsBower get_country_price_tiers 查询失败 (country={country_id}): {exc}")
+            return []
+
     def get_best_country(self, service: Optional[str] = None, *,
                          min_stock: int = 20, max_price: float = 0,
                          strict_whitelist: bool = False,

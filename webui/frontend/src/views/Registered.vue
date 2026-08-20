@@ -72,7 +72,7 @@ import {
   securityTaskStreamUrl,
   getSecurityTaskLog,
 } from '@/api/register'
-import { saveSmsConfig } from '@/api/settings'
+import { saveSmsConfig, getSmsPriceTiers } from '@/api/settings'
 import { copyText, fmtTime, createSSE } from '@/api/request'
 import { useFormStore, proxyText, COUNTRY_OPTIONS, formatCountry } from '@/stores/form'
 import { useProxyStore } from '@/stores/proxy'
@@ -1599,6 +1599,34 @@ const SMS_COUNTRY_OPTIONS = [
   { value: '12', label: '12 · 美国虚拟号' },
   { value: '187', label: '187 · 美国实体号' },
 ]
+
+const oauthPriceTiers = ref([])
+const oauthPriceTiersLoading = ref(false)
+
+async function loadOAuthPriceTiers() {
+  const c = String(oauthForm.smsCountry || '').trim()
+  if (!c || c === 'AUTO' || oauthForm.smsProvider !== 'smsbower') {
+    oauthPriceTiers.value = []
+    return
+  }
+  oauthPriceTiersLoading.value = true
+  try {
+    const res = await getSmsPriceTiers(c, 'dr', oauthForm.smsProvider || 'smsbower')
+    oauthPriceTiers.value = res.tiers || []
+  } catch (e) {
+    oauthPriceTiers.value = []
+  } finally {
+    oauthPriceTiersLoading.value = false
+  }
+}
+
+watch(
+  () => [oauthForm.smsCountry, oauthForm.smsProvider],
+  () => {
+    loadOAuthPriceTiers()
+  },
+  { immediate: true }
+)
 
 const oauthLogModalVisible = ref(false)
 const currentOAuthLogItem = ref(null)
@@ -4175,6 +4203,22 @@ onUnmounted(() => {
                         <el-form-item label="最多换号尝试次数">
                           <el-input-number v-model="oauthForm.smsMaxAttempts" :min="1" :max="10" style="width: 100%" />
                         </el-form-item>
+                      </el-col>
+                      <el-col v-if="oauthPriceTiers.length" :span="24">
+                        <div style="margin-bottom: 8px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center">
+                          <span style="font-size: 11.5px; color: var(--el-text-color-secondary)">当前国家实时号池档位(点击直选):</span>
+                          <el-tag
+                            v-for="t in oauthPriceTiers"
+                            :key="t.price_str"
+                            size="small"
+                            :type="oauthForm.smsMaxPrice === t.price_str ? 'primary' : 'info'"
+                            :effect="oauthForm.smsMaxPrice === t.price_str ? 'dark' : 'plain'"
+                            style="cursor: pointer; user-select: none"
+                            @click="oauthForm.smsMaxPrice = t.price_str"
+                          >
+                            {{ t.label }}
+                          </el-tag>
+                        </div>
                       </el-col>
                       <el-col :xs="24" :sm="16" :md="16">
                         <el-form-item label="接码平台 API Key (留空自动使用全局「接码配置」)">

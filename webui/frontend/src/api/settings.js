@@ -18,6 +18,8 @@ export const testSms = () => http.post('/api/settings/sms/test')
 export const getSmsTopCountries = () => http.get('/api/settings/sms/countries')
 export const getSmsAllCountries = (provider = '') =>
   http.get('/api/settings/sms/all_countries', { params: { provider } })
+export const getSmsPriceTiers = (country = '6', service = 'dr', provider = '') =>
+  http.get('/api/settings/sms/price_tiers', { params: { country, service, provider } })
 
 // ──────────────── 自动导出配置 (CPA / SUB2API) ────────────────
 export const getExportConfig = () => http.get('/api/settings/export')

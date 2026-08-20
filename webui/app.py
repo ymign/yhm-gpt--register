@@ -772,6 +772,30 @@ def api_sms_all_countries(provider: str = ""):
             "openai_sms_safe": list(OPENAI_SMS_COUNTRIES), "source": "static"}
 
 
+@app.get("/api/settings/sms/price_tiers")
+def api_sms_country_price_tiers(country: str = "6", service: str = "dr", provider: str = ""):
+    """实时查询指定国家和业务的所有可用金额档位和库存（如 0.008 $ (1.2万件)）。"""
+    import sys as _sys
+    ROOT_DIR = Path(__file__).resolve().parents[1]
+    if str(ROOT_DIR) not in _sys.path:
+        _sys.path.insert(0, str(ROOT_DIR))
+    from sms_provider import create_sms_provider, SmsBowerProvider
+
+    cfg = db.get_sms_internal_config()
+    p_key = (provider or cfg.get("sms_provider") or "smsbower").strip().lower()
+    if p_key != "smsbower" or not cfg.get("sms_api_key"):
+        return {"ok": True, "tiers": []}
+
+    try:
+        p = create_sms_provider("smsbower", cfg)
+        if isinstance(p, SmsBowerProvider):
+            tiers = p.get_country_price_tiers(country=country, service=service)
+            return {"ok": True, "tiers": tiers}
+    except Exception as e:
+        logger.warning(f"查询金额档位失败: {e}")
+    return {"ok": True, "tiers": []}
+
+
 # ──────────────────────── 自动导出 (CPA / SUB2API) ────────────────────────
 
 
