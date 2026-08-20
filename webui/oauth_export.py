@@ -793,7 +793,12 @@ def execute_codex_oauth_flow(
 
     if need_otp:
         if not mail_provider:
-            raise RuntimeError("需要接收邮箱验证码，但未配置可用邮箱服务")
+            email_lower = (email or "").strip().lower()
+            if any(dom in email_lower for dom in ("@outlook.", "@hotmail.", "@live.", "@msn.")):
+                raise RuntimeError(
+                    f"账号 {email} 需要收取邮箱 OTP 验证码，但号池中未找到该微软邮箱的取件凭证 (email----password----client_id----refresh_token)"
+                )
+            raise RuntimeError(f"账号 {email} 需要收取邮箱验证码，但未配置可用邮箱服务或未获取到取件凭证")
 
         _step("3", "[3/6] 取邮箱OTP (收信中...)")
         _log("[3/6] 服务端已自动下发验证码邮件，正在等待收件 (timeout=60s) ...")
@@ -1119,18 +1124,38 @@ def _run_one_oauth_export(task: OAuthExportTask, email: str) -> None:
     task.add_email_log(email, f"使用网络出口: {proxy_label}{country_tip}")
 
     # 2. 邮箱取码准备
-    mail_account = db.get_account(email) or {"email": email}
-    mail_source = (mail_account.get("kind") or cred.get("kind") or db.get_setting("mail_source", "") or "").strip().lower()
-    if not mail_source or mail_source not in ("outlook", "cf_temp", "icloud_relay"):
-        if any(dom in email for dom in ("@outlook.", "@hotmail.", "@live.", "@msn.")):
-            mail_source = "outlook"
-        elif any(dom in email for dom in ("@icloud.", "@me.", "@mac.")):
-            mail_source = "icloud_relay"
-        else:
-            mail_source = "cf_temp"
+    email_lower = (email or "").strip().lower()
+    mail_account = db.get_account(email_lower)
+    if not mail_account and cred.get("extra"):
+        saved_oauth = cred["extra"].get("mail_oauth")
+        if isinstance(saved_oauth, dict) and (saved_oauth.get("refresh_token") or saved_oauth.get("password")):
+            mail_account = {
+                "email": email_lower,
+                "password": saved_oauth.get("password", ""),
+                "client_id": saved_oauth.get("client_id", ""),
+                "refresh_token": saved_oauth.get("refresh_token", ""),
+                "kind": saved_oauth.get("kind", "outlook"),
+            }
 
+    # 优先根据邮箱域名后缀精准匹配 Provider，绝不让微软邮箱误走 cf_temp
+    is_ms = any(dom in email_lower for dom in ("@outlook.", "@hotmail.", "@live.", "@msn."))
+    is_icloud = any(dom in email_lower for dom in ("@icloud.", "@me.", "@mac."))
+
+    if is_ms:
+        mail_source = "outlook"
+    elif is_icloud:
+        mail_source = "icloud_relay"
+    elif mail_account and mail_account.get("kind"):
+        mail_source = str(mail_account.get("kind")).strip().lower()
+    elif cred.get("kind"):
+        mail_source = str(cred.get("kind")).strip().lower()
+    else:
+        mail_source = (db.get_setting("mail_source", "") or "cf_temp").strip().lower()
+
+    mail = None
+    account_for_mail = {**cred, **(mail_account or {"email": email_lower})}
     try:
-        mail = create_mail_provider(mail_source, db.get_mail_settings(), {**cred, **mail_account})
+        mail = create_mail_provider(mail_source, db.get_mail_settings(), account_for_mail)
     except Exception as e:
         task.add_email_log(email, f"邮箱 Provider ({mail_source}) 初始化提示: {e}")
         mail = None

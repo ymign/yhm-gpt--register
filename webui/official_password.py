@@ -97,20 +97,19 @@ def official_set_account_password(
                 "kind": saved_oauth.get("kind", "outlook"),
             }
 
-    mail_source = (
-        (account_row.get("kind") if account_row else None)
-        or row.get("kind")
-        or db.get_setting("mail_source", "")
-        or ""
-    ).strip().lower()
+    is_ms = any(dom in email_clean for dom in ("@outlook.", "@hotmail.", "@live.", "@msn."))
+    is_icloud = any(dom in email_clean for dom in ("@icloud.", "@me.", "@mac."))
 
-    if not mail_source or mail_source not in ("outlook", "cf_temp", "icloud_relay"):
-        if any(dom in email_clean for dom in ("@outlook.", "@hotmail.", "@live.", "@msn.")):
-            mail_source = "outlook"
-        elif any(dom in email_clean for dom in ("@icloud.", "@me.", "@mac.")):
-            mail_source = "icloud_relay"
-        else:
-            mail_source = "cf_temp"
+    if is_ms:
+        mail_source = "outlook"
+    elif is_icloud:
+        mail_source = "icloud_relay"
+    elif account_row and account_row.get("kind"):
+        mail_source = str(account_row.get("kind")).strip().lower()
+    elif row.get("kind"):
+        mail_source = str(row.get("kind")).strip().lower()
+    else:
+        mail_source = (db.get_setting("mail_source", "") or "cf_temp").strip().lower()
 
     if mail_source == "outlook" and (not account_row or (not account_row.get("refresh_token") and not account_row.get("password"))):
         raise RuntimeError(

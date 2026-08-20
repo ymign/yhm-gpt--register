@@ -612,14 +612,18 @@ def _worker_loop(task: TokenRefreshTask, email: str):
         proxy = route_proxy_country(raw_proxy, target_country, new_proxy_session_id())
 
     # 自动识别邮箱提供商渠道
-    mail_source = (mail_account_info.get("kind") or db.get_setting("mail_source", "") or "").strip().lower()
-    if not mail_source or mail_source not in ("outlook", "cf_temp", "icloud_relay"):
-        if any(dom in email for dom in ("@outlook.", "@hotmail.", "@live.", "@msn.")):
-            mail_source = "outlook"
-        elif any(dom in email for dom in ("@icloud.", "@me.", "@mac.")):
-            mail_source = "icloud_relay"
-        else:
-            mail_source = "cf_temp"
+    email_lower = (email or "").strip().lower()
+    is_ms = any(dom in email_lower for dom in ("@outlook.", "@hotmail.", "@live.", "@msn."))
+    is_icloud = any(dom in email_lower for dom in ("@icloud.", "@me.", "@mac."))
+
+    if is_ms:
+        mail_source = "outlook"
+    elif is_icloud:
+        mail_source = "icloud_relay"
+    elif mail_account_info and mail_account_info.get("kind"):
+        mail_source = str(mail_account_info.get("kind")).strip().lower()
+    else:
+        mail_source = (db.get_setting("mail_source", "") or "cf_temp").strip().lower()
 
     try:
         mail_provider = create_mail_provider(mail_source, db.get_mail_settings(), mail_account_info)
