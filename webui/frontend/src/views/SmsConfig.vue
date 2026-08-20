@@ -223,8 +223,8 @@ load()
 
             <el-row :gutter="12">
               <el-col :span="12">
-                <el-form-item label="接码金额要求 (如 0.008 锁定指定金额 / 空表示不限)">
-                  <el-input v-model="maxPrice" placeholder="输入 0.008 锁定指定金额 或 0.007-0.01 区间" clearable />
+                <el-form-item label="接码金额要求（点选档位即锁定该价格，不含更便宜的号）">
+                  <el-input v-model="maxPrice" placeholder="输入 0.008 锁定该档 或 0.007-0.01 区间" clearable />
                   <div v-if="priceTiers.length" style="margin-top: 6px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center">
                     <span style="font-size: 11.5px; color: var(--el-text-color-secondary)">实时号池档位(点击直选):</span>
                     <el-tag

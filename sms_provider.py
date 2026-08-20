@@ -264,12 +264,12 @@ def parse_price_spec(spec) -> tuple[float, float, float]:
         except ValueError:
             return -1.0, -1.0, -1.0
 
-    # 单纯数值: 如 "0.008" 或 "0.01"（按最高限价处理，允许 <= 设定值的号码）
+    # 单纯数值: 如 "0.008" 或 "0.01" —— 与网页点选一致：锁死该档位，不允许更便宜
     try:
         val = float(s)
         if val <= 0:
             return -1.0, -1.0, -1.0
-        return -1.0, val, -1.0
+        return val, val, val
     except ValueError:
         return -1.0, -1.0, -1.0
 
@@ -559,6 +559,28 @@ class SmsBowerProvider(BaseSmsProvider):
             logger.warning(f"SmsBower get_country_price_tiers 查询失败 (country={country_id}): {exc}")
         return []
 
+    def _provider_ids_cheaper_than(self, country: str, service: str, price_floor: float) -> str:
+        """从 getPricesV3 收集所有单价低于目标档位的供应商 ID，供 exceptProviderIds 使用。"""
+        if price_floor <= 0:
+            return ""
+        ids: list[str] = []
+        seen: set[str] = set()
+        try:
+            for t in self.get_country_price_tiers(country=country, service=service):
+                pid = str(t.get("id") or t.get("provider_id") or "").strip()
+                try:
+                    p = float(t.get("price") or 0)
+                except (TypeError, ValueError):
+                    continue
+                if not pid or pid in seen:
+                    continue
+                if p > 0 and p < price_floor - 1e-5:
+                    seen.add(pid)
+                    ids.append(pid)
+        except Exception as exc:
+            logger.warning("SmsBower 收集更低价供应商失败: %s", exc)
+        return ",".join(ids)
+
     def get_best_country(self, service: Optional[str] = None, *,
                          min_stock: int = 20, max_price: float = 0,
                          strict_whitelist: bool = False,
@@ -675,129 +697,131 @@ class SmsBowerProvider(BaseSmsProvider):
         min_p = self.min_price
         max_p = self.max_price
         exact_p = self.exact_price
+        if exact_p > 0:
+            min_p = exact_p
+            max_p = exact_p
 
-        effective_max = max_p
-        if effective_max <= 0:
-            try:
-                bal = self.get_balance()
-                if bal and bal > 0:
-                    effective_max = round(float(bal), 4)
-            except Exception:
-                effective_max = -1
+        floor_price = exact_p if exact_p > 0 else min_p
+        cheaper_ids = ""
+        if floor_price > 0:
+            cheaper_ids = self._provider_ids_cheaper_than(country, service, floor_price)
 
-        param_attempts = []
+        except_ids = ",".join(
+            x for x in (
+                str(self.except_provider_ids or "").strip(),
+                cheaper_ids,
+            ) if x
+        )
+
         payload_with_price = {"action": action, "service": service, "country": country}
         if self.provider_ids:
             payload_with_price["providerIds"] = self.provider_ids
-            payload_with_price["operator"] = self.provider_ids
-        if self.except_provider_ids:
-            payload_with_price["exceptProviderIds"] = self.except_provider_ids
+        if except_ids:
+            payload_with_price["exceptProviderIds"] = except_ids
         if self.phone_exception:
             payload_with_price["phoneException"] = self.phone_exception
-        if effective_max > 0:
-            payload_with_price["maxPrice"] = effective_max
+        if max_p > 0:
+            payload_with_price["maxPrice"] = max_p
         if min_p > 0:
             payload_with_price["minPrice"] = min_p
-        if exact_p > 0:
-            payload_with_price["price"] = exact_p
-        param_attempts.append(payload_with_price)
-
-        if exact_p <= 0 and min_p <= 0:
-            fallback_payload = {"action": action, "service": service, "country": country}
-            if self.provider_ids:
-                fallback_payload["providerIds"] = self.provider_ids
-                fallback_payload["operator"] = self.provider_ids
-            if self.except_provider_ids:
-                fallback_payload["exceptProviderIds"] = self.except_provider_ids
-            param_attempts.append(fallback_payload)
 
         last_resp_text = ""
-        # 若指定了最低价或精准锁定金额，最多在 0.1s 级别快速向平台重试索要 6 次
-        max_price_retries = 6 if (min_p > 0 or exact_p > 0) else 1
+        max_price_retries = 8 if (min_p > 0 or exact_p > 0 or except_ids) else 1
+        extra_except: list[str] = []
+
+        def _merged_except() -> str:
+            parts = [x.strip() for x in except_ids.split(",") if x.strip()]
+            for x in extra_except:
+                if x and x not in parts:
+                    parts.append(x)
+            return ",".join(parts)
 
         for retry_idx in range(max_price_retries):
-            for params in param_attempts:
-                price_desc_list = []
-                if exact_p > 0:
-                    price_desc_list.append(f"锁定={exact_p}")
-                elif min_p > 0:
-                    price_desc_list.append(f"最低={min_p}")
-                if effective_max > 0 and exact_p <= 0:
-                    price_desc_list.append(f"最高={effective_max}")
-                price_desc = ", ".join(price_desc_list) or "不限"
+            params = dict(payload_with_price)
+            merged = _merged_except()
+            if merged:
+                params["exceptProviderIds"] = merged
+            price_desc_list = []
+            if exact_p > 0:
+                price_desc_list.append(f"锁定={exact_p}")
+            elif min_p > 0 and max_p > 0:
+                price_desc_list.append(f"区间={min_p}~{max_p}")
+            elif min_p > 0:
+                price_desc_list.append(f"最低={min_p}")
+            elif max_p > 0:
+                price_desc_list.append(f"最高={max_p}")
+            if merged:
+                price_desc_list.append(f"排除线路={merged}")
+            price_desc = ", ".join(price_desc_list) or "不限"
 
-                logger.info("SmsBower %s: service=%s country=%s 金额限制=%s (尝试 %d/%d)",
-                            action, service, country, price_desc, retry_idx + 1, max_price_retries)
-                try:
-                    resp = self._request(params)
-                    resp_text = resp.text.strip()
-                    last_resp_text = resp_text
-                    logger.info("SmsBower %s resp: status=%s text=%s", action, resp.status_code, resp_text[:500])
+            logger.info("SmsBower %s: service=%s country=%s 金额限制=%s (尝试 %d/%d)",
+                        action, service, country, price_desc, retry_idx + 1, max_price_retries)
+            try:
+                resp = self._request(params)
+                resp_text = resp.text.strip()
+                last_resp_text = resp_text
+                logger.info("SmsBower %s resp: status=%s text=%s", action, resp.status_code, resp_text[:500])
 
-                    # 若由于指定 providerIds 导致平台报 BANNED 限制，自动降级为纯金额模式重试
-                    if "BANNED:" in resp_text and ("providerIds" in params or "operator" in params):
-                        logger.warning(
-                            "SmsBower: 供应商 ID %s 受平台限制 (%s)，自动移除供应商限制降级为纯限价模式...",
-                            params.get("providerIds") or params.get("operator"), resp_text
-                        )
-                        clean_params = {k: v for k, v in params.items() if k not in ("providerIds", "operator", "exceptProviderIds")}
-                        try:
-                            resp = self._request(clean_params)
-                            resp_text = resp.text.strip()
-                            last_resp_text = resp_text
-                        except Exception:
-                            pass
+                # providerIds 被平台 BANNED 时：去掉指定线路，但保留 exceptProviderIds（排除更便宜档）
+                if "BANNED:" in resp_text and "providerIds" in params:
+                    logger.warning(
+                        "SmsBower: 供应商 ID %s 受平台限制 (%s)，去掉指定线路，保留排除更低价线路后重试...",
+                        params.get("providerIds"), resp_text
+                    )
+                    clean_params = {k: v for k, v in params.items() if k not in ("providerIds", "operator")}
+                    try:
+                        resp = self._request(clean_params)
+                        resp_text = resp.text.strip()
+                        last_resp_text = resp_text
+                        logger.info("SmsBower 降级重试 resp: %s", resp_text[:300])
+                    except Exception:
+                        pass
 
-                    # V2 返回 JSON
-                    if action == "getNumberV2":
-                        try:
-                            data = resp.json()
-                            if isinstance(data, dict) and data.get("activationId"):
-                                aid = str(data.get("activationId"))
-                                cost_raw = data.get("activationCost") or data.get("cost") or data.get("price")
-                                if cost_raw is not None:
-                                    try:
-                                        actual_cost = float(cost_raw)
-                                        # 严格校验最低金额与指定金额
-                                        if min_p > 0 and actual_cost < min_p - 1e-5:
-                                            logger.warning(
-                                                "SmsBower: 租到号码 %s 实际金额 %.4f 低于目标要求 %.4f，正在 0.1s 内秒退换号...",
-                                                aid, actual_cost, min_p
-                                            )
-                                            self.cancel(aid)
-                                            break  # break param_attempts, continue retry_idx
-                                        if max_p > 0 and actual_cost > max_p + 1e-5:
-                                            logger.warning(
-                                                "SmsBower: 租到号码 %s 实际金额 %.4f 高于目标要求 %.4f，正在 0.1s 内秒退换号...",
-                                                aid, actual_cost, max_p
-                                            )
-                                            self.cancel(aid)
-                                            break
-                                    except (ValueError, TypeError):
-                                        pass
-                                return data
-                        except ValueError:
-                            pass
-                        if "NO_NUMBERS" in resp_text and len(param_attempts) > 1 and "maxPrice" in params:
-                            continue
+                if action == "getNumberV2":
+                    try:
+                        data = resp.json()
+                    except ValueError:
+                        data = None
+                    if isinstance(data, dict) and data.get("activationId"):
+                        aid = str(data.get("activationId"))
+                        cost_raw = data.get("activationCost") or data.get("cost") or data.get("price")
+                        op_id = str(data.get("activationOperator") or "").strip()
+                        if cost_raw is not None:
+                            try:
+                                actual_cost = float(cost_raw)
+                                too_cheap = min_p > 0 and actual_cost < min_p - 1e-5
+                                too_expensive = max_p > 0 and actual_cost > max_p + 1e-5
+                                if too_cheap or too_expensive:
+                                    logger.warning(
+                                        "SmsBower: 租到号码 %s 实际金额 %.4f 不符合目标 %s~%s (线路=%s)，秒退换号...",
+                                        aid, actual_cost, min_p, max_p, op_id or "?"
+                                    )
+                                    self.cancel(aid)
+                                    if too_cheap and op_id and op_id not in extra_except:
+                                        extra_except.append(op_id)
+                                    continue
+                            except (ValueError, TypeError):
+                                pass
+                        return data
+                    if "NO_NUMBERS" in resp_text:
                         raise RuntimeError(resp_text[:200] or "empty response")
-
-                    # V1 返回纯文本 ACCESS_NUMBER:id:phone
-                    if resp_text.startswith("ACCESS_NUMBER:"):
-                        parts = resp_text.split(":", 2)
-                        if len(parts) == 3:
-                            return {
-                                "activationId": parts[1],
-                                "phoneNumber": parts[2],
-                                "countryPhoneCode": "",
-                            }
-                    if "NO_NUMBERS" in resp_text and len(param_attempts) > 1 and "maxPrice" in params:
-                        continue
                     raise RuntimeError(resp_text[:200] or "empty response")
-                except Exception as e:
-                    if "NO_NUMBERS" in str(e) and len(param_attempts) > 1 and "maxPrice" in params:
-                        continue
-                    raise
+
+                if resp_text.startswith("ACCESS_NUMBER:"):
+                    parts = resp_text.split(":", 2)
+                    if len(parts) == 3:
+                        return {
+                            "activationId": parts[1],
+                            "phoneNumber": parts[2],
+                            "countryPhoneCode": "",
+                        }
+                raise RuntimeError(resp_text[:200] or "empty response")
+            except Exception as e:
+                if "NO_NUMBERS" in str(e) and retry_idx + 1 < max_price_retries:
+                    continue
+                if retry_idx + 1 < max_price_retries and ("BANNED" in str(e) or "NO_NUMBERS" in str(e)):
+                    continue
+                raise
 
         raise RuntimeError(f"未租到符合指定金额({min_p} ~ {max_p})的号码: {last_resp_text[:200] or 'empty response'}")
 
@@ -843,7 +867,9 @@ class SmsBowerProvider(BaseSmsProvider):
                 cid = str(cid).strip()
                 if not cid:
                     continue
-                for action in ("getNumberV2", "getNumber"):
+                # 锁定金额时只用 V2（响应带 activationCost）；V1 无金额字段会把更便宜的号放进来
+                actions = ("getNumberV2",) if (self.exact_price > 0 or self.min_price > 0) else ("getNumberV2", "getNumber")
+                for action in actions:
                     try:
                         info = self._request_number_single_action(action, service_code, cid)
                         aid = str(info.get("activationId") or "")

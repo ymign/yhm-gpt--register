@@ -4288,7 +4288,7 @@ onUnmounted(() => {
             </el-tabs>
 
             <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 6px; padding-top: 8px; border-top: 1px dashed var(--el-border-color-lighter); font-size: 11.5px; color: var(--el-text-color-secondary)">
-              <span>💡 提示：支持<b>精准锁定金额</b>（如输入 <code>0.008</code>，若平台分配 0.007 等非目标价格号将在 0.1 秒内自动免费退单重租，绝不浪费时间）、<b>价格区间</b>（如 <code>0.007-0.01</code>）或留空不限。</span>
+              <span>💡 提示：点选档位即锁定该价格（选 <code>0.008</code> 绝不会拿 0.007）。也可填区间 <code>0.007-0.01</code>，或留空不限。若该档位无货会报 NO_NUMBERS，不会偷偷换成更便宜的号。</span>
               <el-button size="small" type="primary" plain @click="saveOAuthFormDefault">
                 <el-icon><Check /></el-icon> 保存为默认配置
               </el-button>
