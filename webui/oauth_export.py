@@ -986,7 +986,6 @@ def execute_codex_oauth_flow(
                 "sms_except_provider_ids": except_provider_ids,
                 "sms_per_phone_timeout": str(per_phone_timeout),
                 "sms_max_phone_attempts": str(max_attempts),
-                "proxy": proxy or None,
             },
             service="dr",
             country=primary_country,

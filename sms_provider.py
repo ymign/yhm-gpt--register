@@ -891,15 +891,28 @@ class SmsBowerProvider(BaseSmsProvider):
                                     "stop_reason": "",
                                 }
                                 self._save_cache(cache)
+                        cost_raw = info.get("activationCost") or info.get("cost") or info.get("price")
+                        try:
+                            actual_cost = float(cost_raw) if cost_raw is not None else None
+                        except (TypeError, ValueError):
+                            actual_cost = None
+                        op_id = str(info.get("activationOperator") or "").strip()
                         activation = SmsActivation(
                             activation_id=aid,
                             phone_number=phone,
                             country=cid,
-                            metadata={"reused": False},
+                            metadata={
+                                "reused": False,
+                                "cost": actual_cost,
+                                "operator": op_id,
+                            },
                         )
                         self.current_activation = activation
-                        if len(country_candidates) > 1:
-                            logger.info("SmsBower 在国家 %s 租到号 %s (action=%s)", cid, phone, action)
+                        logger.info(
+                            "SmsBower 租到号 %s 国家=%s 金额=%s 线路=%s (action=%s)",
+                            phone, cid, actual_cost if actual_cost is not None else "未知",
+                            op_id or "未知", action,
+                        )
                         return activation
                     except Exception as e:
                         msg = str(e)[:120]
@@ -1137,9 +1150,9 @@ def create_sms_provider(provider_key: str, config: dict) -> BaseSmsProvider:
         raise RuntimeError(f"{pk} 未配置 API Key")
     country = str(config.get("sms_country") or "").strip()
     service = str(config.get("sms_service") or "").strip() or "dr"
-    # 接码 API 请求走的代理：复用全局 proxy（registrar 注入注册流程的代理），
-    # 也允许调用方显式传 sms_proxy 覆盖（保留扩展点，目前 WebUI 不暴露）。
-    proxy = (str(config.get("sms_proxy") or config.get("proxy") or "")).strip() or None
+    # 接码平台 API 默认直连。OAuth/注册用的出口代理（日本住宅等）打不通 smsbower.page。
+    # 只有显式配置 sms_proxy 才走代理。
+    proxy = (str(config.get("sms_proxy") or "")).strip() or None
 
     price_spec = config.get("sms_price") or config.get("sms_max_price") or config.get("sms_price_spec")
     min_p, max_p, exact_p = parse_price_spec(price_spec)
@@ -1283,11 +1296,16 @@ class PhoneCallbackController:
             self._release_lock()
             raise
 
-        reused = bool((self.activation.metadata or {}).get("reused"))
+        meta = self.activation.metadata or {}
+        reused = bool(meta.get("reused"))
         used_country = self.activation.country or country_candidates[0]
         used_country_label = f"{used_country} {SMS_COUNTRY_NAMES_CN.get(used_country, '')}"
+        cost = meta.get("cost")
+        op_id = meta.get("operator") or ""
+        cost_tip = f" 金额={cost}" if cost is not None else ""
+        op_tip = f" 线路={op_id}" if op_id else ""
         self.log(f"✅ 已租到号码{'(复用)' if reused else ''}: {self.activation.phone_number} "
-                 f"国家={used_country_label} (activation_id={self.activation.activation_id})")
+                 f"国家={used_country_label}{cost_tip}{op_tip} (activation_id={self.activation.activation_id})")
         return self.activation.phone_number
 
     def get_code(self, timeout: int = 180) -> str:
