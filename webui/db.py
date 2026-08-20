@@ -1401,6 +1401,9 @@ def get_sms_config() -> dict:
         "sms_country":             get_setting("sms_country", "52"),
         "sms_service":             get_setting("sms_service", "dr"),
         "sms_max_price":           get_setting("sms_max_price", ""),
+        "sms_provider_ids":        get_setting("sms_provider_ids", get_setting("sms_operator", "")),
+        "sms_except_provider_ids": get_setting("sms_except_provider_ids", ""),
+        "sms_operator":            get_setting("sms_operator", ""),
         "sms_reuse_phone":         get_setting("sms_reuse_phone", "0"),
         "sms_phone_success_max":   get_setting("sms_phone_success_max", "3"),
         "sms_auto_country":        get_setting("sms_auto_country", "0"),
@@ -1425,6 +1428,7 @@ def save_sms_config(data: dict) -> None:
     # 字符串字段直接落
     for key in (
         "sms_country", "sms_service", "sms_max_price",
+        "sms_provider_ids", "sms_except_provider_ids",
         "sms_phone_success_max", "sms_auto_min_stock", "sms_auto_max_price",
         "sms_max_phone_attempts", "sms_per_phone_timeout",
         "sms_allowed_countries",
@@ -1454,6 +1458,9 @@ def get_sms_internal_config() -> dict:
         "sms_country":             get_setting("sms_country", "52"),
         "sms_service":             get_setting("sms_service", "dr"),
         "sms_max_price":           get_setting("sms_max_price", ""),
+        "sms_provider_ids":        get_setting("sms_provider_ids", get_setting("sms_operator", "")),
+        "sms_except_provider_ids": get_setting("sms_except_provider_ids", ""),
+        "sms_operator":            get_setting("sms_operator", ""),
         "sms_reuse_phone":         get_setting("sms_reuse_phone", "0") in ("1", "true"),
         "sms_phone_success_max":   get_setting("sms_phone_success_max", "3"),
         "sms_auto_country":        get_setting("sms_auto_country", "0") in ("1", "true"),

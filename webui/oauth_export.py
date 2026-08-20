@@ -964,8 +964,12 @@ def execute_codex_oauth_flow(
         elif max_p > 0:
             price_desc = f"最高限价 {max_p}"
 
+        provider_ids = str(sms_cfg.get("sms_provider_ids") or sms_cfg.get("providerIds") or sms_cfg.get("sms_operator") or "").strip()
+        except_provider_ids = str(sms_cfg.get("sms_except_provider_ids") or sms_cfg.get("exceptProviderIds") or "").strip()
+
         _step("5_sms", f"[5/6] 手机号接码 ({provider_key})")
-        _log(f"[5/6] 遇到手机验证，已启用 {provider_key} 接码 (国家={country}, 金额要求={price_desc}, 最多换号={max_attempts}次, 超时={per_phone_timeout}s)...")
+        id_tip = f", 指定供应商={provider_ids}" if provider_ids else ""
+        _log(f"[5/6] 遇到手机验证，已启用 {provider_key} 接码 (国家={country}{id_tip}, 金额要求={price_desc}, 最多换号={max_attempts}次, 超时={per_phone_timeout}s)...")
 
         ctrl = PhoneCallbackController(
             provider_key=provider_key,
@@ -978,6 +982,8 @@ def execute_codex_oauth_flow(
                 "sms_max_price": max_p,
                 "sms_min_price": min_p,
                 "sms_exact_price": exact_p,
+                "sms_provider_ids": provider_ids,
+                "sms_except_provider_ids": except_provider_ids,
                 "sms_per_phone_timeout": str(per_phone_timeout),
                 "sms_max_phone_attempts": str(max_attempts),
                 "proxy": proxy or None,

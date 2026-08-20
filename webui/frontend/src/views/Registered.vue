@@ -1534,6 +1534,8 @@ const oauthForm = reactive({
   smsApiKey: savedOAuth.smsApiKey || '',
   smsCountry: savedOAuth.smsCountry || '52',
   smsMaxPrice: savedOAuth.smsMaxPrice || '',
+  smsProviderIds: savedOAuth.smsProviderIds || '',
+  smsExceptProviderIds: savedOAuth.smsExceptProviderIds || '',
   smsMaxAttempts: savedOAuth.smsMaxAttempts || 3,
   smsTimeout: savedOAuth.smsTimeout || 80,
 })
@@ -1578,6 +1580,8 @@ function saveOAuthFormDefault() {
         sms_api_key: oauthForm.smsApiKey,
         sms_country: String(oauthForm.smsCountry || '52').trim(),
         sms_max_price: String(oauthForm.smsMaxPrice || '').trim(),
+        sms_provider_ids: String(oauthForm.smsProviderIds || '').trim(),
+        sms_except_provider_ids: String(oauthForm.smsExceptProviderIds || '').trim(),
         sms_max_phone_attempts: String(oauthForm.smsMaxAttempts || '3'),
         sms_per_phone_timeout: String(oauthForm.smsTimeout || '80'),
       }).catch(() => {})
@@ -1769,6 +1773,8 @@ async function startOAuthExportTask() {
       sms_api_key: oauthForm.smsApiKey || '',
       sms_country: String(oauthForm.smsCountry || '52').trim(),
       sms_max_price: String(oauthForm.smsMaxPrice || '').trim(),
+      sms_provider_ids: String(oauthForm.smsProviderIds || '').trim(),
+      sms_except_provider_ids: String(oauthForm.smsExceptProviderIds || '').trim(),
       sms_max_attempts: Number(oauthForm.smsMaxAttempts) || 3,
       sms_timeout: Number(oauthForm.smsTimeout) || 80,
     })
@@ -4200,12 +4206,32 @@ onUnmounted(() => {
                         </el-form-item>
                       </el-col>
                       <el-col :xs="12" :sm="6" :md="5">
+                        <el-form-item label="指定供应商 ID (如 3237 / 留空不限)">
+                          <el-input v-model="oauthForm.smsProviderIds" placeholder="输入 ID，如 3237" clearable />
+                        </el-form-item>
+                      </el-col>
+                      <el-col :xs="12" :sm="6" :md="5">
+                        <el-form-item label="排除供应商 ID (如 3327 避开低质通道)">
+                          <el-input v-model="oauthForm.smsExceptProviderIds" placeholder="排除 ID，如 3327" clearable />
+                        </el-form-item>
+                      </el-col>
+                      <el-col :xs="24" :sm="12" :md="14">
+                        <el-form-item label="接码平台 API Key (留空自动使用全局「接码配置」)">
+                          <el-input v-model="oauthForm.smsApiKey" type="password" show-password placeholder="留空自动读取系统接码配置" clearable />
+                        </el-form-item>
+                      </el-col>
+                      <el-col :xs="12" :sm="6" :md="5">
                         <el-form-item label="最多换号尝试次数">
                           <el-input-number v-model="oauthForm.smsMaxAttempts" :min="1" :max="10" style="width: 100%" />
                         </el-form-item>
                       </el-col>
+                      <el-col :xs="12" :sm="6" :md="5">
+                        <el-form-item label="单号收码等待超时 (秒)">
+                          <el-input-number v-model="oauthForm.smsTimeout" :min="20" :max="300" :step="10" style="width: 100%" />
+                        </el-form-item>
+                      </el-col>
                       <el-col v-if="oauthPriceTiers.length" :span="24">
-                        <div style="margin-bottom: 8px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center">
+                        <div style="margin-top: 4px; margin-bottom: 8px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center">
                           <span style="font-size: 11.5px; color: var(--el-text-color-secondary)">当前国家实时号池档位(点击直选):</span>
                           <el-tag
                             v-for="t in oauthPriceTiers"
@@ -4219,16 +4245,6 @@ onUnmounted(() => {
                             {{ t.label }}
                           </el-tag>
                         </div>
-                      </el-col>
-                      <el-col :xs="24" :sm="16" :md="16">
-                        <el-form-item label="接码平台 API Key (留空自动使用全局「接码配置」)">
-                          <el-input v-model="oauthForm.smsApiKey" type="password" show-password placeholder="留空自动读取系统接码配置" clearable />
-                        </el-form-item>
-                      </el-col>
-                      <el-col :xs="12" :sm="8" :md="8">
-                        <el-form-item label="单号收码等待超时 (秒)">
-                          <el-input-number v-model="oauthForm.smsTimeout" :min="20" :max="300" :step="10" style="width: 100%" />
-                        </el-form-item>
                       </el-col>
                     </el-row>
                   </div>

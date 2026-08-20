@@ -18,6 +18,8 @@ const apiKeyPh = ref('粘贴接码平台 API Key')
 const country = ref('150')
 const service = ref('dr')
 const maxPrice = ref('')
+const providerIds = ref('')
+const exceptProviderIds = ref('')
 const phoneSuccessMax = ref('3')
 const reusePhone = ref(false)
 const autoCountry = ref(false)
@@ -81,6 +83,8 @@ async function load() {
     country.value = config.sms_country || '150'
     service.value = config.sms_service || 'dr'
     maxPrice.value = config.sms_max_price || ''
+    providerIds.value = config.sms_provider_ids || config.sms_operator || ''
+    exceptProviderIds.value = config.sms_except_provider_ids || ''
     phoneSuccessMax.value = config.sms_phone_success_max || '3'
     reusePhone.value = config.sms_reuse_phone === '1'
     autoCountry.value = config.sms_auto_country === '1'
@@ -115,6 +119,8 @@ async function save() {
       sms_country: String(country.value || '').trim() || '52',
       sms_service: service.value.trim() || 'dr',
       sms_max_price: maxPrice.value.trim(),
+      sms_provider_ids: providerIds.value.trim(),
+      sms_except_provider_ids: exceptProviderIds.value.trim(),
       sms_phone_success_max: phoneSuccessMax.value.trim() || '3',
       sms_reuse_phone: reusePhone.value ? '1' : '0',
       sms_auto_country: autoCountry.value ? '1' : '0',
@@ -233,6 +239,19 @@ load()
                       {{ t.label }}
                     </el-tag>
                   </div>
+                </el-form-item>
+              </el-col>
+              <el-col :span="12">
+                <el-form-item label="指定供应商线路 ID（如 3237，留空不限）">
+                  <el-input v-model="providerIds" placeholder="输入线路 ID，如 3237 (多条用逗号分隔)" clearable />
+                </el-form-item>
+              </el-col>
+            </el-row>
+
+            <el-row :gutter="12">
+              <el-col :span="12">
+                <el-form-item label="排除供应商线路 ID（如 3327 避开低质通道）">
+                  <el-input v-model="exceptProviderIds" placeholder="排除的线路 ID，如 3327" clearable />
                 </el-form-item>
               </el-col>
               <el-col :span="12">

@@ -337,6 +337,10 @@ class SmsBowerProvider(BaseSmsProvider):
         min_price: float = -1,
         exact_price: float = -1,
         price_spec=None,
+        operator: str = "",
+        provider_ids: str = "",
+        except_provider_ids: str = "",
+        phone_exception: str = "",
         proxy: Optional[str] = None,
         reuse_phone_to_max: bool = True,
         phone_success_max: int = 3,
@@ -345,6 +349,10 @@ class SmsBowerProvider(BaseSmsProvider):
         self.base_url = str(base_url or "").strip() or self.DEFAULT_BASE_URL
         self.default_service = str(default_service or SMS_DEFAULT_SERVICE).strip()
         self.default_country = str(default_country or SMS_DEFAULT_COUNTRY).strip()
+        self.operator = str(operator or "").strip()
+        self.provider_ids = str(provider_ids or operator or "").strip()
+        self.except_provider_ids = str(except_provider_ids or "").strip()
+        self.phone_exception = str(phone_exception or "").strip()
 
         parsed_min, parsed_max, parsed_exact = parse_price_spec(price_spec)
         self.min_price = parsed_min if parsed_min > 0 else float(min_price or -1)
@@ -640,17 +648,29 @@ class SmsBowerProvider(BaseSmsProvider):
 
         param_attempts = []
         payload_with_price = {"action": action, "service": service, "country": country}
+        if self.provider_ids:
+            payload_with_price["providerIds"] = self.provider_ids
+            payload_with_price["operator"] = self.provider_ids
+        if self.except_provider_ids:
+            payload_with_price["exceptProviderIds"] = self.except_provider_ids
+        if self.phone_exception:
+            payload_with_price["phoneException"] = self.phone_exception
         if effective_max > 0:
             payload_with_price["maxPrice"] = effective_max
         if min_p > 0:
             payload_with_price["minPrice"] = min_p
-            payload_with_price["min_price"] = min_p
         if exact_p > 0:
             payload_with_price["price"] = exact_p
         param_attempts.append(payload_with_price)
 
         if exact_p <= 0 and min_p <= 0:
-            param_attempts.append({"action": action, "service": service, "country": country})
+            fallback_payload = {"action": action, "service": service, "country": country}
+            if self.provider_ids:
+                fallback_payload["providerIds"] = self.provider_ids
+                fallback_payload["operator"] = self.provider_ids
+            if self.except_provider_ids:
+                fallback_payload["exceptProviderIds"] = self.except_provider_ids
+            param_attempts.append(fallback_payload)
 
         last_resp_text = ""
         # 若指定了最低价或精准锁定金额，最多在 0.1s 级别快速向平台重试索要 6 次
@@ -1052,6 +1072,10 @@ def create_sms_provider(provider_key: str, config: dict) -> BaseSmsProvider:
     reuse = _safe_bool(config.get("sms_reuse_phone"), False)
     succ_max = max(0, _safe_int(config.get("sms_phone_success_max"), 3))
 
+    provider_ids = str(config.get("sms_provider_ids") or config.get("providerIds") or config.get("sms_operator") or config.get("operator") or "").strip()
+    except_provider_ids = str(config.get("sms_except_provider_ids") or config.get("exceptProviderIds") or "").strip()
+    phone_exception = str(config.get("sms_phone_exception") or config.get("phoneException") or "").strip()
+
     if pk in ("smsbower", "sms_bower"):
         return SmsBowerProvider(api_key=api_key,
                                 default_service=service,
@@ -1060,6 +1084,10 @@ def create_sms_provider(provider_key: str, config: dict) -> BaseSmsProvider:
                                 min_price=min_p,
                                 exact_price=exact_p,
                                 price_spec=price_spec,
+                                operator=provider_ids,
+                                provider_ids=provider_ids,
+                                except_provider_ids=except_provider_ids,
+                                phone_exception=phone_exception,
                                 proxy=proxy,
                                 reuse_phone_to_max=reuse,
                                 phone_success_max=succ_max)
@@ -1072,6 +1100,10 @@ def create_sms_provider(provider_key: str, config: dict) -> BaseSmsProvider:
                                 min_price=min_p,
                                 exact_price=exact_p,
                                 price_spec=price_spec,
+                                operator=provider_ids,
+                                provider_ids=provider_ids,
+                                except_provider_ids=except_provider_ids,
+                                phone_exception=phone_exception,
                                 proxy=proxy,
                                 reuse_phone_to_max=reuse,
                                 phone_success_max=succ_max)

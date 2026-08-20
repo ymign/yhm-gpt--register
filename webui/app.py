@@ -662,6 +662,8 @@ class SaveSmsConfigReq(BaseModel):
     sms_country: Optional[str] = None              # ID 或国家代码（'52' / 'th'）
     sms_service: Optional[str] = None              # OpenAI = 'dr'
     sms_max_price: Optional[str] = None
+    sms_provider_ids: Optional[str] = None          # 指定供应商ID(如 3237)
+    sms_except_provider_ids: Optional[str] = None   # 排除供应商ID(如 3327)
     sms_reuse_phone: Optional[str] = None
     sms_phone_success_max: Optional[str] = None
     sms_auto_country: Optional[str] = None
@@ -1861,6 +1863,8 @@ class StartOAuthExportReq(BaseModel):
     sms_api_key: Optional[str] = Field("", description="接码平台 API Key（留空使用系统全局配置）")
     sms_country: Optional[str] = Field("52", description="接码国家ID，默认52泰国")
     sms_max_price: Optional[str] = Field("", description="最高单价限制")
+    sms_provider_ids: Optional[str] = Field("", description="指定供应商ID(如3237)")
+    sms_except_provider_ids: Optional[str] = Field("", description="排除的供应商ID(如3327)")
     sms_max_attempts: int = Field(3, ge=1, le=10, description="最多换号尝试次数")
     sms_timeout: int = Field(80, ge=20, le=300, description="单号等待短信超时秒数")
 
@@ -1906,6 +1910,8 @@ def api_oauth_export_start(req: StartOAuthExportReq):
         "sms_api_key": sms_api_key,
         "sms_country": (req.sms_country or "52").strip(),
         "sms_max_price": (req.sms_max_price or "").strip(),
+        "sms_provider_ids": (req.sms_provider_ids or "").strip(),
+        "sms_except_provider_ids": (req.sms_except_provider_ids or "").strip(),
         "sms_max_attempts": max(1, min(10, req.sms_max_attempts)),
         "sms_timeout": max(20, min(300, req.sms_timeout)),
     }
