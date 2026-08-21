@@ -245,12 +245,13 @@ def parse_lines(text: str, kind: str = "") -> list[dict]:
 def import_accounts(text: str, kind: str = "") -> dict:
     """批量入库。已存在的 email 仅在凭证变化时更新。
 
-    解析阶段全对才写：有一行非法就整批拒绝（抛 ImportValidationError），
-    不会出现"写进去一半"对不上账的情况。
+    若邮箱已在 registered（已注册结果库）中存在，自动将其 4 段授权凭证同步写入
+    registered.extra_json.mail_oauth（终身绑定接码凭证），但不作为待注册号入库/重置
+    为 available，自动跳过老号，防止老号被重新跑注册报错。
     """
     rows = parse_lines(text, kind)
     now = time.time()
-    inserted = updated = skipped = 0
+    inserted = updated = skipped = skipped_registered = 0
     with _lock:
         con = _conn()
         for r in rows:
@@ -260,10 +261,43 @@ def import_accounts(text: str, kind: str = "") -> dict:
             client_id = r.get("client_id", "") or ""
             refresh = r.get("refresh_token", "") or ""
             relay = r.get("relay_url", "") or ""
+            em = r["email"].strip().lower()
 
+            # 1. 检查是否在 registered（已注册库）中已存在
+            reg_row = con.execute(
+                "SELECT extra_json FROM registered WHERE lower(email)=?",
+                (em,),
+            ).fetchone()
+            if reg_row:
+                # 已注册老号：自动将 4 段取件凭证更新到 registered.extra_json.mail_oauth
+                if client_id or refresh or password:
+                    try:
+                        ex = json.loads(reg_row["extra_json"]) if reg_row["extra_json"] else {}
+                    except Exception:
+                        ex = {}
+                    ex["mail_oauth"] = {
+                        "client_id": client_id,
+                        "refresh_token": refresh,
+                        "password": password,
+                        "kind": row_kind,
+                    }
+                    con.execute(
+                        "UPDATE registered SET extra_json=? WHERE lower(email)=?",
+                        (json.dumps(ex, ensure_ascii=False), em),
+                    )
+
+                # 确保 outlook_accounts 号池中将其标记为已完成（done），避免进入待注册队列
+                con.execute(
+                    "UPDATE outlook_accounts SET status='done', finished_at=?, fail_reason='already_registered' WHERE lower(email)=?",
+                    (now, em),
+                )
+                skipped_registered += 1
+                continue
+
+            # 2. 未注册新号：正常入库 outlook_accounts
             cur = con.execute(
-                "SELECT refresh_token, relay_url, kind FROM outlook_accounts WHERE email=?",
-                (r["email"],),
+                "SELECT refresh_token, relay_url, kind FROM outlook_accounts WHERE lower(email)=?",
+                (em,),
             )
             existing = cur.fetchone()
             if existing is None:
@@ -271,7 +305,7 @@ def import_accounts(text: str, kind: str = "") -> dict:
                     "INSERT INTO outlook_accounts(email, password, client_id, refresh_token, "
                     "relay_url, kind, status, imported_at) "
                     "VALUES (?, ?, ?, ?, ?, ?, 'available', ?)",
-                    (r["email"], password, client_id, refresh, relay, row_kind, now),
+                    (em, password, client_id, refresh, relay, row_kind, now),
                 )
                 inserted += 1
             elif (
@@ -283,30 +317,72 @@ def import_accounts(text: str, kind: str = "") -> dict:
                 con.execute(
                     "UPDATE outlook_accounts SET refresh_token=?, password=?, client_id=?, "
                     "relay_url=?, kind=?, status='available', imported_at=?, fail_reason=NULL "
-                    "WHERE email=?",
-                    (refresh, password, client_id, relay, row_kind, now, r["email"]),
+                    "WHERE lower(email)=?",
+                    (refresh, password, client_id, relay, row_kind, now, em),
                 )
                 updated += 1
             else:
                 skipped += 1
 
-            # 若该邮箱在 registered（已注册库）中已存在，自动将 4 段取件凭证永久写入 extra_json，终身绑定
-            if client_id or refresh or password:
-                r_row = con.execute("SELECT extra_json FROM registered WHERE email=?", (r["email"],)).fetchone()
-                if r_row:
-                    try:
-                        ex = json.loads(r_row["extra_json"]) if r_row["extra_json"] else {}
-                    except Exception:
-                        ex = {}
-                    ex["mail_oauth"] = {
-                        "client_id": client_id,
-                        "refresh_token": refresh,
-                        "password": password,
-                        "kind": row_kind,
-                    }
-                    con.execute("UPDATE registered SET extra_json=? WHERE email=?", (json.dumps(ex, ensure_ascii=False), r["email"]))
         con.commit()
-    return {"parsed": len(rows), "inserted": inserted, "updated": updated, "skipped": skipped}
+    return {
+        "parsed": len(rows),
+        "inserted": inserted,
+        "updated": updated,
+        "skipped": skipped,
+        "skipped_registered": skipped_registered,
+    }
+
+
+def clean_registered_from_pool(mode: str = "delete") -> dict:
+    """比对号池与本地已注册库，清理号池中所有已在 registered 表中存在的账号。
+
+    自动将 4 段授权凭证同步备份到 registered.extra_json.mail_oauth，
+    然后将这些已注册号从待注册号池（outlook_accounts）中彻底移除（或更新为 done 状态）。
+    """
+    now = time.time()
+    with _lock:
+        con = _conn()
+        cur = con.execute("""
+            SELECT a.email, a.password, a.client_id, a.refresh_token, a.kind, a.status, r.extra_json
+            FROM outlook_accounts a
+            INNER JOIN registered r ON lower(a.email) = lower(r.email)
+            WHERE a.status IN ('available', 'in_use', 'failed')
+        """)
+        rows = cur.fetchall()
+        cleaned = len(rows)
+        for r in rows:
+            em = r["email"].strip().lower()
+            client_id = r["client_id"] or ""
+            refresh = r["refresh_token"] or ""
+            password = r["password"] or ""
+            row_kind = r["kind"] or "outlook"
+
+            if client_id or refresh or password:
+                try:
+                    ex = json.loads(r["extra_json"]) if r["extra_json"] else {}
+                except Exception:
+                    ex = {}
+                ex["mail_oauth"] = {
+                    "client_id": client_id,
+                    "refresh_token": refresh,
+                    "password": password,
+                    "kind": row_kind,
+                }
+                con.execute(
+                    "UPDATE registered SET extra_json=? WHERE lower(email)=?",
+                    (json.dumps(ex, ensure_ascii=False), em),
+                )
+
+            if mode == "delete":
+                con.execute("DELETE FROM outlook_accounts WHERE lower(email)=?", (em,))
+            else:
+                con.execute(
+                    "UPDATE outlook_accounts SET status='done', finished_at=?, fail_reason='already_registered' WHERE lower(email)=?",
+                    (now, em),
+                )
+        con.commit()
+    return {"cleaned": cleaned}
 
 
 def count_accounts(status: str = "", kind: str = "") -> int:
@@ -381,8 +457,19 @@ def claim_account(email: str) -> Optional[dict]:
         return None
     with _lock:
         con = _conn()
+        # 前置校验：若该号已在 registered 表中存在，自动归档为 done 并拦截
+        is_reg = con.execute("SELECT 1 FROM registered WHERE lower(email)=?", (email,)).fetchone()
+        if is_reg:
+            con.execute(
+                "UPDATE outlook_accounts SET status='done', finished_at=?, fail_reason='already_registered' "
+                "WHERE lower(email)=?",
+                (time.time(), email),
+            )
+            con.commit()
+            return None
+
         cur = con.execute(
-            "SELECT * FROM outlook_accounts WHERE email=? AND status IN ('available', 'failed')",
+            "SELECT * FROM outlook_accounts WHERE lower(email)=? AND status IN ('available', 'failed')",
             (email,),
         )
         row = cur.fetchone()
@@ -390,7 +477,7 @@ def claim_account(email: str) -> Optional[dict]:
             return None
         rc = con.execute(
             "UPDATE outlook_accounts SET status='in_use', claimed_at=?, fail_reason=NULL "
-            "WHERE email=? AND status IN ('available', 'failed')",
+            "WHERE lower(email)=? AND status IN ('available', 'failed')",
             (time.time(), email),
         )
         con.commit()
@@ -426,10 +513,22 @@ def claim_next(kind: str = "") -> Optional[dict]:
             row = cur.fetchone()
             if not row:
                 return None
+
+            # 前置校验：若该号已在 registered 表中存在，自动归档为 done 并跳过，继续取下一个真正的新号
+            is_reg = con.execute("SELECT 1 FROM registered WHERE lower(email)=?", (row["email"].lower(),)).fetchone()
+            if is_reg:
+                con.execute(
+                    "UPDATE outlook_accounts SET status='done', finished_at=?, fail_reason='already_registered' "
+                    "WHERE lower(email)=?",
+                    (time.time(), row["email"].lower()),
+                )
+                con.commit()
+                continue
+
             rc = con.execute(
                 "UPDATE outlook_accounts SET status='in_use', claimed_at=? "
-                "WHERE email=? AND status='available'",
-                (time.time(), row["email"]),
+                "WHERE lower(email)=? AND status='available'",
+                (time.time(), row["email"].lower()),
             )
             con.commit()
             if rc.rowcount == 1:

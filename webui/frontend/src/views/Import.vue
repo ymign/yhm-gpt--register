@@ -56,7 +56,14 @@ async function doImport() {
   errors.value = []
   try {
     const r = await importAccounts(text.value.trim(), kind.value)
-    result.value = `解析 ${r.parsed} 行，新增 ${r.inserted}，更新 ${r.updated}，跳过 ${r.skipped}`
+    let resMsg = `解析 ${r.parsed} 行，新增 ${r.inserted}，更新 ${r.updated}`
+    if (r.skipped_registered) {
+      resMsg += `，自动跳过已注册老号 ${r.skipped_registered}`
+    }
+    if (r.skipped) {
+      resMsg += `，跳过重复 ${r.skipped}`
+    }
+    result.value = resMsg
     ElMessage.success('导入成功')
     text.value = ''
     statsStore.refresh()

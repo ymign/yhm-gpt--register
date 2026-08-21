@@ -25,6 +25,11 @@ import {
   Lock,
   Timer,
   DataAnalysis,
+  Phone,
+  Discount,
+  Money,
+  CircleCheckFilled,
+  Operation,
 } from '@element-plus/icons-vue'
 import {
   listRegistered,
@@ -3180,15 +3185,17 @@ onUnmounted(() => {
   <div class="registered-page">
     <div class="macos-window-panel">
       <div class="acct-chrome">
+        <!-- 顶栏：标题、总数 Pill、搜索框、刷新 -->
         <div class="acct-head">
           <div class="acct-title-block">
-            <h1>账号</h1>
-            <span class="acct-count">{{ total }}</span>
+            <div class="acct-title-glow"></div>
+            <h1>账号资产管理</h1>
+            <span class="acct-count-badge">{{ total }} 个账号</span>
           </div>
           <div class="acct-head-tools">
             <el-input
               v-model="searchKeyword"
-              placeholder="搜索邮箱"
+              placeholder="搜索账号邮箱..."
               clearable
               size="small"
               class="acct-search"
@@ -3197,107 +3204,138 @@ onUnmounted(() => {
               @clear="load(true)"
               @keyup.enter="load(true)"
             />
-            <el-button size="small" class="acct-ghost-btn" @click="load(false)">
+            <el-button size="small" class="acct-refresh-btn" @click="load(false)">
               <el-icon><Refresh /></el-icon>刷新
             </el-button>
           </div>
         </div>
 
-        <div class="acct-filters">
-          <el-select v-model="filterPlan" placeholder="套餐" size="small" class="acct-select" @change="load(true)">
-            <el-option label="全部套餐" value="all" />
-            <el-option label="Plus / 试用" value="plus" />
-            <el-option label="可领 Plus 免单" value="extract_eligible" />
-            <el-option label="Pro" value="pro" />
-            <el-option label="Team" value="team" />
-            <el-option label="Free" value="free" />
-            <el-option label="已封号" value="banned" />
-            <el-option label="凭证失效" value="token_invalid" />
-            <el-option label="未检测" value="unchecked" />
-          </el-select>
-          <el-select v-model="filterSec" placeholder="安全" size="small" class="acct-select" @change="load(true)">
-            <el-option label="全部安全状态" value="all" />
-            <el-option label="缺少密码" value="no_password" />
-            <el-option label="缺少 2FA" value="no_2fa" />
-            <el-option label="密码 / 2FA 不全" value="missing_security" />
-            <el-option label="已设密码" value="has_password" />
-            <el-option label="已绑 2FA" value="has_2fa" />
-            <el-option label="密码与 2FA 双全" value="both_secured" />
-          </el-select>
-          <el-select v-model="filterExtract" placeholder="提炼" size="small" class="acct-select" @change="load(true)">
-            <el-option label="全部提炼" value="all" />
-            <el-option label="待提链" value="extract_eligible" />
-            <el-option label="提链成功" value="extract_success" />
-            <el-option label="提链失败" value="extract_failed" />
-          </el-select>
-          <el-select v-model="filterOAuth" placeholder="授权" size="small" class="acct-select" @change="load(true)">
-            <el-option label="全部授权" value="all" />
-            <el-option label="授权成功" value="oauth_success" />
-            <el-option label="需接码" value="oauth_need_phone" />
-            <el-option label="授权失败" value="oauth_failed" />
-            <el-option label="授权异常" value="oauth_error" />
-            <el-option label="从未授权" value="oauth_unchecked" />
-            <el-option label="OAICS 命中" value="oa_hit" />
-            <el-option label="OAICS 未中" value="oa_miss" />
-          </el-select>
-          <el-select
-            v-model="filterDomain"
-            placeholder="域名"
-            size="small"
-            class="acct-select acct-select-wide"
-            filterable
-            allow-create
-            default-first-option
-            clearable
-            @change="load(true)"
-            @clear="filterDomain = 'all'; load(true)"
-          >
-            <el-option-group label="常用分类">
-              <el-option label="全部邮箱" value="all" />
-              <el-option label="微软全系" value="microsoft" />
-              <el-option label="Outlook" value="outlook" />
-              <el-option label="Hotmail" value="hotmail" />
-              <el-option label="Live" value="live" />
-              <el-option label="Gmail" value="gmail" />
-              <el-option label="其它域名" value="custom_domain" />
-            </el-option-group>
-            <el-option-group v-if="domainOptions.length > 0" label="库内域名">
-              <el-option
-                v-for="d in domainOptions"
-                :key="d.domain"
-                :label="`${d.domain} (${d.count})`"
-                :value="d.domain"
-              />
-            </el-option-group>
-          </el-select>
-          <el-select
-            v-model="form.proxy"
-            filterable
-            clearable
-            allow-create
-            default-first-option
-            :reserve-keyword="false"
-            placeholder="检测代理，留空直连"
-            class="acct-select acct-select-wide"
-            size="small"
-          >
-            <el-option v-for="p in proxyList" :key="p" :label="p" :value="p" />
-          </el-select>
-          <el-button
-            v-if="hasActiveFilter"
-            size="small"
-            class="acct-ghost-btn"
-            @click="clearAllFilters"
-          >
-            重置筛选
-          </el-button>
+        <!-- 筛选区域：模块化容器 + 标签分组 -->
+        <div class="acct-filters-panel">
+          <div class="acct-filters-row">
+            <div class="filter-item-wrap">
+              <span class="filter-label">套餐:</span>
+              <el-select v-model="filterPlan" placeholder="全部套餐" size="small" class="acct-select" @change="load(true)">
+                <el-option label="全部套餐" value="all" />
+                <el-option label="Plus / 试用" value="plus" />
+                <el-option label="可领 Plus 免单" value="extract_eligible" />
+                <el-option label="👑 Pro 订阅" value="pro" />
+                <el-option label="💎 Team" value="team" />
+                <el-option label="⚪ Free 账号" value="free" />
+                <el-option label="🚫 已封号" value="banned" />
+                <el-option label="❌ 凭证失效" value="token_invalid" />
+                <el-option label="⏳ 未检测" value="unchecked" />
+              </el-select>
+            </div>
+
+            <div class="filter-item-wrap">
+              <span class="filter-label">安全:</span>
+              <el-select v-model="filterSec" placeholder="安全防护" size="small" class="acct-select" @change="load(true)">
+                <el-option label="全部安全状态" value="all" />
+                <el-option label="⚠️ 缺少密码" value="no_password" />
+                <el-option label="⚠️ 缺少 2FA" value="no_2fa" />
+                <el-option label="⚠️ 密码 / 2FA 不全" value="missing_security" />
+                <el-option label="🔑 已设密码" value="has_password" />
+                <el-option label="🛡️ 已绑 2FA" value="has_2fa" />
+                <el-option label="✅ 密码与 2FA 双全" value="both_secured" />
+              </el-select>
+            </div>
+
+            <div class="filter-item-wrap">
+              <span class="filter-label">授权:</span>
+              <el-select v-model="filterOAuth" placeholder="OAuth授权" size="small" class="acct-select" @change="load(true)">
+                <el-option label="全部授权" value="all" />
+                <el-option label="✅ 授权成功" value="oauth_success" />
+                <el-option label="📱 需接码" value="oauth_need_phone" />
+                <el-option label="❌ 授权失败" value="oauth_failed" />
+                <el-option label="⚠️ 授权异常" value="oauth_error" />
+                <el-option label="⚪ 从未授权" value="oauth_unchecked" />
+                <el-option label="🎯 OAICS 命中" value="oa_hit" />
+                <el-option label="○ OAICS 未中" value="oa_miss" />
+              </el-select>
+            </div>
+
+            <div class="filter-item-wrap">
+              <span class="filter-label">提链:</span>
+              <el-select v-model="filterExtract" placeholder="提链状态" size="small" class="acct-select" @change="load(true)">
+                <el-option label="全部提炼" value="all" />
+                <el-option label="待提链" value="extract_eligible" />
+                <el-option label="提链成功" value="extract_success" />
+                <el-option label="提链失败" value="extract_failed" />
+              </el-select>
+            </div>
+
+            <div class="filter-item-wrap">
+              <span class="filter-label">域名:</span>
+              <el-select
+                v-model="filterDomain"
+                placeholder="全部域名"
+                size="small"
+                class="acct-select acct-select-domain"
+                filterable
+                allow-create
+                default-first-option
+                clearable
+                @change="load(true)"
+                @clear="filterDomain = 'all'; load(true)"
+              >
+                <el-option-group label="常用分类">
+                  <el-option label="全部邮箱域名" value="all" />
+                  <el-option label="微软全系" value="microsoft" />
+                  <el-option label="Outlook" value="outlook" />
+                  <el-option label="Hotmail" value="hotmail" />
+                  <el-option label="Live" value="live" />
+                  <el-option label="Gmail" value="gmail" />
+                  <el-option label="其它自定义域名" value="custom_domain" />
+                </el-option-group>
+                <el-option-group v-if="domainOptions.length > 0" label="库内域名">
+                  <el-option
+                    v-for="d in domainOptions"
+                    :key="d.domain"
+                    :label="`${d.domain} (${d.count})`"
+                    :value="d.domain"
+                  />
+                </el-option-group>
+              </el-select>
+            </div>
+
+            <div class="filter-item-wrap">
+              <span class="filter-label">代理:</span>
+              <el-select
+                v-model="form.proxy"
+                filterable
+                clearable
+                allow-create
+                default-first-option
+                :reserve-keyword="false"
+                placeholder="检测代理 (留空直连)"
+                class="acct-select acct-select-proxy"
+                size="small"
+              >
+                <el-option v-for="p in proxyList" :key="p" :label="p" :value="p" />
+              </el-select>
+            </div>
+
+            <el-button
+              v-if="hasActiveFilter"
+              size="small"
+              type="danger"
+              plain
+              class="acct-reset-filter-btn"
+              @click="clearAllFilters"
+            >
+              <el-icon><Close /></el-icon>重置筛选
+            </el-button>
+          </div>
         </div>
 
-        <div class="acct-actions">
-          <div class="acct-action-group">
+        <!-- 现代化操作工具栏：三大功能集群 -->
+        <div class="acct-actions-bar">
+          <!-- 集群 1: 核心流水线与业务工具 -->
+          <div class="acct-action-cluster">
             <el-dropdown trigger="click" @command="handleHealthCheckCommand">
-              <el-button type="primary" size="small" class="acct-btn">
-                验活{{ selected.length ? ` ${selected.length}` : '' }}
+              <el-button type="primary" size="small" class="cluster-btn btn-primary">
+                <el-icon><Timer /></el-icon> 验活{{ selected.length ? ` (${selected.length})` : '' }}
                 <el-icon class="el-icon--right"><ArrowDown /></el-icon>
               </el-button>
               <template #dropdown>
@@ -3314,15 +3352,19 @@ onUnmounted(() => {
               </template>
             </el-dropdown>
 
+            <el-button type="success" size="small" class="cluster-btn btn-emerald" :disabled="!selected.length" @click="openOAuthExport('selected')">
+              <el-icon><Phone /></el-icon> OAuth接码{{ selected.length ? ` (${selected.length})` : '' }}
+            </el-button>
+
             <el-dropdown trigger="click" @command="openExtractChannel">
-              <el-button size="small" class="acct-btn acct-btn-warn">
-                提炼{{ selected.length ? ` ${selected.length}` : '' }}
+              <el-button size="small" class="cluster-btn btn-amber">
+                <el-icon><Discount /></el-icon> 提链/出码{{ selected.length ? ` (${selected.length})` : '' }}
                 <el-icon class="el-icon--right"><ArrowDown /></el-icon>
               </el-button>
               <template #dropdown>
                 <el-dropdown-menu class="extract-dropdown-menu">
                   <div class="dropdown-group-title">一条龙</div>
-                  <el-dropdown-item command="paypal_pipeline">PayPal 提链 + 代付（同 IP）</el-dropdown-item>
+                  <el-dropdown-item command="paypal_pipeline">PayPal 提链 + 代付 (同 IP)</el-dropdown-item>
                   <div class="dropdown-group-title divider-title">资格检测</div>
                   <el-dropdown-item command="gcash_check">GCash 检测</el-dropdown-item>
                   <el-dropdown-item command="oaics_check">OAICS 检测</el-dropdown-item>
@@ -3330,7 +3372,7 @@ onUnmounted(() => {
                   <div class="dropdown-group-title divider-title">提链 / 出码</div>
                   <el-dropdown-item command="gcash">GCash</el-dropdown-item>
                   <el-dropdown-item command="pix">PIX</el-dropdown-item>
-                  <el-dropdown-item command="paypal">PayPal（仅提链）</el-dropdown-item>
+                  <el-dropdown-item command="paypal">PayPal (仅提链)</el-dropdown-item>
                   <el-dropdown-item command="ideal">iDEAL</el-dropdown-item>
                   <el-dropdown-item command="upi">UPI</el-dropdown-item>
                   <el-dropdown-item command="kakao">Kakao</el-dropdown-item>
@@ -3342,14 +3384,16 @@ onUnmounted(() => {
               </template>
             </el-dropdown>
 
-            <el-button type="success" size="small" class="acct-btn" :disabled="!selected.length" @click="openOAuthExport('selected')">
-              OAuth{{ selected.length ? ` ${selected.length}` : '' }}
+            <el-button size="small" class="cluster-btn btn-indigo" @click="openFeatBoard">
+              <el-icon><DataAnalysis /></el-icon> 特征
             </el-button>
-            <el-button size="small" class="acct-btn acct-btn-soft" @click="openFeatBoard">特征</el-button>
+          </div>
 
+          <!-- 集群 2: 凭证与安全维护 -->
+          <div class="acct-action-cluster">
             <el-dropdown trigger="click" @command="handleCopyAtCommand">
-              <el-button size="small" class="acct-ghost-btn">
-                复制 AT{{ selected.length ? ` ${selected.length}` : '' }}
+              <el-button size="small" class="cluster-btn btn-neutral">
+                <el-icon><CopyDocument /></el-icon> 复制 AT{{ selected.length ? ` (${selected.length})` : '' }}
                 <el-icon class="el-icon--right"><ArrowDown /></el-icon>
               </el-button>
               <template #dropdown>
@@ -3364,8 +3408,8 @@ onUnmounted(() => {
             </el-dropdown>
 
             <el-dropdown trigger="click" @command="handleRefreshCommand">
-              <el-button size="small" class="acct-ghost-btn">
-                Token{{ selected.length ? ` ${selected.length}` : '' }}
+              <el-button size="small" class="cluster-btn btn-neutral">
+                <el-icon><Refresh /></el-icon> Token刷新{{ selected.length ? ` (${selected.length})` : '' }}
                 <el-icon class="el-icon--right"><ArrowDown /></el-icon>
               </el-button>
               <template #dropdown>
@@ -3379,8 +3423,8 @@ onUnmounted(() => {
             </el-dropdown>
 
             <el-dropdown trigger="click" @command="handleSecurityCommand">
-              <el-button size="small" class="acct-ghost-btn">
-                密码 / 2FA{{ selected.length ? ` ${selected.length}` : '' }}
+              <el-button size="small" class="cluster-btn btn-neutral">
+                <el-icon><Lock /></el-icon> 密码/2FA{{ selected.length ? ` (${selected.length})` : '' }}
                 <el-icon class="el-icon--right"><ArrowDown /></el-icon>
               </el-button>
               <template #dropdown>
@@ -3396,10 +3440,11 @@ onUnmounted(() => {
             </el-dropdown>
           </div>
 
-          <div class="acct-action-group acct-action-quiet">
+          <!-- 集群 3: 导出与数据清理 -->
+          <div class="acct-action-cluster acct-cluster-right">
             <el-dropdown trigger="click" @command="doExport" @visible-change="(v) => v && loadExportFormats()">
-              <el-button size="small" class="acct-ghost-btn" :loading="exporting">
-                {{ exportBtnText }}
+              <el-button size="small" class="cluster-btn btn-neutral" :loading="exporting">
+                <el-icon><Download /></el-icon> {{ exportBtnText }}
                 <el-icon class="el-icon--right"><ArrowDown /></el-icon>
               </el-button>
               <template #dropdown>
@@ -3412,9 +3457,12 @@ onUnmounted(() => {
                 </el-dropdown-menu>
               </template>
             </el-dropdown>
-            <el-button size="small" type="danger" plain :disabled="!selected.length" @click="deleteSelected">删除{{ selected.length ? ` ${selected.length}` : '' }}</el-button>
-            <el-button size="small" class="acct-ghost-btn" @click="cleanInvalid">清理空号</el-button>
-            <el-button size="small" type="danger" plain @click="deleteAll">清空</el-button>
+
+            <el-button size="small" type="danger" plain class="cluster-btn btn-danger-soft" :disabled="!selected.length" @click="deleteSelected">
+              <el-icon><Delete /></el-icon> 删除{{ selected.length ? ` (${selected.length})` : '' }}
+            </el-button>
+            <el-button size="small" class="cluster-btn btn-neutral" @click="cleanInvalid">清理空号</el-button>
+            <el-button size="small" type="danger" plain class="cluster-btn btn-danger-soft" @click="deleteAll">清空</el-button>
           </div>
         </div>
       </div>
@@ -4175,22 +4223,22 @@ onUnmounted(() => {
       </template>
     </el-dialog>
 
-    <!-- ──────────────── OAuth 导出与凭证生成控制台弹窗 (紧凑型设计) ──────────────── -->
+    <!-- ──────────────── OAuth 导出与凭证生成控制台弹窗 ──────────────── -->
     <el-dialog
-      v-model="oauthVisible" width="880px" top="2vh"
-      class="oa-custom-dialog plus-dialog oauth-dialog oauth-compact-modal"
+      v-model="oauthVisible" width="900px" top="3vh"
+      class="oa-custom-dialog plus-dialog oauth-dialog oauth-modern-modal"
       :close-on-click-modal="false" @closed="closeOAuthExport"
     >
       <template #header>
         <div class="oa-header">
           <div class="oa-header-title">
-            <span class="oa-title-badge">OAUTH</span>
-            <span class="oa-title-text">Codex OAuth 重跑导出与凭证生成</span>
-            <el-tag size="small" type="info" round effect="plain">{{ oauthTargetEmails.length }} 个账号</el-tag>
+            <span class="oa-title-badge">CODEX OAUTH</span>
+            <span class="oa-title-text">Codex OAuth 导出与智能接码授权</span>
+            <span class="oa-target-pill">{{ oauthTargetEmails.length }} 个账号</span>
           </div>
           <div class="oa-header-extra">
-            <el-button size="small" text @click="oauthConfigCollapsed = !oauthConfigCollapsed">
-              <el-icon><Setting /></el-icon>{{ oauthConfigCollapsed ? '展开参数配置' : '收起参数配置' }}
+            <el-button size="small" class="oa-config-toggle-btn" @click="oauthConfigCollapsed = !oauthConfigCollapsed">
+              <el-icon><Setting /></el-icon>{{ oauthConfigCollapsed ? '展开参数配置' : '收起配置' }}
             </el-button>
           </div>
         </div>
@@ -4199,33 +4247,39 @@ onUnmounted(() => {
       <div class="oa-dialog-container">
         <!-- 参数配置卡片 (Tab 选项卡折叠卡片) -->
         <el-collapse-transition>
-          <div v-show="!oauthConfigCollapsed" class="oa-config-card" style="padding: 10px 14px 12px">
-            <!-- 手机号接码策略全局快捷切换栏 -->
-            <div style="display: flex; align-items: center; justify-content: space-between; padding: 6px 10px; background: rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.25); border-radius: 6px; margin-bottom: 10px; flex-wrap: wrap; gap: 8px">
-              <div style="display: flex; align-items: center; gap: 8px">
-                <span style="font-weight: 600; font-size: 12.5px; color: var(--el-text-color-primary)">手机号策略：</span>
-                <el-radio-group v-model="oauthForm.smsEnabled" size="small" :disabled="oauthRunning">
-                  <el-radio-button :value="false">⏩ 跳过短信接码 (识别到直接跳过)</el-radio-button>
-                  <el-radio-button :value="true">📱 自动短信接码 (SmsBower)</el-radio-button>
+          <div v-show="!oauthConfigCollapsed" class="oa-config-card">
+            <!-- 手机号接码策略全局快捷切换卡片 (Hero Strategy Selector) -->
+            <div class="oa-strategy-hero-card" :class="oauthForm.smsEnabled ? 'is-sms-mode' : 'is-skip-mode'">
+              <div class="strategy-left-control">
+                <span class="strategy-label">手机号策略:</span>
+                <el-radio-group v-model="oauthForm.smsEnabled" size="small" class="strategy-radio-group" :disabled="oauthRunning">
+                  <el-radio-button :value="false">
+                    <span class="strategy-btn-content">⏩ 极速跳过模式</span>
+                  </el-radio-button>
+                  <el-radio-button :value="true">
+                    <span class="strategy-btn-content">📱 智能短信接码</span>
+                  </el-radio-button>
                 </el-radio-group>
               </div>
-              <div style="font-size: 12px">
-                <span v-if="!oauthForm.smsEnabled" style="color: #10b981; font-weight: 500">
-                  🛡️ 遇到需手机号验证（add-phone）直接安全跳过，零费用消耗
-                </span>
-                <span v-else style="color: #3b82f6; font-weight: 500">
-                  📱 遇到手机号验证时自动租号接码 (未接通自动退款)
-                </span>
+              <div class="strategy-right-meta">
+                <div v-if="!oauthForm.smsEnabled" class="strategy-tip text-emerald">
+                  <span class="strategy-dot emerald"></span>
+                  <span>遇到手机号风控（add-phone）安全跳过并标记「需接码」，零费用消耗</span>
+                </div>
+                <div v-else class="strategy-tip text-blue">
+                  <span class="strategy-dot blue"></span>
+                  <span>遇到手机号验证时自动连接接码平台租号收码（未接通自动退款）</span>
+                </div>
               </div>
             </div>
 
             <el-tabs v-model="oauthActiveTab" class="oa-config-tabs">
               <!-- Tab 1: 网络与代理 -->
-              <el-tab-pane label="🌐 网络代理 & 并发设置" name="network">
-                <el-form label-position="top" :disabled="oauthRunning" size="small" style="margin-top: 6px">
+              <el-tab-pane label="🌐 网络代理 & 并发" name="network">
+                <el-form label-position="top" :disabled="oauthRunning" size="small" class="oa-tab-form">
                   <el-row :gutter="12">
                     <el-col :xs="24" :sm="12" :md="8">
-                      <el-form-item label="网络代理（支持下拉选择/代理池轮询/手动输入/直连）">
+                      <el-form-item label="网络代理设置">
                         <el-select
                           v-model="oauthForm.proxy" filterable clearable allow-create default-first-option
                           :reserve-keyword="false" placeholder="选择或手动输入代理" style="width: 100%"
@@ -4240,7 +4294,7 @@ onUnmounted(() => {
                       </el-form-item>
                     </el-col>
                     <el-col :xs="24" :sm="12" :md="8">
-                      <el-form-item label="代理目标国家（自动重写代理与请求特征）">
+                      <el-form-item label="代理目标国家">
                         <el-select
                           v-model="oauthForm.proxyCountry" filterable allow-create
                           placeholder="选择目标国家" style="width: 100%"
@@ -4253,7 +4307,7 @@ onUnmounted(() => {
                       </el-form-item>
                     </el-col>
                     <el-col :xs="12" :sm="6" :md="4">
-                      <el-form-item label="并发 Worker 数">
+                      <el-form-item label="并发 Worker">
                         <el-input-number v-model="oauthForm.workers" :min="1" :max="20" style="width: 100%" />
                       </el-form-item>
                     </el-col>
@@ -4268,48 +4322,50 @@ onUnmounted(() => {
 
               <!-- Tab 2: 短信接码设置 -->
               <el-tab-pane label="📱 手机号短信接码参数" name="sms">
-                <el-form label-position="top" :disabled="oauthRunning" size="small" style="margin-top: 6px">
+                <el-form label-position="top" :disabled="oauthRunning" size="small" class="oa-tab-form">
                   <div v-show="oauthForm.smsEnabled">
                     <el-row :gutter="12">
                       <el-col :xs="24" :sm="12" :md="6">
                         <el-form-item label="接码服务平台">
                           <el-select v-model="oauthForm.smsProvider" style="width: 100%">
-                            <el-option label="SmsBower (smsbower.page)" value="smsbower" />
-                            <el-option label="HeroSMS (hero-sms.com)" value="herosms" />
+                            <el-option label="SmsBower (即时取消即退款)" value="smsbower" />
+                            <el-option label="HeroSMS (20分钟自动退款)" value="herosms" />
                           </el-select>
                         </el-form-item>
                       </el-col>
                       <el-col :xs="24" :sm="12" :md="8">
-                        <el-form-item label="接码国家 (可搜索，全量国家)">
+                        <el-form-item label="接码国家 (可搜索)">
                           <el-select
                             v-model="oauthForm.smsCountry"
                             filterable
                             allow-create
                             default-first-option
                             :loading="smsCountriesLoading"
-                            placeholder="搜索国家名或输入国家ID"
+                            placeholder="搜索国家名或输入ID"
                             style="width: 100%"
                           >
                             <el-option v-for="sc in SMS_COUNTRY_OPTIONS" :key="sc.value" :label="sc.label" :value="sc.value">
-                              <span>{{ sc.label }}</span>
-                              <el-tag v-if="sc.safe" size="small" type="success" style="margin-left: 6px">免WhatsApp</el-tag>
+                              <div class="country-option-item">
+                                <span>{{ sc.label }}</span>
+                                <el-tag v-if="sc.safe" size="small" type="success" effect="plain" class="safe-badge">免WhatsApp</el-tag>
+                              </div>
                             </el-option>
                           </el-select>
                         </el-form-item>
                       </el-col>
                       <el-col :xs="12" :sm="6" :md="5">
-                        <el-form-item label="接码金额要求 (如 0.008 / 留空不限)">
-                          <el-input v-model="oauthForm.smsMaxPrice" placeholder="输入 0.008 或 0.007-0.01" clearable />
+                        <el-form-item label="接码金额要求 (如 0.008 或区间)">
+                          <el-input v-model="oauthForm.smsMaxPrice" placeholder="如 0.008 或 0.007-0.01" clearable :prefix-icon="Money" />
                         </el-form-item>
                       </el-col>
                       <el-col :xs="12" :sm="6" :md="5">
-                        <el-form-item label="指定供应商 ID (下拉直选带金额/库存)">
+                        <el-form-item label="指定供应商 ID (下拉直选)">
                           <el-select
                             v-model="oauthForm.smsProviderIds"
                             filterable
                             allow-create
                             clearable
-                            placeholder="选择或输入线路 ID，如 3237"
+                            placeholder="选择或输入线路ID"
                             style="width: 100%"
                             @change="(val) => {
                               const found = oauthPriceTiers.find((x) => x.id === val)
@@ -4325,8 +4381,30 @@ onUnmounted(() => {
                           </el-select>
                         </el-form-item>
                       </el-col>
-                      <el-col :xs="12" :sm="6" :md="5">
-                        <el-form-item label="排除供应商 ID（可多选，如 3327 / 1170）">
+
+                      <!-- 号池实时档位直选区 -->
+                      <el-col v-if="oauthPriceTiers.length" :span="24">
+                        <div class="oa-tier-chips-block">
+                          <span class="oa-tier-title"><el-icon><Discount /></el-icon> 实时号池档位 (点击即锁定):</span>
+                          <div class="oa-tier-chips">
+                            <div
+                              v-for="t in oauthPriceTiers"
+                              :key="t.id || t.price_str"
+                              class="oa-tier-pill"
+                              :class="{ 'is-active': oauthForm.smsProviderIds === t.id || oauthForm.smsMaxPrice === t.price_str }"
+                              @click="() => { oauthForm.smsMaxPrice = t.price_str; if (t.id) oauthForm.smsProviderIds = t.id; }"
+                            >
+                              <span>{{ t.label }}</span>
+                              <el-icon v-if="oauthForm.smsProviderIds === t.id || oauthForm.smsMaxPrice === t.price_str" class="oa-check-icon">
+                                <CircleCheckFilled />
+                              </el-icon>
+                            </div>
+                          </div>
+                        </div>
+                      </el-col>
+
+                      <el-col :xs="24" :sm="12" :md="8">
+                        <el-form-item label="排除供应商 ID (多选拉黑)">
                           <el-select
                             v-model="oauthForm.smsExceptProviderIds"
                             multiple
@@ -4347,60 +4425,49 @@ onUnmounted(() => {
                           </el-select>
                         </el-form-item>
                       </el-col>
-                      <el-col :xs="24" :sm="12" :md="14">
-                        <el-form-item label="接码平台 API Key (留空自动使用全局「接码配置」)">
-                          <el-input v-model="oauthForm.smsApiKey" type="password" show-password placeholder="留空自动读取系统接码配置" clearable />
+                      <el-col :xs="24" :sm="12" :md="8">
+                        <el-form-item label="接码 API Key (留空读取全局配置)">
+                          <el-input v-model="oauthForm.smsApiKey" type="password" show-password placeholder="留空自动使用系统接码配置" clearable :prefix-icon="Lock" />
                         </el-form-item>
                       </el-col>
-                      <el-col :xs="12" :sm="6" :md="5">
-                        <el-form-item label="最多换号尝试次数">
+                      <el-col :xs="12" :sm="6" :md="4">
+                        <el-form-item label="最多换号次数">
                           <el-input-number v-model="oauthForm.smsMaxAttempts" :min="1" :max="10" style="width: 100%" />
                         </el-form-item>
                       </el-col>
-                      <el-col :xs="12" :sm="6" :md="5">
-                        <el-form-item label="单号收码等待超时 (秒)">
+                      <el-col :xs="12" :sm="6" :md="4">
+                        <el-form-item label="收码等待超时 (秒)">
                           <el-input-number v-model="oauthForm.smsTimeout" :min="20" :max="300" :step="10" style="width: 100%" />
                         </el-form-item>
                       </el-col>
-                      <el-col v-if="oauthPriceTiers.length" :span="24">
-                        <div style="margin-top: 4px; margin-bottom: 8px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center">
-                          <span style="font-size: 11.5px; color: var(--el-text-color-secondary)">当前国家实时号池档位(点击直选):</span>
-                          <el-tag
-                            v-for="t in oauthPriceTiers"
-                            :key="t.id || t.price_str"
-                            size="small"
-                            :type="oauthForm.smsProviderIds === t.id || oauthForm.smsMaxPrice === t.price_str ? 'primary' : 'info'"
-                            :effect="oauthForm.smsProviderIds === t.id ? 'dark' : 'plain'"
-                            style="cursor: pointer; user-select: none"
-                            @click="() => { oauthForm.smsMaxPrice = t.price_str; if (t.id) oauthForm.smsProviderIds = t.id; }"
-                          >
-                            {{ t.label }}
-                          </el-tag>
-                        </div>
-                      </el-col>
+
                       <el-col :span="24">
                         <div class="sms-guide-box">
-                          <div class="sms-guide-title">怎么填才和网页点选一样</div>
-                          <ol>
-                            <li>先选国家，再点下方档位（例 <code>3237 · 0.008 $</code>）。金额和线路会一起锁定。</li>
-                            <li>填 <code>0.008</code> = 只要这一档，<b>不会</b>拿到 0.007。没货就报 NO_NUMBERS，不会偷偷换便宜号。</li>
-                            <li>填 <code>0.007-0.008</code> 才允许两个档都要；填 <code>&lt;=0.008</code> 才会优先派更便宜的。</li>
-                            <li>指定线路若被平台 BANNED，会自动去掉线路参数，但仍排除更便宜档，继续按锁定金额租号。</li>
-                          </ol>
+                          <div class="sms-guide-title">
+                            <el-icon><InfoFilled /></el-icon> 怎么填才和网页点选一样（规则速查）
+                          </div>
+                          <div class="sms-guide-chips">
+                            <span class="sms-rule-chip"><b>选 0.008</b> = 锁定该档，绝不拿更便宜的 0.007</span>
+                            <span class="sms-rule-chip"><b>填 0.007-0.008</b> = 允许两档区间</span>
+                            <span class="sms-rule-chip"><b>坏线自动剔除</b> = 线路 BANNED 自动去参数继续按金额租号</span>
+                          </div>
                         </div>
                       </el-col>
                     </el-row>
                   </div>
-                  <div v-show="!oauthForm.smsEnabled" style="padding: 12px; background: var(--el-fill-color-light); border-radius: 6px; color: var(--el-text-color-secondary); font-size: 12.5px; line-height: 1.6">
-                    当前处于 <b>⏩ 跳过接码模式</b>。OpenAI 遇到需手机号验证（add-phone）时将<b>直接安全跳过</b>并标记为「需接码」，不会产生任何接码扣费。如需自动接码推进，请在上方切换为「📱 自动短信接码」。
+                  <div v-show="!oauthForm.smsEnabled" class="oa-skip-mode-panel">
+                    <el-icon class="skip-icon"><CircleCheckFilled /></el-icon>
+                    <div class="skip-text">
+                      当前处于 <b>极速跳过接码模式</b>。OpenAI 遇到需手机号验证（add-phone）时将<b>直接安全跳过</b>并标记为「需接码」，不会产生任何接码扣费。如需自动接码推进，请在上方切换为「智能短信接码」。
+                    </div>
                   </div>
                 </el-form>
               </el-tab-pane>
             </el-tabs>
 
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 6px; padding-top: 8px; border-top: 1px dashed var(--el-border-color-lighter); font-size: 11.5px; color: var(--el-text-color-secondary)">
-              <span>💡 提示：点选档位即锁定该价格（选 <code>0.008</code> 绝不会拿 0.007）。也可填区间 <code>0.007-0.01</code>，或留空不限。若该档位无货会报 NO_NUMBERS，不会偷偷换成更便宜的号。</span>
-              <el-button size="small" type="primary" plain @click="saveOAuthFormDefault">
+            <div class="oa-config-footer-row">
+              <span class="oa-config-hint">💡 提示：点选档位即锁定该价格（选 <code>0.008</code> 绝不拿 0.007）。若该档位无货会报 NO_NUMBERS，不会擅自换号。</span>
+              <el-button size="small" class="oa-save-default-btn" @click="saveOAuthFormDefault">
                 <el-icon><Check /></el-icon> 保存为默认配置
               </el-button>
             </div>
@@ -4408,7 +4475,7 @@ onUnmounted(() => {
         </el-collapse-transition>
 
         <!-- KPI 统计看板 -->
-        <div class="plus-kpi-grid">
+        <div class="plus-kpi-grid oa-kpi-grid">
           <div class="plus-kpi-card">
             <span class="kpi-label">已处理 / 总数</span>
             <span class="kpi-num">{{ oauthStats.done }} / {{ oauthStats.total }}</span>
@@ -6141,95 +6208,189 @@ onUnmounted(() => {
   overflow: hidden;
 }
 
+/* ──────────── 现代化账号资产管理顶部控制区 ──────────── */
 .acct-chrome {
   flex-shrink: 0;
   background: var(--app-card-bg);
   border-bottom: 1px solid var(--app-border);
+  display: flex;
+  flex-direction: column;
 }
+
 .acct-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding: 12px 16px 8px;
+  padding: 12px 18px 10px;
 }
+
 .acct-title-block {
   display: flex;
-  align-items: baseline;
-  gap: 8px;
-  min-width: 0;
+  align-items: center;
+  gap: 10px;
+  position: relative;
 }
+
+.acct-title-glow {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--el-color-primary);
+  box-shadow: 0 0 10px var(--el-color-primary);
+}
+
 .acct-title-block h1 {
   margin: 0;
   font-size: 16px;
-  font-weight: 650;
+  font-weight: 700;
   letter-spacing: -0.02em;
   color: var(--app-title);
 }
-.acct-count {
-  font-size: 12px;
-  color: var(--app-text-secondary);
+
+.acct-count-badge {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--el-color-primary);
+  background: rgba(0, 122, 255, 0.08);
+  padding: 2px 8px;
+  border-radius: 12px;
+  border: 1px solid rgba(0, 122, 255, 0.18);
   font-variant-numeric: tabular-nums;
 }
+
 .acct-head-tools {
   display: flex;
   align-items: center;
   gap: 8px;
 }
+
 .acct-search {
-  width: 240px;
+  width: 250px;
 }
-.acct-filters {
+.acct-search :deep(.el-input__wrapper) {
+  border-radius: 6px;
+  background: var(--el-fill-color-light);
+}
+
+.acct-refresh-btn {
+  border-radius: 6px;
+  font-weight: 500;
+}
+
+/* 多维筛选区域 */
+.acct-filters-panel {
+  padding: 0 18px 10px;
+}
+
+.acct-filters-row {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 0 16px 10px;
   flex-wrap: wrap;
-  overflow: hidden;
 }
+
+.filter-item-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--el-fill-color-light);
+  border: 1px solid var(--app-border);
+  border-radius: 6px;
+  padding: 1px 4px 1px 8px;
+}
+
+.filter-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--el-text-color-secondary);
+  white-space: nowrap;
+}
+
 .acct-select {
-  width: 132px;
-  flex-shrink: 0;
+  width: 120px;
 }
-.acct-select-wide {
-  width: 180px;
+.acct-select :deep(.el-input__wrapper) {
+  background: transparent !important;
+  box-shadow: none !important;
+  padding: 0 4px !important;
 }
-.acct-actions {
+
+.acct-select-domain {
+  width: 150px;
+}
+
+.acct-select-proxy {
+  width: 165px;
+}
+
+.acct-reset-filter-btn {
+  border-radius: 6px;
+  font-size: 11.5px;
+  padding: 4px 10px;
+  font-weight: 600;
+}
+
+/* 操作工具栏三大集群 */
+.acct-actions-bar {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 8px 16px 12px;
+  padding: 10px 18px 12px;
   border-top: 1px solid var(--app-border);
+  background: var(--el-fill-color-lighter);
+  flex-wrap: wrap;
 }
-.acct-action-group {
+
+.acct-action-cluster {
   display: flex;
   align-items: center;
   gap: 6px;
-  flex-wrap: nowrap;
-  min-width: 0;
+  flex-wrap: wrap;
 }
-.acct-ghost-btn {
-  background: transparent !important;
-  border: 1px solid var(--app-border) !important;
-  color: var(--app-text-regular) !important;
-  box-shadow: none !important;
+
+.cluster-btn {
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  transition: all 0.16s ease;
 }
-.acct-ghost-btn:hover {
-  background: var(--el-fill-color-light) !important;
+
+.btn-primary {
+  background: #007aff !important;
+  border-color: #007aff !important;
+  color: #fff !important;
 }
-.acct-btn {
-  box-shadow: none !important;
+.btn-emerald {
+  background: #10b981 !important;
+  border-color: #10b981 !important;
+  color: #fff !important;
 }
-.acct-btn-warn {
-  background: var(--el-color-warning) !important;
-  border-color: var(--el-color-warning) !important;
+.btn-amber {
+  background: #f59e0b !important;
+  border-color: #f59e0b !important;
   color: #111 !important;
 }
-.acct-btn-soft {
-  background: #5856d6 !important;
-  border-color: #5856d6 !important;
+.btn-indigo {
+  background: #6366f1 !important;
+  border-color: #6366f1 !important;
   color: #fff !important;
+}
+.btn-neutral {
+  background: var(--el-bg-color-overlay, #ffffff) !important;
+  border: 1px solid var(--app-border) !important;
+  color: var(--app-title) !important;
+}
+.btn-neutral:hover {
+  border-color: var(--el-color-primary) !important;
+  color: var(--el-color-primary) !important;
+}
+.btn-danger-soft {
+  border-radius: 6px;
 }
 
 .registered-page :deep(.el-button--primary:not(.is-link):not(.is-text)),
@@ -7349,34 +7510,207 @@ onUnmounted(() => {
   word-break: break-all;
 }
 
-.sms-guide-box {
-  margin-top: 2px;
-  padding: 10px 12px;
+/* ──────────── 现代化 OAuth 接码与凭证生成控制台样式 ──────────── */
+.oa-target-pill {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--el-color-primary);
+  background: rgba(0, 122, 255, 0.08);
+  padding: 1px 8px;
+  border-radius: 12px;
+}
+
+.oa-config-toggle-btn {
+  font-size: 11.5px;
+  font-weight: 500;
+  border-radius: 6px;
+}
+
+.oa-strategy-hero-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
   border-radius: 8px;
-  background: rgba(14, 165, 233, 0.07);
-  border: 1px solid rgba(14, 165, 233, 0.22);
-  color: var(--el-text-color-regular);
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+  gap: 10px;
+  border: 1px solid var(--el-border-color-lighter);
+  background: var(--el-bg-color-overlay, #ffffff);
+  transition: all 0.2s ease;
+}
+
+.oa-strategy-hero-card.is-skip-mode {
+  background: rgba(16, 185, 129, 0.05);
+  border-color: rgba(16, 185, 129, 0.25);
+}
+
+.oa-strategy-hero-card.is-sms-mode {
+  background: rgba(0, 122, 255, 0.05);
+  border-color: rgba(0, 122, 255, 0.25);
+}
+
+.strategy-left-control {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.strategy-label {
+  font-weight: 700;
+  font-size: 12.5px;
+  color: var(--app-title);
+}
+.strategy-btn-content {
+  font-weight: 600;
   font-size: 12px;
-  line-height: 1.65;
+}
+
+.strategy-right-meta {
+  font-size: 12px;
+  line-height: 1.4;
+}
+.strategy-tip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 500;
+}
+.strategy-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+.strategy-dot.emerald { background: #10b981; }
+.strategy-dot.blue { background: #007aff; }
+
+.text-emerald { color: #10b981; }
+.text-blue { color: #007aff; }
+
+.oa-tab-form {
+  margin-top: 8px;
+}
+
+/* 实时号池档位选择器 */
+.oa-tier-chips-block {
+  background: var(--el-fill-color-light);
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.oa-tier-title {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--app-title);
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.oa-tier-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.oa-tier-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  background: var(--el-bg-color-overlay, #ffffff);
+  border: 1px solid var(--el-border-color-lighter);
+  color: var(--el-text-color-primary);
+  cursor: pointer;
+  user-select: none;
+  transition: all 0.15s ease;
+}
+.oa-tier-pill:hover {
+  border-color: var(--el-color-primary);
+  color: var(--el-color-primary);
+}
+.oa-tier-pill.is-active {
+  background: #007aff;
+  color: #fff;
+  border-color: #007aff;
+  font-weight: 600;
+}
+.oa-check-icon {
+  font-size: 12px;
+}
+
+.sms-guide-box {
+  margin-top: 4px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: rgba(14, 165, 233, 0.05);
+  border: 1px solid rgba(14, 165, 233, 0.2);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 .sms-guide-title {
   font-weight: 700;
-  color: var(--app-title, var(--el-text-color-primary));
-  margin-bottom: 4px;
+  color: var(--app-title);
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
 }
-.sms-guide-box ol {
-  margin: 0;
-  padding-left: 18px;
+.sms-guide-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
-.sms-guide-box li + li {
-  margin-top: 2px;
-}
-.sms-guide-box code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 11.5px;
-  padding: 0 4px;
+.sms-rule-chip {
+  font-size: 11px;
+  padding: 2px 8px;
   border-radius: 4px;
-  background: rgba(15, 23, 42, 0.08);
+  background: var(--el-bg-color-overlay, #ffffff);
+  border: 1px solid rgba(14, 165, 233, 0.18);
+  color: var(--el-text-color-regular);
+}
+
+.oa-skip-mode-panel {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px;
+  background: rgba(16, 185, 129, 0.06);
+  border: 1px solid rgba(16, 185, 129, 0.2);
+  border-radius: 6px;
+  color: var(--el-text-color-regular);
+  font-size: 12px;
+  line-height: 1.55;
+}
+.skip-icon {
+  font-size: 20px;
+  color: #10b981;
+  flex-shrink: 0;
+}
+.skip-text {
+  flex: 1;
+}
+
+.oa-config-footer-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--el-border-color-lighter);
+  font-size: 11.5px;
+}
+.oa-config-hint {
+  color: var(--el-text-color-secondary);
+}
+.oa-save-default-btn {
+  font-size: 11.5px;
+  font-weight: 500;
 }
 
 :deep(.feat-dialog) {

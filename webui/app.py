@@ -131,6 +131,13 @@ def api_delete_account(email: str):
     return {"ok": True}
 
 
+@app.post("/api/accounts/clean-registered")
+def api_clean_registered(mode: str = "delete"):
+    """比对号池与本地已注册库，清理号池中所有已在 registered 表中的账号。"""
+    res = db.clean_registered_from_pool(mode=mode)
+    return {"ok": True, **res, "stats": db.stats()}
+
+
 class BulkDeleteReq(BaseModel):
     status: Optional[str] = Field(None, description="available/in_use/done/failed/all")
     emails: Optional[list[str]] = Field(None, description="按 email 列表删")

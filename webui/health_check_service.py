@@ -133,8 +133,8 @@ class HealthCheckTask:
         with self._lock:
             if email in self.items:
                 self.items[email]["logs"].append(formatted)
-                if len(self.items[email]["logs"]) > 250:
-                    self.items[email]["logs"] = self.items[email]["logs"][-250:]
+                if len(self.items[email]["logs"]) > 500:
+                    self.items[email]["logs"] = self.items[email]["logs"][-500:]
         try:
             self.queue.put({"kind": "log", "email": email, "line": f"[{email}] {line}"})
         except Exception:
@@ -251,9 +251,18 @@ def _check_token_mode(task: HealthCheckTask, email: str, cred: dict, at: str, pr
 
         if status_code == 200:
             user_data = resp.json() if body.startswith("{") else {}
+            task.add_email_log(email, "【接口回参】HTTP 200 /backend-api/me 响应内容:")
+            try:
+                pretty_json = json.dumps(user_data, ensure_ascii=False, indent=2)
+                for json_line in pretty_json.splitlines():
+                    task.add_email_log(email, f"  {json_line}")
+            except Exception:
+                task.add_email_log(email, f"  {body[:1000]}")
+
             name = user_data.get("name") or user_data.get("email") or ""
             user_id = user_data.get("id") or ""
-            task.add_email_log(email, f"🎉 Token 验证有效！用户名={name}, ID={user_id}")
+            task.add_email_log(email, f"【响应分析】HTTP 200 鉴权通过 (user_id={user_id[:16]}..., name={name})")
+            task.add_email_log(email, f"🎉 Token 验证有效！用户名={name}")
 
             res = {
                 "status": "token_valid",
@@ -274,6 +283,7 @@ def _check_token_mode(task: HealthCheckTask, email: str, cred: dict, at: str, pr
             return res
 
         if status_code in (401, 403):
+            task.add_email_log(email, f"【接口回参】HTTP {status_code} 原始响应: {body[:300]}")
             if _looks_deactivated(body):
                 res = {
                     "status": "banned",
@@ -282,7 +292,8 @@ def _check_token_mode(task: HealthCheckTask, email: str, cred: dict, at: str, pr
                     "error": f"HTTP {status_code} 账号已被禁用",
                     "checked_at": time.time(),
                 }
-                task.add_email_log(email, f"检测结论: 封号 (HTTP {status_code}) -> {body[:100]}")
+                task.add_email_log(email, f"【响应分析】HTTP {status_code} 命中封号标记: {body[:100]}")
+                task.add_email_log(email, f"检测结论: 封号 (HTTP {status_code})")
                 db.update_plus_check(email, res)
                 return res
             if status_code == 401:
@@ -293,6 +304,7 @@ def _check_token_mode(task: HealthCheckTask, email: str, cred: dict, at: str, pr
                     "error": "401 Unauthorized",
                     "checked_at": time.time(),
                 }
+                task.add_email_log(email, "【响应分析】HTTP 401 Unauthorized: access_token 已过期或被吊销")
                 task.add_email_log(email, "检测结论: Token 已失效/被吊销 (401)")
                 db.update_plus_check(email, res)
                 return res
@@ -359,12 +371,16 @@ def _check_plan_mode(task: HealthCheckTask, email: str, cred: dict, at: str, pro
         body = (resp.text or "").strip()
 
         if status_code in (401, 403):
+            task.add_email_log(email, f"【接口回参】HTTP {status_code} 原始响应: {body[:300]}")
             if _looks_deactivated(body):
                 res = {"status": "banned", "label": "封号", "error": f"HTTP {status_code} 账号被禁用"}
+                task.add_email_log(email, f"【响应分析】HTTP {status_code} 命中封号标记: {body[:100]}")
             elif status_code == 401:
                 res = {"status": "token_invalid", "label": "凭证失效", "error": "401 Unauthorized"}
+                task.add_email_log(email, "【响应分析】HTTP 401 Unauthorized: access_token 已过期或被吊销")
             else:
                 res = {"status": "error", "label": f"HTTP {status_code}", "error": f"HTTP {status_code}: {body[:100]}"}
+                task.add_email_log(email, f"【响应分析】HTTP {status_code} 访问受限: {body[:100]}")
             task.add_email_log(email, f"检测结论: {res.get('label')}")
             db.update_plus_check(email, res)
             return res
@@ -374,8 +390,20 @@ def _check_plan_mode(task: HealthCheckTask, email: str, cred: dict, at: str, pro
                 data = resp.json()
             except Exception:
                 data = json.loads(body)
+
+            task.add_email_log(email, "【接口回参】HTTP 200 accounts/check 响应内容:")
+            try:
+                pretty_json = json.dumps(data, ensure_ascii=False, indent=2)
+                for json_line in pretty_json.splitlines():
+                    task.add_email_log(email, f"  {json_line}")
+            except Exception:
+                task.add_email_log(email, f"  {body[:1000]}")
+
             parsed = parse_account_plan(data, body)
-            task.add_email_log(email, f"🎉 检测结论: {parsed.get('label')} (plan={parsed.get('plan')})")
+            for l in parsed.get("log_lines") or []:
+                task.add_email_log(email, l)
+            extra_tip = f" [{parsed['reason']}]" if parsed.get("reason") else ""
+            task.add_email_log(email, f"🎉 检测结论: {parsed.get('label')} (plan={parsed.get('plan')}){extra_tip}")
             db.update_plus_check(email, parsed)
             return parsed
 

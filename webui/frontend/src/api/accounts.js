@@ -27,3 +27,6 @@ export const bulkResetAccounts = (emails) =>
   http.post('/api/accounts/bulk_reset', { emails })
 
 export const releaseStale = () => http.post('/api/accounts/release_stale')
+
+export const cleanRegisteredFromPool = (mode = 'delete') =>
+  http.post(`/api/accounts/clean-registered?mode=${mode}`)

@@ -2611,6 +2611,77 @@ class AuthFlow:
         except Exception:
             return {}
 
+    def send_password_reset_otp(self) -> dict:
+        """已有账号在 log-in/password 页面触发官方发送重置密码 6 位验证码（/password/send-otp）。"""
+        headers = self._common_headers("https://auth.openai.com/log-in/password")
+        headers["Content-Type"] = "application/json"
+        if self._last_sentinel_token:
+            headers["openai-sentinel-token"] = self._last_sentinel_token
+        if getattr(self, "_last_sentinel_so_token", ""):
+            headers["openai-sentinel-so-token"] = self._last_sentinel_so_token
+        resp = self.session.post(
+            "https://auth.openai.com/api/accounts/password/send-otp",
+            headers=headers,
+            json={},
+            timeout=30,
+        )
+        self._trace_http("send_password_reset_otp", resp)
+        if resp.status_code != 200:
+            body = (resp.text or "")[:260]
+            raise RuntimeError(f"申请重置密码验证码失败: {resp.status_code} - {body}")
+        try:
+            return resp.json()
+        except Exception:
+            return {}
+
+    def reset_password_submit(self, new_password: str) -> dict:
+        """重置密码验证码核验通过后，向官方服务端提交新密码（/password/reset）。"""
+        if self.result.device_id:
+            try:
+                from sentinel import get_sentinel_token as _get_st
+                token, so_token = _get_st(
+                    self.session,
+                    device_id=self.result.device_id,
+                    flow="oauth_create_account",
+                    **self._sentinel_fp_kwargs()
+                )
+                self._last_sentinel_token = token or ""
+                self._last_sentinel_so_token = so_token or ""
+            except Exception as e:
+                logger.warning(f"提交新密码前刷新 sentinel 异常: {e}")
+
+        headers = self._common_headers("https://auth.openai.com/create-account/password")
+        headers["Content-Type"] = "application/json"
+        if self._last_sentinel_token:
+            headers["openai-sentinel-token"] = self._last_sentinel_token
+        if getattr(self, "_last_sentinel_so_token", ""):
+            headers["openai-sentinel-so-token"] = self._last_sentinel_so_token
+
+        resp = self.session.post(
+            "https://auth.openai.com/api/accounts/password/reset",
+            headers=headers,
+            json={"password": new_password},
+            timeout=30,
+        )
+        self._trace_http("reset_password_submit", resp)
+        if resp.status_code != 200:
+            # 备用 /user/register 设密接口
+            resp = self.session.post(
+                "https://auth.openai.com/api/accounts/user/register",
+                headers=headers,
+                json={"password": new_password, "username": self.result.email or ""},
+                timeout=30,
+            )
+            self._trace_http("reset_password_submit_fallback", resp)
+
+        if resp.status_code != 200:
+            body = (resp.text or "")[:260]
+            raise RuntimeError(f"提交重置新密码失败: {resp.status_code} - {body}")
+        try:
+            return resp.json()
+        except Exception:
+            return {}
+
     # ── Step 7.5: 提交 TOTP 2FA 验证码 ──
     def submit_mfa_totp(self, totp_code: str, challenge_id: str) -> dict:
         """提交 TOTP 2FA 验证码（已有账号登录时，密码验证后进入 mfa-challenge 状态）。
@@ -3493,13 +3564,48 @@ class AuthFlow:
                 otp_timeout = 180
 
             if page_type == "login_password":
-                logger.info("已有账号进入 login_password 分支，先走密码校验再 OTP")
+                logger.info("已有账号进入 login_password 分支，尝试密码登录 / 自动重置密码盘活")
                 login_password, pw_is_real = self._resolve_login_password(email)
-                if pw_is_real:
+                login_success = False
+                login_resp = {}
+
+                # 1. 若有已知真实密码，先尝试直接登录
+                if pw_is_real and login_password:
                     self.result.password = login_password
-                else:
-                    logger.info("该号无已知密码，用默认规则猜一个试试（多半 401）")
-                login_resp = self.login_password_verify(login_password)
+                    try:
+                        login_resp = self.login_password_verify(login_password)
+                        login_success = True
+                        logger.info("✅ 已知密码登录成功，继续获取凭证")
+                    except Exception as e:
+                        logger.warning(f"已知密码登录失败 ({e})，准备切换为官方重置密码自愈流程...")
+
+                # 2. 若密码未知或密码登录失败（如 401 等），走全自动邮件重置密码自愈盘活流程！
+                if not login_success:
+                    logger.info(f"🔄 正在为账号 {email} 向 OpenAI 申请官方重置密码验证码...")
+                    t_sent = time.time()
+                    self.send_password_reset_otp()
+                    logger.info(f"📨 重置验证码已发送至邮箱，正在收取 OTP (timeout={otp_timeout}s)...")
+                    otp_code = mail_provider.wait_for_otp(
+                        email,
+                        timeout=otp_timeout,
+                        issued_after=t_sent - 10,
+                    )
+                    logger.info(f"✅ 成功获取重置验证码: {otp_code}，正在进行官方验证...")
+                    otp_resp = self.verify_otp(otp_code)
+
+                    new_password = self._random_password(16)
+                    logger.info(f"🔑 正在为账号向官方提交新密码...")
+                    reset_resp = self.reset_password_submit(new_password)
+                    self.result.password = new_password
+                    if self._on_password:
+                        try:
+                            self._on_password(self, email, new_password)
+                        except Exception:
+                            pass
+                    logger.info(f"🎉 官方新密码设置成功 ({new_password})，继续获取完整 Token 与 2FA...")
+
+                    login_resp = reset_resp if isinstance(reset_resp, dict) and reset_resp else (otp_resp or {})
+
                 login_page_type = self._extract_page_type(login_resp)
                 continue_url = self._normalize_continue_url(
                     (login_resp or {}).get("continue_url", "") if isinstance(login_resp, dict) else ""

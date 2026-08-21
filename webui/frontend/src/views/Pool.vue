@@ -2,7 +2,7 @@
 import { computed, onActivated, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage, ElMessageBox, ElNotification, ElLoading } from 'element-plus'
 import {
   Refresh,
   Delete,
@@ -20,6 +20,7 @@ import {
   resetAccount,
   bulkResetAccounts,
   releaseStale,
+  cleanRegisteredFromPool,
 } from '@/api/accounts'
 import { getMailProviders } from '@/api/settings'
 import { copyText } from '@/api/request'
@@ -120,6 +121,53 @@ async function releaseStaleAll() {
     afterMutate()
   } catch (e) {
     ElMessage.error(e.message)
+  }
+}
+
+const cleaningRegistered = ref(false)
+
+async function cleanRegisteredAll() {
+  const ok = await confirm(
+    '系统将比对本地「已注册结果库」，自动从待注册号池中移除已成功注册的账号（并自动将 4 段邮箱取件凭证同步备份到已注册库，确保 2FA 与收信凭证不丢失）。\n\n确定开始全库对账清理？',
+    '号池对账与清理已注册老号',
+  )
+  if (!ok) return
+
+  cleaningRegistered.value = true
+  const loadingInstance = ElLoading.service({
+    lock: true,
+    text: '正在比对号池与已注册库，执行深度对账清理...',
+    background: 'rgba(0, 0, 0, 0.7)',
+  })
+
+  try {
+    const r = await cleanRegisteredFromPool('delete')
+    if (r.cleaned > 0) {
+      ElNotification({
+        title: '清理完成',
+        message: `成功比对全库，已自动从待注册号池中移除 ${r.cleaned} 个已注册老号（邮箱凭证已同步备份）。`,
+        type: 'success',
+        duration: 5000,
+      })
+    } else {
+      ElNotification({
+        title: '号池非常纯净',
+        message: '全库比对完成，当前待注册号池中没有与已注册库重叠的老号（重叠数：0）。',
+        type: 'info',
+        duration: 4000,
+      })
+    }
+    afterMutate()
+  } catch (e) {
+    ElNotification({
+      title: '清理失败',
+      message: e.message || '请求失败，请检查后端服务是否正常',
+      type: 'error',
+      duration: 5000,
+    })
+  } finally {
+    loadingInstance.close()
+    cleaningRegistered.value = false
   }
 }
 
@@ -244,6 +292,7 @@ loadProviders()
           <div class="macos-btn-group">
             <el-button size="small" @click="resetFailedAll">重试 failed</el-button>
             <el-button size="small" @click="releaseStaleAll">释放卡死号</el-button>
+            <el-button size="small" type="warning" plain :loading="cleaningRegistered" @click="cleanRegisteredAll">清理已注册老号</el-button>
           </div>
         </div>
 
