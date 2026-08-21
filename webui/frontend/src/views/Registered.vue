@@ -3179,106 +3179,72 @@ onUnmounted(() => {
 <template>
   <div class="registered-page">
     <div class="macos-window-panel">
-      <!-- 顶部 macOS 风格工具栏 -->
-      <div class="macos-toolbar">
-        <div class="toolbar-left">
-          <div class="page-title-badge">
-            <span class="dot-live"></span>
-            <span class="title">注册结果</span>
-            <span class="badge-total">{{ total }} 条</span>
+      <div class="acct-chrome">
+        <div class="acct-head">
+          <div class="acct-title-block">
+            <h1>账号</h1>
+            <span class="acct-count">{{ total }}</span>
           </div>
+          <div class="acct-head-tools">
+            <el-input
+              v-model="searchKeyword"
+              placeholder="搜索邮箱"
+              clearable
+              size="small"
+              class="acct-search"
+              :prefix-icon="Search"
+              @input="onSearchInput"
+              @clear="load(true)"
+              @keyup.enter="load(true)"
+            />
+            <el-button size="small" class="acct-ghost-btn" @click="load(false)">
+              <el-icon><Refresh /></el-icon>刷新
+            </el-button>
+          </div>
+        </div>
 
-          <el-button class="macos-btn" @click="load(false)">
-            <el-icon><Refresh /></el-icon>刷新
-          </el-button>
-
-          <!-- 1. 搜索框 -->
-          <el-input
-            v-model="searchKeyword"
-            placeholder="搜索邮箱..."
-            clearable
-            size="small"
-            class="macos-input search-input"
-            :prefix-icon="Search"
-            @input="onSearchInput"
-            @clear="load(true)"
-            @keyup.enter="load(true)"
-          />
-
-          <!-- 2. 套餐/订阅状态维度 -->
-          <el-select
-            v-model="filterPlan"
-            placeholder="套餐订阅"
-            class="macos-select filter-select plan-filter"
-            size="small"
-            @change="load(true)"
-          >
-            <el-option label="🌟 全部套餐" value="all" />
-            <el-option label="★ Plus / 试用" value="plus" />
-            <el-option label="🎁 可领Plus免单" value="extract_eligible" />
-            <el-option label="👑 Pro 账号 (20x/5x)" value="pro" />
-            <el-option label="💎 Team 团队号" value="team" />
-            <el-option label="⚪ Free 普通号" value="free" />
-            <el-option label="🚫 已封号" value="banned" />
-            <el-option label="⚠️ 凭证失效" value="token_invalid" />
-            <el-option label="❓ 未检测" value="unchecked" />
+        <div class="acct-filters">
+          <el-select v-model="filterPlan" placeholder="套餐" size="small" class="acct-select" @change="load(true)">
+            <el-option label="全部套餐" value="all" />
+            <el-option label="Plus / 试用" value="plus" />
+            <el-option label="可领 Plus 免单" value="extract_eligible" />
+            <el-option label="Pro" value="pro" />
+            <el-option label="Team" value="team" />
+            <el-option label="Free" value="free" />
+            <el-option label="已封号" value="banned" />
+            <el-option label="凭证失效" value="token_invalid" />
+            <el-option label="未检测" value="unchecked" />
           </el-select>
-
-          <!-- 3. 密码与2FA安全维度 -->
-          <el-select
-            v-model="filterSec"
-            placeholder="密码/2FA"
-            class="macos-select filter-select sec-filter"
-            size="small"
-            @change="load(true)"
-          >
-            <el-option label="🛡️ 全部安全" value="all" />
-            <el-option label="🔑 缺少密码" value="no_password" />
-            <el-option label="🛡️ 缺少 2FA" value="no_2fa" />
-            <el-option label="⚠️ 密码/2FA 不全" value="missing_security" />
-            <el-option label="🔐 已设密码" value="has_password" />
-            <el-option label="✅ 已绑 2FA" value="has_2fa" />
-            <el-option label="🛡️ 密码与2FA双全" value="both_secured" />
+          <el-select v-model="filterSec" placeholder="安全" size="small" class="acct-select" @change="load(true)">
+            <el-option label="全部安全状态" value="all" />
+            <el-option label="缺少密码" value="no_password" />
+            <el-option label="缺少 2FA" value="no_2fa" />
+            <el-option label="密码 / 2FA 不全" value="missing_security" />
+            <el-option label="已设密码" value="has_password" />
+            <el-option label="已绑 2FA" value="has_2fa" />
+            <el-option label="密码与 2FA 双全" value="both_secured" />
           </el-select>
-
-          <!-- 4. 提炼与代付状态维度 -->
-          <el-select
-            v-model="filterExtract"
-            placeholder="提炼状态"
-            class="macos-select filter-select extract-filter"
-            size="small"
-            @change="load(true)"
-          >
-            <el-option label="⚗️ 全部提炼" value="all" />
-            <el-option label="🎁 待提链资格" value="extract_eligible" />
-            <el-option label="✅ 提链成功" value="extract_success" />
-            <el-option label="❌ 提链失败" value="extract_failed" />
+          <el-select v-model="filterExtract" placeholder="提炼" size="small" class="acct-select" @change="load(true)">
+            <el-option label="全部提炼" value="all" />
+            <el-option label="待提链" value="extract_eligible" />
+            <el-option label="提链成功" value="extract_success" />
+            <el-option label="提链失败" value="extract_failed" />
           </el-select>
-
-          <!-- 5. 授权与OAICS维度 -->
-          <el-select
-            v-model="filterOAuth"
-            placeholder="授权状态"
-            class="macos-select filter-select oauth-filter"
-            size="small"
-            @change="load(true)"
-          >
-            <el-option label="🏷️ 全部授权" value="all" />
-            <el-option label="🟢 授权成功" value="oauth_success" />
-            <el-option label="🟡 需接码 (已跳过)" value="oauth_need_phone" />
-            <el-option label="🔴 授权失败" value="oauth_failed" />
-            <el-option label="⚠️ 授权异常" value="oauth_error" />
-            <el-option label="⚪ 从未授权" value="oauth_unchecked" />
-            <el-option label="⚡ OAICS 命中" value="oa_hit" />
-            <el-option label="⚪ OAICS 未中" value="oa_miss" />
+          <el-select v-model="filterOAuth" placeholder="授权" size="small" class="acct-select" @change="load(true)">
+            <el-option label="全部授权" value="all" />
+            <el-option label="授权成功" value="oauth_success" />
+            <el-option label="需接码" value="oauth_need_phone" />
+            <el-option label="授权失败" value="oauth_failed" />
+            <el-option label="授权异常" value="oauth_error" />
+            <el-option label="从未授权" value="oauth_unchecked" />
+            <el-option label="OAICS 命中" value="oa_hit" />
+            <el-option label="OAICS 未中" value="oa_miss" />
           </el-select>
-
-          <!-- 6. 邮箱格式/域名维度 -->
           <el-select
             v-model="filterDomain"
-            placeholder="邮箱格式/域名"
-            class="macos-select filter-select domain-filter"
+            placeholder="域名"
             size="small"
+            class="acct-select acct-select-wide"
             filterable
             allow-create
             default-first-option
@@ -3286,16 +3252,16 @@ onUnmounted(() => {
             @change="load(true)"
             @clear="filterDomain = 'all'; load(true)"
           >
-            <el-option-group label="常用格式分类">
-              <el-option label="📧 全部邮箱格式" value="all" />
-              <el-option label="🟦 微软全系 (Outlook/Hotmail/Live)" value="microsoft" />
-              <el-option label="📮 Outlook 系 (@outlook.*)" value="outlook" />
-              <el-option label="📨 Hotmail 系 (@hotmail.*)" value="hotmail" />
-              <el-option label="💌 Live 系 (@live.*)" value="live" />
-              <el-option label="🔴 Gmail (@gmail.com)" value="gmail" />
-              <el-option label="🌐 其它 / 自建域名" value="custom_domain" />
+            <el-option-group label="常用分类">
+              <el-option label="全部邮箱" value="all" />
+              <el-option label="微软全系" value="microsoft" />
+              <el-option label="Outlook" value="outlook" />
+              <el-option label="Hotmail" value="hotmail" />
+              <el-option label="Live" value="live" />
+              <el-option label="Gmail" value="gmail" />
+              <el-option label="其它域名" value="custom_domain" />
             </el-option-group>
-            <el-option-group v-if="domainOptions.length > 0" label="数据库现有域名">
+            <el-option-group v-if="domainOptions.length > 0" label="库内域名">
               <el-option
                 v-for="d in domainOptions"
                 :key="d.domain"
@@ -3304,21 +3270,6 @@ onUnmounted(() => {
               />
             </el-option-group>
           </el-select>
-
-          <!-- 7. 快捷清除筛选条件按钮 -->
-          <el-button
-            v-if="hasActiveFilter"
-            size="small"
-            type="danger"
-            plain
-            class="clear-filter-btn"
-            title="清空当前所有搜索与筛选条件"
-            @click="clearAllFilters"
-          >
-            ✕ 重置筛选
-          </el-button>
-
-          <!-- 检测代理选择 -->
           <el-select
             v-model="form.proxy"
             filterable
@@ -3326,181 +3277,143 @@ onUnmounted(() => {
             allow-create
             default-first-option
             :reserve-keyword="false"
-            placeholder="检测代理（留空直连）"
-            class="macos-select proxy-select"
+            placeholder="检测代理，留空直连"
+            class="acct-select acct-select-wide"
             size="small"
           >
             <el-option v-for="p in proxyList" :key="p" :label="p" :value="p" />
           </el-select>
+          <el-button
+            v-if="hasActiveFilter"
+            size="small"
+            class="acct-ghost-btn"
+            @click="clearAllFilters"
+          >
+            重置筛选
+          </el-button>
         </div>
 
-        <div class="toolbar-right">
-          <!-- 核心功能：账号批量验活 (Token 验活 & 套餐/试用资格探测) -->
-          <el-dropdown trigger="click" @command="handleHealthCheckCommand">
-            <el-button type="primary" class="oa-action-btn health-action-btn">
-              <el-icon><Compass /></el-icon>⚡ 批量验活 ({{ selected.length }})
-              <el-icon class="el-icon--right"><ArrowDown /></el-icon>
+        <div class="acct-actions">
+          <div class="acct-action-group">
+            <el-dropdown trigger="click" @command="handleHealthCheckCommand">
+              <el-button type="primary" size="small" class="acct-btn">
+                验活{{ selected.length ? ` ${selected.length}` : '' }}
+                <el-icon class="el-icon--right"><ArrowDown /></el-icon>
+              </el-button>
+              <template #dropdown>
+                <el-dropdown-menu class="extract-dropdown-menu">
+                  <div class="dropdown-group-title">Token 验活</div>
+                  <el-dropdown-item command="token_selected" :disabled="!selected.length">验活选中 ({{ selected.length }})</el-dropdown-item>
+                  <el-dropdown-item command="token_unchecked">验活未检</el-dropdown-item>
+                  <el-dropdown-item command="token_all">全量重验</el-dropdown-item>
+                  <div class="dropdown-group-title divider-title">套餐探测</div>
+                  <el-dropdown-item command="plan_selected" :disabled="!selected.length">探测选中套餐 ({{ selected.length }})</el-dropdown-item>
+                  <el-dropdown-item command="plan_unchecked">探测未检套餐</el-dropdown-item>
+                  <el-dropdown-item command="plan_all">全量重测套餐</el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
+
+            <el-dropdown trigger="click" @command="openExtractChannel">
+              <el-button size="small" class="acct-btn acct-btn-warn">
+                提炼{{ selected.length ? ` ${selected.length}` : '' }}
+                <el-icon class="el-icon--right"><ArrowDown /></el-icon>
+              </el-button>
+              <template #dropdown>
+                <el-dropdown-menu class="extract-dropdown-menu">
+                  <div class="dropdown-group-title">一条龙</div>
+                  <el-dropdown-item command="paypal_pipeline">PayPal 提链 + 代付（同 IP）</el-dropdown-item>
+                  <div class="dropdown-group-title divider-title">资格检测</div>
+                  <el-dropdown-item command="gcash_check">GCash 检测</el-dropdown-item>
+                  <el-dropdown-item command="oaics_check">OAICS 检测</el-dropdown-item>
+                  <el-dropdown-item command="plus_check">Plus 状态检测</el-dropdown-item>
+                  <div class="dropdown-group-title divider-title">提链 / 出码</div>
+                  <el-dropdown-item command="gcash">GCash</el-dropdown-item>
+                  <el-dropdown-item command="pix">PIX</el-dropdown-item>
+                  <el-dropdown-item command="paypal">PayPal（仅提链）</el-dropdown-item>
+                  <el-dropdown-item command="ideal">iDEAL</el-dropdown-item>
+                  <el-dropdown-item command="upi">UPI</el-dropdown-item>
+                  <el-dropdown-item command="kakao">Kakao</el-dropdown-item>
+                  <el-dropdown-item command="momo">MoMo</el-dropdown-item>
+                  <el-dropdown-item command="twint">TWINT</el-dropdown-item>
+                  <el-dropdown-item command="blik">BLIK</el-dropdown-item>
+                  <el-dropdown-item command="hosted">Hosted</el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
+
+            <el-button type="success" size="small" class="acct-btn" :disabled="!selected.length" @click="openOAuthExport('selected')">
+              OAuth{{ selected.length ? ` ${selected.length}` : '' }}
             </el-button>
-            <template #dropdown>
-              <el-dropdown-menu class="extract-dropdown-menu">
-                <div class="dropdown-group-title">🔑 Token 状态验活</div>
-                <el-dropdown-item command="token_selected" :disabled="!selected.length">
-                  验活选中账号 Token ({{ selected.length }})
-                </el-dropdown-item>
-                <el-dropdown-item command="token_unchecked">验活未检账号 Token</el-dropdown-item>
-                <el-dropdown-item command="token_all">全量重验所有账号 Token</el-dropdown-item>
+            <el-button size="small" class="acct-btn acct-btn-soft" @click="openFeatBoard">特征</el-button>
 
-                <div class="dropdown-group-title divider-title">💎 套餐与试用资格探测</div>
-                <el-dropdown-item command="plan_selected" :disabled="!selected.length">
-                  探测选中账号套餐 ({{ selected.length }})
-                </el-dropdown-item>
-                <el-dropdown-item command="plan_unchecked">探测未检账号套餐</el-dropdown-item>
-                <el-dropdown-item command="plan_all">全量重测所有账号套餐</el-dropdown-item>
-              </el-dropdown-menu>
-            </template>
-          </el-dropdown>
+            <el-dropdown trigger="click" @command="handleCopyAtCommand">
+              <el-button size="small" class="acct-ghost-btn">
+                复制 AT{{ selected.length ? ` ${selected.length}` : '' }}
+                <el-icon class="el-icon--right"><ArrowDown /></el-icon>
+              </el-button>
+              <template #dropdown>
+                <el-dropdown-menu class="extract-dropdown-menu">
+                  <div class="dropdown-group-title">Access Token</div>
+                  <el-dropdown-item command="copy_at_selected" :disabled="!selected.length">复制选中 ({{ selected.length }})</el-dropdown-item>
+                  <el-dropdown-item command="copy_at_page">复制当前页 ({{ rows.filter((r) => r.at_len).length }})</el-dropdown-item>
+                  <el-dropdown-item command="copy_at_all" divided>全库复制</el-dropdown-item>
+                  <el-dropdown-item command="copy_at_with_email" :disabled="!selected.length">邮箱----AT 格式</el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
 
-          <!-- 核心功能：全渠道提炼与资格检测下拉菜单 -->
-          <el-dropdown trigger="click" @command="openExtractChannel">
-            <el-button type="warning" class="oa-action-btn extract-action-btn">
-              <el-icon><Link /></el-icon>⚗️ 提炼 ({{ selected.length }})
-              <el-icon class="el-icon--right"><ArrowDown /></el-icon>
-            </el-button>
-            <template #dropdown>
-              <el-dropdown-menu class="extract-dropdown-menu">
-                <div class="dropdown-group-title">⚡ 一体化一条龙流水线</div>
-                <el-dropdown-item command="paypal_pipeline" class="pipeline-menu-item">
-                  ⚡ PayPal 提链+代付一条龙 (同IP)
-                </el-dropdown-item>
+            <el-dropdown trigger="click" @command="handleRefreshCommand">
+              <el-button size="small" class="acct-ghost-btn">
+                Token{{ selected.length ? ` ${selected.length}` : '' }}
+                <el-icon class="el-icon--right"><ArrowDown /></el-icon>
+              </el-button>
+              <template #dropdown>
+                <el-dropdown-menu class="extract-dropdown-menu">
+                  <div class="dropdown-group-title">刷新 / 重登</div>
+                  <el-dropdown-item command="refresh_selected" :disabled="!selected.length">刷新选中 ({{ selected.length }})</el-dropdown-item>
+                  <el-dropdown-item command="refresh_no_token">补全无 Token 账号</el-dropdown-item>
+                  <el-dropdown-item command="refresh_all">全量刷新</el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
 
-                <div class="dropdown-group-title divider-title">资格检测</div>
-                <el-dropdown-item command="gcash_check">批量 GCash 检测</el-dropdown-item>
-                <el-dropdown-item command="oaics_check">批量 OAICS 检测</el-dropdown-item>
-                <el-dropdown-item command="plus_check">批量 Plus 状态检测</el-dropdown-item>
+            <el-dropdown trigger="click" @command="handleSecurityCommand">
+              <el-button size="small" class="acct-ghost-btn">
+                密码 / 2FA{{ selected.length ? ` ${selected.length}` : '' }}
+                <el-icon class="el-icon--right"><ArrowDown /></el-icon>
+              </el-button>
+              <template #dropdown>
+                <el-dropdown-menu class="extract-dropdown-menu">
+                  <div class="dropdown-group-title">密码</div>
+                  <el-dropdown-item command="batch_pwd_selected" :disabled="!selected.length">选中无密码账号补密 ({{ selected.length }})</el-dropdown-item>
+                  <el-dropdown-item command="batch_pwd_all_missing">全量补密</el-dropdown-item>
+                  <div class="dropdown-group-title divider-title">2FA</div>
+                  <el-dropdown-item command="batch_2fa_selected" :disabled="!selected.length">选中账号补绑 2FA ({{ selected.length }})</el-dropdown-item>
+                  <el-dropdown-item command="batch_2fa_all_missing">全量补绑 2FA</el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
+          </div>
 
-                <div class="dropdown-group-title divider-title">提链 / 出码</div>
-                <el-dropdown-item command="gcash">批量 GCash 提链</el-dropdown-item>
-                <el-dropdown-item command="pix">批量 PIX 出码</el-dropdown-item>
-                <el-dropdown-item command="paypal">批量 PayPal 提链 (仅提链)</el-dropdown-item>
-                <el-dropdown-item command="ideal">批量 iDEAL 提链</el-dropdown-item>
-                <el-dropdown-item command="upi">批量 UPI 提链</el-dropdown-item>
-                <el-dropdown-item command="kakao">批量 Kakao 提链</el-dropdown-item>
-                <el-dropdown-item command="momo">批量 MoMo 提链</el-dropdown-item>
-                <el-dropdown-item command="twint">批量 TWINT 提链</el-dropdown-item>
-                <el-dropdown-item command="blik">批量 BLIK 提链</el-dropdown-item>
-                <el-dropdown-item command="hosted">批量 Hosted 提链</el-dropdown-item>
-              </el-dropdown-menu>
-            </template>
-          </el-dropdown>
-
-          <!-- 核心功能：OAuth 导出 -->
-          <el-button
-            type="success" class="oa-action-btn oauth-action-btn" :disabled="!selected.length"
-            @click="openOAuthExport('selected')"
-          >
-            <el-icon><Refresh /></el-icon>OAuth 导出 ({{ selected.length }})
-          </el-button>
-          <el-button class="oa-action-btn feat-action-btn" @click="openFeatBoard">
-            <el-icon><DataAnalysis /></el-icon>授权特征
-          </el-button>
-
-          <!-- 核心功能：批量复制 AT -->
-          <el-dropdown trigger="click" @command="handleCopyAtCommand">
-            <el-button type="primary" class="oa-action-btn copy-at-action-btn">
-              <el-icon><CopyDocument /></el-icon>📋 复制 AT <span v-if="selected.length">({{ selected.length }})</span>
-              <el-icon class="el-icon--right"><ArrowDown /></el-icon>
-            </el-button>
-            <template #dropdown>
-              <el-dropdown-menu class="extract-dropdown-menu">
-                <div class="dropdown-group-title">🔑 Access Token (AT) 批量复制</div>
-                <el-dropdown-item command="copy_at_selected" :disabled="!selected.length">
-                  📋 复制选中账号 AT ({{ selected.length }})
-                </el-dropdown-item>
-                <el-dropdown-item command="copy_at_page">
-                  📑 复制当前页所有有效 AT ({{ rows.filter((r) => r.at_len).length }})
-                </el-dropdown-item>
-                <el-dropdown-item command="copy_at_all" divided>
-                  🌐 全量复制所有账号 AT (全库)
-                </el-dropdown-item>
-                <el-dropdown-item command="copy_at_with_email" :disabled="!selected.length">
-                  📧 复制选中为「邮箱----AT」格式 ({{ selected.length }})
-                </el-dropdown-item>
-              </el-dropdown-menu>
-            </template>
-          </el-dropdown>
-
-          <!-- 核心功能：Token 重新获取与刷新 -->
-          <el-dropdown trigger="click" @command="handleRefreshCommand">
-            <el-button type="info" class="oa-action-btn refresh-token-action-btn">
-              <el-icon><Refresh /></el-icon>🔄 刷新/重获Token ({{ selected.length }})
-              <el-icon class="el-icon--right"><ArrowDown /></el-icon>
-            </el-button>
-            <template #dropdown>
-              <el-dropdown-menu class="extract-dropdown-menu">
-                <div class="dropdown-group-title">🔑 Token 智能双模刷新与重登</div>
-                <el-dropdown-item command="refresh_selected" :disabled="!selected.length">
-                  刷新选中账号 Token ({{ selected.length }})
-                </el-dropdown-item>
-                <el-dropdown-item command="refresh_no_token">
-                  重新获取无 Token 账号凭证
-                </el-dropdown-item>
-                <el-dropdown-item command="refresh_all">
-                  全量重新获取/刷新所有账号
-                </el-dropdown-item>
-              </el-dropdown-menu>
-            </template>
-          </el-dropdown>
-
-          <!-- 核心功能：安全加固 (批量补密码 / 批量补 2FA) -->
-          <el-dropdown trigger="click" @command="handleSecurityCommand">
-            <el-button type="success" plain class="oa-action-btn sec-action-btn">
-              <el-icon><Key /></el-icon>🛡️ 密码/2FA ({{ selected.length }})
-              <el-icon class="el-icon--right"><ArrowDown /></el-icon>
-            </el-button>
-            <template #dropdown>
-              <el-dropdown-menu class="extract-dropdown-menu">
-                <div class="dropdown-group-title">🔑 密码加固</div>
-                <el-dropdown-item command="batch_pwd_selected" :disabled="!selected.length">
-                  为选中无密码账号补设随机密码 ({{ selected.length }})
-                </el-dropdown-item>
-                <el-dropdown-item command="batch_pwd_all_missing">
-                  全量为所有无密码账号补设随机密码
-                </el-dropdown-item>
-
-                <div class="dropdown-group-title divider-title">🛡️ 2FA 绑定加固</div>
-                <el-dropdown-item command="batch_2fa_selected" :disabled="!selected.length">
-                  为选中有 Token 账号批量补绑 2FA ({{ selected.length }})
-                </el-dropdown-item>
-                <el-dropdown-item command="batch_2fa_all_missing">
-                  全量为所有未绑 2FA 账号批量补绑
-                </el-dropdown-item>
-              </el-dropdown-menu>
-            </template>
-          </el-dropdown>
-
-          <!-- 导出下拉 -->
-          <el-dropdown trigger="click" @command="doExport" @visible-change="(v) => v && loadExportFormats()">
-            <el-button class="macos-btn" :loading="exporting">
-              <el-icon><Download /></el-icon>{{ exportBtnText }}
-              <el-icon class="el-icon--right"><ArrowDown /></el-icon>
-            </el-button>
-            <template #dropdown>
-              <el-dropdown-menu class="macos-dropdown-menu">
-                <el-dropdown-item v-for="f in exportFormats" :key="f.id" :command="f" :divided="f.mode === 'download' && f.id === 'cpa'">
-                  {{ f.label }}
-                  <span v-if="f.note" class="hint" style="margin-left: 6px">{{ f.note }}</span>
-                </el-dropdown-item>
-                <el-dropdown-item v-if="!exportFormats.length" disabled>加载中...</el-dropdown-item>
-              </el-dropdown-menu>
-            </template>
-          </el-dropdown>
-
-          <!-- 删除操作 -->
-          <div class="macos-btn-group danger-group">
-            <el-button size="small" type="danger" plain :disabled="!selected.length" @click="deleteSelected">
-              删除 ({{ selected.length }})
-            </el-button>
-            <el-button size="small" type="warning" plain @click="cleanInvalid">清理空号</el-button>
+          <div class="acct-action-group acct-action-quiet">
+            <el-dropdown trigger="click" @command="doExport" @visible-change="(v) => v && loadExportFormats()">
+              <el-button size="small" class="acct-ghost-btn" :loading="exporting">
+                {{ exportBtnText }}
+                <el-icon class="el-icon--right"><ArrowDown /></el-icon>
+              </el-button>
+              <template #dropdown>
+                <el-dropdown-menu class="macos-dropdown-menu">
+                  <el-dropdown-item v-for="f in exportFormats" :key="f.id" :command="f" :divided="f.mode === 'download' && f.id === 'cpa'">
+                    {{ f.label }}
+                    <span v-if="f.note" class="hint" style="margin-left: 6px">{{ f.note }}</span>
+                  </el-dropdown-item>
+                  <el-dropdown-item v-if="!exportFormats.length" disabled>加载中...</el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
+            <el-button size="small" type="danger" plain :disabled="!selected.length" @click="deleteSelected">删除{{ selected.length ? ` ${selected.length}` : '' }}</el-button>
+            <el-button size="small" class="acct-ghost-btn" @click="cleanInvalid">清理空号</el-button>
             <el-button size="small" type="danger" plain @click="deleteAll">清空</el-button>
           </div>
         </div>
@@ -4271,7 +4184,7 @@ onUnmounted(() => {
       <template #header>
         <div class="oa-header">
           <div class="oa-header-title">
-            <span class="oa-title-badge" style="background: linear-gradient(135deg, #10b981 0%, #059669 100%)">OAUTH</span>
+            <span class="oa-title-badge">OAUTH</span>
             <span class="oa-title-text">Codex OAuth 重跑导出与凭证生成</span>
             <el-tag size="small" type="info" round effect="plain">{{ oauthTargetEmails.length }} 个账号</el-tag>
           </div>
@@ -5163,7 +5076,7 @@ onUnmounted(() => {
       <template #header>
         <div class="oa-header">
           <div class="oa-header-title">
-            <span class="oa-title-badge" style="background: linear-gradient(135deg, #0ea5e9 0%, #0284c7 100%)">TOKEN</span>
+            <span class="oa-title-badge health-badge">TOKEN</span>
             <span class="oa-title-text">Token 智能双模刷新与重获工作台</span>
             <el-tag size="small" type="primary" round effect="dark">RT极速置换 / Full OAuth重登</el-tag>
             <el-tag size="small" type="info" round effect="plain">{{ refreshTargetEmails.length }} 个账号</el-tag>
@@ -6217,30 +6130,128 @@ onUnmounted(() => {
   overflow: hidden;
 }
 
-/* macOS 风格主面板卡片 */
 .macos-window-panel {
   flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
-  background: var(--el-bg-color);
-  border: 1px solid var(--el-border-color-light);
-  border-radius: 10px;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.04);
+  background: var(--app-card-bg);
+  border: 1px solid var(--app-border);
+  border-radius: 12px;
   overflow: hidden;
 }
 
-/* ──────────── macOS 风格顶部工具栏 ──────────── */
-.macos-toolbar {
-  padding: 10px 14px;
+.acct-chrome {
+  flex-shrink: 0;
+  background: var(--app-card-bg);
+  border-bottom: 1px solid var(--app-border);
+}
+.acct-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 16px 8px;
+}
+.acct-title-block {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+.acct-title-block h1 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  color: var(--app-title);
+}
+.acct-count {
+  font-size: 12px;
+  color: var(--app-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.acct-head-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.acct-search {
+  width: 240px;
+}
+.acct-filters {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 16px 10px;
+  flex-wrap: wrap;
+  overflow: hidden;
+}
+.acct-select {
+  width: 132px;
+  flex-shrink: 0;
+}
+.acct-select-wide {
+  width: 180px;
+}
+.acct-actions {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  flex-wrap: wrap;
-  background: var(--el-fill-color-blank);
-  border-bottom: 1px solid var(--el-border-color-lighter);
-  flex-shrink: 0;
+  padding: 8px 16px 12px;
+  border-top: 1px solid var(--app-border);
+}
+.acct-action-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+.acct-ghost-btn {
+  background: transparent !important;
+  border: 1px solid var(--app-border) !important;
+  color: var(--app-text-regular) !important;
+  box-shadow: none !important;
+}
+.acct-ghost-btn:hover {
+  background: var(--el-fill-color-light) !important;
+}
+.acct-btn {
+  box-shadow: none !important;
+}
+.acct-btn-warn {
+  background: var(--el-color-warning) !important;
+  border-color: var(--el-color-warning) !important;
+  color: #111 !important;
+}
+.acct-btn-soft {
+  background: #5856d6 !important;
+  border-color: #5856d6 !important;
+  color: #fff !important;
+}
+
+.registered-page :deep(.el-button--primary:not(.is-link):not(.is-text)),
+.registered-page :deep(.el-button--primary:not(.is-link):not(.is-text):hover:not(:disabled)) {
+  background: var(--el-color-primary) !important;
+  box-shadow: none !important;
+  transform: none !important;
+}
+.registered-page :deep(.el-button--success:not(.is-link):not(.is-text)),
+.registered-page :deep(.el-button--success:not(.is-link):not(.is-text):hover:not(:disabled)) {
+  background: var(--el-color-success) !important;
+  box-shadow: none !important;
+}
+.registered-page :deep(.el-button--danger:not(.is-link):not(.is-text)),
+.registered-page :deep(.el-button--danger:not(.is-link):not(.is-text):hover:not(:disabled)) {
+  background: var(--el-color-danger) !important;
+  box-shadow: none !important;
+}
+.registered-page :deep(.el-button--warning:not(.is-link):not(.is-text)),
+.registered-page :deep(.el-button--warning:not(.is-link):not(.is-text):hover:not(:disabled)) {
+  background: var(--el-color-warning) !important;
+  box-shadow: none !important;
 }
 
 .toolbar-left, .toolbar-right {
@@ -6369,20 +6380,20 @@ onUnmounted(() => {
   border-radius: 6px;
   font-size: 12px;
   font-weight: 600;
-  background: linear-gradient(135deg, #10b981, #059669);
+  background: #059669;
   border: none;
-  box-shadow: 0 2px 6px rgba(16, 185, 129, 0.25);
+  box-shadow: none;
 }
 .oa-action-btn:hover:not(:disabled) {
-  background: linear-gradient(135deg, #059669, #047857);
+  background: #047857;
 }
 
 .copy-at-action-btn {
-  background: linear-gradient(135deg, #3b82f6, #2563eb) !important;
-  box-shadow: 0 2px 6px rgba(37, 99, 235, 0.25) !important;
+  background: var(--el-color-primary) !important;
+  box-shadow: none !important;
 }
 .copy-at-action-btn:hover:not(:disabled) {
-  background: linear-gradient(135deg, #2563eb, #1d4ed8) !important;
+  background: var(--el-color-primary-dark-2) !important;
 }
 
 /* ──────────── 中间表格区域 ──────────── */
@@ -6571,7 +6582,7 @@ onUnmounted(() => {
   gap: 8px;
 }
 .oa-title-badge {
-  background: linear-gradient(135deg, #10b981, #059669);
+  background: #059669;
   color: #fff;
   font-size: 11px;
   font-weight: 700;
@@ -6580,28 +6591,28 @@ onUnmounted(() => {
   letter-spacing: 0.5px;
 }
 .oa-title-badge.plus-badge {
-  background: linear-gradient(135deg, #3b82f6, #1d4ed8);
+  background: #2563eb;
 }
 .oa-title-badge.health-badge {
-  background: linear-gradient(135deg, #0ea5e9, #0284c7);
+  background: #0284c7;
 }
 .oa-title-badge.sec-badge {
-  background: linear-gradient(135deg, #10b981, #059669);
+  background: #059669;
 }
 .health-action-btn {
-  background: linear-gradient(135deg, #0ea5e9, #0284c7) !important;
+  background: #0284c7 !important;
   border: none !important;
   color: #fff !important;
   font-weight: 600;
 }
 .feat-action-btn {
-  background: linear-gradient(135deg, #8b5cf6, #6d28d9) !important;
+  background: #5856d6 !important;
   border: none !important;
   color: #fff !important;
   font-weight: 600;
 }
 .oa-title-badge.feat-badge {
-  background: linear-gradient(135deg, #8b5cf6, #6d28d9);
+  background: #5856d6;
 }
 .oa-title-text {
   font-size: 14px;
@@ -6669,7 +6680,7 @@ onUnmounted(() => {
 }
 .plus-kpi-card.hit-pro {
   border-color: rgba(244, 63, 94, 0.45);
-  background: linear-gradient(135deg, rgba(244, 63, 94, 0.12), rgba(245, 158, 11, 0.08));
+  background: rgba(244, 63, 94, 0.1);
 }
 .plus-kpi-card.hit-team {
   border-color: rgba(99, 102, 241, 0.45);
@@ -6840,11 +6851,11 @@ onUnmounted(() => {
 }
 
 .start-gradient-btn {
-  background: linear-gradient(135deg, #10b981, #059669);
+  background: #059669;
   border: none;
 }
 .start-gradient-btn:hover:not(:disabled) {
-  background: linear-gradient(135deg, #059669, #047857);
+  background: #047857;
 }
 
 .plus-table-box {
@@ -7072,12 +7083,12 @@ onUnmounted(() => {
 }
 
 .refresh-token-action-btn {
-  background: linear-gradient(135deg, #0ea5e9, #0284c7) !important;
+  background: #0284c7 !important;
   border-color: #0284c7 !important;
   color: #fff !important;
 }
 .refresh-token-action-btn:hover {
-  background: linear-gradient(135deg, #0284c7, #0369a1) !important;
+  background: #0369a1 !important;
 }
 
 .extract-pill-tag {
@@ -7214,12 +7225,11 @@ onUnmounted(() => {
 }
 
 .totp-hero-box {
-  background: linear-gradient(135deg, #1e293b, #0f172a);
+  background: #141418;
   border-radius: 12px;
   padding: 22px 18px;
   text-align: center;
   color: #fff;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.15);
   border: 1px solid rgba(255, 255, 255, 0.08);
 }
 
@@ -7406,15 +7416,15 @@ onUnmounted(() => {
   min-width: 0;
 }
 .feat-kpi.tone-ok {
-  background: linear-gradient(180deg, rgba(16, 185, 129, 0.14), rgba(16, 185, 129, 0.04));
+  background: rgba(16, 185, 129, 0.1);
   border-color: rgba(16, 185, 129, 0.28);
 }
 .feat-kpi.tone-bad {
-  background: linear-gradient(180deg, rgba(239, 68, 68, 0.12), rgba(239, 68, 68, 0.04));
+  background: rgba(239, 68, 68, 0.1);
   border-color: rgba(239, 68, 68, 0.24);
 }
 .feat-kpi.tone-warn {
-  background: linear-gradient(180deg, rgba(245, 158, 11, 0.14), rgba(245, 158, 11, 0.04));
+  background: rgba(245, 158, 11, 0.12);
   border-color: rgba(245, 158, 11, 0.28);
 }
 .feat-kpi-label {
@@ -7495,7 +7505,7 @@ onUnmounted(() => {
   display: block;
   height: 100%;
   border-radius: 99px;
-  background: linear-gradient(90deg, #8b5cf6, #10b981);
+  background: #5856d6;
 }
 .feat-empty {
   color: var(--el-text-color-secondary);

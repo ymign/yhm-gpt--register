@@ -268,7 +268,7 @@ onMounted(() => {
 .brand-badge {
   font-size: 10.5px;
   font-weight: 700;
-  background: linear-gradient(135deg, #007aff, #0056b3);
+  background: #007aff;
   color: #fff;
   padding: 1px 6px;
   border-radius: 5px;
@@ -325,10 +325,10 @@ html.dark .macos-menu-item:hover {
 
 /* 选中激活态：Apple SF Blue 拟态胶囊 */
 .macos-menu-item.is-active {
-  background: linear-gradient(180deg, #007aff 0%, #006ee6 100%) !important;
+  background: #007aff !important;
   color: #ffffff !important;
   font-weight: 600 !important;
-  box-shadow: 0 1px 3px rgba(0, 122, 255, 0.28), 0 2px 8px rgba(0, 122, 255, 0.15) !important;
+  box-shadow: none !important;
 }
 .macos-menu-item.is-active .menu-icon {
   color: #ffffff !important;
@@ -526,7 +526,7 @@ html.dark .collapse-btn:hover {
   width: 20px;
   height: 20px;
   border-radius: 50%;
-  background: linear-gradient(135deg, #007aff, #5856d6);
+  background: #007aff;
   color: #fff;
   display: flex;
   align-items: center;

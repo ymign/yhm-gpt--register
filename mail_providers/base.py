@@ -83,9 +83,9 @@ class ImportValidationError(Exception):
         super().__init__(head or "导入内容无效")
 
 
-# 单次导入上限（防止误粘贴整个文件把 UI 卡死）
-MAX_IMPORT_LINES = 5000
-MAX_IMPORT_BYTES = 2 * 1024 * 1024
+# 单次导入上限：一行一个号。1 万条直接支持。
+MAX_IMPORT_LINES = 20000
+MAX_IMPORT_BYTES = 20 * 1024 * 1024
 
 
 # ════════════════════════════════════════════════════════════
@@ -465,6 +465,18 @@ def validate_email(email: str) -> None:
         raise ValueError(f"邮箱含空格: {em[:60]}")
 
 
+def split_import_records(text: str) -> list[tuple[int, str]]:
+    """严格一行一个号。空行和 # 注释跳过，行内容原样保留（含 refresh_token 里的 $$）。"""
+    raw = (text or "").replace("﻿", "")
+    records = []
+    for n, line in enumerate(raw.splitlines(), 1):
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        records.append((n, s))
+    return records
+
+
 def parse_import_line(line: str, kind: str = "") -> dict:
     """解析一行导入文本，非法抛 ValueError（带原因）。
 
@@ -525,20 +537,27 @@ def parse_import_text(text: str, kind: str = "") -> list[dict]:
     if not isinstance(text, str) or not text.strip():
         raise ImportValidationError([{"line": 0, "error": "导入内容为空"}])
     if len(text.encode("utf-8")) > MAX_IMPORT_BYTES:
-        raise ImportValidationError([{"line": 0, "error": "导入内容超过 2 MiB"}])
+        raise ImportValidationError(
+            [{"line": 0, "error": f"导入内容超过 {MAX_IMPORT_BYTES // (1024 * 1024)} MiB"}]
+        )
 
-    # 去 BOM，跳过空行和 # 注释行，但保留原始行号用于报错
-    numbered = [
-        (n, raw.strip())
-        for n, raw in enumerate(text.replace("﻿", "", 1).splitlines(), 1)
-        if raw.strip() and not raw.strip().startswith("#")
-    ]
+    numbered = split_import_records(text)
     if not numbered:
         raise ImportValidationError([{"line": 0, "error": "没有可导入的内容"}])
     if len(numbered) > MAX_IMPORT_LINES:
         raise ImportValidationError(
-            [{"line": 0, "error": f"单次最多导入 {MAX_IMPORT_LINES} 行"}]
+            [{"line": 0, "error": f"单次最多导入 {MAX_IMPORT_LINES} 条账号"}]
         )
+
+    # 选错来源时按第一行段数纠正：4 段是 Outlook，2 段且第 2 段是 http 才是 iCloud 中转
+    if kind:
+        first = numbered[0][1]
+        segs = [p for p in first.split("----") if p.strip()]
+        want = get_provider_class(kind).line_segments
+        if want != 4 and len(segs) >= 4:
+            kind = "outlook"
+        elif want != 2 and len(segs) == 2 and segs[1].lower().startswith(("http://", "https://")):
+            kind = "icloud_relay"
 
     errors: list[dict] = []
     rows: list[dict] = []

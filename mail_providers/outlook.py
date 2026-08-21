@@ -573,13 +573,16 @@ class OutlookMailProvider(MailProvider):
         非法行抛 ValueError 说明原因（不返回 None），
         调用方会把原因连同行号报给用户。
         """
-        parts = line.split("----")
-        if len(parts) != 4:
+        parts = [p.strip() for p in line.split("----")]
+        parts = [p for p in parts if p != ""] or parts
+        if len(parts) < 4:
             raise ValueError(
                 f"需要 4 段（email----password----client_id----refresh_token），"
                 f"实际 {len(parts)} 段"
             )
-        email, password, client_id, refresh = (p.strip() for p in parts)
+        if len(parts) > 4:
+            parts = [parts[0], parts[1], parts[2], "----".join(parts[3:])]
+        email, password, client_id, refresh = parts
         validate_email(email)
         if not client_id:
             raise ValueError("client_id 为空")

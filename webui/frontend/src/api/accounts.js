@@ -7,7 +7,7 @@ export const getStats = () => http.get('/api/stats')
 // kind = 邮箱来源（outlook / ...）。留空后端会按段数猜，
 // 但 Outlook 和 Gmail 都是 4 段猜不出来，所以页面上必选。
 export const importAccounts = (text, kind = '') =>
-  http.post('/api/import', { text, kind })
+  http.post('/api/import', { text, kind }, { timeout: 300000 })
 
 export const listAccounts = (params) =>
   http.get('/api/accounts', { params }) // { status, limit, offset, kind }

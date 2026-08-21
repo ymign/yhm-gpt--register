@@ -21,9 +21,10 @@ const current = computed(
   () => providers.value.find((p) => p.kind === kind.value) || null,
 )
 
-const lineCount = computed(
+const recordCount = computed(
   () => text.value.split('\n').filter((l) => l.trim() && !l.trim().startsWith('#')).length,
 )
+const importCountLabel = computed(() => (recordCount.value ? `待导入 ${recordCount.value} 条` : ''))
 
 async function loadProviders() {
   try {
@@ -138,7 +139,7 @@ async function doImport() {
             >
               <el-icon><Upload /></el-icon>开始导入号池
             </el-button>
-            <span v-if="lineCount" class="count-pill">待导入 {{ lineCount }} 行</span>
+            <span v-if="recordCount" class="count-pill">{{ importCountLabel }}</span>
             <span v-if="result" class="result-tip">{{ result }}</span>
           </div>
         </div>
