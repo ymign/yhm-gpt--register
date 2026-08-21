@@ -732,7 +732,7 @@ def api_sms_top_countries():
 
 @app.get("/api/settings/sms/all_countries")
 def api_sms_all_countries(provider: str = ""):
-    """返回当前平台实际有库存的国家（动态查询）；查询失败则 fallback 到静态字典。"""
+    """返回平台全量国家（静态字典 + 实时库存）。有货的排前面，没货的也显示，方便对照网页点选。"""
     import sys as _sys
     ROOT_DIR = Path(__file__).resolve().parents[1]
     if str(ROOT_DIR) not in _sys.path:
@@ -743,35 +743,64 @@ def api_sms_all_countries(provider: str = ""):
     if provider:
         cfg["sms_provider"] = provider
 
-    # 尝试从平台 API 动态获取有库存的国家
+    live_map: dict = {}
     if cfg.get("sms_api_key"):
         try:
             p = create_sms_provider(cfg["sms_provider"], cfg)
-            rows = p.get_top_countries(service=cfg.get("sms_service") or "dr")
-            countries = []
-            for r in rows:
-                cid = str(r.get("country") or "")
-                countries.append({
-                    "id": cid,
-                    "name_cn": SMS_COUNTRY_NAMES_CN.get(cid, f"国家{cid}"),
-                    "openai_sms_safe": cid in OPENAI_SMS_COUNTRIES,
-                    "price": r.get("price"),
-                    "count": r.get("count"),
-                })
-            if countries:
-                return {"ok": True, "countries": countries,
-                        "openai_sms_safe": list(OPENAI_SMS_COUNTRIES), "source": "live"}
+            for r in p.get_top_countries(service=cfg.get("sms_service") or "dr") or []:
+                cid = str(r.get("country") or "").strip()
+                if cid:
+                    live_map[cid] = r
         except Exception:
-            pass
+            live_map = {}
 
-    # fallback: 静态字典
-    items = sorted(SMS_COUNTRY_NAMES_CN.items(), key=lambda kv: int(kv[0]) if kv[0].isdigit() else 9999)
-    countries = [
-        {"id": cid, "name_cn": name, "openai_sms_safe": cid in OPENAI_SMS_COUNTRIES}
-        for cid, name in items
-    ]
-    return {"ok": True, "countries": countries,
-            "openai_sms_safe": list(OPENAI_SMS_COUNTRIES), "source": "static"}
+    seen = set()
+    countries = []
+    for cid, name in SMS_COUNTRY_NAMES_CN.items():
+        live = live_map.get(cid) or {}
+        seen.add(cid)
+        countries.append({
+            "id": cid,
+            "name_cn": name,
+            "openai_sms_safe": cid in OPENAI_SMS_COUNTRIES,
+            "price": live.get("price"),
+            "count": live.get("count"),
+        })
+    for cid, live in live_map.items():
+        if cid in seen:
+            continue
+        countries.append({
+            "id": cid,
+            "name_cn": SMS_COUNTRY_NAMES_CN.get(cid, f"国家{cid}"),
+            "openai_sms_safe": cid in OPENAI_SMS_COUNTRIES,
+            "price": live.get("price"),
+            "count": live.get("count"),
+        })
+
+    def _sort_key(c):
+        cid = str(c.get("id") or "")
+        try:
+            nid = int(cid)
+        except (TypeError, ValueError):
+            nid = 9999
+        count = 0
+        try:
+            count = int(c.get("count") or 0)
+        except (TypeError, ValueError):
+            count = 0
+        if cid == "52":
+            return (0, 0, nid)
+        if count > 0:
+            return (1, -count, nid)
+        return (2, 0, nid)
+
+    countries.sort(key=_sort_key)
+    return {
+        "ok": True,
+        "countries": countries,
+        "openai_sms_safe": list(OPENAI_SMS_COUNTRIES),
+        "source": "merged" if live_map else "static",
+    }
 
 
 @app.get("/api/settings/sms/price_tiers")
@@ -2060,6 +2089,18 @@ def api_oauth_export_download_sub2(task_id: str, emails: str = ""):
         media_type="application/json",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@app.get("/api/registered/oauth_export/features")
+def api_oauth_export_features(limit: int = 100, outcome: str = ""):
+    """最近一次次 OAuth 授权尝试的特征明细（成功/失败都在）。"""
+    return {"ok": True, "rows": db.list_oauth_attempt_features(limit=limit, outcome=outcome)}
+
+
+@app.get("/api/registered/oauth_export/feature_weights")
+def api_oauth_export_feature_weights(min_n: int = 1):
+    """按代理国/指纹/接码国家等组合统计成功率，给后续加权选路用。"""
+    return {"ok": True, **db.get_oauth_feature_weights(min_n=min_n)}
 
 
 # ──────────────────────── Token 重新获取与刷新 (Token Refresh Studio) ────────────────────────

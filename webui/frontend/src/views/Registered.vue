@@ -24,6 +24,7 @@ import {
   Message,
   Lock,
   Timer,
+  DataAnalysis,
 } from '@element-plus/icons-vue'
 import {
   listRegistered,
@@ -61,6 +62,8 @@ import {
   getOAuthExportLog,
   downloadOAuthExportCpa,
   downloadOAuthExportSub2,
+  getOAuthExportFeatures,
+  getOAuthExportFeatureWeights,
   startTokenRefresh,
   stopTokenRefresh,
   tokenRefreshStreamUrl,
@@ -72,7 +75,7 @@ import {
   securityTaskStreamUrl,
   getSecurityTaskLog,
 } from '@/api/register'
-import { saveSmsConfig, getSmsPriceTiers } from '@/api/settings'
+import { saveSmsConfig, getSmsPriceTiers, getSmsAllCountries } from '@/api/settings'
 import { copyText, fmtTime, createSSE } from '@/api/request'
 import { useFormStore, proxyText, COUNTRY_OPTIONS, formatCountry } from '@/stores/form'
 import { useProxyStore } from '@/stores/proxy'
@@ -1057,6 +1060,7 @@ async function openTokenRefresh(scope = 'selected') {
   }
 
   refreshVisible.value = true
+  loadSmsCountries()
 }
 
 function handleRefreshCommand(cmd) {
@@ -1549,12 +1553,139 @@ watch(oauthForm, (v) => {
   try { localStorage.setItem(OAUTH_FORM_KEY, JSON.stringify(v)) } catch (_) {}
 }, { deep: true })
 
+const featVisible = ref(false)
+const featLoading = ref(false)
+const featOutcome = ref('')
+const featWeights = ref({
+  overall: { n: 0, ok: 0, rate: 0 },
+  by_proxy_country: [],
+  by_impersonate: [],
+  by_browser: [],
+  by_sms_country: [],
+  by_sms_operator: [],
+  by_login_path: [],
+  by_error_class: [],
+})
+const featRows = ref([])
+
+const FEAT_OUTCOME_META = {
+  success: { label: '成功', tone: 'ok' },
+  failed: { label: '失败', tone: 'bad' },
+  error: { label: '异常', tone: 'warn' },
+  need_phone: { label: '需接码', tone: 'warn' },
+  cancelled: { label: '取消', tone: 'mute' },
+  not_found: { label: '未找到', tone: 'mute' },
+}
+
+const FEAT_ERROR_META = {
+  need_phone: '需接码',
+  session_expired: '会话过期',
+  sms_no_numbers: '无号',
+  phone_rejected: '号段拒',
+  sms_fail: '接码失败',
+  otp_fail: 'OTP 失败',
+  password_fail: '密码失败',
+  callback_fail: '缺 callback',
+  token_fail: '换 token 失败',
+  cancelled: '取消',
+  not_found: '未找到',
+  other: '其他',
+}
+
+function featOutcomeMeta(v) {
+  return FEAT_OUTCOME_META[v] || { label: v || '—', tone: 'mute' }
+}
+
+function featErrorLabel(v) {
+  if (!v) return '—'
+  return FEAT_ERROR_META[v] || v
+}
+
+function featPct(rate) {
+  const n = Number(rate || 0)
+  return `${Math.round(n * 100)}%`
+}
+
+function featWhen(ts) {
+  const n = Number(ts || 0)
+  if (!n) return '—'
+  const d = new Date(n * 1000)
+  const p = (x) => String(x).padStart(2, '0')
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+}
+
+function featBarItems(list, key) {
+  return (list || []).slice(0, 6).map((it) => ({
+    key: String(it[key] || '未填'),
+    n: it.n || 0,
+    ok: it.ok || 0,
+    rate: it.rate || 0,
+  }))
+}
+
+const featKpis = computed(() => {
+  const o = featWeights.value.overall || { n: 0, ok: 0, rate: 0 }
+  const failN = Math.max(0, (o.n || 0) - (o.ok || 0))
+  const needN = (featWeights.value.by_error_class || []).find((x) => x.error_class === 'need_phone')?.n || 0
+  return [
+    { label: '总尝试', value: o.n || 0, tone: 'plain' },
+    { label: '成功', value: o.ok || 0, tone: 'ok' },
+    { label: '失败/异常', value: failN, tone: 'bad' },
+    { label: '需接码', value: needN, tone: 'warn' },
+    { label: '成功率', value: featPct(o.rate), tone: 'ok' },
+  ]
+})
+
+const featProxyBars = computed(() => featBarItems(featWeights.value.by_proxy_country, 'proxy_country'))
+const featFpBars = computed(() => featBarItems(featWeights.value.by_impersonate, 'impersonate'))
+const featSmsBars = computed(() => featBarItems(featWeights.value.by_sms_country, 'sms_country'))
+const featPathBars = computed(() => featBarItems(featWeights.value.by_login_path, 'login_path'))
+const featRecent = computed(() => (featRows.value || []).slice(0, 8))
+
+async function loadFeatBoard() {
+  featLoading.value = true
+  try {
+    const featParams = { limit: 8 }
+    if (featOutcome.value) featParams.outcome = featOutcome.value
+    const [w, f] = await Promise.all([
+      getOAuthExportFeatureWeights(1),
+      getOAuthExportFeatures(featParams),
+    ])
+    featWeights.value = {
+      overall: w.overall || { n: 0, ok: 0, rate: 0 },
+      by_proxy_country: w.by_proxy_country || [],
+      by_impersonate: w.by_impersonate || [],
+      by_browser: w.by_browser || [],
+      by_sms_country: w.by_sms_country || [],
+      by_sms_operator: w.by_sms_operator || [],
+      by_login_path: w.by_login_path || [],
+      by_error_class: w.by_error_class || [],
+    }
+    featRows.value = f.rows || []
+  } catch (e) {
+    ElMessage.error('加载授权特征失败: ' + (e.message || e))
+  } finally {
+    featLoading.value = false
+  }
+}
+
+async function openFeatBoard() {
+  featVisible.value = true
+  await loadFeatBoard()
+}
+
+async function onFeatOutcome(v) {
+  featOutcome.value = v
+  await loadFeatBoard()
+}
+
 const oauthActiveTab = ref('network')
 const oauthNowTime = ref(Date.now())
 let oauthLiveTimer = null
 
 onMounted(() => {
   loadDomains()
+  loadSmsCountries()
   oauthLiveTimer = setInterval(() => {
     if (oauthRunning.value) {
       oauthNowTime.value = Date.now()
@@ -1599,17 +1730,37 @@ function saveOAuthFormDefault() {
   }
 }
 
-const SMS_COUNTRY_OPTIONS = [
-  { value: '52', label: '52 · 泰国 (推荐 ★★★★★ 免WhatsApp极高成功率)' },
-  { value: 'AUTO', label: '🌐 智能多国自动轮换 (泰国52/印尼6/越南10/巴西73/波兰15)' },
-  { value: '6', label: '6 · 印度尼西亚 (东南亚高库存)' },
-  { value: '10', label: '10 · 越南 (东南亚低价)' },
-  { value: '73', label: '73 · 巴西 (拉美高爆)' },
-  { value: '15', label: '15 · 波兰 (欧洲高品质)' },
-  { value: '16', label: '16 · 英国 (欧洲高品质)' },
-  { value: '12', label: '12 · 美国虚拟号' },
-  { value: '187', label: '187 · 美国实体号' },
-]
+const smsAllCountries = ref([])
+const smsCountriesLoading = ref(false)
+
+function formatSmsCountryOption(c) {
+  const bits = [`${c.id} · ${c.name_cn}`]
+  if (c.openai_sms_safe) bits.push('免WhatsApp')
+  if (c.count != null && c.count !== '') bits.push(`余${c.count}`)
+  else bits.push('暂无库存')
+  if (c.price != null && c.price !== '') bits.push(`${c.price}`)
+  return { value: String(c.id), label: bits.join(' · '), safe: !!c.openai_sms_safe }
+}
+
+const SMS_COUNTRY_OPTIONS = computed(() => {
+  const auto = { value: 'AUTO', label: '🌐 智能多国自动轮换', safe: false }
+  const rest = (smsAllCountries.value || []).map(formatSmsCountryOption)
+  return [auto, ...rest]
+})
+
+async function loadSmsCountries() {
+  smsCountriesLoading.value = true
+  try {
+    const r = await getSmsAllCountries(oauthForm.smsProvider || 'smsbower')
+    smsAllCountries.value = r.countries || []
+  } catch (e) {
+    if (!smsAllCountries.value.length) {
+      ElMessage.warning('加载接码国家失败，可直接输入国家 ID')
+    }
+  } finally {
+    smsCountriesLoading.value = false
+  }
+}
 
 const oauthPriceTiers = ref([])
 const oauthPriceTiersLoading = ref(false)
@@ -1636,7 +1787,14 @@ watch(
   () => {
     loadOAuthPriceTiers()
   },
-  { immediate: true }
+  { immediate: true },
+)
+
+watch(
+  () => oauthForm.smsProvider,
+  () => {
+    loadSmsCountries()
+  },
 )
 
 const oauthLogModalVisible = ref(false)
@@ -1709,6 +1867,7 @@ async function openOAuthExport(target = 'selected') {
   }
 
   oauthVisible.value = true
+  loadSmsCountries()
 }
 
 function closeOAuthExport() {
@@ -1838,6 +1997,7 @@ async function startOAuthExportTask() {
         }
         ElMessage.success('OAuth 导出任务已全部完成！')
         load(false)
+        if (featVisible.value) loadFeatBoard()
       },
     }, () => {
       if (!oauthRunning.value && oauthEs.value) {
@@ -1983,6 +2143,7 @@ function openOAuthExportForSingle(email) {
   oauthTaskId.value = ''
   initOAuthRows([email])
   oauthVisible.value = true
+  loadSmsCountries()
 }
 
 // ════════════════════════ 数据加载与分页 ════════════════════════
@@ -3239,6 +3400,9 @@ onUnmounted(() => {
           >
             <el-icon><Refresh /></el-icon>OAuth 导出 ({{ selected.length }})
           </el-button>
+          <el-button class="oa-action-btn feat-action-btn" @click="openFeatBoard">
+            <el-icon><DataAnalysis /></el-icon>授权特征
+          </el-button>
 
           <!-- 核心功能：批量复制 AT -->
           <el-dropdown trigger="click" @command="handleCopyAtCommand">
@@ -4203,9 +4367,20 @@ onUnmounted(() => {
                         </el-form-item>
                       </el-col>
                       <el-col :xs="24" :sm="12" :md="8">
-                        <el-form-item label="接码国家 (建议 52 泰国免 WhatsApp)">
-                          <el-select v-model="oauthForm.smsCountry" filterable allow-create placeholder="选择或输入国家ID" style="width: 100%">
-                            <el-option v-for="sc in SMS_COUNTRY_OPTIONS" :key="sc.value" :label="sc.label" :value="sc.value" />
+                        <el-form-item label="接码国家 (可搜索，全量国家)">
+                          <el-select
+                            v-model="oauthForm.smsCountry"
+                            filterable
+                            allow-create
+                            default-first-option
+                            :loading="smsCountriesLoading"
+                            placeholder="搜索国家名或输入国家ID"
+                            style="width: 100%"
+                          >
+                            <el-option v-for="sc in SMS_COUNTRY_OPTIONS" :key="sc.value" :label="sc.label" :value="sc.value">
+                              <span>{{ sc.label }}</span>
+                              <el-tag v-if="sc.safe" size="small" type="success" style="margin-left: 6px">免WhatsApp</el-tag>
+                            </el-option>
                           </el-select>
                         </el-form-item>
                       </el-col>
@@ -4470,6 +4645,134 @@ onUnmounted(() => {
           </div>
         </div>
       </template>
+    </el-dialog>
+
+    <!-- ──────────────── 授权特征 / 成功率看板 ──────────────── -->
+    <el-dialog
+      v-model="featVisible"
+      width="1080px"
+      top="3vh"
+      class="oa-custom-dialog plus-dialog feat-dialog"
+      modal-class="feat-overlay"
+      :close-on-click-modal="false"
+      :show-close="true"
+      append-to-body
+    >
+      <template #header>
+        <div class="oa-header">
+          <div class="oa-header-title">
+            <span class="oa-title-badge feat-badge">特征</span>
+            <span class="oa-title-text">OAuth 授权特征与成功率</span>
+            <el-tag size="small" type="info" round effect="plain">成功失败都记 · 给后续加权选路用</el-tag>
+          </div>
+          <div class="oa-header-extra">
+            <el-button size="small" text :loading="featLoading" @click="loadFeatBoard">
+              <el-icon><Refresh /></el-icon>刷新
+            </el-button>
+          </div>
+        </div>
+      </template>
+
+      <div class="feat-board" v-loading="featLoading">
+        <div class="feat-kpi-row">
+          <div v-for="k in featKpis" :key="k.label" class="feat-kpi" :class="'tone-' + k.tone">
+            <div class="feat-kpi-label">{{ k.label }}</div>
+            <div class="feat-kpi-value">{{ k.value }}</div>
+          </div>
+        </div>
+
+        <div class="feat-grid">
+          <section class="feat-card">
+            <div class="feat-card-head">代理国成功率</div>
+            <div v-if="featProxyBars.length" class="feat-bars">
+              <div v-for="b in featProxyBars" :key="'p-' + b.key" class="feat-bar">
+                <div class="feat-bar-meta">
+                  <span class="feat-bar-key">{{ b.key }}</span>
+                  <span class="feat-bar-num">{{ featPct(b.rate) }} · {{ b.ok }}/{{ b.n }}</span>
+                </div>
+                <div class="feat-bar-track">
+                  <i :style="{ width: featPct(b.rate) }"></i>
+                </div>
+              </div>
+            </div>
+            <div v-else class="feat-empty">暂无样本</div>
+          </section>
+
+          <section class="feat-card">
+            <div class="feat-card-head">指纹成功率</div>
+            <div v-if="featFpBars.length" class="feat-bars">
+              <div v-for="b in featFpBars" :key="'f-' + b.key" class="feat-bar">
+                <div class="feat-bar-meta">
+                  <span class="feat-bar-key">{{ b.key }}</span>
+                  <span class="feat-bar-num">{{ featPct(b.rate) }} · {{ b.ok }}/{{ b.n }}</span>
+                </div>
+                <div class="feat-bar-track">
+                  <i :style="{ width: featPct(b.rate) }"></i>
+                </div>
+              </div>
+            </div>
+            <div v-else class="feat-empty">暂无样本</div>
+          </section>
+
+          <section class="feat-card">
+            <div class="feat-card-head">接码国家成功率</div>
+            <div v-if="featSmsBars.length" class="feat-bars">
+              <div v-for="b in featSmsBars" :key="'s-' + b.key" class="feat-bar">
+                <div class="feat-bar-meta">
+                  <span class="feat-bar-key">{{ b.key }}</span>
+                  <span class="feat-bar-num">{{ featPct(b.rate) }} · {{ b.ok }}/{{ b.n }}</span>
+                </div>
+                <div class="feat-bar-track">
+                  <i :style="{ width: featPct(b.rate) }"></i>
+                </div>
+              </div>
+            </div>
+            <div v-else class="feat-empty">暂无样本</div>
+          </section>
+
+          <section class="feat-card">
+            <div class="feat-card-head">登录路径成功率</div>
+            <div v-if="featPathBars.length" class="feat-bars">
+              <div v-for="b in featPathBars" :key="'l-' + b.key" class="feat-bar">
+                <div class="feat-bar-meta">
+                  <span class="feat-bar-key">{{ b.key }}</span>
+                  <span class="feat-bar-num">{{ featPct(b.rate) }} · {{ b.ok }}/{{ b.n }}</span>
+                </div>
+                <div class="feat-bar-track">
+                  <i :style="{ width: featPct(b.rate) }"></i>
+                </div>
+              </div>
+            </div>
+            <div v-else class="feat-empty">暂无样本</div>
+          </section>
+        </div>
+
+        <section class="feat-recent">
+          <div class="feat-recent-head">
+            <span>最近 8 次尝试</span>
+            <el-radio-group :model-value="featOutcome" size="small" @change="onFeatOutcome">
+              <el-radio-button value="">全部</el-radio-button>
+              <el-radio-button value="success">成功</el-radio-button>
+              <el-radio-button value="error">异常</el-radio-button>
+              <el-radio-button value="need_phone">需接码</el-radio-button>
+            </el-radio-group>
+          </div>
+          <div v-if="featRecent.length" class="feat-recent-list">
+            <div v-for="r in featRecent" :key="r.id" class="feat-recent-row">
+              <span class="feat-chip" :class="'tone-' + featOutcomeMeta(r.outcome).tone">{{ featOutcomeMeta(r.outcome).label }}</span>
+              <span class="feat-mail" :title="r.email">{{ r.email }}</span>
+              <span class="feat-cell">{{ r.proxy_country || '—' }}</span>
+              <span class="feat-cell">{{ r.impersonate || '—' }}</span>
+              <span class="feat-cell">{{ r.sms_country || '—' }}{{ r.sms_operator ? ' / ' + r.sms_operator : '' }}</span>
+              <span class="feat-cell feat-err">{{ featErrorLabel(r.error_class) }}</span>
+              <span class="feat-time">{{ featWhen(r.created_at) }}</span>
+            </div>
+          </div>
+          <div v-else class="feat-empty feat-empty-wide">
+            还没有样本。重启后端后跑一次授权，成功失败都会出现在这里。
+          </div>
+        </section>
+      </div>
     </el-dialog>
 
     <!-- ──────────────── 单账号 OAuth 详细日志弹窗 ──────────────── -->
@@ -4961,8 +5264,18 @@ onUnmounted(() => {
                       </el-form-item>
                     </el-col>
                     <el-col :xs="24" :sm="6">
-                      <el-form-item label="国家代码">
-                        <el-input v-model="refreshForm.smsCountry" placeholder="如 52(泰国), 6(印尼)" />
+                      <el-form-item label="接码国家">
+                        <el-select
+                          v-model="refreshForm.smsCountry"
+                          filterable
+                          allow-create
+                          default-first-option
+                          :loading="smsCountriesLoading"
+                          placeholder="搜索国家名或输入国家ID"
+                          style="width: 100%"
+                        >
+                          <el-option v-for="sc in SMS_COUNTRY_OPTIONS" :key="sc.value" :label="sc.label" :value="sc.value" />
+                        </el-select>
                       </el-form-item>
                     </el-col>
                   </el-row>
@@ -6281,6 +6594,15 @@ onUnmounted(() => {
   color: #fff !important;
   font-weight: 600;
 }
+.feat-action-btn {
+  background: linear-gradient(135deg, #8b5cf6, #6d28d9) !important;
+  border: none !important;
+  color: #fff !important;
+  font-weight: 600;
+}
+.oa-title-badge.feat-badge {
+  background: linear-gradient(135deg, #8b5cf6, #6d28d9);
+}
 .oa-title-text {
   font-size: 14px;
   font-weight: 600;
@@ -7045,5 +7367,196 @@ onUnmounted(() => {
   padding: 0 4px;
   border-radius: 4px;
   background: rgba(15, 23, 42, 0.08);
+}
+
+:deep(.feat-dialog) {
+  margin: 3vh auto 0 !important;
+  max-height: 94vh;
+  overflow: hidden !important;
+}
+:deep(.feat-dialog .el-dialog__header) {
+  padding: 12px 18px;
+}
+:deep(.feat-dialog .el-dialog__body) {
+  padding: 12px 16px 16px;
+  overflow: hidden !important;
+  max-height: calc(94vh - 56px);
+}
+:deep(.feat-dialog .el-dialog__footer) {
+  display: none;
+}
+.feat-board {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  height: min(calc(94vh - 72px), 680px);
+  overflow: hidden;
+}
+.feat-kpi-row {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 8px;
+  flex-shrink: 0;
+}
+.feat-kpi {
+  border-radius: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--el-border-color-lighter);
+  background: var(--el-fill-color-light);
+  min-width: 0;
+}
+.feat-kpi.tone-ok {
+  background: linear-gradient(180deg, rgba(16, 185, 129, 0.14), rgba(16, 185, 129, 0.04));
+  border-color: rgba(16, 185, 129, 0.28);
+}
+.feat-kpi.tone-bad {
+  background: linear-gradient(180deg, rgba(239, 68, 68, 0.12), rgba(239, 68, 68, 0.04));
+  border-color: rgba(239, 68, 68, 0.24);
+}
+.feat-kpi.tone-warn {
+  background: linear-gradient(180deg, rgba(245, 158, 11, 0.14), rgba(245, 158, 11, 0.04));
+  border-color: rgba(245, 158, 11, 0.28);
+}
+.feat-kpi-label {
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+}
+.feat-kpi-value {
+  margin-top: 2px;
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: -0.4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  line-height: 1.15;
+}
+.feat-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+  gap: 8px;
+  flex: 1;
+  min-height: 0;
+}
+.feat-card,
+.feat-recent {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border-radius: 10px;
+  border: 1px solid var(--el-border-color-lighter);
+  background: var(--el-bg-color);
+  padding: 10px 12px;
+}
+.feat-card {
+  display: flex;
+  flex-direction: column;
+}
+.feat-card-head,
+.feat-recent-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12.5px;
+  font-weight: 700;
+  margin-bottom: 8px;
+  flex-shrink: 0;
+}
+.feat-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  overflow: hidden;
+}
+.feat-bar-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11.5px;
+}
+.feat-bar-key {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.feat-bar-num {
+  color: var(--el-text-color-secondary);
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+.feat-bar-track {
+  height: 6px;
+  border-radius: 99px;
+  background: var(--el-fill-color);
+  overflow: hidden;
+}
+.feat-bar-track i {
+  display: block;
+  height: 100%;
+  border-radius: 99px;
+  background: linear-gradient(90deg, #8b5cf6, #10b981);
+}
+.feat-empty {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  padding: 18px 4px;
+}
+.feat-empty-wide {
+  text-align: center;
+  padding-top: 28px;
+}
+.feat-recent {
+  flex-shrink: 0;
+  height: 232px;
+}
+.feat-recent-list {
+  display: grid;
+  grid-template-rows: repeat(8, 1fr);
+  height: calc(100% - 28px);
+  overflow: hidden;
+}
+.feat-recent-row {
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1.6fr) 52px minmax(0, 1.1fr) minmax(0, 1fr) 88px 86px;
+  gap: 8px;
+  align-items: center;
+  font-size: 12px;
+  min-width: 0;
+  overflow: hidden;
+}
+.feat-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 20px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+}
+.feat-chip.tone-ok { color: #059669; background: rgba(16, 185, 129, 0.14); }
+.feat-chip.tone-bad { color: #dc2626; background: rgba(239, 68, 68, 0.14); }
+.feat-chip.tone-warn { color: #d97706; background: rgba(245, 158, 11, 0.16); }
+.feat-chip.tone-mute { color: var(--el-text-color-secondary); background: var(--el-fill-color); }
+.feat-mail,
+.feat-cell,
+.feat-err,
+.feat-time {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.feat-mail { font-weight: 600; }
+.feat-cell, .feat-err, .feat-time { color: var(--el-text-color-secondary); }
+.feat-time { text-align: right; font-variant-numeric: tabular-nums; }
+</style>
+
+<style>
+.feat-overlay {
+  overflow: hidden !important;
+}
+.feat-overlay .el-overlay-dialog {
+  overflow: hidden !important;
 }
 </style>

@@ -112,6 +112,12 @@ export const downloadOAuthExportSub2 = (taskId, emails = '') =>
     responseType: 'blob',
   })
 
+export const getOAuthExportFeatures = (params = {}) =>
+  http.get('/api/registered/oauth_export/features', { params })
+
+export const getOAuthExportFeatureWeights = (minN = 1) =>
+  http.get('/api/registered/oauth_export/feature_weights', { params: { min_n: minN } })
+
 // ──────────────── Token 重新获取与刷新 (Token Refresh Studio) ────────────────
 export const startTokenRefresh = (payload) =>
   http.post('/api/registered/token_refresh/start', payload)

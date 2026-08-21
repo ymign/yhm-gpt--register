@@ -191,6 +191,241 @@ def _handle_choose_account_page(session, html_text: str, current_url: str, post_
     return ""
 
 
+def _short_url(url: str, limit: int = 90) -> str:
+    u = (url or "").strip()
+    if len(u) <= limit:
+        return u
+    return u[:limit] + "..."
+
+
+def _page_kind_from_url(url: str) -> str:
+    u = (url or "").lower()
+    if "localhost:1455/auth/callback" in u or "code=" in u:
+        return "callback"
+    if "/log-in/password" in u:
+        return "密码页"
+    if "/email-verification" in u:
+        return "邮箱验证页"
+    if "/mfa-challenge" in u:
+        return "2FA页"
+    if "/add-phone" in u or "/phone-verification" in u:
+        return "绑手机页"
+    if "/workspace" in u:
+        return "工作空间页"
+    if "/consent" in u or "/sign-in-with-chatgpt" in u:
+        return "授权同意页"
+    if "/choose-an-account" in u:
+        return "选账号页"
+    if "/log-in" in u:
+        return "登录页"
+    if "/oauth/authorize" in u or "/oauth2/auth" in u:
+        return "OAuth授权入口"
+    if "/accounts/login" in u:
+        return "登录challenge"
+    return "页面"
+
+
+def _is_real_workspace_url(url: str) -> bool:
+    u = (url or "").lower()
+    if "/workspace" in u or "/sign-in-with-chatgpt/" in u:
+        return True
+    if "/consent" in u and "auth.openai.com" in u:
+        return True
+    return False
+
+
+def _json_or_empty(resp) -> dict:
+    try:
+        data = resp.json()
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _parse_auth_page(data: Any) -> tuple[str, str, str]:
+    """从 authorize/continue 一类 JSON 抽出 page_type / continue_url / email_verification_mode。"""
+    if not isinstance(data, dict):
+        return "", "", ""
+    page = data.get("page") if isinstance(data.get("page"), dict) else {}
+    page_type = str((page or {}).get("type") or "").strip().lower()
+    continue_url = str(data.get("continue_url") or data.get("redirect_url") or "").strip()
+    payload = (page or {}).get("payload") if isinstance((page or {}).get("payload"), dict) else {}
+    mode = str((payload or {}).get("email_verification_mode") or "").strip().lower()
+    return page_type, continue_url, mode
+
+
+def _describe_auth_page(page_type: str, continue_url: str, mode: str = "") -> str:
+    bits = [f"page_type={page_type or '(空)'}"]
+    if mode:
+        bits.append(f"mode={mode}")
+    if continue_url:
+        bits.append(f"continue={_page_kind_from_url(continue_url)} {_short_url(continue_url)}")
+    else:
+        bits.append("continue=无")
+    return " ".join(bits)
+
+
+def _is_password_page(page_type: str, continue_url: str) -> bool:
+    return (page_type or "") == "login_password" or "/log-in/password" in (continue_url or "")
+
+
+def _is_otp_page(page_type: str, continue_url: str, mode: str = "") -> bool:
+    if (page_type or "") in ("email_otp_verification", "passwordless_signup", "passwordless_login"):
+        return True
+    if "/email-verification" in (continue_url or ""):
+        return True
+    if (mode or "") in ("passwordless_signup", "passwordless_login", "email_otp_verification"):
+        return True
+    return False
+
+
+def _is_mfa_page(page_type: str, continue_url: str) -> bool:
+    return (page_type or "") in ("mfa_challenge", "totp_verification") or "/mfa-challenge" in (continue_url or "")
+
+
+def _still_needs_login(page_type: str, continue_url: str) -> bool:
+    pt = (page_type or "").strip().lower()
+    if pt in ("login", "log_in", "login_password"):
+        return True
+    return _page_kind_from_url(continue_url) in ("登录页", "密码页")
+
+
+def _looks_logged_in(page_type: str, continue_url: str, mode: str = "") -> bool:
+    """只有明确离开登录/OTP/2FA 才算已登录。空 page + 空 continue 不算。"""
+    if _still_needs_login(page_type, continue_url):
+        return False
+    if _is_otp_page(page_type, continue_url, mode):
+        return False
+    if _is_mfa_page(page_type, continue_url):
+        return False
+    if continue_url:
+        return True
+    pt = (page_type or "").strip().lower()
+    return pt in ("add_phone", "workspace_select", "consent")
+
+
+def _kickoff_login_email_otp(session, post_headers: dict, timeout, log_fn) -> tuple[bool, str, str, str]:
+    """停在密码页且无密码时，向 OpenAI 申请发邮箱 OTP。
+
+    当前还在密码页，通常还没有 email-otp challenge，必须先 send 再建码。
+    resend 放最后，避免在没 challenge 时空转。
+    返回 (成功, page_type, continue_url, mode)。
+    """
+    attempts = [
+        ("GET", "https://auth.openai.com/api/accounts/email-otp/send", "https://auth.openai.com/log-in/password"),
+        ("POST", "https://auth.openai.com/api/accounts/passwordless/send-otp", "https://auth.openai.com/log-in/password"),
+        ("POST", "https://auth.openai.com/api/accounts/password/send-otp", "https://auth.openai.com/log-in/password"),
+        ("POST", "https://auth.openai.com/api/accounts/email-otp/resend", "https://auth.openai.com/email-verification"),
+    ]
+    for method, url, referer in attempts:
+        headers = dict(post_headers)
+        headers["Referer"] = referer
+        name = url.rsplit("/", 1)[-1]
+        try:
+            if method == "GET":
+                resp = session.get(url, headers=headers, timeout=timeout)
+            else:
+                resp = session.post(url, headers=headers, json={}, timeout=timeout)
+        except Exception as e:
+            if log_fn:
+                log_fn(f"[3/6] 申请发码 {method} {name} 异常: {e}")
+            continue
+        snip = (resp.text or "").replace("\n", " ")[:120]
+        if log_fn:
+            log_fn(f"[3/6] 申请发码 {method} {name} HTTP {resp.status_code} {snip}")
+        if resp.status_code == 200:
+            pt, cu, md = _parse_auth_page(_json_or_empty(resp))
+            if log_fn:
+                log_fn(f"[3/6] 发码成功 {method} {name} {_describe_auth_page(pt, cu, md)}")
+            return True, pt, cu, md
+    if log_fn:
+        log_fn("[3/6] 申请发码全部失败")
+    return False, "", "", ""
+
+
+def _submit_totp_if_needed(
+    session,
+    post_headers: dict,
+    page_type: str,
+    continue_url: str,
+    totp_secret: str,
+    timeout,
+    log_fn,
+    verify_mode: str = "",
+) -> tuple[str, str, str]:
+    """当前是 2FA 页才提交 TOTP；否则原样返回。失败直接抛错，不假装通过。"""
+    if not _is_mfa_page(page_type, continue_url):
+        return page_type, continue_url, verify_mode or ""
+    verify_mode = verify_mode or ""
+    if not (totp_secret or "").strip():
+        raise RuntimeError("停在 2FA 页，但库里没有 totp_secret，无法提交动态码")
+    challenge_id = continue_url.split("/")[-1] if "/mfa-challenge/" in (continue_url or "") else ""
+    totp_code = _totp_now(totp_secret)
+    if not totp_code:
+        raise RuntimeError("库里有 totp_secret，但当前窗口无法算出 6 位动态码")
+    if log_fn:
+        log_fn(f"[2/6] 当前是 2FA 页，提交 TOTP={totp_code} challenge_id={challenge_id[:8] or '无'}")
+    mfa_headers = dict(post_headers)
+    mfa_headers["Referer"] = (
+        f"https://auth.openai.com/mfa-challenge/{challenge_id}" if challenge_id else "https://auth.openai.com/mfa-challenge"
+    )
+    mfa_resp = session.post(
+        "https://auth.openai.com/api/accounts/mfa/verify",
+        headers=mfa_headers,
+        json={"code": totp_code, "type": "totp", "id": challenge_id},
+        allow_redirects=False,
+        timeout=timeout,
+    )
+    step_data = _json_or_empty(mfa_resp)
+    page_type, continue_url, next_mode = _parse_auth_page(step_data)
+    verify_mode = next_mode or verify_mode
+    if log_fn:
+        log_fn(f"[2/6] 2FA 验证 HTTP {mfa_resp.status_code} {_describe_auth_page(page_type, continue_url, verify_mode)}")
+    if mfa_resp.status_code != 200:
+        raise RuntimeError(f"2FA 验证失败: HTTP {mfa_resp.status_code} - {(mfa_resp.text or '')[:180]}")
+    if _is_password_page(page_type, continue_url):
+        if log_fn:
+            log_fn("[2/6] 2FA 后仍回到密码页，未视为已登录")
+    return page_type, continue_url, verify_mode
+
+
+def _abs_auth_url(url: str) -> str:
+    u = (url or "").strip()
+    if not u:
+        return ""
+    if u.startswith("/"):
+        return urljoin("https://auth.openai.com", u)
+    return u
+
+
+def _enter_auth_page(session, url: str, nav_headers: dict, timeout, log_fn, label: str) -> str:
+    """GET continue_url，把服务端返回的下一页真正打开，绑定登录会话。"""
+    curr = _abs_auth_url(url)
+    if not curr:
+        return ""
+    for hop in range(6):
+        try:
+            r = session.get(curr, headers=nav_headers, allow_redirects=False, timeout=timeout)
+        except Exception as e:
+            if log_fn:
+                log_fn(f"{label} GET 异常: {e}")
+            return curr
+        loc = (r.headers.get("Location") or r.headers.get("location") or "").strip()
+        kind = _page_kind_from_url(loc or curr)
+        if log_fn:
+            log_fn(f"{label} GET hop {hop + 1} HTTP {r.status_code} {kind} {_short_url(loc or curr)}")
+        if loc:
+            loc = _abs_auth_url(loc)
+            if _page_kind_from_url(loc) in ("登录页", "密码页"):
+                if log_fn:
+                    log_fn(f"{label} 打开后又回到登录/密码页，会话没保住")
+                return loc
+            curr = loc
+            continue
+        return curr
+    return curr
+
+
 def _follow_oauth_callback(
     session,
     start_urls: list[str],
@@ -217,10 +452,16 @@ def _follow_oauth_callback(
         if curr.startswith("/"):
             curr = "https://auth.openai.com" + curr
 
-        _log(f"[5/6] 正在跟踪授权跳转链路 (尝试 {start_idx+1}/{len(start_urls)}: {curr[:65]}...)...")
+        start_kind = _page_kind_from_url(curr)
+        if start_kind in ("密码页", "登录页"):
+            _log(f"[5/6] 跳过起点 {start_idx+1}/{len(start_urls)}：这是{start_kind}，未登录跟下去也拿不到 callback code  {_short_url(curr)}")
+            continue
+
+        _log(f"[5/6] 跟踪跳转 {start_idx+1}/{len(start_urls)} 起点={start_kind} {_short_url(curr)}")
 
         for hop in range(15):
             if _callback_has_code(curr, redirect_uri):
+                _log(f"[5/6] 已捕获 callback code: {_short_url(curr)}")
                 return curr
 
             try:
@@ -231,13 +472,22 @@ def _follow_oauth_callback(
 
             status = r.status_code
             loc = (r.headers.get("Location") or r.headers.get("location") or "").strip()
-            _log(f"[5/6] 跳转跟踪 hop {hop+1}: HTTP {status} -> {(loc or curr)[:75]}")
+            kind = _page_kind_from_url(loc or curr)
+            if loc:
+                loc_full = loc if not loc.startswith("/") else urljoin("https://auth.openai.com", loc)
+                _log(f"[5/6] hop {hop+1}: HTTP {status} {kind} -> {_short_url(loc_full)}")
+            else:
+                _log(f"[5/6] hop {hop+1}: HTTP {status} 停在{kind} {_short_url(curr)}")
 
             if loc:
                 if loc.startswith("/"):
                     loc = urljoin("https://auth.openai.com", loc)
                 if _callback_has_code(loc, redirect_uri):
+                    _log(f"[5/6] 重定向中捕获 callback code: {_short_url(loc)}")
                     return loc
+                if _page_kind_from_url(loc) in ("密码页", "登录页"):
+                    _log("[5/6] 跳转落到登录/密码页，说明当前会话未真正登录，停止这条起点")
+                    break
                 curr = loc
                 continue
 
@@ -248,12 +498,17 @@ def _follow_oauth_callback(
                 if _callback_has_code(curr, redirect_uri):
                     return curr
 
+                if _page_kind_from_url(curr) in ("密码页", "登录页"):
+                    _log("[5/6] 当前仍是登录/密码页，未进入工作空间，停止这条起点（不会把登录页当成 workspace）")
+                    break
+
                 # 1. 检查 HTML 中是否有 meta refresh 或 JS location 重定向
                 m_meta = re.search(r'<meta[^>]+http-equiv=["\']refresh["\'][^>]+content=["\'][^"\']*url=([^"\']+)["\']', html_text, re.IGNORECASE)
                 if m_meta:
                     meta_target = m_meta.group(1).strip()
                     if meta_target.startswith("/"):
                         meta_target = urljoin("https://auth.openai.com", meta_target)
+                    _log(f"[5/6] HTML meta refresh -> {_short_url(meta_target)}")
                     if _callback_has_code(meta_target, redirect_uri):
                         return meta_target
                     curr = meta_target
@@ -264,22 +519,20 @@ def _follow_oauth_callback(
                     loc_target = m_loc.group(1).strip()
                     if loc_target.startswith("/"):
                         loc_target = urljoin("https://auth.openai.com", loc_target)
+                    _log(f"[5/6] HTML JS location -> {_short_url(loc_target)}")
                     if _callback_has_code(loc_target, redirect_uri):
                         return loc_target
                     curr = loc_target
                     continue
 
-                # 2. 检查是否是 workspace / consent 页面
-                is_workspace_like = (
-                    ("/workspace" in curr)
-                    or ("/sign-in-with-chatgpt/" in curr)
-                    or ("/consent" in curr)
-                    or ("workspace" in html_text.lower())
-                )
+                # 2. 仅在真实 workspace / consent URL 上提交选择，不用 HTML 里的 workspace 字样误判
+                is_workspace_like = _is_real_workspace_url(curr)
                 if is_workspace_like:
                     wid = _extract_workspace_id_from_session(session, html_text) or fallback_workspace_id
                     if wid:
-                        _log(f"[5/6] 发现授权工作空间 (workspace_id={wid[:8]}...)，正在提交选择...")
+                        _log(f"[5/6] 工作空间页，提交 workspace/select id={wid[:8]}...")
+                    else:
+                        _log("[5/6] 工作空间页，但没解析到 workspace_id，改空 payload 试一次")
                     ws_headers = dict(post_headers)
                     ws_headers["Origin"] = "https://auth.openai.com"
                     ws_headers["Referer"] = curr
@@ -296,6 +549,7 @@ def _follow_oauth_callback(
                             timeout=timeout,
                         )
                         ws_loc = (ws_resp.headers.get("Location") or ws_resp.headers.get("location") or "").strip()
+                        _log(f"[5/6] workspace/select HTTP {ws_resp.status_code} loc={_short_url(ws_loc) or '无'}")
                         if ws_loc:
                             if ws_loc.startswith("/"):
                                 ws_loc = urljoin("https://auth.openai.com", ws_loc)
@@ -303,15 +557,21 @@ def _follow_oauth_callback(
                                 return ws_loc
                             curr = ws_loc
                             continue
-                        ws_data = ws_resp.json() if ws_resp.status_code == 200 else {}
+                        ws_data = {}
+                        try:
+                            ws_data = ws_resp.json() if ws_resp.status_code == 200 else {}
+                        except Exception:
+                            ws_data = {}
                         next_url = (ws_data.get("continue_url") or ws_data.get("redirect_url") or "").strip()
                         if next_url:
                             if next_url.startswith("/"):
                                 next_url = urljoin("https://auth.openai.com", next_url)
+                            _log(f"[5/6] workspace/select continue_url={_short_url(next_url)}")
                             if _callback_has_code(next_url, redirect_uri):
                                 return next_url
                             curr = next_url
                             continue
+                        _log(f"[5/6] workspace/select 无下一跳 body={(ws_resp.text or '')[:120]}")
                     except Exception as e:
                         _log(f"[5/6] workspace/select 异常: {e}")
 
@@ -537,6 +797,72 @@ def _prune_tasks_locked() -> None:
             _tasks.pop(k, None)
 
 
+def _trace_put(trace: Optional[dict], **kwargs) -> None:
+    if not isinstance(trace, dict):
+        return
+    for k, v in kwargs.items():
+        if v is None:
+            continue
+        trace[k] = v
+
+
+def _ua_family(ua: str, impersonate: str = "", browser_type: str = "") -> str:
+    raw = f"{impersonate} {browser_type} {ua}".lower()
+    if "safari" in raw or "ios" in raw:
+        return "safari"
+    if "firefox" in raw:
+        return "firefox"
+    if "chrome" in raw or "chromium" in raw:
+        return "chrome"
+    return (browser_type or impersonate or "unknown")[:32]
+
+
+def _proxy_host_of(proxy: str) -> str:
+    p = (proxy or "").strip()
+    if not p:
+        return ""
+    try:
+        if "://" not in p:
+            p = "http://" + p
+        host = urlparse(p).hostname or ""
+        return host
+    except Exception:
+        return p.split("@")[-1].split(":")[0]
+
+
+def _phone_prefix(phone: str) -> str:
+    digits = re.sub(r"\D+", "", phone or "")
+    if not digits:
+        return ""
+    return ("+" + digits)[:7]
+
+
+def _classify_oauth_error(err: str, status: str = "") -> str:
+    s = (err or "").lower()
+    st = (status or "").lower()
+    if st == "need_phone" or "需接码" in (err or "") or "add_phone" in s:
+        return "need_phone"
+    if "session is no longer valid" in s or "invalid_state" in s:
+        return "session_expired"
+    if "no_numbers" in s:
+        return "sms_no_numbers"
+    if "suspicious behavior from phone" in s:
+        return "phone_rejected"
+    if "接码" in (err or "") or "sms" in s or "短信" in (err or ""):
+        return "sms_fail"
+    if "otp" in s or "验证码" in (err or "") or "取件凭证" in (err or ""):
+        return "otp_fail"
+    if "password" in s or "密码" in (err or ""):
+        return "password_fail"
+    if "callback" in s or "authorization code" in s:
+        return "callback_fail"
+    if "token" in s:
+        return "token_fail"
+    if st in ("cancelled", "not_found"):
+        return st
+    return "other"
+
+
 def execute_codex_oauth_flow(
     email: str,
     mail_provider: Any,
@@ -547,6 +873,7 @@ def execute_codex_oauth_flow(
     step_fn: Optional[Callable[[str, str], None]] = None,
     skip_sms: bool = True,
     timeout: float = 45.0,
+    trace: Optional[dict] = None,
 ) -> dict:
     """独立且纯净的 Codex OAuth 授权与 Token 获取协议流。
 
@@ -568,6 +895,8 @@ def execute_codex_oauth_flow(
 
     account_info = account_info or {}
     device_id = str(account_info.get("device_id") or "").strip() or str(uuid.uuid4())
+    trace = trace if isinstance(trace, dict) else {}
+    path_steps: list[str] = []
 
     country_code = (target_country or account_info.get("reg_country") or "JP").strip().upper()
     lang_full = COUNTRY_LANG_MAP.get(country_code, "ja-JP,ja;q=0.9,en-US;q=0.8" if country_code == "JP" else "en-US,en;q=0.9")
@@ -576,6 +905,19 @@ def execute_codex_oauth_flow(
     fp = generate_fingerprint(country_code=country_code)
     ua = fp.get("user_agent") or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
     impersonate = fp.get("impersonate") or "chrome136"
+    _trace_put(
+        trace,
+        impersonate=impersonate,
+        browser_type=fp.get("browser_type") or "",
+        ua_family=_ua_family(ua, impersonate, str(fp.get("browser_type") or "")),
+        screen=fp.get("screen") or "",
+        timezone=fp.get("timezone") or "",
+        lang=lang_full,
+        proxy_country=country_code,
+        proxy_host=_proxy_host_of(proxy),
+        has_password=bool(str(account_info.get("password") or "").strip()),
+        has_totp=bool(str(account_info.get("totp_secret") or "").strip()),
+    )
 
     client_id = "app_EMoamEEZ73f0CkXaXp7hrann"
     redirect_uri = "http://localhost:1455/auth/callback"
@@ -786,36 +1128,59 @@ def execute_codex_oauth_flow(
                 },
             )
             _log(f"🎉 [AuthFlow 兜底重登成功] access_token(len={len(new_at)}), refresh_token(len={len(new_rt)}) 已自动写入数据库")
+            path_steps.append("authflow_fallback")
+            _trace_put(
+                trace,
+                login_path="+".join(path_steps) if path_steps else "authflow_fallback",
+                plan_type=claims.get("plan_type") or "free",
+            )
             return {
                 "status": "success",
                 "label": "✅ 登录成功",
-                "access_token_len": len(new_at),
-                "refresh_token_len": len(new_rt),
-                "expires_at": claims.get("exp_iso"),
+                "access_token": new_at,
+                "refresh_token": new_rt,
+                "id_token": new_it,
+                "account_id": claims.get("account_id") or "",
                 "plan_type": claims.get("plan_type") or "free",
+                "exp_iso": claims.get("exp_iso"),
                 "cpa": cpa_doc,
                 "sub2api": sub2_doc,
+                "trace": dict(trace),
             }
 
         raise RuntimeError(f"提交邮箱失败: HTTP {step_resp.status_code} - {err_msg}")
-        raise RuntimeError(f"提交邮箱失败: HTTP {step_resp.status_code} - {(step_resp.text or '')[:150]}")
 
-    step_data = step_resp.json() if step_resp.status_code == 200 else {}
-    page_type = ((step_data.get("page") or {}).get("type") or "").strip().lower()
-    continue_url = (step_data.get("continue_url") or "").strip()
-    _log(f"[2/6] 邮箱已提交: page_type={page_type or 'normal'}")
+    step_data = _json_or_empty(step_resp)
+    page_type, continue_url, verify_mode = _parse_auth_page(step_data)
+    _log(f"[2/6] 邮箱已提交: HTTP {step_resp.status_code} {_describe_auth_page(page_type, continue_url, verify_mode)}")
+    _trace_put(trace, first_page_type=page_type or _page_kind_from_url(continue_url))
+    if page_type:
+        path_steps.append(page_type)
 
-    authenticated = False
+    password = str((account_info or {}).get("password") or "").strip()
+    totp_secret = str((account_info or {}).get("totp_secret") or "").strip()
+    _log(f"[2/6] 本地凭证: 登录密码={'有' if password else '无'}  2FA={'有' if totp_secret else '无'}")
+    try:
+        has_sess = bool(session.cookies.get("oai-client-auth-session"))
+    except Exception:
+        has_sess = False
+    _log(f"[2/6] 会话 cookie oai-client-auth-session={'有' if has_sess else '无'}")
 
-    # 密码分支（如果账号在注册时设置了密码）
-    if page_type == "login_password" or "/log-in/password" in continue_url:
-        password = str(account_info.get("password") or "").strip()
+    login_passed = False
+    otp_kicked = False
+    password_accepted = False
+
+    if _is_password_page(page_type, continue_url):
         if password:
-            _log("正在提交密码进行登录验证...")
+            _log("[2/6] 当前是密码页，库里有登录密码，提交 password/verify")
             try:
-                session.get(f"https://auth.openai.com/log-in/password?email={quote(email)}", headers=nav_headers, timeout=timeout)
-            except Exception:
-                pass
+                session.get(
+                    f"https://auth.openai.com/log-in/password?email={quote(email)}",
+                    headers=nav_headers,
+                    timeout=timeout,
+                )
+            except Exception as e:
+                _log(f"[2/6] 打开密码页 GET 失败（继续提交验证）: {e}")
             pw_headers = dict(post_headers)
             pw_headers["Referer"] = "https://auth.openai.com/log-in/password"
             pw_resp = session.post(
@@ -825,44 +1190,63 @@ def execute_codex_oauth_flow(
                 allow_redirects=False,
                 timeout=timeout,
             )
-            step_data = pw_resp.json() if pw_resp.status_code == 200 else {}
-            page_type = ((step_data.get("page") or {}).get("type") or "").strip().lower()
-            continue_url = (step_data.get("continue_url") or "").strip()
-            _log(f"[2/6] 密码验证响应: status={pw_resp.status_code}, page_type={page_type or 'none'}")
-            if pw_resp.status_code == 200 and not page_type:
-                authenticated = True
-
-    # 2FA TOTP 分支
-    if page_type == "mfa_challenge" or "/mfa-challenge" in continue_url:
-        totp_secret = str(account_info.get("totp_secret") or "").strip()
-        if totp_secret:
-            challenge_id = continue_url.split("/")[-1] if "/mfa-challenge/" in continue_url else ""
-            totp_code = _totp_now(totp_secret)
-            _log(f"正在提交 2FA TOTP 验证码: {totp_code} (challenge_id={challenge_id[:8]}...)...")
-            mfa_headers = dict(post_headers)
-            mfa_headers["Referer"] = f"https://auth.openai.com/mfa-challenge/{challenge_id}" if challenge_id else "https://auth.openai.com/mfa-challenge"
-            mfa_resp = session.post(
-                "https://auth.openai.com/api/accounts/mfa/verify",
-                headers=mfa_headers,
-                json={"code": totp_code, "type": "totp", "id": challenge_id},
-                allow_redirects=False,
-                timeout=timeout,
-            )
-            step_data = mfa_resp.json() if mfa_resp.status_code == 200 else {}
-            page_type = ((step_data.get("page") or {}).get("type") or "").strip().lower()
-            continue_url = (step_data.get("continue_url") or "").strip()
-            if mfa_resp.status_code == 200:
-                _log(f"[2/6] ✅ 2FA TOTP 验证通过 (page_type={page_type or 'success'})")
-                authenticated = True
+            step_data = _json_or_empty(pw_resp)
+            page_type, continue_url, verify_mode = _parse_auth_page(step_data)
+            _log(f"[2/6] 密码验证 HTTP {pw_resp.status_code} {_describe_auth_page(page_type, continue_url, verify_mode)}")
+            if pw_resp.status_code != 200:
+                raise RuntimeError(
+                    f"密码验证失败: HTTP {pw_resp.status_code} - {(pw_resp.text or '')[:180]}"
+                )
+            if _is_password_page(page_type, continue_url):
+                _log("[2/6] 提交密码后仍停在密码页，未视为已登录")
             else:
-                _log(f"[2/6] ⚠️ 2FA TOTP 验证响应: HTTP {mfa_resp.status_code} - {(mfa_resp.text or '')[:120]}")
+                password_accepted = True
+                _log("[2/6] 密码已受理，离开密码页")
+        else:
+            _log("[2/6] 当前是密码页，但库里没有登录密码，不会提交空密码，也不会假装已经登录")
+            _log("[3/6] 改为向 OpenAI 申请邮箱一次性验证码")
+            sent_ok, sent_pt, sent_cu, sent_md = _kickoff_login_email_otp(session, post_headers, timeout, _log)
+            if not sent_ok:
+                raise RuntimeError(
+                    "停在密码页且库里没有登录密码，向 OpenAI 申请邮箱验证码也失败，无法继续授权"
+                )
+            otp_kicked = True
+            path_steps.append("otp_from_password")
+            _trace_put(trace, need_otp=True)
+            otp_issued_after = time.time() - 5
+            if sent_pt:
+                page_type = sent_pt
+            else:
+                page_type = "email_otp_verification"
+            if sent_cu:
+                continue_url = sent_cu
+            elif "/email-verification" not in (continue_url or ""):
+                continue_url = "https://auth.openai.com/email-verification"
+            if sent_md:
+                verify_mode = sent_md
+            _log(f"[3/6] 发码后 {_describe_auth_page(page_type, continue_url, verify_mode)}")
+            if _is_password_page(page_type, continue_url) and not _is_otp_page(page_type, continue_url, verify_mode):
+                page_type = "email_otp_verification"
+                continue_url = "https://auth.openai.com/email-verification"
+                _log("[3/6] 发码接口没返回验证页，按邮箱 OTP 页继续收信")
 
-    # ──────────────── 阶段 3 & 4: 邮箱 OTP 取码与核验 ────────────────
-    need_otp = False
-    if not authenticated:
-        need_otp = (page_type in ("email_otp_verification", "passwordless_signup", "passwordless_login")) or ("/email-verification" in continue_url) or (not page_type and not continue_url)
-    elif "/email-verification" in continue_url or page_type == "email_otp_verification":
+    page_type, continue_url, verify_mode = _submit_totp_if_needed(
+        session, post_headers, page_type, continue_url, totp_secret, timeout, _log, verify_mode
+    )
+    login_passed = _looks_logged_in(page_type, continue_url, verify_mode)
+    need_otp = _is_otp_page(page_type, continue_url, verify_mode) or otp_kicked
+    if (
+        not need_otp
+        and not login_passed
+        and not _is_mfa_page(page_type, continue_url)
+        and (password_accepted or (not page_type and not continue_url))
+    ):
         need_otp = True
+        _log("[2/6] 还没有离开登录态的下一页，按邮箱 OTP 继续，不会假装已登录")
+    _log(
+        f"[2/6] 登录判定: login_passed={login_passed} need_otp={need_otp} "
+        f"{_describe_auth_page(page_type, continue_url, verify_mode)}"
+    )
 
     if need_otp:
         if not mail_provider:
@@ -873,17 +1257,26 @@ def execute_codex_oauth_flow(
                 )
             raise RuntimeError(f"账号 {email} 需要收取邮箱验证码，但未配置可用邮箱服务或未获取到取件凭证")
 
+        path_steps.append("otp")
+        _trace_put(trace, need_otp=True)
         _step("3", "[3/6] 取邮箱OTP (收信中...)")
-        _log("[3/6] 服务端已自动下发验证码邮件，正在等待收件 (timeout=60s) ...")
+        mail_name = getattr(mail_provider, "display_name", "") or type(mail_provider).__name__
+        if otp_kicked:
+            _log(f"[3/6] 刚向 OpenAI 申请了邮箱验证码，正在 {mail_name} 收信 (timeout=60s)")
+        else:
+            _log(
+                f"[3/6] 当前是邮箱验证页，按已有账号处理：服务端通常在提交邮箱时已发码，"
+                f"正在 {mail_name} 收信 (timeout=60s, issued_after={int(otp_issued_after)})"
+            )
         t_otp0 = time.time()
         otp_code = mail_provider.wait_for_otp(email, timeout=60, issued_after=otp_issued_after)
         t_otp = round(time.time() - t_otp0, 1)
         if not otp_code:
             raise RuntimeError(f"收取邮箱 OTP 验证码超时 ({t_otp}s) 或未收到邮件")
-        _log(f"[3/6] 成功收取到邮箱 OTP 验证码: {otp_code} (耗时 {t_otp}s)")
+        _log(f"[3/6] 收到邮箱 OTP: {otp_code} (耗时 {t_otp}s)")
 
         _step("4", "[4/6] 校验OTP (验证码核验)")
-        _log(f"[4/6] 正在提交验证 OTP: {otp_code} ...")
+        _log(f"[4/6] 正在提交邮箱 OTP: {otp_code}")
         st_token_v, so_token_v = "", ""
         try:
             st_token_v, so_token_v = get_sentinel_token(
@@ -893,8 +1286,8 @@ def execute_codex_oauth_flow(
                 user_agent=ua,
                 lang_full=lang_full,
             )
-        except Exception:
-            pass
+        except Exception as e:
+            _log(f"[4/6] OTP 提交前 Sentinel 计算失败（继续用原 token）: {e}")
 
         otp_headers = dict(post_headers)
         otp_headers["Referer"] = "https://auth.openai.com/email-verification"
@@ -910,14 +1303,35 @@ def execute_codex_oauth_flow(
             allow_redirects=False,
             timeout=timeout,
         )
+        step_data = _json_or_empty(v_resp)
+        page_type, continue_url, verify_mode = _parse_auth_page(step_data)
+        _log(f"[4/6] 邮箱 OTP 校验 HTTP {v_resp.status_code} {_describe_auth_page(page_type, continue_url, verify_mode)}")
         if v_resp.status_code != 200:
             raise RuntimeError(f"邮箱 OTP 验证失败: HTTP {v_resp.status_code} - {(v_resp.text or '')[:150]}")
-        _log("[4/6] ✅ 邮箱 OTP 验证成功通过")
-        step_data = v_resp.json() if v_resp.status_code == 200 else {}
-        page_type = ((step_data.get("page") or {}).get("type") or "").strip().lower()
-        continue_url = (step_data.get("continue_url") or "").strip()
+        if _is_otp_page(page_type, continue_url, verify_mode):
+            raise RuntimeError("邮箱 OTP 已提交，但仍停在邮箱验证页，验证码可能无效")
+        if _still_needs_login(page_type, continue_url):
+            raise RuntimeError(
+                f"邮箱 OTP 已提交，但又回到登录/密码页：{_describe_auth_page(page_type, continue_url, verify_mode)}"
+            )
+        login_passed = True
+        _log("[4/6] 邮箱 OTP 校验通过，离开验证页")
+    elif login_passed:
+        _log(f"[3/6] 本步不需要邮箱 OTP。当前 {_describe_auth_page(page_type, continue_url, verify_mode)}")
     else:
-        _log("[3/6] 当前账号已通过密码/2FA 鉴权，跳过邮箱 OTP 取码步骤")
+        raise RuntimeError(
+            f"登录未完成，当前 {_describe_auth_page(page_type, continue_url, verify_mode)}。"
+            "不会假装已登录去跟跳转拿 callback code"
+        )
+
+    page_type, continue_url, verify_mode = _submit_totp_if_needed(
+        session, post_headers, page_type, continue_url, totp_secret, timeout, _log, verify_mode
+    )
+    if _still_needs_login(page_type, continue_url) or _is_otp_page(page_type, continue_url, verify_mode):
+        raise RuntimeError(
+            f"登录未完成，当前 {_describe_auth_page(page_type, continue_url, verify_mode)}。"
+            "不会把登录/验证页当成工作空间去跟跳转"
+        )
 
     # 检测是否命中手机号验证
     if page_type == "add_phone" or "/add-phone" in continue_url or "/phone-verification" in continue_url:
@@ -926,11 +1340,23 @@ def execute_codex_oauth_flow(
 
         if not sms_enabled or skip_sms:
             _log("检测到需要手机号验证 (未开启 SMS 接码，已按要求跳过接码并标记)")
+            path_steps.append("add_phone")
+            _trace_put(trace, need_phone=True, login_path="+".join(path_steps), continue_page_type="add_phone")
             return {
                 "status": "need_phone",
                 "label": "需接码(已跳过)",
                 "error": "OpenAI 要求绑定手机号 (已跳过)",
+                "trace": dict(trace),
             }
+
+        add_phone_url = continue_url or "https://auth.openai.com/add-phone"
+        _log("[5/6] 登录后要绑手机。先打开绑手机页，把这次登录会话挂上，再去租号")
+        opened = _enter_auth_page(session, add_phone_url, nav_headers, timeout, _log, "[5/6] 绑手机页")
+        if _page_kind_from_url(opened) in ("登录页", "密码页"):
+            raise RuntimeError(
+                "2FA 后打开绑手机页又回到登录，这次登录会话没有保住。"
+                "账号测活正常不代表这次 OAuth 会话还在，不会去租号浪费钱"
+            )
 
         # ── 开启接码：执行 SmsBower 自动租号、发码、收码与验证 ──
         from sms_provider import PhoneCallbackController, parse_price_spec
@@ -966,6 +1392,17 @@ def execute_codex_oauth_flow(
 
         provider_ids = str(sms_cfg.get("sms_provider_ids") or sms_cfg.get("providerIds") or sms_cfg.get("sms_operator") or "").strip()
         except_provider_ids = str(sms_cfg.get("sms_except_provider_ids") or sms_cfg.get("exceptProviderIds") or "").strip()
+        path_steps.append("add_phone")
+        _trace_put(
+            trace,
+            need_phone=True,
+            sms_enabled=True,
+            sms_provider=provider_key,
+            sms_country=country,
+            sms_provider_ids=provider_ids,
+            sms_except_provider_ids=except_provider_ids,
+            sms_price_spec=str(max_price_raw or ""),
+        )
 
         _step("5_sms", f"[5/6] 手机号接码 ({provider_key})")
         id_tip = f", 指定供应商={provider_ids}" if provider_ids else ""
@@ -1016,30 +1453,54 @@ def execute_codex_oauth_flow(
 
                 _step("5_sms_send", f"[5/6] 发送短信: {phone} (第{attempt}/{max_attempts}号)")
                 _log(f"[sms] 租到手机号: {phone}，正在向 OpenAI 提交发送验证短信...")
-                phone_headers = {
-                    "Accept": "application/json",
-                    "Content-Type": "application/json",
-                    "User-Agent": ua,
-                    "Accept-Language": lang_full,
-                    "Origin": "https://auth.openai.com",
-                    "Referer": "https://auth.openai.com/add-phone",
-                    "oai-device-id": device_id,
-                }
-                send_resp = session.post(
-                    "https://auth.openai.com/api/accounts/add-phone/send",
-                    headers=phone_headers,
-                    json={"phone_number": phone, "channel": "sms"},
-                    timeout=30,
-                )
+                phone_headers = dict(post_headers)
+                phone_headers["Referer"] = "https://auth.openai.com/add-phone"
+                phone_headers["Origin"] = "https://auth.openai.com"
+                if device_id:
+                    phone_headers["oai-device-id"] = device_id
+
+                def _send_phone():
+                    return session.post(
+                        "https://auth.openai.com/api/accounts/add-phone/send",
+                        headers=phone_headers,
+                        json={"phone_number": phone},
+                        timeout=30,
+                    )
+
+                send_resp = _send_phone()
+                err_msg = (send_resp.text or "")[:180]
+                session_dead = send_resp.status_code == 409 or "no longer valid" in err_msg.lower() or "invalid_state" in err_msg.lower()
+                if session_dead:
+                    _log(f"[sms] add-phone/send HTTP {send_resp.status_code} 会话失效: {err_msg}")
+                    _log("[sms] 不立刻判账号死。重新打开绑手机页再发一次")
+                    opened = _enter_auth_page(
+                        session,
+                        opened or add_phone_url,
+                        nav_headers,
+                        timeout,
+                        _log,
+                        "[sms] 绑手机页重开",
+                    )
+                    if _page_kind_from_url(opened) in ("登录页", "密码页"):
+                        ctrl.mark_send_failed("session_expired")
+                        raise RuntimeError(
+                            "绑手机时登录会话已经丢了（打开 add-phone 回到登录页）。"
+                            "账号测活正常，是这次 OAuth 会话断了，已退号"
+                        )
+                    send_resp = _send_phone()
+                    err_msg = (send_resp.text or "")[:180]
+                    session_dead = send_resp.status_code == 409 or "no longer valid" in err_msg.lower() or "invalid_state" in err_msg.lower()
 
                 if send_resp.status_code != 200:
-                    err_msg = (send_resp.text or "")[:150]
-                    if "no longer valid" in err_msg.lower() or send_resp.status_code == 409:
-                        _log(f"[sms] ❌ OpenAI 登录临时会话过期 (409): {err_msg}，立即取消并释放退款该号码...")
+                    if session_dead:
+                        _log(f"[sms] 重发后仍是会话失效 HTTP {send_resp.status_code}: {err_msg}，退号")
                         ctrl.mark_send_failed("session_expired")
-                        raise RuntimeError("OpenAI 登录临时会话过期(409)，请重新发起导出")
-                    _log(f"[sms] ❌ OpenAI 拒绝该手机号 ({send_resp.status_code}): {err_msg}，立即取消并释放退款该号码...")
-                    ctrl.mark_send_failed(err_msg)  # 释放退款
+                        raise RuntimeError(
+                            f"OpenAI 绑手机接口会话失效 HTTP {send_resp.status_code}。"
+                            "这不是测活失败，是这次登录会话没挂上绑手机页，已退号"
+                        )
+                    _log(f"[sms] OpenAI 拒绝该手机号 HTTP {send_resp.status_code}: {err_msg}，退号换下一个")
+                    ctrl.mark_send_failed(err_msg)
                     time.sleep(2)
                     continue
 
@@ -1077,13 +1538,23 @@ def execute_codex_oauth_flow(
                     time.sleep(2)
                     continue
 
-                _log(f"[sms] 🎉 手机号 {phone} 验证成功通过！")
+                _log(f"[sms] 手机号 {phone} 验证 HTTP {val_resp.status_code}，准备进入下一页")
                 ctrl.report_success()
                 phone_verified = True
                 verified_phone = phone
-                step_data = val_resp.json() if val_resp.status_code == 200 else {}
-                page_type = ((step_data.get("page") or {}).get("type") or "").strip().lower()
-                continue_url = (step_data.get("continue_url") or "").strip()
+                page_type, continue_url, verify_mode = _parse_auth_page(_json_or_empty(val_resp))
+                _log(f"[sms] 验号后 {_describe_auth_page(page_type, continue_url, verify_mode)}")
+                act = getattr(ctrl, "activation", None)
+                meta = (getattr(act, "metadata", None) or {}) if act else {}
+                _trace_put(
+                    trace,
+                    phone_verified=True,
+                    sms_attempts=attempt,
+                    sms_country_used=str(getattr(act, "country", "") or country),
+                    sms_phone_prefix=_phone_prefix(phone),
+                    sms_cost=meta.get("cost"),
+                    sms_operator=str(meta.get("operator") or ""),
+                )
                 break
         finally:
             ctrl.cleanup()
@@ -1125,8 +1596,20 @@ def execute_codex_oauth_flow(
     start_candidates = []
     for u in raw_candidates:
         u_str = (u or "").strip()
-        if u_str and u_str not in start_candidates:
-            start_candidates.append(u_str)
+        if not u_str or u_str in start_candidates:
+            continue
+        kind = _page_kind_from_url(u_str)
+        if kind in ("密码页", "登录页"):
+            _log(f"[5/6] 候选起点丢掉（{kind}，未完成登录）: {_short_url(u_str)}")
+            continue
+        start_candidates.append(u_str)
+        _log(f"[5/6] 候选起点 {len(start_candidates)}: {kind} {_short_url(u_str)}")
+
+    if not start_candidates:
+        raise RuntimeError(
+            f"登录后没有可跟的跳转起点。当前 {_describe_auth_page(page_type, continue_url, verify_mode)}。"
+            "不会拿登录/密码页去假装跟 OAuth callback"
+        )
 
     callback_url = _follow_oauth_callback(
         session=session,
@@ -1141,7 +1624,11 @@ def execute_codex_oauth_flow(
     )
 
     if not callback_url or "code=" not in callback_url:
-        raise RuntimeError("未能在 OAuth 授权链路中获取到 callback authorization code")
+        raise RuntimeError(
+            "未能拿到 callback authorization code。"
+            f"跟跳转前 {_describe_auth_page(page_type, continue_url, verify_mode)}。"
+            "若日志里停在登录/密码页，说明这一步其实没登录成功，不是工作空间丢了 code"
+        )
 
     qs = parse_qs(urlparse(callback_url).query)
     code = (qs.get("code") or [""])[0].strip()
@@ -1192,6 +1679,13 @@ def execute_codex_oauth_flow(
     exp_iso = claims.get("exp_iso") or ""
 
     _log(f"[6/6] ✅ 成功获取 Refresh Token (长度={len(rt)}), 计划类型={plan_type}, 账号ID={account_id[:8]}...")
+    _trace_put(
+        trace,
+        continue_page_type=page_type,
+        continue_kind=_page_kind_from_url(continue_url),
+        plan_type=plan_type,
+        login_path="+".join(path_steps) if path_steps else "direct",
+    )
     return {
         "status": "success",
         "label": f"成功 ({plan_type.upper()})",
@@ -1201,11 +1695,22 @@ def execute_codex_oauth_flow(
         "account_id": account_id,
         "plan_type": plan_type,
         "exp_iso": exp_iso,
+        "trace": dict(trace) if isinstance(trace, dict) else {},
     }
 
 
 def _run_one_oauth_export(task: OAuthExportTask, email: str) -> None:
     if task.cancelled:
+        try:
+            db.insert_oauth_attempt_feature({
+                "task_id": task.task_id,
+                "email": (email or "").strip().lower(),
+                "outcome": "cancelled",
+                "error_class": "cancelled",
+                "error_text": "任务被中止",
+            })
+        except Exception:
+            pass
         task.mark_done(email, {"status": "cancelled", "label": "已取消", "error": "任务被中止"})
         return
 
@@ -1216,6 +1721,16 @@ def _run_one_oauth_export(task: OAuthExportTask, email: str) -> None:
     if not cred:
         res = {"status": "not_found", "label": "未找到", "error": "数据库中无此凭证记录"}
         task.add_email_log(email, "错误: 数据库中无此凭证记录")
+        try:
+            db.insert_oauth_attempt_feature({
+                "task_id": task.task_id,
+                "email": (email or "").strip().lower(),
+                "outcome": "not_found",
+                "error_class": "not_found",
+                "error_text": "数据库中无此凭证记录",
+            })
+        except Exception:
+            pass
         task.mark_done(email, res)
         return
 
@@ -1272,6 +1787,46 @@ def _run_one_oauth_export(task: OAuthExportTask, email: str) -> None:
     cred_with_sms = dict(cred)
     cred_with_sms["sms_config"] = sms_cfg
 
+    created_at = cred.get("created_at")
+    account_age_days = None
+    try:
+        if created_at:
+            account_age_days = round(max(0.0, (time.time() - float(created_at)) / 86400.0), 2)
+    except Exception:
+        account_age_days = None
+
+    flow_trace: dict[str, Any] = {
+        "task_id": task.task_id,
+        "email": email_lower,
+        "email_domain": email_lower.split("@")[-1] if "@" in email_lower else "",
+        "mail_kind": mail_source,
+        "has_mail_cred": bool(mail_account),
+        "account_age_days": account_age_days,
+        "sms_enabled": sms_enabled,
+        "sms_provider": str(sms_cfg.get("sms_provider") or ""),
+        "sms_country": str(sms_cfg.get("sms_country") or ""),
+        "sms_provider_ids": str(sms_cfg.get("sms_provider_ids") or ""),
+        "sms_except_provider_ids": str(sms_cfg.get("sms_except_provider_ids") or ""),
+        "sms_price_spec": str(sms_cfg.get("sms_max_price") or sms_cfg.get("sms_price") or ""),
+        "proxy_country": target_country,
+        "proxy_host": _proxy_host_of(proxy),
+        "has_password": bool(str(cred.get("password") or "").strip()),
+        "has_totp": bool(str(cred.get("totp_secret") or "").strip()),
+    }
+
+    def _persist_oauth_feat(outcome: str, error_text: str = "", duration_ms: int = 0, extra: Optional[dict] = None):
+        feat = dict(flow_trace)
+        if extra:
+            feat.update(extra)
+        feat["outcome"] = outcome
+        feat["error_text"] = (error_text or "")[:400]
+        feat["error_class"] = _classify_oauth_error(error_text, outcome)
+        feat["duration_ms"] = int(duration_ms or 0)
+        try:
+            db.insert_oauth_attempt_feature(feat)
+        except Exception as persist_err:
+            logger.warning("[oauth_export] 特征落库失败: %s", persist_err)
+
     started_ts = time.time()
     try:
         flow_res = execute_codex_oauth_flow(
@@ -1284,6 +1839,7 @@ def _run_one_oauth_export(task: OAuthExportTask, email: str) -> None:
             step_fn=lambda step_k, step_t: task.set_step(email, step_k, step_t),
             skip_sms=not sms_enabled,
             timeout=float(task.config.get("timeout") or 45.0),
+            trace=flow_trace,
         )
         req_ms = int((time.time() - started_ts) * 1000)
 
@@ -1296,7 +1852,18 @@ def _run_one_oauth_export(task: OAuthExportTask, email: str) -> None:
                 "req_ms": req_ms,
             }
             db.update_registered_oauth_status(email, "need_phone", "需要手机号验证 (已跳过)")
+            _persist_oauth_feat("need_phone", "OpenAI 要求绑定手机号 (已跳过)", req_ms, flow_res.get("trace"))
             task.mark_done(email, res)
+            return
+        if flow_res.get("status") == "cancelled":
+            _persist_oauth_feat("cancelled", "任务被中止", req_ms, flow_res.get("trace"))
+            task.mark_done(email, flow_res)
+            return
+        if flow_res.get("status") not in ("success", None, "") and not flow_res.get("access_token") and not flow_res.get("refresh_token"):
+            st = str(flow_res.get("status") or "error")
+            err = str(flow_res.get("error") or flow_res.get("label") or st)
+            _persist_oauth_feat(st, err, req_ms, flow_res.get("trace"))
+            task.mark_done(email, {**flow_res, "req_ms": req_ms})
             return
 
         at = flow_res.get("access_token") or cred.get("access_token") or ""
@@ -1356,6 +1923,9 @@ def _run_one_oauth_export(task: OAuthExportTask, email: str) -> None:
             "sub2api": sub2_account,
             "req_ms": req_ms,
         }
+        extra_trace = flow_res.get("trace") if isinstance(flow_res.get("trace"), dict) else {}
+        extra_trace["plan_type"] = plan_type
+        _persist_oauth_feat("success", "", req_ms, extra_trace)
         task.add_email_log(email, f"✅ OAuth 导出成功 ({req_ms}ms): RT={len(rt)} 字符, Plan={plan_type}, AccountId={account_id[:8]}...")
         task.mark_done(email, res)
 
@@ -1366,6 +1936,7 @@ def _run_one_oauth_export(task: OAuthExportTask, email: str) -> None:
             res = {"status": "need_phone", "label": "需接码(已跳过)", "error": "需要手机号验证 (已跳过)", "req_ms": req_ms}
             db.update_registered_oauth_status(email, "need_phone", "需要手机号验证 (已跳过)")
             task.add_email_log(email, "检测到需要手机号验证 (未开启自动接码，已跳过)")
+            _persist_oauth_feat("need_phone", "需要手机号验证 (已跳过)", req_ms)
         else:
             is_sms_fail = sms_enabled and ("接码" in err_str or "NO_NUMBERS" in err_str or "短信" in err_str)
             is_business_fail = is_sms_fail or any(k in err_str for k in ("密码", "password", "封禁", "banned", "取件凭证", "未找到", "400", "invalid_grant", "access_denied"))
@@ -1374,6 +1945,7 @@ def _run_one_oauth_export(task: OAuthExportTask, email: str) -> None:
             res = {"status": fail_status, "label": fail_label, "error": err_str, "req_ms": req_ms}
             db.update_registered_oauth_status(email, fail_status, err_str)
             task.add_email_log(email, f"OAuth {fail_label} ({req_ms}ms): {err_str}")
+            _persist_oauth_feat(fail_status, err_str, req_ms)
         task.mark_done(email, res)
 
 

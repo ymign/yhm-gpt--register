@@ -37,11 +37,13 @@ const priceTiers = ref([])
 const priceTiersLoading = ref(false)
 
 const countryOptions = computed(() =>
-  allCountries.value.map((c) => ({
-    value: c.id,
-    label: `${c.id} · ${c.name_cn}${c.price != null ? ` (${c.price}₽ / 余${c.count})` : ''}`,
-    safe: c.openai_sms_safe,
-  })),
+  allCountries.value.map((c) => {
+    const bits = [`${c.id} · ${c.name_cn}`]
+    if (c.count != null && c.count !== '') bits.push(`余${c.count}`)
+    else bits.push('暂无库存')
+    if (c.price != null && c.price !== '') bits.push(`${c.price}`)
+    return { value: c.id, label: bits.join(' · '), safe: c.openai_sms_safe }
+  }),
 )
 
 async function loadPriceTiers() {

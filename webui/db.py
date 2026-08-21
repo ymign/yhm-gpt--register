@@ -166,6 +166,63 @@ def init_db():
     """)
     con.commit()
 
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS oauth_attempt_features (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at REAL NOT NULL,
+            task_id TEXT,
+            email TEXT,
+            email_domain TEXT,
+            mail_kind TEXT,
+            outcome TEXT,
+            error_class TEXT,
+            error_text TEXT,
+            duration_ms INTEGER,
+            has_password INTEGER,
+            has_totp INTEGER,
+            has_mail_cred INTEGER,
+            account_age_days REAL,
+            plan_type TEXT,
+            proxy_country TEXT,
+            proxy_host TEXT,
+            impersonate TEXT,
+            browser_type TEXT,
+            ua_family TEXT,
+            screen TEXT,
+            timezone TEXT,
+            lang TEXT,
+            first_page_type TEXT,
+            login_path TEXT,
+            need_otp INTEGER,
+            need_phone INTEGER,
+            phone_verified INTEGER,
+            sms_enabled INTEGER,
+            sms_provider TEXT,
+            sms_country TEXT,
+            sms_country_used TEXT,
+            sms_provider_ids TEXT,
+            sms_except_provider_ids TEXT,
+            sms_price_spec TEXT,
+            sms_phone_prefix TEXT,
+            sms_cost REAL,
+            sms_operator TEXT,
+            sms_attempts INTEGER,
+            continue_page_type TEXT,
+            continue_kind TEXT,
+            extra_json TEXT
+        )
+    """)
+    con.execute(
+        "CREATE INDEX IF NOT EXISTS idx_oauth_feat_outcome ON oauth_attempt_features(outcome, created_at)"
+    )
+    con.execute(
+        "CREATE INDEX IF NOT EXISTS idx_oauth_feat_email ON oauth_attempt_features(email, created_at)"
+    )
+    con.execute(
+        "CREATE INDEX IF NOT EXISTS idx_oauth_feat_combo ON oauth_attempt_features(proxy_country, impersonate, sms_country, outcome)"
+    )
+    con.commit()
+
 
 # ──────────────────────── outlook 号池 ────────────────────────
 
@@ -679,6 +736,115 @@ def update_registered_oauth_status(email: str, status: str, error: str = "") -> 
         )
         con.commit()
         return True
+
+
+_OAUTH_FEATURE_COLS = (
+    "created_at", "task_id", "email", "email_domain", "mail_kind",
+    "outcome", "error_class", "error_text", "duration_ms",
+    "has_password", "has_totp", "has_mail_cred", "account_age_days", "plan_type",
+    "proxy_country", "proxy_host", "impersonate", "browser_type", "ua_family",
+    "screen", "timezone", "lang",
+    "first_page_type", "login_path", "need_otp", "need_phone", "phone_verified",
+    "sms_enabled", "sms_provider", "sms_country", "sms_country_used",
+    "sms_provider_ids", "sms_except_provider_ids", "sms_price_spec",
+    "sms_phone_prefix", "sms_cost", "sms_operator", "sms_attempts",
+    "continue_page_type", "continue_kind", "extra_json",
+)
+
+
+def insert_oauth_attempt_feature(feat: dict) -> int:
+    """写入一次 OAuth 授权尝试的特征（成功/失败/需接码都记）。返回 row id。"""
+    if not isinstance(feat, dict):
+        return 0
+    row = {k: feat.get(k) for k in _OAUTH_FEATURE_COLS}
+    row["created_at"] = float(row.get("created_at") or time.time())
+    email = str(row.get("email") or "").strip().lower()
+    row["email"] = email
+    if email and not row.get("email_domain"):
+        row["email_domain"] = email.split("@")[-1] if "@" in email else ""
+    extra = feat.get("extra")
+    if extra is None:
+        extra = {k: v for k, v in feat.items() if k not in _OAUTH_FEATURE_COLS and k != "extra"}
+    if extra:
+        row["extra_json"] = json.dumps(extra, ensure_ascii=False)
+    for bkey in (
+        "has_password", "has_totp", "has_mail_cred",
+        "need_otp", "need_phone", "phone_verified", "sms_enabled",
+    ):
+        if row.get(bkey) is not None:
+            row[bkey] = 1 if row[bkey] else 0
+    err = str(row.get("error_text") or "")
+    if len(err) > 400:
+        row["error_text"] = err[:400]
+    cols = [c for c in _OAUTH_FEATURE_COLS]
+    placeholders = ",".join("?" for _ in cols)
+    values = [row.get(c) for c in cols]
+    with _lock:
+        con = _conn()
+        cur = con.execute(
+            f"INSERT INTO oauth_attempt_features ({','.join(cols)}) VALUES ({placeholders})",
+            values,
+        )
+        con.commit()
+        return int(cur.lastrowid or 0)
+
+
+def list_oauth_attempt_features(limit: int = 100, outcome: str = "") -> list[dict]:
+    limit = max(1, min(500, int(limit or 100)))
+    sql = "SELECT * FROM oauth_attempt_features"
+    args: list = []
+    if outcome:
+        sql += " WHERE outcome=?"
+        args.append(str(outcome).strip())
+    sql += " ORDER BY id DESC LIMIT ?"
+    args.append(limit)
+    con = _conn()
+    rows = con.execute(sql, args).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_oauth_feature_weights(min_n: int = 1) -> dict:
+    """按关键特征组合统计成功率，给后续加权选路用。"""
+    min_n = max(1, int(min_n or 1))
+    con = _conn()
+    total_row = con.execute(
+        "SELECT COUNT(*) AS n, SUM(CASE WHEN outcome='success' THEN 1 ELSE 0 END) AS ok FROM oauth_attempt_features"
+    ).fetchone()
+    overall_n = int(total_row["n"] or 0)
+    overall_ok = int(total_row["ok"] or 0)
+
+    def _group(cols: list[str]) -> list[dict]:
+        sel = ", ".join(cols)
+        sql = (
+            f"SELECT {sel}, COUNT(*) AS n, "
+            f"SUM(CASE WHEN outcome='success' THEN 1 ELSE 0 END) AS ok "
+            f"FROM oauth_attempt_features GROUP BY {sel} HAVING n >= ? "
+            f"ORDER BY (ok * 1.0 / n) DESC, n DESC LIMIT 80"
+        )
+        out = []
+        for r in con.execute(sql, (min_n,)).fetchall():
+            d = dict(r)
+            n = int(d.get("n") or 0)
+            ok = int(d.get("ok") or 0)
+            d["rate"] = round(ok / n, 4) if n else 0.0
+            out.append(d)
+        return out
+
+    return {
+        "overall": {
+            "n": overall_n,
+            "ok": overall_ok,
+            "rate": round(overall_ok / overall_n, 4) if overall_n else 0.0,
+        },
+        "by_proxy_country": _group(["proxy_country"]),
+        "by_impersonate": _group(["impersonate"]),
+        "by_browser": _group(["browser_type"]),
+        "by_sms_country": _group(["sms_country"]),
+        "by_sms_operator": _group(["sms_operator"]),
+        "by_login_path": _group(["login_path"]),
+        "by_error_class": _group(["error_class"]),
+        "by_combo": _group(["proxy_country", "impersonate", "sms_country"]),
+    }
 
 
 def save_password_early(email: str, password: str) -> None:
