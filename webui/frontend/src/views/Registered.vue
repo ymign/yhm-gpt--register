@@ -1535,7 +1535,12 @@ const oauthForm = reactive({
   smsCountry: savedOAuth.smsCountry || '52',
   smsMaxPrice: savedOAuth.smsMaxPrice || '',
   smsProviderIds: savedOAuth.smsProviderIds || '',
-  smsExceptProviderIds: savedOAuth.smsExceptProviderIds || '',
+  smsExceptProviderIds: Array.isArray(savedOAuth.smsExceptProviderIds)
+    ? savedOAuth.smsExceptProviderIds
+    : String(savedOAuth.smsExceptProviderIds || '')
+        .split(/[,;]/)
+        .map((s) => s.trim())
+        .filter(Boolean),
   smsMaxAttempts: savedOAuth.smsMaxAttempts || 3,
   smsTimeout: savedOAuth.smsTimeout || 80,
 })
@@ -1581,7 +1586,9 @@ function saveOAuthFormDefault() {
         sms_country: String(oauthForm.smsCountry || '52').trim(),
         sms_max_price: String(oauthForm.smsMaxPrice || '').trim(),
         sms_provider_ids: String(oauthForm.smsProviderIds || '').trim(),
-        sms_except_provider_ids: String(oauthForm.smsExceptProviderIds || '').trim(),
+        sms_except_provider_ids: Array.isArray(oauthForm.smsExceptProviderIds)
+          ? oauthForm.smsExceptProviderIds.join(',')
+          : String(oauthForm.smsExceptProviderIds || '').trim(),
         sms_max_phone_attempts: String(oauthForm.smsMaxAttempts || '3'),
         sms_per_phone_timeout: String(oauthForm.smsTimeout || '80'),
       }).catch(() => {})
@@ -1774,7 +1781,9 @@ async function startOAuthExportTask() {
       sms_country: String(oauthForm.smsCountry || '52').trim(),
       sms_max_price: String(oauthForm.smsMaxPrice || '').trim(),
       sms_provider_ids: String(oauthForm.smsProviderIds || '').trim(),
-      sms_except_provider_ids: String(oauthForm.smsExceptProviderIds || '').trim(),
+      sms_except_provider_ids: Array.isArray(oauthForm.smsExceptProviderIds)
+        ? oauthForm.smsExceptProviderIds.join(',')
+        : String(oauthForm.smsExceptProviderIds || '').trim(),
       sms_max_attempts: Number(oauthForm.smsMaxAttempts) || 3,
       sms_timeout: Number(oauthForm.smsTimeout) || 80,
     })
@@ -4229,13 +4238,16 @@ onUnmounted(() => {
                         </el-form-item>
                       </el-col>
                       <el-col :xs="12" :sm="6" :md="5">
-                        <el-form-item label="排除供应商 ID (如 3327 避开低质通道)">
+                        <el-form-item label="排除供应商 ID（可多选，如 3327 / 1170）">
                           <el-select
                             v-model="oauthForm.smsExceptProviderIds"
+                            multiple
                             filterable
                             allow-create
                             clearable
-                            placeholder="选择或输入排除 ID，如 3327"
+                            collapse-tags
+                            collapse-tags-tooltip
+                            placeholder="可多选排除，如 3327、1170"
                             style="width: 100%"
                           >
                             <el-option

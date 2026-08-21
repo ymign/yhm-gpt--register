@@ -19,7 +19,7 @@ const country = ref('150')
 const service = ref('dr')
 const maxPrice = ref('')
 const providerIds = ref('')
-const exceptProviderIds = ref('')
+const exceptProviderIds = ref([])
 const phoneSuccessMax = ref('3')
 const reusePhone = ref(false)
 const autoCountry = ref(false)
@@ -84,7 +84,10 @@ async function load() {
     service.value = config.sms_service || 'dr'
     maxPrice.value = config.sms_max_price || ''
     providerIds.value = config.sms_provider_ids || config.sms_operator || ''
-    exceptProviderIds.value = config.sms_except_provider_ids || ''
+    exceptProviderIds.value = String(config.sms_except_provider_ids || '')
+      .split(/[,;]/)
+      .map((s) => s.trim())
+      .filter(Boolean)
     phoneSuccessMax.value = config.sms_phone_success_max || '3'
     reusePhone.value = config.sms_reuse_phone === '1'
     autoCountry.value = config.sms_auto_country === '1'
@@ -120,7 +123,7 @@ async function save() {
       sms_service: service.value.trim() || 'dr',
       sms_max_price: maxPrice.value.trim(),
       sms_provider_ids: providerIds.value.trim(),
-      sms_except_provider_ids: exceptProviderIds.value.trim(),
+      sms_except_provider_ids: exceptProviderIds.value.join(','),
       sms_phone_success_max: phoneSuccessMax.value.trim() || '3',
       sms_reuse_phone: reusePhone.value ? '1' : '0',
       sms_auto_country: autoCountry.value ? '1' : '0',
@@ -268,13 +271,16 @@ load()
 
             <el-row :gutter="12">
               <el-col :span="12">
-                <el-form-item label="排除供应商线路 ID（避开低质通道）">
+                <el-form-item label="排除供应商线路 ID（可多选，避开低质通道）">
                   <el-select
                     v-model="exceptProviderIds"
+                    multiple
                     filterable
                     allow-create
                     clearable
-                    placeholder="下拉选择或输入排除 ID，如 3327"
+                    collapse-tags
+                    collapse-tags-tooltip
+                    placeholder="可多选，如 3327、1170"
                     style="width: 100%"
                   >
                     <el-option
