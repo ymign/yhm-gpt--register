@@ -219,7 +219,8 @@ def classify_error(err: str, mail_source: str = "") -> str:
         "outlook imap account unusable", "user is authenticated but not connected",
         "outlook refresh failed", "authentication failed", "authenticate failed",
         "outlook otp timeout", "registration_disallowed",
-        "已有账号", "账号被", "refresh_token 失效",
+        "account_deactivated", "deleted or deactivated", "deactivated",
+        "已被官方封禁", "已有账号", "账号被", "refresh_token 失效",
     ]
     if mail_source:
         try:
@@ -591,7 +592,7 @@ def _do_register(
         #    避免把没有任何 token 的半成品塞进「注册结果」表里。
         try:
             _pw = (flow.result.password or "").strip()
-            if _pw:
+            if _pw and "account_deactivated" not in err and "deleted or deactivated" not in err and "已被官方封禁" not in err:
                 logging.getLogger("registrar").error(
                     f"[register] 该号已生成密码，请自行留存: {flow.result.email or email} / {_pw}"
                 )

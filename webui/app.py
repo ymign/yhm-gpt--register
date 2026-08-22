@@ -138,6 +138,80 @@ def api_clean_registered(mode: str = "delete"):
     return {"ok": True, **res, "stats": db.stats()}
 
 
+class MailboxValidateReq(BaseModel):
+    emails: Optional[list[str]] = None
+    status_filter: Optional[str] = ""
+    kind_filter: Optional[str] = ""
+    action: Optional[str] = "mark_failed"  # mark_failed / delete
+    workers: Optional[int] = 15
+
+
+@app.post("/api/accounts/validate/start")
+def api_validate_mailbox_start(req: MailboxValidateReq):
+    """启动邮箱号池快速验活任务。"""
+    from . import mailbox_validator
+    try:
+        task_id = mailbox_validator.start_mailbox_validation(
+            emails=req.emails,
+            config={
+                "status_filter": req.status_filter,
+                "kind_filter": req.kind_filter,
+                "action": req.action,
+                "workers": req.workers,
+            },
+        )
+        return {"ok": True, "task_id": task_id}
+    except Exception as e:
+        raise HTTPException(400, f"启动邮箱验活失败: {e}")
+
+
+@app.get("/api/accounts/validate/{task_id}/stream")
+async def api_validate_mailbox_stream(task_id: str, request: Request):
+    """订阅邮箱验活进度与日志 SSE。"""
+    from . import mailbox_validator
+    task = mailbox_validator.get_task(task_id)
+    if not task:
+        raise HTTPException(404, "任务未找到")
+
+    loop = asyncio.get_event_loop()
+
+    async def event_gen():
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                msg = await loop.run_in_executor(None, _safe_get, task.queue)
+                if msg == "" or msg is None:
+                    if task.finished_at > 0 and task.queue.empty():
+                        yield "event: end\ndata: {}\n\n"
+                        break
+                    continue
+                if isinstance(msg, dict):
+                    kind = msg.get("kind", "progress")
+                    yield f"event: {kind}\ndata: {json.dumps(msg, ensure_ascii=False)}\n\n"
+                    if kind == "end":
+                        break
+        except Exception as e:
+            logger.warning(f"SSE 传输异常: {e}")
+
+    return StreamingResponse(
+        event_gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
+@app.post("/api/accounts/validate/{task_id}/stop")
+def api_validate_mailbox_stop(task_id: str):
+    from . import mailbox_validator
+    ok = mailbox_validator.stop_task(task_id)
+    return {"ok": ok}
+
+
 class BulkDeleteReq(BaseModel):
     status: Optional[str] = Field(None, description="available/in_use/done/failed/all")
     emails: Optional[list[str]] = Field(None, description="按 email 列表删")

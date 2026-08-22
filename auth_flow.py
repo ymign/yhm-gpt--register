@@ -2605,6 +2605,8 @@ class AuthFlow:
         self._trace_http("login_password_verify", resp)
         if resp.status_code != 200:
             body = (resp.text or "")[:260]
+            if "account_deactivated" in body or "deleted or deactivated" in body or resp.status_code == 403:
+                raise RuntimeError(f"账号已被官方封禁/注销 (account_deactivated): {resp.status_code} - {body}")
             raise RuntimeError(f"密码登录失败: {resp.status_code} - {body}")
         try:
             return resp.json()
@@ -2730,6 +2732,8 @@ class AuthFlow:
         if resp.status_code != 200:
             body = (resp.text or "")
             logger.warning(f"verify_otp FULL body ({resp.status_code}): {body[:2000]}")
+            if "account_deactivated" in body or "deleted or deactivated" in body or resp.status_code == 403:
+                raise RuntimeError(f"账号已被官方封禁/注销 (account_deactivated): {resp.status_code} - {body[:260]}")
             raise RuntimeError(f"OTP 验证失败: {resp.status_code} - {body[:260]}")
         logger.info("OTP 验证成功")
         try:
@@ -3602,9 +3606,20 @@ class AuthFlow:
                             self._on_password(self, email, new_password)
                         except Exception:
                             pass
-                    logger.info(f"🎉 官方新密码设置成功 ({new_password})，继续获取完整 Token 与 2FA...")
+                    logger.info(f"🎉 官方新密码设置成功 ({new_password})，正在使用新密码自动完成登录与凭证提取...")
 
-                    login_resp = reset_resp if isinstance(reset_resp, dict) and reset_resp else (otp_resp or {})
+                    # 官方重置密码接口完成后，使用新密码立即执行登录验证以获取 OAuth Callback 会话
+                    try:
+                        login_resp = self.login_password_verify(new_password)
+                        login_success = True
+                        logger.info("✅ 新密码登录成功，已获取官方授权会话")
+                    except Exception as e:
+                        err_s = str(e).lower()
+                        if "account_deactivated" in err_s or "deleted or deactivated" in err_s or "403" in err_s or "已被官方封禁" in err_s:
+                            logger.error(f"❌ 账号 {email} 已被 OpenAI 官方永久封禁/注销 (account_deactivated)，直接终止后续尝试")
+                            raise
+                        logger.warning(f"新密码自动登录异常 ({e})，尝试以 reset 响应继续: {reset_resp}")
+                        login_resp = reset_resp if isinstance(reset_resp, dict) and reset_resp else (otp_resp or {})
 
                 login_page_type = self._extract_page_type(login_resp)
                 continue_url = self._normalize_continue_url(
@@ -3638,9 +3653,9 @@ class AuthFlow:
                         else:
                             logger.warning("无法从 continue_url 提取 challenge_id")
 
-                # 部分账号密码校验后仍需 email otp（二次校验）
-                elif not continue_url or "/email-verification" in continue_url:
-                    # password/verify 后推荐使用 resend，而不是 /email-otp/send
+                # 部分账号密码校验后仍需 email otp（二次邮箱校验）
+                elif "/email-verification" in continue_url or login_page_type == "email_otp_verification":
+                    logger.info(f"📧 密码登录后触发二次邮箱验证 (continue_url={continue_url[:60]})...")
                     otp_sent_at = time.time()
                     self.kickoff_otp_delivery("existing_login_password")
                     otp_code = mail_provider.wait_for_otp(
@@ -3648,10 +3663,30 @@ class AuthFlow:
                         timeout=otp_timeout,
                         issued_after=otp_sent_at,
                     )
-                    otp_resp = self.verify_otp(otp_code)
+                    try:
+                        otp_resp = self.verify_otp(otp_code)
+                    except RuntimeError as e:
+                        if any(code in str(e) for code in ("401", "409")):
+                            logger.warning(f"二次邮箱 OTP 首次验证失败，重发重试: {e}")
+                            otp_sent_at = time.time()
+                            if not self.kickoff_otp_delivery("existing_verify_retry"):
+                                self.send_otp()
+                            otp_code = mail_provider.wait_for_otp(
+                                email,
+                                timeout=otp_timeout,
+                                issued_after=otp_sent_at,
+                            )
+                            otp_resp = self.verify_otp(otp_code)
+                        else:
+                            raise
+
                     continue_url = self._normalize_continue_url(
                         (otp_resp or {}).get("continue_url", "") if isinstance(otp_resp, dict) else ""
                     )
+                    if self._is_add_phone_state(page_type=self._extract_page_type(otp_resp), continue_url=continue_url):
+                        continue_url = self._normalize_continue_url(
+                            self._handle_add_phone_verification(continue_url=continue_url)
+                        )
             else:
                 need_send_otp = mode not in ("passwordless_signup", "passwordless_login")
                 if need_send_otp:
@@ -3752,8 +3787,8 @@ class AuthFlow:
                         logger.warning(f"已有账号 about-you 创建信息失败，回退 reauthorize: {e}")
                         continue_url = ""
 
-            # 若 otp 响应未给可用 continue_url，则回退到 reauthorize
-            if not continue_url:
+            # 若 otp 响应未给可用 continue_url，或指向登录页面，则回退到 reauthorize 直接提取 callback
+            if not continue_url or any(continue_url.rstrip("/").endswith(p) for p in ("/log-in/password", "/login", "/log-in")):
                 # auth.openai.com 的 session cookie 已设置，直接拿 code
                 continue_url = self._reauthorize_for_session(auth_url)
 

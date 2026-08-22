@@ -30,3 +30,13 @@ export const releaseStale = () => http.post('/api/accounts/release_stale')
 
 export const cleanRegisteredFromPool = (mode = 'delete') =>
   http.post(`/api/accounts/clean-registered?mode=${mode}`)
+
+// ──────────────── 邮箱号池快速验活 ────────────────
+export const startMailboxValidation = (payload) =>
+  http.post('/api/accounts/validate/start', payload)
+
+export const stopMailboxValidation = (taskId) =>
+  http.post(`/api/accounts/validate/${taskId}/stop`)
+
+export const mailboxValidateStreamUrl = (taskId) =>
+  `/api/accounts/validate/${taskId}/stream`
