@@ -504,45 +504,51 @@ function _rng(min, max) {
 }
 
 async function dispatchBehavior(durationMs) {
+  const targetMs = Math.max(1000, Number(durationMs || 1800));
   const started = Date.now();
-  const moves = _rng(12, 16);
+  const moves = _rng(8, 12);
   let x = _rng(260, 420);
   let y = _rng(180, 300);
+
+  // 动态匹配目标时长，确保在 1.5~2.0 秒内生成真实且连贯的人类传感器轨迹
+  const moveDelayMin = Math.max(25, Math.floor(targetMs / (moves * 3.5)));
+  const moveDelayMax = Math.max(45, Math.floor(targetMs / (moves * 2.2)));
+
   for (let i = 0; i < moves; i++) {
-    const dx = _rng(5, 18);
-    const dy = _rng(-4, 12);
+    const dx = _rng(6, 20);
+    const dy = _rng(-4, 14);
     x += dx;
     y += dy;
-    await new Promise(r => setTimeout(r, _rng(70, 145)));
+    await new Promise(r => setTimeout(r, _rng(moveDelayMin, moveDelayMax)));
     await dispatch('pointermove', {
       clientX: x, clientY: y, screenX: x, screenY: y,
       movementX: dx, movementY: dy, buttons: 0,
     });
   }
-  await new Promise(r => setTimeout(r, _rng(90, 220)));
+  await new Promise(r => setTimeout(r, _rng(40, 90)));
   await dispatch('click', {
     clientX: x, clientY: y, screenX: x, screenY: y, button: 0, buttons: 0,
   });
-  for (let i = 0; i < _rng(3, 4); i++) {
-    await new Promise(r => setTimeout(r, _rng(80, 180)));
+  for (let i = 0; i < _rng(2, 3); i++) {
+    await new Promise(r => setTimeout(r, _rng(35, 75)));
     context.scrollY = (context.scrollY || 0) + _rng(35, 120);
     context.pageYOffset = context.scrollY;
     await dispatch('scroll', { scrollX: 0, scrollY: context.scrollY });
   }
-  await new Promise(r => setTimeout(r, _rng(80, 160)));
+  await new Promise(r => setTimeout(r, _rng(35, 75)));
   await dispatch('wheel', {
     deltaX: 0, deltaY: _rng(70, 140), clientX: x, clientY: y,
   });
   const keys = ['L', 'u', 'Tab'];
   for (const key of keys) {
-    await new Promise(r => setTimeout(r, _rng(90, 210)));
+    await new Promise(r => setTimeout(r, _rng(40, 80)));
     await dispatch('keydown', {
       key,
       code: key === 'Tab' ? 'Tab' : 'Key' + key.toUpperCase(),
       repeat: false, altKey: false, ctrlKey: false, metaKey: false,
     });
   }
-  const remaining = Math.max(0, Number(durationMs || 0) - (Date.now() - started));
+  const remaining = Math.max(0, targetMs - (Date.now() - started));
   if (remaining > 0) await new Promise(r => setTimeout(r, remaining));
 }
 

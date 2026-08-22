@@ -31,8 +31,10 @@ from __future__ import annotations
 import json
 import logging
 import os
+import random
 import subprocess
 import tempfile
+import threading
 import uuid
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -43,6 +45,13 @@ logger = logging.getLogger(__name__)
 SENTINEL_VERSION = "20260219f9f6"
 SENTINEL_SDK_URL = f"https://sentinel.openai.com/sentinel/{SENTINEL_VERSION}/sdk.js"
 SENTINEL_REQ_URL = "https://sentinel.openai.com/backend-api/sentinel/req"
+
+# ─── PoW 算力槽位并发控制器 ──────────────────────────────────
+# 无论外层网络并发（HTTP / IMAP 邮件 / SMS）开了 10 个还是 20 个，
+# 将 CPU 密集的 Node.js PoW 碰撞限制在最多 4 个同时进行（独占 4 个性能大核最高睿频），
+# 避免 10 个同时算互相争抢 CPU 导致整机发热降频、每个号算力耗时翻倍。
+_DEFAULT_POW_SLOTS = int(os.getenv("SENTINEL_MAX_POW_WORKERS", "4"))
+_POW_SEMAPHORE = threading.BoundedSemaphore(max(1, _DEFAULT_POW_SLOTS))
 
 
 def _resolve_node_binary() -> str:
@@ -276,19 +285,24 @@ def get_sentinel_token_via_quickjs(
             return None
 
         solve_payload = dict(env_payload)
+        # 精简模拟行为时长，从原本写死的 4200ms 优化为 1500~2000ms 动态随机值，大幅缩短单次等待
+        behavior_ms = int(os.getenv("SENTINEL_BEHAVIOR_MS", str(random.randint(1500, 2000))))
         solve_payload.update({
             "request_p": request_p,
             "challenge": challenge,
             "flow": flow,
-            "behavior_duration_ms": 4200,
+            "behavior_duration_ms": behavior_ms,
         })
-        solved = _run_quickjs_action(
-            action="solve",
-            sdk_file=sdk_file,
-            quickjs_script=quickjs_script,
-            payload=solve_payload,
-            timeout_ms=timeout_ms,
-        )
+
+        # 核心算力隔离：获取 PoW 算力槽位（限制至多 4 核心并发碰撞，避免 10 并发 CPU 争抢打架）
+        with _POW_SEMAPHORE:
+            solved = _run_quickjs_action(
+                action="solve",
+                sdk_file=sdk_file,
+                quickjs_script=quickjs_script,
+                payload=solve_payload,
+                timeout_ms=timeout_ms,
+            )
 
         so_token_raw = str(solved.get("so_token") or "").strip()
 
