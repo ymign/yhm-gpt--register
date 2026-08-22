@@ -27,7 +27,7 @@ except ImportError:
 logger = logging.getLogger("mailbox_validator")
 
 
-def validate_single_mailbox(account: dict, timeout: int = 15) -> dict:
+def validate_single_mailbox(account: dict, timeout: int = 6, proxy: str = "") -> dict:
     """快速检测单个邮箱账号凭证是否有效。
 
     Returns:
@@ -53,7 +53,7 @@ def validate_single_mailbox(account: dict, timeout: int = 15) -> dict:
                 "reason": "缺少 refresh_token (微软已禁用普通密码直登)",
             }
         try:
-            token_data = get_outlook_access_token(refresh_token, client_id)
+            token_data = get_outlook_access_token(refresh_token, client_id, timeout=timeout, proxy=proxy)
             if token_data.get("access_token"):
                 return {
                     "email": email,
@@ -90,7 +90,7 @@ def validate_single_mailbox(account: dict, timeout: int = 15) -> dict:
                 "email": email,
                 "valid": False,
                 "status": "failed",
-                "reason": f"网络或服务异常: {type(e).__name__}: {str(e)[:80]}",
+                "reason": f"网络超时或异常: {type(e).__name__}: {str(e)[:80]}",
             }
 
     # 2. iCloud 中转邮箱
@@ -98,12 +98,12 @@ def validate_single_mailbox(account: dict, timeout: int = 15) -> dict:
         if not relay_url:
             return {"email": email, "valid": False, "status": "failed", "reason": "缺少 relay_url"}
         try:
-            import urllib.request
-            req = urllib.request.Request(relay_url, headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                if resp.status in (200, 204, 404):
-                    return {"email": email, "valid": True, "status": "available", "reason": "中转接口连通正常"}
-                return {"email": email, "valid": False, "status": "failed", "reason": f"中转接口 HTTP {resp.status}"}
+            import requests
+            proxies = {"http": proxy, "https": proxy} if proxy else None
+            resp = requests.get(relay_url, headers={"User-Agent": "Mozilla/5.0"}, proxies=proxies, timeout=timeout)
+            if resp.status_code in (200, 204, 404):
+                return {"email": email, "valid": True, "status": "available", "reason": "中转接口连通正常"}
+            return {"email": email, "valid": False, "status": "failed", "reason": f"中转接口 HTTP {resp.status_code}"}
         except Exception as e:
             return {"email": email, "valid": False, "status": "failed", "reason": f"中转接口请求失败: {e}"}
 
@@ -119,9 +119,23 @@ class MailboxValidatorTask:
         self.accounts = accounts
         self.config = config
         self.action = config.get("action", "mark_failed")  # mark_failed 或 delete
-        self.workers = min(30, max(1, int(config.get("workers") or 15)))
+        self.workers = min(50, max(1, int(config.get("workers") or 15)))
         self.started_at = time.time()
         self.finished_at = 0.0
+
+        # 代理与动态住宅 IP 配置
+        self.proxy = (config.get("proxy") or "").strip()
+        self.proxy_pool = (config.get("proxy_pool") or "").strip()
+        self.proxy_country = (config.get("proxy_country") or "").strip()
+
+        self._proxy_list: list[str] = []
+        if self.proxy_pool:
+            self._proxy_list = [p.strip() for p in self.proxy_pool.splitlines() if p.strip() and not p.strip().startswith("#")]
+        elif self.proxy:
+            self._proxy_list = [self.proxy]
+
+        self._proxy_idx = 0
+        self._proxy_lock = threading.Lock()
 
         self.items: dict[str, dict] = {
             a["email"]: {
@@ -139,6 +153,25 @@ class MailboxValidatorTask:
         self.done_count = 0
         self.stats = {"valid": 0, "invalid": 0, "total": len(accounts)}
         self._lock = threading.Lock()
+
+    def get_proxy_for_account(self) -> str:
+        """为每一个验活请求获取代理，若为动态住宅代理自动派生独立 session_id (一号一 IP)。"""
+        if not self._proxy_list:
+            return ""
+        with self._proxy_lock:
+            p = self._proxy_list[self._proxy_idx % len(self._proxy_list)]
+            self._proxy_idx += 1
+
+        try:
+            try:
+                from .proxy_util import route_proxy_country, new_proxy_session_id
+            except ImportError:
+                from proxy_util import route_proxy_country, new_proxy_session_id
+            sid = new_proxy_session_id(8)
+            routed = route_proxy_country(p, self.proxy_country, session_id=sid)
+            return routed or p
+        except Exception:
+            return p
 
     def add_log(self, line: str, email: str = ""):
         ts = time.strftime("%H:%M:%S")
@@ -164,27 +197,35 @@ class MailboxValidatorTask:
                 it["reason"] = res.get("reason", "")
                 it["elapsed"] = round(now - self.started_at, 2)
 
-        # 数据库状态回写
+        # 1. 数据库状态高效回写（仅在需要变更时写入，避免对数千个正常号进行无谓的 SELECT 查库）
         if not res.get("valid"):
             if self.action == "delete":
                 db.delete_account(email)
             else:
                 db.mark_failed(email, res.get("reason", "验活未通过"))
-        else:
-            # 有效且之前是 failed 的，重置为 available
-            account_curr = db.get_account(email)
-            if account_curr and account_curr.get("status") == "failed":
-                db.reset_account(email)
+        elif self.config.get("status_filter") == "failed":
+            # 仅当在复检 failed 状态的列表且恢复成功时，重置为 available
+            db.reset_account(email)
 
-        self.queue.put({
-            "kind": "progress",
-            "email": email,
-            "valid": res.get("valid"),
-            "status": res.get("status"),
-            "reason": res.get("reason"),
-            "stats": dict(self.stats),
-            "done_count": self.done_count,
-        })
+        # 2. SSE 事件推送控制（关键性能优化）
+        # 失效死号：立即推送 failed_item 让前端死号清单表格更新
+        if not res.get("valid"):
+            self.queue.put({
+                "kind": "failed_item",
+                "email": email,
+                "reason": res.get("reason", "授权失效"),
+                "elapsed": round(now - self.started_at, 2),
+                "stats": dict(self.stats),
+                "done_count": self.done_count,
+            })
+        else:
+            # 正常号：节流推送进度更新，每 10 个或完成时推送一次汇总状态，防止数万条消息轰炸卡死浏览器
+            if self.done_count % 10 == 0 or self.done_count == self.stats["total"]:
+                self.queue.put({
+                    "kind": "progress",
+                    "stats": dict(self.stats),
+                    "done_count": self.done_count,
+                })
 
 
 _tasks: dict[str, MailboxValidatorTask] = {}
@@ -195,28 +236,40 @@ _MAX_HISTORY_TASKS = 15
 def _worker_loop(task: MailboxValidatorTask):
     task.add_log(f"🚀 开始并发检测 {len(task.accounts)} 个邮箱账号 (并发: {task.workers} Worker, 动作: {task.action})...")
 
-    def _check_wrapper(acct: dict):
-        if task.cancelled:
-            return
-        em = acct.get("email", "")
-        t0 = time.time()
-        res = validate_single_mailbox(acct)
-        cost = round(time.time() - t0, 2)
-        if res.get("valid"):
-            task.add_log(f"✅ [{em}] 有效 (耗时 {cost}s)", email=em)
-        else:
-            task.add_log(f"❌ [{em}] 失效: {res.get('reason')} (耗时 {cost}s)", email=em)
-        task.mark_one_done(em, res)
+    work_q: queue.Queue = queue.Queue()
+    for a in task.accounts:
+        work_q.put(a)
 
-    with ThreadPoolExecutor(max_workers=task.workers) as executor:
-        futures = [executor.submit(_check_wrapper, a) for a in task.accounts]
-        for f in futures:
-            if task.cancelled:
+    def _worker():
+        while not task.cancelled:
+            try:
+                acct = work_q.get_nowait()
+            except queue.Empty:
                 break
             try:
-                f.result()
+                em = acct.get("email", "")
+                t0 = time.time()
+                proxy_for_run = task.get_proxy_for_account()
+                res = validate_single_mailbox(acct, timeout=6, proxy=proxy_for_run)
+                cost = round(time.time() - t0, 2)
+                if res.get("valid"):
+                    task.add_log(f"✅ [{em}] 有效 (耗时 {cost}s)", email=em)
+                else:
+                    task.add_log(f"❌ [{em}] 失效: {res.get('reason')} (耗时 {cost}s)", email=em)
+                task.mark_one_done(em, res)
             except Exception as e:
                 logger.warning(f"验活单个任务异常: {e}")
+            finally:
+                work_q.task_done()
+
+    threads = []
+    for _ in range(task.workers):
+        t = threading.Thread(target=_worker, daemon=True)
+        threads.append(t)
+        t.start()
+
+    for t in threads:
+        t.join()
 
     task.finished_at = time.time()
     elapsed = round(task.finished_at - task.started_at, 1)

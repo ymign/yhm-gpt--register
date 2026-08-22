@@ -220,6 +220,7 @@ def classify_error(err: str, mail_source: str = "") -> str:
         "outlook refresh failed", "authentication failed", "authenticate failed",
         "outlook otp timeout", "registration_disallowed",
         "account_deactivated", "deleted or deactivated", "deactivated",
+        "mfa-challenge", "缺少 totp 密钥", "已开启 2fa", "2fa 两步验证",
         "已被官方封禁", "已有账号", "账号被", "refresh_token 失效",
     ]
     if mail_source:

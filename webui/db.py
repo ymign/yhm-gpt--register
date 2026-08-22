@@ -694,6 +694,38 @@ def delete_accounts_by_emails(emails: list[str]) -> int:
         return rc.rowcount
 
 
+def export_pool_accounts(
+    status: str = "",
+    kind: str = "",
+    emails: Optional[list[str]] = None,
+    reason_like: str = "",
+) -> list[dict]:
+    """查询指定状态、类型、错误原因或邮箱列表的号池账号，供导出。"""
+    con = _conn()
+    sql = "SELECT email, password, client_id, refresh_token, relay_url, kind, status, fail_reason, imported_at FROM outlook_accounts"
+    where, args = [], []
+    if emails and len(emails) > 0:
+        cleaned = [e.strip().lower() for e in emails if e and e.strip()]
+        placeholders = ",".join("?" for _ in cleaned)
+        where.append(f"lower(email) IN ({placeholders})")
+        args.extend(cleaned)
+    else:
+        if status and status.lower() != "all":
+            where.append("status=?")
+            args.append(status.lower())
+        if kind and kind.lower() != "all":
+            where.append("kind=?")
+            args.append(kind.strip().lower())
+        if reason_like:
+            where.append("(fail_reason LIKE ? OR fail_reason LIKE ?)")
+            args.extend([f"%{reason_like}%", f"%{reason_like.lower()}%"])
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY imported_at ASC"
+    return [dict(r) for r in con.execute(sql, args).fetchall()]
+
+
+
 def stats() -> dict:
     con = _conn()
     cur = con.execute(
@@ -794,18 +826,28 @@ def update_registered_oauth(
     session_token: str = "",
     cookie_header: str = "",
     extra_data: Optional[dict] = None,
+    oauth_status: Optional[str] = None,
 ) -> bool:
-    """OAuth 导出与 Token 刷新成功后回写 access_token / refresh_token / id_token / session_token / cookie_header 及 extra_json。"""
+    """OAuth 导出与 Token 刷新成功后回写 access_token / refresh_token / id_token / session_token / cookie_header 及 extra_json。
+
+    只有真实完成 Codex OAuth 授权或 RT 换取成功的账号才会标记 oauth_status='success'；
+    普通 Web 登录重登/Session 刷新仅更新 Web 会话凭证，不产生虚假的 OAuth 授权成功标记。
+    """
     email = (email or "").strip().lower()
     if not email:
         return False
     with _lock:
         con = _conn()
-        row = con.execute("SELECT * FROM registered WHERE email=?", (email,)).fetchone()
+        row = con.execute("SELECT * FROM registered WHERE lower(email)=?", (email,)).fetchone()
         if not row:
             return False
         d = dict(row)
-        extra = json.loads(d.get("extra_json") or "{}")
+        extra = {}
+        if d.get("extra_json"):
+            try:
+                extra = json.loads(d["extra_json"])
+            except Exception:
+                extra = {}
         if extra_data:
             extra.update(extra_data)
 
@@ -815,10 +857,34 @@ def update_registered_oauth(
         new_st = session_token.strip() or d.get("session_token") or ""
         new_cookie = cookie_header.strip() or d.get("cookie_header") or ""
 
+        # 核心自愈：若有新的有效 Token，自动将历史残留的 "token_invalid" (凭证失效) 状态重置为正常套餐状态
+        if new_at or new_st or new_rt:
+            plus_chk = extra.get("plus_check")
+            if isinstance(plus_chk, dict):
+                old_st = str(plus_chk.get("status") or "").lower()
+                if old_st in ("token_invalid", "error", "failed") or not old_st:
+                    claims_plan = (extra.get("oauth_export") or {}).get("claims", {}).get("plan_type") or "free"
+                    extra["plus_check"] = {
+                        "status": claims_plan,
+                        "label": "Free" if claims_plan == "free" else claims_plan.upper(),
+                        "updated_at": time.time(),
+                        "reason": "Token 刷新成功，状态已自动更新",
+                    }
+
+        # 计算精确的 OAuth 授权状态：
+        # 1. 显式指定了 oauth_status 则使用指定的；
+        # 2. 若本次提供了新的非空 refresh_token，则确认为 success；
+        # 3. 否则保留原数据库中的 oauth_status（避免将普通 Web 登录误打为 OAuth 成功）
+        final_oauth_status = d.get("oauth_status") or ""
+        if oauth_status is not None:
+            final_oauth_status = oauth_status
+        elif refresh_token.strip():
+            final_oauth_status = "success"
+
         con.execute(
             "UPDATE registered SET access_token=?, refresh_token=?, id_token=?, session_token=?, "
-            "cookie_header=?, oauth_status='success', oauth_updated_at=?, extra_json=? WHERE email=?",
-            (new_at, new_rt, new_it, new_st, new_cookie, time.time(), json.dumps(extra, ensure_ascii=False), email),
+            "cookie_header=?, oauth_status=?, oauth_updated_at=?, extra_json=? WHERE lower(email)=?",
+            (new_at, new_rt, new_it, new_st, new_cookie, final_oauth_status, time.time(), json.dumps(extra, ensure_ascii=False), email),
         )
         con.commit()
         return True

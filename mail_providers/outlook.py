@@ -76,28 +76,69 @@ def _is_fatal_imap_error(exc: Exception) -> bool:
 # ──────────────────────── Microsoft OAuth ────────────────────────
 
 
-def _request_access_token(refresh_token: str, client_id: str, scope: str) -> dict:
-    """尝试多个 token endpoint 换 access_token，返回完整 JSON dict。"""
+def _request_access_token(
+    refresh_token: str,
+    client_id: str,
+    scope: str,
+    timeout: float = 8,
+    proxy: str = "",
+) -> dict:
+    """尝试多个 token endpoint 换 access_token，返回完整 JSON dict。
+
+    支持 HTTP / SOCKS5 / SOCKS5h 动态代理，彻底避免单 IP 频率限制。
+    遇到明确的 AADSTS70000 / invalid_grant / 封禁等致命错误时立即熔断退出（Fast-Fail）。
+    """
+    import requests
+
     last_error = ""
+    proxies = {"http": proxy, "https": proxy} if proxy else None
+
     for endpoint in TOKEN_ENDPOINTS:
         try:
-            body = urllib.parse.urlencode({
+            body = {
                 "grant_type": "refresh_token",
                 "refresh_token": refresh_token,
                 "client_id": client_id,
                 "scope": scope,
-            }).encode()
-            req = urllib.request.Request(endpoint, data=body)
-            resp = urllib.request.urlopen(req, timeout=15)
-            data = json.loads(resp.read())
-            if data.get("access_token"):
-                return data
-            last_error = f"no access_token from {endpoint}"
+            }
+            if proxy:
+                resp = requests.post(
+                    endpoint,
+                    data=body,
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                    proxies=proxies,
+                    timeout=timeout,
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if data.get("access_token"):
+                        return data
+                    last_error = f"no access_token from {endpoint}"
+                else:
+                    text = resp.text[:300]
+                    last_error = f"HTTP {resp.status_code} {endpoint}: {text}"
+                    if any(f_err in text for f_err in ("AADSTS70000", "invalid_grant", "AADSTS50057", "AADSTS50034", "AADSTS50076", "AADSTS50079")):
+                        raise FatalOutlookMailError(f"token 获取失败 (scope={scope}): {last_error}")
+                    if resp.status_code in (400, 401, 403):
+                        continue
+                    raise RuntimeError(last_error)
+            else:
+                body_bytes = urllib.parse.urlencode(body).encode()
+                req = urllib.request.Request(endpoint, data=body_bytes)
+                resp = urllib.request.urlopen(req, timeout=timeout)
+                data = json.loads(resp.read())
+                if data.get("access_token"):
+                    return data
+                last_error = f"no access_token from {endpoint}"
         except urllib.error.HTTPError as e:
             text = e.read().decode("utf-8", errors="replace")[:300]
             last_error = f"HTTP {e.code} {endpoint}: {text}"
+            if any(f_err in text for f_err in ("AADSTS70000", "invalid_grant", "AADSTS50057", "AADSTS50034", "AADSTS50076", "AADSTS50079")):
+                raise FatalOutlookMailError(f"token 获取失败 (scope={scope}): {last_error}")
             if e.code in (400, 401, 403):
                 continue
+            raise
+        except FatalOutlookMailError:
             raise
         except Exception as e:
             last_error = f"{endpoint}: {e}"
@@ -105,9 +146,9 @@ def _request_access_token(refresh_token: str, client_id: str, scope: str) -> dic
     raise FatalOutlookMailError(f"token 获取失败 (scope={scope}): {last_error}")
 
 
-def get_outlook_access_token(refresh_token: str, client_id: str) -> dict:
-    """兼容旧调用：用 IMAP scope 换 token。"""
-    return _request_access_token(refresh_token, client_id, IMAP_SCOPE)
+def get_outlook_access_token(refresh_token: str, client_id: str, timeout: float = 8, proxy: str = "") -> dict:
+    """兼容旧调用：用 IMAP scope 换 token，支持动态代理传入。"""
+    return _request_access_token(refresh_token, client_id, IMAP_SCOPE, timeout=timeout, proxy=proxy)
 
 
 # ──────────────────────── OTP 抽取 ────────────────────────

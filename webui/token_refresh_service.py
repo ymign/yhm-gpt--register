@@ -268,22 +268,27 @@ def execute_token_refresh_flow(
             claims = _get_account_claims(new_at)
             _log(f"🎉 [Session 极速刷新成功] 耗时 {elapsed_ms}ms, access_token 长度={len(new_at)}, 用户={s_data.get('user', {}).get('email') or email}")
 
-            cpa_doc = {
-                "access_token": new_at,
-                "refresh_token": existing_rt,
-                "session_token": new_st,
-                "email": email,
-                "name": claims.get("name") or s_data.get("user", {}).get("name") or "",
-                "user_id": claims.get("user_id") or s_data.get("user", {}).get("id") or "",
-                "account_id": claims.get("account_id") or "",
-                "plan_type": claims.get("plan_type") or "free",
-                "expires_at": claims.get("exp_iso") or s_data.get("expires"),
-                "token_type": "Bearer",
-                "last_refreshed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-                "refresh_method": "st_fast",
-            }
-            sub2_doc = cpa_credential_to_sub2_account(cpa_doc)
+            # 仅当原本存在有效 RT 时才构造附带 RT 的 CPA/Sub2API 结构
+            cpa_doc = None
+            sub2_doc = None
+            if existing_rt:
+                cpa_doc = {
+                    "access_token": new_at,
+                    "refresh_token": existing_rt,
+                    "session_token": new_st,
+                    "email": email,
+                    "name": claims.get("name") or s_data.get("user", {}).get("name") or "",
+                    "user_id": claims.get("user_id") or s_data.get("user", {}).get("id") or "",
+                    "account_id": claims.get("account_id") or "",
+                    "plan_type": claims.get("plan_type") or "free",
+                    "expires_at": claims.get("exp_iso") or s_data.get("expires"),
+                    "token_type": "Bearer",
+                    "last_refreshed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                    "refresh_method": "st_fast",
+                }
+                sub2_doc = cpa_credential_to_sub2_account(cpa_doc)
 
+            # Session 刷新仅更新 Web 登录凭证，不强行标记为 OAuth 授权成功
             db.update_registered_oauth(
                 email=email,
                 access_token=new_at,
@@ -291,7 +296,7 @@ def execute_token_refresh_flow(
                 session_token=new_st,
                 cookie_header=existing_cookies,
                 extra_data={
-                    "oauth_export": {
+                    "web_session": {
                         "status": "success",
                         "updated_at": time.time(),
                         "method": "st_fast",
@@ -303,7 +308,7 @@ def execute_token_refresh_flow(
             return {
                 "status": "success",
                 "method": "st_fast",
-                "label": "✅ Session极速刷新成功",
+                "label": "✅ Session极速刷新成功(Web)",
                 "access_token_len": len(new_at),
                 "refresh_token_len": len(existing_rt),
                 "expires_at": claims.get("exp_iso"),
@@ -370,24 +375,30 @@ def execute_token_refresh_flow(
     new_st = result.session_token or ""
     new_it = result.id_token or ""
 
-    claims = _get_account_claims(new_at)
-    cpa_doc = {
-        "access_token": new_at,
-        "refresh_token": new_rt,
-        "id_token": new_it,
-        "session_token": new_st,
-        "email": email,
-        "name": claims.get("name") or "",
-        "user_id": claims.get("user_id") or "",
-        "account_id": claims.get("account_id") or "",
-        "plan_type": claims.get("plan_type") or "free",
-        "expires_at": claims.get("exp_iso"),
-        "token_type": "Bearer",
-        "last_refreshed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-        "refresh_method": "full_login",
-    }
-    sub2_doc = cpa_credential_to_sub2_account(cpa_doc)
+    # 区分真实 Codex RT 与普通 Web 登录态：
+    # 只有存在真实 refresh_token 时才生成有效的 CPA/Sub2API 凭证
+    cpa_doc = None
+    sub2_doc = None
+    if new_rt:
+        cpa_doc = {
+            "access_token": new_at,
+            "refresh_token": new_rt,
+            "id_token": new_it,
+            "session_token": new_st,
+            "email": email,
+            "name": claims.get("name") or "",
+            "user_id": claims.get("user_id") or "",
+            "account_id": claims.get("account_id") or "",
+            "plan_type": claims.get("plan_type") or "free",
+            "expires_at": claims.get("exp_iso"),
+            "token_type": "Bearer",
+            "last_refreshed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "refresh_method": "full_login",
+        }
+        sub2_doc = cpa_credential_to_sub2_account(cpa_doc)
 
+    # 写入数据库：普通 Web 重登更新 Web 会话凭证 (ST/AT/Cookie)
+    # 若无新的有效 OAuth refresh_token，则不伪造 oauth_status='success'
     db.update_registered_oauth(
         email=email,
         access_token=new_at,
@@ -396,7 +407,7 @@ def execute_token_refresh_flow(
         id_token=new_it,
         cookie_header=result.cookie_header or "",
         extra_data={
-            "oauth_export": {
+            "web_session": {
                 "status": "success",
                 "updated_at": time.time(),
                 "method": "full_login",
@@ -409,7 +420,7 @@ def execute_token_refresh_flow(
     return {
         "status": "success",
         "method": "full_login",
-        "label": "✅ Web重登成功",
+        "label": "✅ Web重登成功(Web凭据)",
         "access_token_len": len(new_at),
         "refresh_token_len": len(new_rt),
         "expires_at": claims.get("exp_iso"),

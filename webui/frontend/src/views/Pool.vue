@@ -12,6 +12,7 @@ import {
   Files,
   ArrowDown,
   Setting,
+  Download,
 } from '@element-plus/icons-vue'
 import {
   listAccounts,
@@ -25,17 +26,22 @@ import {
   startMailboxValidation,
   stopMailboxValidation,
   mailboxValidateStreamUrl,
+  exportPoolAccounts,
 } from '@/api/accounts'
 import { getMailProviders } from '@/api/settings'
 import { copyText, createSSE } from '@/api/request'
 import { useStatsStore } from '@/stores/stats'
 import { useRuntimeStore } from '@/stores/runtime'
+import { useProxyStore } from '@/stores/proxy'
+import { useFormStore, COUNTRY_OPTIONS } from '@/stores/form'
 import StatusDot from '@/components/StatusDot.vue'
 
 const router = useRouter()
 const statsStore = useStatsStore()
 const runtime = useRuntimeStore()
 const { dataVersion } = storeToRefs(runtime)
+const { list: proxyList } = storeToRefs(useProxyStore())
+const { form: regForm } = storeToRefs(useFormStore())
 
 const PAGE_SIZE = 20
 const rows = ref([])
@@ -107,24 +113,149 @@ async function confirm(msg, title = '确认') {
   }
 }
 
+const failedCount = computed(() => statsStore.stats?.failed || 0)
+const inUseCount = computed(() => statsStore.stats?.in_use || 0)
+const resettingFailed = ref(false)
+const releasingStale = ref(false)
+
 async function resetFailedAll() {
-  if (!(await confirm('把所有 failed 状态的号重置为 available？'))) return
+  const count = failedCount.value
+  const countMsg = count > 0 ? `全部 ${count} 个` : '全部'
+  const ok = await confirm(
+    `确定将待注册号池中${countMsg}【失败 (failed)】邮箱一键重置为 available（可用）状态？\n\n重置后将自动清空原失败原因和时间戳，重新进入待注册与验活队列。`,
+    '一键重置所有失败号',
+  )
+  if (!ok) return
+
+  resettingFailed.value = true
   try {
     const r = await resetFailed()
-    ElMessage.success(`已重置 ${r.reset} 个账号`)
+    ElNotification({
+      title: '重置成功',
+      message: `已成功将 ${r.reset} 个失败邮箱重置为可用 (available) 状态！`,
+      type: 'success',
+      duration: 4000,
+    })
     afterMutate()
   } catch (e) {
-    ElMessage.error(e.message)
+    ElNotification({
+      title: '重置失败',
+      message: e.message || '请求异常',
+      type: 'error',
+      duration: 4000,
+    })
+  } finally {
+    resettingFailed.value = false
   }
 }
 
 async function releaseStaleAll() {
+  releasingStale.value = true
   try {
     const r = await releaseStale()
-    ElMessage.success(`已释放 ${r.released} 个卡死账号`)
+    ElNotification({
+      title: '释放完成',
+      message: `已成功释放 ${r.released} 个卡在 in_use 状态的账号回 available 状态！`,
+      type: 'info',
+      duration: 4000,
+    })
     afterMutate()
   } catch (e) {
     ElMessage.error(e.message)
+  } finally {
+    releasingStale.value = false
+  }
+}
+
+function handleResetCommand(cmd) {
+  if (cmd === 'selected') {
+    resetSelected()
+  } else if (cmd === 'failed') {
+    resetFailedAll()
+  } else if (cmd === 'stale') {
+    releaseStaleAll()
+  }
+}
+
+// ════════════════ 邮箱号池一键导出 (标准 4 段 txt 格式) ════════════════
+const exportVisible = ref(false)
+const exportText = ref('')
+const exportCount = ref(0)
+const exportFilename = ref('')
+const exportLabel = ref('')
+const exporting = ref(false)
+
+async function doExportPool(mode, emails = null, label = '', reasonLike = '') {
+  exporting.value = true
+  try {
+    let payload = {}
+    if (emails && emails.length) {
+      payload.emails = emails
+    } else if (mode === 'all') {
+      payload.all = true
+    } else if (mode === 'failed_70000') {
+      payload.status = 'failed'
+      payload.reason_like = 'AADSTS70000'
+    } else if (mode) {
+      payload.status = mode
+    }
+    if (reasonLike) {
+      payload.reason_like = reasonLike
+    }
+    const res = await exportPoolAccounts(payload)
+    if (!res.count) {
+      ElMessage.warning('未找到符合条件的邮箱数据')
+      return
+    }
+    exportText.value = res.text || ''
+    exportCount.value = res.count || 0
+    exportFilename.value = res.filename || `mailbox_${mode || 'all'}.txt`
+    exportLabel.value = label || (mode === 'failed_70000' ? 'AADSTS70000 授权过期死号' : (mode === 'failed' ? '所有失败死号' : (mode === 'available' ? '所有可用邮箱' : '号池邮箱')))
+    exportVisible.value = true
+  } catch (e) {
+    ElMessage.error('导出失败: ' + (e.response?.data?.detail || e.message))
+  } finally {
+    exporting.value = false
+  }
+}
+
+function downloadExportTxt() {
+  if (!exportText.value) return
+  const blob = new Blob([exportText.value], { type: 'text/plain;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = exportFilename.value || 'mailbox_accounts.txt'
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+  ElMessage.success(`已开始下载 ${exportFilename.value}`)
+}
+
+function handleExportCommand(cmd) {
+  if (cmd === 'selected') {
+    const emails = selected.value.map((r) => r.email)
+    if (!emails.length) return
+    doExportPool(null, emails, `选中的 ${emails.length} 个邮箱`)
+  } else if (cmd === 'failed_70000') {
+    doExportPool('failed_70000', null, 'AADSTS70000 授权过期/被吊销死号 (卡商退款售后专用)')
+  } else if (cmd === 'failed') {
+    doExportPool('failed', null, `全部失败/死号 (${failedCount.value} 个)`)
+  } else if (cmd === 'available') {
+    doExportPool('available', null, '全部可用邮箱 (available)')
+  } else if (cmd === 'all') {
+    doExportPool('all', null, '全量号池所有邮箱')
+  }
+}
+
+async function exportDeadMailboxesFromVal() {
+  // 优先直接按当前验活出的 failed_70000 或全部失败号导出
+  const deadEmails = mbxValFailedRows.value.map((r) => r.email)
+  if (deadEmails.length > 0) {
+    await doExportPool(null, deadEmails, `验活发现的 ${deadEmails.length} 个失效死号 (含 AADSTS70000)`)
+  } else {
+    await doExportPool('failed_70000', null, '号池 AADSTS70000 授权过期死号')
   }
 }
 
@@ -138,11 +269,14 @@ const mbxValEs = ref(null)
 const mbxValConfigCollapsed = ref(true)
 const mbxValMode = ref('selected') // selected / available / failed / all
 const mbxValTargetEmails = ref([])
-const mbxValItems = ref({})
+const mbxValFailedRows = ref([])
 const mbxValLogs = ref([])
 const mbxValForm = reactive({
   action: 'mark_failed', // mark_failed (标记为失败) / delete (直接删除)
-  workers: 15,
+  workers: 20,
+  proxyMode: '__AUTO_DYNAMIC__', // '__AUTO_DYNAMIC__' (动态住宅按账号自动换IP) / '__POOL__' (代理池轮换) / '__DIRECT__' (直连) / '__CUSTOM__' (自定义)
+  customProxy: '',
+  proxyCountry: '',
 })
 const mbxValStats = reactive({
   total: 0,
@@ -152,12 +286,20 @@ const mbxValStats = reactive({
   percent: 0,
 })
 
-const mbxValRows = computed(() => Object.values(mbxValItems.value))
+function updateMbxStats(data) {
+  if (data && data.stats) {
+    mbxValStats.total = data.stats.total || mbxValStats.total
+    mbxValStats.valid = data.stats.valid || 0
+    mbxValStats.invalid = data.stats.invalid || 0
+    mbxValStats.done = data.done_count || (mbxValStats.valid + mbxValStats.invalid)
+    mbxValStats.percent = mbxValStats.total ? Math.round((mbxValStats.done / mbxValStats.total) * 100) : 0
+  }
+}
 
 function openMbxValidation(mode = 'selected') {
   mbxValMode.value = mode
   mbxValLogs.value = []
-  mbxValItems.value = {}
+  mbxValFailedRows.value = []
   mbxValStats.total = 0
   mbxValStats.done = 0
   mbxValStats.valid = 0
@@ -171,9 +313,6 @@ function openMbxValidation(mode = 'selected') {
     }
     mbxValTargetEmails.value = selected.value.map((r) => r.email)
     mbxValStats.total = mbxValTargetEmails.value.length
-    for (const em of mbxValTargetEmails.value) {
-      mbxValItems.value[em] = { email: em, status: 'pending', valid: null, reason: '' }
-    }
   } else {
     mbxValTargetEmails.value = []
   }
@@ -185,10 +324,28 @@ async function startMbxValTask() {
   if (mbxValRunning.value) return
   mbxValRunning.value = true
   mbxValLogs.value = []
+  mbxValFailedRows.value = []
+
+  let proxyParam = ''
+  let proxyPoolParam = ''
+  if (mbxValForm.proxyMode === '__AUTO_DYNAMIC__') {
+    // 动态住宅代理模式：优先使用注册表单中配置的动态住宅代理，或者代理池中的节点，由后端自动派生新 session_id
+    proxyParam = (regForm.value?.proxy || (proxyList.value && proxyList.value[0]) || '').trim()
+    if (!proxyParam && proxyList.value?.length) {
+      proxyPoolParam = proxyList.value.join('\n')
+    }
+  } else if (mbxValForm.proxyMode === '__POOL__') {
+    proxyPoolParam = (proxyList.value || []).join('\n')
+  } else if (mbxValForm.proxyMode === '__CUSTOM__') {
+    proxyParam = (mbxValForm.customProxy || '').trim()
+  }
 
   let payload = {
     action: mbxValForm.action,
     workers: mbxValForm.workers,
+    proxy: proxyParam,
+    proxy_pool: proxyPoolParam,
+    proxy_country: mbxValForm.proxyCountry,
   }
 
   if (mbxValMode.value === 'selected') {
@@ -208,24 +365,26 @@ async function startMbxValTask() {
     }
 
     mbxValEs.value = createSSE(mailboxValidateStreamUrl(task_id), {
-      progress: (ev) => {
+      failed_item: (ev) => {
         try {
           const data = JSON.parse(ev.data)
           if (data.email) {
-            mbxValItems.value[data.email] = {
+            mbxValFailedRows.value.unshift({
               email: data.email,
-              status: data.status,
-              valid: data.valid,
               reason: data.reason,
+              elapsed: data.elapsed,
+            })
+            if (mbxValFailedRows.value.length > 200) {
+              mbxValFailedRows.value.pop()
             }
           }
-          if (data.stats) {
-            mbxValStats.total = data.stats.total || mbxValStats.total
-            mbxValStats.valid = data.stats.valid || 0
-            mbxValStats.invalid = data.stats.invalid || 0
-            mbxValStats.done = data.done_count || (mbxValStats.valid + mbxValStats.invalid)
-            mbxValStats.percent = mbxValStats.total ? Math.round((mbxValStats.done / mbxValStats.total) * 100) : 0
-          }
+          updateMbxStats(data)
+        } catch (_) {}
+      },
+      progress: (ev) => {
+        try {
+          const data = JSON.parse(ev.data)
+          updateMbxStats(data)
         } catch (_) {}
       },
       log: (ev) => {
@@ -233,7 +392,7 @@ async function startMbxValTask() {
           const data = JSON.parse(ev.data)
           if (data.line) {
             mbxValLogs.value.push(data.line)
-            if (mbxValLogs.value.length > 300) mbxValLogs.value.splice(0, mbxValLogs.value.length - 300)
+            if (mbxValLogs.value.length > 200) mbxValLogs.value.splice(0, mbxValLogs.value.length - 200)
           }
         } catch (_) {}
       },
@@ -450,8 +609,18 @@ loadProviders()
           </el-select>
 
           <div class="macos-btn-group">
-            <el-button size="small" @click="resetFailedAll">重试 failed</el-button>
-            <el-button size="small" @click="releaseStaleAll">释放卡死号</el-button>
+            <el-button
+              size="small"
+              type="warning"
+              plain
+              class="macos-btn"
+              :loading="resettingFailed"
+              @click="resetFailedAll"
+            >
+              <el-icon><RefreshRight /></el-icon>一键重置所有失败号
+              <span v-if="failedCount > 0" style="margin-left: 2px; font-weight: 700">({{ failedCount }})</span>
+            </el-button>
+            <el-button size="small" :loading="releasingStale" @click="releaseStaleAll">释放卡死号</el-button>
             <el-button size="small" type="warning" plain :loading="cleaningRegistered" @click="cleanRegisteredAll">清理已注册老号</el-button>
           </div>
 
@@ -472,16 +641,62 @@ loadProviders()
         </div>
 
         <div class="toolbar-right">
-          <el-button
-            type="primary"
-            plain
-            size="small"
-            class="macos-btn"
-            :disabled="!selected.length"
-            @click="resetSelected"
-          >
-            重置选中 ({{ selected.length }})
-          </el-button>
+          <!-- 导出号池下拉菜单 -->
+          <el-dropdown trigger="click" @command="handleExportCommand">
+            <el-button
+              size="small"
+              class="macos-btn"
+              :loading="exporting"
+            >
+              <el-icon><Download /></el-icon>导出号池
+              <el-icon class="el-icon--right"><ArrowDown /></el-icon>
+            </el-button>
+            <template #dropdown>
+              <el-dropdown-menu class="macos-dropdown-menu">
+                <el-dropdown-item command="failed_70000" style="color: var(--el-color-danger); font-weight: 600">
+                  🔥 一键导出 AADSTS70000 授权过期死号 (卡商售后退款专属 · 4段txt)
+                </el-dropdown-item>
+                <el-dropdown-item command="failed">
+                  ❌ 导出所有失败/死号 ({{ failedCount }} 项 · 4段txt)
+                </el-dropdown-item>
+                <el-dropdown-item command="selected" :disabled="!selected.length">
+                  📋 导出当前选中项 ({{ selected.length }} 项 · 4段txt)
+                </el-dropdown-item>
+                <el-dropdown-item command="available" divided>
+                  ✅ 导出所有可用号 (available · 4段txt)
+                </el-dropdown-item>
+                <el-dropdown-item command="all">
+                  📦 导出全量号池所有数据 (4段txt)
+                </el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
+
+          <el-dropdown trigger="click" @command="handleResetCommand">
+            <el-button
+              type="primary"
+              plain
+              size="small"
+              class="macos-btn"
+            >
+              <el-icon><RefreshRight /></el-icon>重置操作
+              <span v-if="selected.length" style="margin-left: 4px; font-weight: 700">({{ selected.length }})</span>
+              <el-icon class="el-icon--right"><ArrowDown /></el-icon>
+            </el-button>
+            <template #dropdown>
+              <el-dropdown-menu class="macos-dropdown-menu">
+                <el-dropdown-item command="selected" :disabled="!selected.length">
+                  重置当前选中 ({{ selected.length }} 项)
+                </el-dropdown-item>
+                <el-dropdown-item command="failed" divided>
+                  🔄 一键重置全部失败号 (共 {{ failedCount }} 项)
+                </el-dropdown-item>
+                <el-dropdown-item command="stale">
+                  ⏱️ 一键释放所有卡死号 (in_use ➔ available)
+                </el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
 
           <el-dropdown trigger="click" @command="bulkDeleteByStatus">
             <el-button size="small" type="danger" plain class="macos-btn">
@@ -611,10 +826,10 @@ loadProviders()
       </div>
     </div>
 
-    <!-- ──────────────── 邮箱快速验活控制台弹窗 ──────────────── -->
+    <!-- ──────────────── 邮箱快速验活控制台弹窗 (Linear & macOS 大气紧凑设计) ──────────────── -->
     <el-dialog
       v-model="mbxValVisible"
-      width="860px"
+      width="880px"
       top="4vh"
       class="oa-custom-dialog plus-dialog mbx-val-dialog"
       :close-on-click-modal="false"
@@ -622,13 +837,20 @@ loadProviders()
     >
       <template #header>
         <div class="oa-header">
+          <div class="window-dots">
+            <span class="dot red"></span>
+            <span class="dot yellow"></span>
+            <span class="dot green"></span>
+          </div>
           <div class="oa-header-title">
             <span class="oa-title-badge">MAILBOX</span>
             <span class="oa-title-text">邮箱号池快速验活与死号检测</span>
-            <span class="oa-target-pill">{{ mbxValMode === 'selected' ? `${mbxValTargetEmails.length} 个选中邮箱` : (mbxValMode === 'available' ? '全部可用号' : (mbxValMode === 'failed' ? '全部失败号' : '全量号池')) }}</span>
+            <span class="oa-target-pill">
+              {{ mbxValMode === 'selected' ? `${mbxValTargetEmails.length} 个选中邮箱` : (mbxValMode === 'available' ? '全部可用号' : (mbxValMode === 'failed' ? '全部失败号' : '全量号池')) }}
+            </span>
           </div>
           <div class="oa-header-extra">
-            <el-button size="small" text @click="mbxValConfigCollapsed = !mbxValConfigCollapsed">
+            <el-button size="small" class="config-toggle-btn" text @click="mbxValConfigCollapsed = !mbxValConfigCollapsed">
               <el-icon><Setting /></el-icon>{{ mbxValConfigCollapsed ? '展开检测配置' : '收起配置' }}
             </el-button>
           </div>
@@ -636,16 +858,53 @@ loadProviders()
       </template>
 
       <div class="oa-dialog-container">
-        <!-- 检测参数配置 -->
+        <!-- 检测参数配置卡片 -->
         <el-collapse-transition>
-          <div v-show="!mbxValConfigCollapsed" class="oa-config-card" style="padding: 10px 14px">
+          <div v-show="!mbxValConfigCollapsed" class="oa-config-card">
             <el-form label-position="top" size="small" :disabled="mbxValRunning">
-              <el-row :gutter="12">
-                <el-col :xs="24" :sm="14" :md="14">
+              <el-row :gutter="14">
+                <el-col :xs="24" :sm="13" :md="13">
+                  <el-form-item label="网络与动态代理通道 (建议开启，彻底避免单 IP 频率限制)">
+                    <el-select v-model="mbxValForm.proxyMode" style="width: 100%" placeholder="选择验活网络模式">
+                      <el-option value="__AUTO_DYNAMIC__" label="🎲 动态住宅轮换 (一号一IP，自动注入 Session ID)" />
+                      <el-option value="__POOL__" :label="`📋 使用系统代理池 (${proxyList.length} 个节点)`" />
+                      <el-option value="__DIRECT__" label="🌐 直连本机网络 (速度最快，无代理)" />
+                      <el-option value="__CUSTOM__" label="⚙️ 指定自定义单代理 / 动态住宅 URL" />
+                    </el-select>
+                  </el-form-item>
+                </el-col>
+                <el-col :xs="12" :sm="6" :md="6">
+                  <el-form-item label="出口国家 (动态住宅)">
+                    <el-select v-model="mbxValForm.proxyCountry" style="width: 100%" placeholder="自动 / 默认">
+                      <el-option
+                        v-for="c in COUNTRY_OPTIONS"
+                        :key="c.code"
+                        :label="c.name"
+                        :value="c.code"
+                      />
+                    </el-select>
+                  </el-form-item>
+                </el-col>
+                <el-col :xs="12" :sm="5" :md="5">
+                  <el-form-item label="并发 Worker (并发检测)">
+                    <el-input-number v-model="mbxValForm.workers" :min="1" :max="50" style="width: 100%" />
+                  </el-form-item>
+                </el-col>
+
+                <el-col v-if="mbxValForm.proxyMode === '__CUSTOM__'" :xs="24" :sm="24" :md="24">
+                  <el-form-item label="自定义代理地址 (支持 socks5:// 或 http://)">
+                    <el-input
+                      v-model="mbxValForm.customProxy"
+                      placeholder="socks5h://user:pass@host:port 或 http://host:port"
+                    />
+                  </el-form-item>
+                </el-col>
+
+                <el-col :xs="24" :sm="24" :md="24">
                   <el-form-item label="发现失效死号时的动作">
-                    <el-radio-group v-model="mbxValForm.action" size="small">
+                    <el-radio-group v-model="mbxValForm.action" size="small" class="custom-radio-group">
                       <el-radio-button value="mark_failed">
-                        ⚠️ 标记为 failed (记录报错原因，可在号池筛选)
+                        ⚠️ 标记为 failed (记录报错原因，可在号池筛选导出)
                       </el-radio-button>
                       <el-radio-button value="delete">
                         🗑️ 直接从号池彻底删除
@@ -653,28 +912,26 @@ loadProviders()
                     </el-radio-group>
                   </el-form-item>
                 </el-col>
-                <el-col :xs="12" :sm="10" :md="10">
-                  <el-form-item label="并发 Worker (并发检测)">
-                    <el-input-number v-model="mbxValForm.workers" :min="1" :max="30" style="width: 100%" />
-                  </el-form-item>
-                </el-col>
               </el-row>
             </el-form>
           </div>
         </el-collapse-transition>
 
-        <!-- KPI 统计看板 -->
+        <!-- KPI 统计看板 (大气卡片，高对比度) -->
         <div class="plus-kpi-grid mbx-kpi-grid">
           <div class="plus-kpi-card">
             <span class="kpi-label">已检测 / 总数</span>
-            <span class="kpi-num">{{ mbxValStats.done }} / {{ mbxValStats.total || '—' }}</span>
+            <div class="kpi-num-row">
+              <span class="kpi-num">{{ mbxValStats.done }}</span>
+              <span class="kpi-total">/ {{ mbxValStats.total || '—' }}</span>
+            </div>
           </div>
           <div class="plus-kpi-card hit-active">
-            <span class="kpi-label">✅ OAuth有效 / 正常收信</span>
+            <span class="kpi-label">✅ OAuth有效 / 正常可用</span>
             <span class="kpi-num text-success">{{ mbxValStats.valid }}</span>
           </div>
-          <div class="plus-kpi-card" :class="{ 'card-danger': mbxValStats.invalid > 0 }">
-            <span class="kpi-label">❌ 授权过期 / 死号</span>
+          <div class="plus-kpi-card card-danger" :class="{ 'has-dead': mbxValStats.invalid > 0 }">
+            <span class="kpi-label">❌ 授权过期 / 失效死号</span>
             <span class="kpi-num text-danger">{{ mbxValStats.invalid }}</span>
           </div>
         </div>
@@ -684,64 +941,98 @@ loadProviders()
           <el-progress
             :percentage="mbxValStats.percent"
             :status="mbxValStats.percent === 100 ? (mbxValStats.invalid > 0 ? 'warning' : 'success') : ''"
-            :stroke-width="6"
+            :stroke-width="5"
             :show-text="false"
           />
         </div>
 
-        <!-- 实时结果表格 -->
+        <!-- 失效死号清单实时表格 (仅展示死号，保障万级检测丝滑流畅) -->
         <div class="plus-table-wrap">
+          <div class="mbx-sub-header">
+            <div class="sub-title-wrap">
+              <span class="sub-title">❌ 失效死号实时清单</span>
+              <span v-if="mbxValStats.invalid > 0" class="dead-count-badge">{{ mbxValStats.invalid }} 个死号</span>
+            </div>
+            <span class="sub-tip">（仅实时展示死号与失败诊断，正常号不占列表 DOM，保持极速流畅）</span>
+          </div>
           <el-table
-            :data="mbxValRows"
+            :data="mbxValFailedRows"
             size="small"
             stripe
-            :height="mbxValConfigCollapsed ? '300px' : '200px'"
-            class="plus-table"
+            :height="mbxValConfigCollapsed ? '280px' : '180px'"
+            class="macos-table mbx-table"
           >
-            <el-table-column prop="email" label="邮箱账号" min-width="220" show-overflow-tooltip>
+            <el-table-column prop="email" label="失效邮箱账号" min-width="220" show-overflow-tooltip>
               <template #default="{ row }">
-                <span class="mono">{{ row.email }}</span>
+                <button
+                  type="button"
+                  class="macos-tag-btn copy-btn err-copy-btn"
+                  title="点击复制邮箱"
+                  @click="copyText(row.email)"
+                >
+                  <span class="mono">{{ row.email }}</span>
+                  <el-icon class="copy-ico"><CopyDocument /></el-icon>
+                </button>
               </template>
             </el-table-column>
-            <el-table-column label="检测状态" width="130" align="center">
-              <template #default="{ row }">
-                <el-tag v-if="row.valid === true" size="small" type="success" effect="light">✅ 有效正常</el-tag>
-                <el-tag v-else-if="row.valid === false" size="small" type="danger" effect="light">❌ 授权失效</el-tag>
-                <el-tag v-else size="small" type="info" effect="plain">⏳ 待检测</el-tag>
+            <el-table-column label="状态" width="110" align="center">
+              <template #default>
+                <el-tag size="small" type="danger" effect="light" class="dead-tag">❌ 授权失效</el-tag>
               </template>
             </el-table-column>
-            <el-table-column prop="reason" label="诊断结果 / 失败原因" min-width="240" show-overflow-tooltip>
+            <el-table-column prop="reason" label="诊断原因 / 报错信息" min-width="260" show-overflow-tooltip>
               <template #default="{ row }">
-                <span v-if="row.reason" :style="{ color: row.valid === false ? 'var(--el-color-danger)' : 'var(--el-color-success)' }">
-                  {{ row.reason }}
-                </span>
-                <span v-else class="hint">—</span>
+                <span class="err-reason-text">{{ row.reason }}</span>
               </template>
             </el-table-column>
+            <el-table-column prop="elapsed" label="耗时" width="80" align="center">
+              <template #default="{ row }">
+                <span class="hint mono">{{ row.elapsed ? `${row.elapsed}s` : '—' }}</span>
+              </template>
+            </el-table-column>
+            <template #empty>
+              <div class="mbx-empty-state">
+                <div class="empty-icon-wrap">🎉</div>
+                <div class="empty-title">当前未发现任何失效死号</div>
+                <div class="empty-desc">
+                  {{ mbxValRunning ? `已快速扫过 ${mbxValStats.valid} 个正常邮箱，正在持续高并发检测中...` : '号池非常纯净可用' }}
+                </div>
+              </div>
+            </template>
           </el-table>
         </div>
 
-        <!-- 底部控制按钮 -->
+        <!-- 底部控制栏 -->
         <div class="oa-dialog-footer">
           <div class="footer-tip">
             <span v-if="mbxValRunning" class="running-indicator">
-              <span class="pulse-dot"></span> 正在并发检测中 (Worker: {{ mbxValForm.workers }})...
+              <span class="pulse-dot"></span> 正在并发高速验活中 (Worker: {{ mbxValForm.workers }})...
             </span>
             <span v-else-if="mbxValStats.done > 0" class="finished-indicator">
-              已完成全部检测
+              ✅ 已完成全部检测 (共 {{ mbxValStats.total }} 项)
             </span>
           </div>
           <div class="modal-footer-btns">
+            <el-button
+              v-if="mbxValStats.invalid > 0"
+              size="small"
+              type="warning"
+              plain
+              @click="exportDeadMailboxesFromVal"
+            >
+              <el-icon><Download /></el-icon> 导出失效死号 ({{ mbxValStats.invalid }} 项)
+            </el-button>
             <el-button v-if="mbxValRunning" size="small" @click="closeMbxValModal">
               后台运行
             </el-button>
-            <el-button v-if="mbxValRunning" size="small" type="danger" @click="stopMbxValTask">
+            <el-button v-if="mbxValRunning" size="small" type="danger" plain @click="stopMbxValTask">
               停止检测
             </el-button>
             <el-button
               v-else
               size="small"
               type="primary"
+              class="start-gradient-btn"
               @click="startMbxValTask"
             >
               <el-icon><VideoPlay /></el-icon> 开始快速验活
@@ -750,6 +1041,51 @@ loadProviders()
           </div>
         </div>
       </div>
+    </el-dialog>
+
+    <!-- ──────────────── 邮箱号池一键导出弹窗 (标准 4 段 txt 格式) ──────────────── -->
+    <el-dialog
+      v-model="exportVisible"
+      width="780px"
+      top="8vh"
+      class="macos-custom-dialog export-dialog"
+      :close-on-click-modal="false"
+    >
+      <template #header>
+        <div style="display: flex; align-items: center; justify-content: space-between; width: 100%; padding-right: 20px">
+          <div style="display: flex; align-items: center; gap: 8px">
+            <span style="font-weight: 700; font-size: 14px; color: var(--app-title)">📥 导出邮箱号池 · {{ exportLabel }}</span>
+            <el-tag size="small" type="primary" effect="plain" class="mono">共 {{ exportCount }} 行</el-tag>
+          </div>
+          <span style="font-size: 11.5px; color: var(--app-text-secondary)">格式：邮箱----密码----ClientID----RefreshToken</span>
+        </div>
+      </template>
+
+      <el-input
+        :model-value="exportText"
+        type="textarea"
+        :rows="14"
+        readonly
+        class="mono export-area"
+        placeholder="正在生成导出数据..."
+      />
+
+      <template #footer>
+        <div style="display: flex; align-items: center; justify-content: space-between">
+          <span style="font-size: 11.5px; color: var(--app-text-secondary)">
+            标准 4 段格式，可直接用于售后退款/补号、备份或重新批量导入
+          </span>
+          <div style="display: flex; gap: 8px">
+            <el-button size="small" @click="copyText(exportText, '已复制全部邮箱数据')">
+              <el-icon><CopyDocument /></el-icon> 复制全部
+            </el-button>
+            <el-button size="small" type="primary" @click="downloadExportTxt">
+              <el-icon><Download /></el-icon> 下载 {{ exportFilename }}
+            </el-button>
+            <el-button size="small" @click="exportVisible = false">关闭</el-button>
+          </div>
+        </div>
+      </template>
     </el-dialog>
   </div>
 </template>
@@ -908,5 +1244,294 @@ loadProviders()
 .selected-badge {
   color: var(--el-color-primary);
   font-weight: 500;
+}
+
+.mbx-sub-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  padding: 0 4px;
+}
+.sub-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.mbx-sub-header .sub-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--el-color-danger);
+}
+.dead-count-badge {
+  font-size: 11px;
+  font-weight: 700;
+  color: #fff;
+  background: var(--el-color-danger);
+  padding: 1px 7px;
+  border-radius: 10px;
+}
+.mbx-sub-header .sub-tip {
+  font-size: 11px;
+  color: var(--app-text-secondary);
+}
+
+/* ════════════════════════ 验活弹窗高级现代设计 (Linear & macOS Dark/Light) ════════════════════════ */
+:deep(.mbx-val-dialog) {
+  border-radius: 14px;
+  overflow: hidden;
+  background: var(--app-window-bg);
+  border: 1px solid var(--app-border);
+  box-shadow: 0 20px 48px rgba(0, 0, 0, 0.45);
+}
+
+:deep(.mbx-val-dialog .el-dialog__header) {
+  padding: 12px 18px;
+  margin: 0;
+  border-bottom: 1px solid var(--app-border);
+  background: var(--el-fill-color-light);
+}
+
+:deep(.mbx-val-dialog .el-dialog__body) {
+  padding: 14px 18px;
+}
+
+.oa-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.window-dots {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: 12px;
+}
+.dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+.dot.red { background: #ff5f56; }
+.dot.yellow { background: #ffbd2e; }
+.dot.green { background: #27c93f; }
+
+.oa-header-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+}
+.oa-title-badge {
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 0.5px;
+  color: #fff;
+  background: linear-gradient(135deg, #007aff, #5856d6);
+  padding: 2px 7px;
+  border-radius: 5px;
+}
+.oa-title-text {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--app-title);
+}
+.oa-target-pill {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--app-text-secondary);
+  background: var(--el-fill-color);
+  border: 1px solid var(--app-border);
+  padding: 2px 8px;
+  border-radius: 12px;
+}
+
+.config-toggle-btn {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--app-title);
+  background: var(--el-fill-color);
+  border: 1px solid var(--app-border);
+  border-radius: 6px;
+  padding: 4px 8px;
+}
+
+.oa-dialog-container {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* 参数配置卡片 */
+.oa-config-card {
+  background: var(--el-fill-color-light);
+  border: 1px solid var(--app-border);
+  border-radius: 10px;
+  padding: 12px 16px;
+}
+.oa-config-card :deep(.el-form-item) {
+  margin-bottom: 8px;
+}
+.oa-config-card :deep(.el-form-item__label) {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--app-text-secondary);
+  padding-bottom: 2px;
+}
+
+/* KPI 统计卡片网格 */
+.plus-kpi-grid.mbx-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+.plus-kpi-card {
+  background: var(--el-fill-color-light);
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  padding: 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  transition: all 0.2s ease;
+}
+.plus-kpi-card .kpi-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--app-text-secondary);
+}
+.plus-kpi-card .kpi-num-row {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+}
+.plus-kpi-card .kpi-num {
+  font-size: 19px;
+  font-weight: 800;
+  font-family: var(--font-mono, monospace);
+  line-height: 1.1;
+  color: var(--app-title);
+}
+.plus-kpi-card .kpi-total {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--app-text-secondary);
+  font-family: var(--font-mono, monospace);
+}
+.plus-kpi-card.hit-active {
+  background: rgba(39, 201, 63, 0.08);
+  border-color: rgba(39, 201, 63, 0.35);
+}
+.plus-kpi-card.card-danger.has-dead {
+  background: rgba(255, 59, 48, 0.1);
+  border-color: rgba(255, 59, 48, 0.4);
+  box-shadow: 0 0 12px rgba(255, 59, 48, 0.15);
+}
+.text-success { color: var(--apple-green) !important; }
+.text-danger { color: var(--apple-red) !important; }
+
+/* 进度条 */
+.oa-progress-wrap {
+  margin: -2px 0 2px;
+}
+.oa-progress-wrap :deep(.el-progress-bar__outer) {
+  background: var(--el-fill-color);
+  border-radius: 4px;
+}
+.oa-progress-wrap :deep(.el-progress-bar__inner) {
+  border-radius: 4px;
+  background: linear-gradient(90deg, #007aff, #34c759);
+}
+
+/* 核心表格 */
+.plus-table-wrap {
+  background: var(--app-window-bg);
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  padding: 10px;
+}
+.mbx-table :deep(.el-table__inner-wrapper) {
+  background: transparent;
+}
+.err-copy-btn {
+  background: rgba(255, 59, 48, 0.08) !important;
+  border-color: rgba(255, 59, 48, 0.25) !important;
+  color: var(--apple-red) !important;
+}
+.dead-tag {
+  font-weight: 700;
+  border-radius: 4px;
+}
+.err-reason-text {
+  color: var(--apple-red);
+  font-size: 11.5px;
+  font-weight: 500;
+}
+
+/* 空状态卡片 */
+.mbx-empty-state {
+  padding: 28px 0;
+  text-align: center;
+}
+.empty-icon-wrap {
+  font-size: 26px;
+  margin-bottom: 6px;
+}
+.empty-title {
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--apple-green);
+}
+.empty-desc {
+  font-size: 11.5px;
+  color: var(--app-text-secondary);
+  margin-top: 4px;
+}
+
+/* 底部状态与按钮 */
+.oa-dialog-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-top: 6px;
+}
+.running-indicator {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--el-color-primary);
+}
+.finished-indicator {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--apple-green);
+}
+.pulse-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--el-color-primary);
+  animation: pulse 1.2s infinite ease-in-out;
+}
+@keyframes pulse {
+  0% { transform: scale(0.8); opacity: 0.4; }
+  50% { transform: scale(1.3); opacity: 1; }
+  100% { transform: scale(0.8); opacity: 0.4; }
+}
+
+.modal-footer-btns {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.start-gradient-btn {
+  background: linear-gradient(135deg, #007aff, #5856d6) !important;
+  border: none !important;
+  color: #fff !important;
+  font-weight: 700 !important;
+  border-radius: 6px;
+  box-shadow: 0 2px 8px rgba(0, 122, 255, 0.35);
 }
 </style>

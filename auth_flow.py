@@ -3640,7 +3640,8 @@ class AuthFlow:
                         except Exception as e:
                             logger.warning(f"account_callback 异常: {e}")
                     if not totp_secret:
-                        logger.warning("进入 mfa-challenge 但没有 totp_secret，无法继续")
+                        logger.error(f"❌ 账号 {email} 原号主已开启 2FA 两步验证 (mfa-challenge)，本地无 TOTP 密钥无法完成登录")
+                        raise RuntimeError(f"原号主已开启 2FA 两步验证 (mfa-challenge)，缺少 TOTP 密钥无法登录: {email}")
                     else:
                         challenge_id = continue_url.split("/")[-1] if "/mfa-challenge/" in continue_url else ""
                         if challenge_id:

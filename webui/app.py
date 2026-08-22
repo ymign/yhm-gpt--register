@@ -144,6 +144,9 @@ class MailboxValidateReq(BaseModel):
     kind_filter: Optional[str] = ""
     action: Optional[str] = "mark_failed"  # mark_failed / delete
     workers: Optional[int] = 15
+    proxy: Optional[str] = ""
+    proxy_pool: Optional[str] = ""
+    proxy_country: Optional[str] = ""
 
 
 @app.post("/api/accounts/validate/start")
@@ -158,6 +161,9 @@ def api_validate_mailbox_start(req: MailboxValidateReq):
                 "kind_filter": req.kind_filter,
                 "action": req.action,
                 "workers": req.workers,
+                "proxy": req.proxy,
+                "proxy_pool": req.proxy_pool,
+                "proxy_country": req.proxy_country,
             },
         )
         return {"ok": True, "task_id": task_id}
@@ -261,6 +267,51 @@ def api_bulk_reset(req: BulkResetReq):
 def api_release_stale(stale_seconds: int = 1800):
     n = db.release_stale_in_use(stale_seconds=stale_seconds)
     return {"ok": True, "released": n, "stats": db.stats()}
+
+
+class ExportPoolReq(BaseModel):
+    status: Optional[str] = Field(None, description="available/in_use/done/failed/all")
+    emails: Optional[list[str]] = Field(None, description="按 email 列表导出")
+    kind: Optional[str] = Field(None, description="按邮箱类型过滤")
+    all: bool = Field(False, description="是否导出全部")
+    reason_like: Optional[str] = Field(None, description="按失败原因过滤，如 AADSTS70000")
+
+
+@app.post("/api/accounts/export")
+def api_export_pool_accounts(req: ExportPoolReq):
+    """一键导出号池邮箱（支持按失败状态、特定错误原因如 AADSTS70000、全部可用或勾选列表导出 4 段原始格式）。"""
+    status = "" if req.all else (req.status or "")
+    rows = db.export_pool_accounts(
+        status=status,
+        kind=req.kind or "",
+        emails=req.emails,
+        reason_like=req.reason_like or "",
+    )
+    lines = []
+    for r in rows:
+        em = (r.get("email") or "").strip()
+        pwd = (r.get("password") or "").strip()
+        cid = (r.get("client_id") or "").strip()
+        rt = (r.get("refresh_token") or "").strip()
+        relay = (r.get("relay_url") or "").strip()
+
+        if cid or rt:
+            lines.append(f"{em}----{pwd}----{cid}----{rt}")
+        elif relay:
+            lines.append(f"{em}----{relay}")
+        elif pwd:
+            lines.append(f"{em}----{pwd}")
+        else:
+            lines.append(em)
+
+    tag = "aadsts70000" if (req.reason_like and "70000" in req.reason_like) else (req.status or ("selected" if req.emails else "all"))
+    filename = f"mailbox_{tag}_{int(time.time())}.txt"
+    return {
+        "ok": True,
+        "count": len(lines),
+        "text": "\n".join(lines),
+        "filename": filename,
+    }
 
 
 @app.get("/api/stats")

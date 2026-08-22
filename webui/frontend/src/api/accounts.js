@@ -28,6 +28,9 @@ export const bulkResetAccounts = (emails) =>
 
 export const releaseStale = () => http.post('/api/accounts/release_stale')
 
+export const exportPoolAccounts = (payload) =>
+  http.post('/api/accounts/export', payload)
+
 export const cleanRegisteredFromPool = (mode = 'delete') =>
   http.post(`/api/accounts/clean-registered?mode=${mode}`)
 
