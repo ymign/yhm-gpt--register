@@ -64,6 +64,7 @@ class AuthResult:
         self.refresh_token: str = ""
         self.cookie_header: str = ""
         self.totp_secret: str = ""
+        self.session_data: dict = {}
 
     def is_valid(self) -> bool:
         return bool(self.session_token and self.access_token)
@@ -80,6 +81,7 @@ class AuthResult:
             "refresh_token": self.refresh_token,
             "cookie_header": self.cookie_header,
             "totp_secret": self.totp_secret,
+            "session_data": self.session_data,
         }
 
 
@@ -2966,8 +2968,9 @@ class AuthFlow:
         logger.info("[9/10] 跟踪重定向链...")
         current_url = start_url
         callback_url = ""
-        max_hops = 12
+        max_hops = 15
         referer = "https://auth.openai.com/"
+        chose_account = False
 
         for i in range(max_hops):
             # 逐跳整页导航，头必须像浏览器：同 auth_oauth_init，旧版只发
@@ -2994,18 +2997,56 @@ class AuthFlow:
             if "/api/auth/callback/openai" in current_url:
                 callback_url = current_url
                 self._sniff_login_verifier(current_url, f"redirect_hop_{i+1}_callback_url")
+                break
 
-            # workspace 页面常见为 200，需要主动调 workspace/select 获取下一跳
-            if "/workspace" in current_url and resp.status_code == 200:
-                workspace_id = self._extract_workspace_id() or self._extract_workspace_id_from_html(resp.text or "")
-                if workspace_id:
-                    logger.info("workspace 页面提取到 workspace_id=%s，尝试继续授权", workspace_id)
-                    next_url = self._workspace_select(workspace_id)
+            # 处理 HTTP 200 页面（workspace、sign-in-with-chatgpt、consent、choose-an-account、HTML meta/JS 跳转）
+            if resp.status_code == 200:
+                html_text = resp.text or ""
+                is_workspace_like = (
+                    ("/workspace" in current_url)
+                    or ("/sign-in-with-chatgpt/" in current_url)
+                    or ("/consent" in current_url)
+                )
+                if is_workspace_like:
+                    workspace_id = self._extract_workspace_id() or self._extract_workspace_id_from_html(html_text)
+                    if workspace_id:
+                        logger.info("workspace 页面提取到 workspace_id=%s，尝试继续授权", workspace_id)
+                        next_url = self._workspace_select(workspace_id)
+                        if next_url:
+                            if next_url.startswith("/"):
+                                next_url = urljoin("https://auth.openai.com", next_url)
+                            current_url = next_url
+                            continue
+
+                # /choose-an-account 多账号选择页
+                if "/choose-an-account" in current_url and not chose_account:
+                    chose_account = True
+                    logger.info("检测到 choose-an-account 选择页，自动提交 session 选择")
+                    next_url = self._choose_account_select(html_text, current_url)
                     if next_url:
                         if next_url.startswith("/"):
                             next_url = urljoin("https://auth.openai.com", next_url)
                         current_url = next_url
                         continue
+
+                # HTML 中包含 meta refresh 或 JS location 跳转
+                m_meta = re.search(r'<meta[^>]+http-equiv=["\']refresh["\'][^>]+content=["\'][^"\']*url=([^"\']+)["\']', html_text, re.IGNORECASE)
+                if m_meta:
+                    meta_target = m_meta.group(1).strip()
+                    if meta_target.startswith("/"):
+                        meta_target = urljoin("https://auth.openai.com", meta_target)
+                    logger.info("捕获 HTML meta refresh 跳转: %s", meta_target[:100])
+                    current_url = meta_target
+                    continue
+
+                m_loc = re.search(r'(?:window\.location(?:\.href|\.replace)?|location\.href)\s*=\s*["\']([^"\']+)["\']', html_text)
+                if m_loc:
+                    loc_target = m_loc.group(1).strip()
+                    if loc_target.startswith("/"):
+                        loc_target = urljoin("https://auth.openai.com", loc_target)
+                    logger.info("捕获 HTML JS location 跳转: %s", loc_target[:100])
+                    current_url = loc_target
+                    continue
 
             if resp.status_code in (301, 302, 303, 307, 308):
                 location = resp.headers.get("Location", "")
@@ -3028,11 +3069,14 @@ class AuthFlow:
 
         # 补一跳首页
         if (not callback_url) and (not current_url.rstrip("/").endswith("chatgpt.com")):
-            self.session.get(
-                "https://chatgpt.com/",
-                headers={"Referer": current_url},
-                timeout=30,
-            )
+            try:
+                self.session.get(
+                    "https://chatgpt.com/",
+                    headers={"Referer": current_url},
+                    timeout=30,
+                )
+            except Exception:
+                pass
 
         logger.info(f"重定向链完成, callback: {'有' if callback_url else '无'}")
         return callback_url, current_url
@@ -3062,28 +3106,42 @@ class AuthFlow:
             current_url = resp.headers.get("Location", "")
             logger.info(f"reauthorize Location: {current_url[:150]}")
             if resp.status_code in (301, 302, 303, 307, 308) and current_url:
-                for hop in range(10):
+                for hop in range(15):
                     logger.debug(f"reauthorize redirect hop {hop+1}: {current_url[:100]}")
-                    if "code=" in current_url and "state=" in current_url:
+                    if "code=" in current_url and ("callback" in current_url or "state=" in current_url):
                         logger.info("reauthorize: 找到 callback URL")
                         return current_url
                     try:
                         hop_resp = self.session.get(
                             current_url,
+                            headers=self._navigation_headers(),
                             allow_redirects=False,
                             timeout=15,
                         )
                         self._trace_http(f"reauthorize_hop_{hop+1}", hop_resp)
+                        if hop_resp.status_code == 200:
+                            h_text = hop_resp.text or ""
+                            if ("/workspace" in current_url) or ("/sign-in-with-chatgpt/" in current_url) or ("/consent" in current_url):
+                                wid = self._extract_workspace_id() or self._extract_workspace_id_from_html(h_text)
+                                if wid:
+                                    n_url = self._workspace_select(wid)
+                                    if n_url:
+                                        current_url = urljoin("https://auth.openai.com", n_url)
+                                        continue
+                            if "/choose-an-account" in current_url:
+                                n_url = self._choose_account_select(h_text, current_url)
+                                if n_url:
+                                    current_url = urljoin("https://auth.openai.com", n_url)
+                                    continue
+
                         next_loc = hop_resp.headers.get("Location", "")
                         if hop_resp.status_code not in (301, 302, 303, 307, 308) or not next_loc:
-                            # 检查最终 URL
                             final_url = str(getattr(hop_resp, 'url', current_url))
                             if "code=" in final_url:
                                 return final_url
                             break
                         current_url = next_loc
                         if not current_url.startswith("http"):
-                            from urllib.parse import urljoin
                             current_url = urljoin(authorize_url, current_url)
                     except Exception:
                         break
@@ -3166,6 +3224,12 @@ class AuthFlow:
             self.result.session_token = session_token
         if access_token:
             self.result.access_token = access_token
+        if sess_json:
+            if session_token and "sessionToken" not in sess_json:
+                sess_json["sessionToken"] = session_token
+            if access_token and "accessToken" not in sess_json:
+                sess_json["accessToken"] = access_token
+            self.result.session_data = sess_json
         self.result.cookie_header = self._build_chatgpt_cookie_header()
 
         _log = logger.info if first_call else logger.debug
@@ -3818,19 +3882,18 @@ class AuthFlow:
                 normalized = self._normalize_continue_url(final_url)
                 if normalized and normalized != final_url:
                     callback_url, final_url = self.follow_redirect_chain(normalized)
+            # 关键兜底：如果重定向链走完依然没有捕获到 callback，自动发起 reauthorize 兜底
+            if (not callback_url) and auth_url:
+                logger.info("重定向链未捕获 callback，启动 reauthorize 兜底获取 session ...")
+                callback_url = self._reauthorize_for_session(auth_url)
         else:
             callback_url, final_url = None, None
 
         refresh_only_mode = self._env_flag("OAUTH_REFRESH_ONLY", "0")
 
         # ─ 关键顺序修复 ─
-        # 旧版顺序：get_auth_session → oauth_token_exchange → _consume_callback (兜底)
-        # 问题：oauth_token_exchange 直接 POST /oauth/token 用掉了 callback 的 code，
-        #       后面 _consume_callback 再 GET callback URL 时 code 已失效 →
-        #       NextAuth 拒绝 set __Secure-next-auth.session-token cookie。
-        # 新版：先 _consume_callback 让 chatgpt.com NextAuth 自己消费 code 并 set 全套
-        #       cookie（含 session-token），然后再 get_auth_session 拿 access_token；
-        #       Codex RT exchange 用独立 authorize 链路，跟 chatgpt callback 不冲突。
+        # 先 _consume_callback 让 chatgpt.com NextAuth 自己消费 code 并 set 全套
+        # cookie（含 session-token），然后再 get_auth_session 拿 access_token；
         if (not refresh_only_mode) and callback_url:
             logger.debug("消费 callback 触发 NextAuth Set-Cookie (session-token)")
             self._consume_callback_for_session(callback_url)
@@ -4089,6 +4152,13 @@ class AuthFlow:
                 normalized = self._normalize_continue_url(final_url)
                 if normalized and normalized != final_url:
                     callback_url, final_url = self.follow_redirect_chain(normalized)
+            if (not callback_url) and auth_url:
+                logger.info("协议登录重定向链未捕获 callback，启动 reauthorize 兜底 ...")
+                callback_url = self._reauthorize_for_session(auth_url)
+
+        if (not refresh_only_mode) and callback_url:
+            logger.debug("消费 callback 触发 NextAuth Set-Cookie (session-token)")
+            self._consume_callback_for_session(callback_url)
 
         if not refresh_only_mode:
             self.get_auth_session()

@@ -775,20 +775,29 @@ def save_registered(d: dict) -> None:
         reg_city = (d.get("reg_city") or "").strip()
         reg_ip = (d.get("reg_ip") or "").strip()
 
-        if not password or not totp_secret:
-            row = con.execute(
-                "SELECT password, totp_secret, totp_factor_id, reg_country, reg_city, reg_ip "
-                "FROM registered WHERE email=?",
-                (email,),
-            ).fetchone()
-            if row:
-                if not password and (row["password"] or "").strip():
-                    password = row["password"]
-                if not totp_secret and (row["totp_secret"] or "").strip():
-                    totp_secret = row["totp_secret"]
-                    totp_factor_id = totp_factor_id or (row["totp_factor_id"] or "")
-                if not reg_country and (row["reg_country"] or "").strip():
-                    reg_country = row["reg_country"]
+        row = con.execute(
+            "SELECT password, totp_secret, totp_factor_id, reg_country, reg_city, reg_ip, extra_json "
+            "FROM registered WHERE email=?",
+            (email,),
+        ).fetchone()
+        if row:
+            if not password and (row["password"] or "").strip():
+                password = row["password"]
+            if not totp_secret and (row["totp_secret"] or "").strip():
+                totp_secret = row["totp_secret"]
+                totp_factor_id = totp_factor_id or (row["totp_factor_id"] or "")
+            if not reg_country and (row["reg_country"] or "").strip():
+                reg_country = row["reg_country"]
+            if row["extra_json"]:
+                try:
+                    old_ex = json.loads(row["extra_json"])
+                    if isinstance(old_ex, dict):
+                        # 保留旧 extra 中未被新 extra 覆盖的字段（如 mail_oauth, plus_check 等）
+                        for ok, ov in old_ex.items():
+                            if ok not in extra:
+                                extra[ok] = ov
+                except Exception:
+                    pass
 
         con.execute(
             "INSERT OR REPLACE INTO registered "
@@ -1471,17 +1480,20 @@ def list_registered(
         plus = None
         oauth_meta = None
         extract_link = None
+        session_data = None
         if d.get("extra_json"):
             try:
                 extra = json.loads(d["extra_json"])
                 plus = extra.get("plus_check")
                 oauth_meta = extra.get("oauth_export")
                 extract_link = extra.get("extract_link")
+                session_data = extra.get("session_data")
             except Exception:
                 pass
         d["plus_check"] = plus
         d["oauth_export"] = oauth_meta
         d["extract_link"] = extract_link
+        d["session_data"] = session_data
         d.pop("extra_json", None)
         oa = None
         if d.get("oa_check"):

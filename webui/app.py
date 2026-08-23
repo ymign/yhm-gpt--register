@@ -3044,6 +3044,8 @@ def api_security_task_log(task_id: str, email: str = ""):
 
 class AutoLoopStartReq(BaseModel):
     """跟 RegisterReq 复用同样的字段，auto-loop 内部传给每个 run。"""
+    model_config = {"extra": "allow"}
+
     mail_source: Optional[str] = Field(None, description="指定邮箱渠道: cf_temp / outlook / icloud_relay 等")
     want_access_token: bool = True
     want_session_token: bool = True
@@ -3056,6 +3058,7 @@ class AutoLoopStartReq(BaseModel):
     allow_existing_login: bool = True
     cool_down_seconds: float = 3.0  # 每个 worker 跑完后冷却（防风控）
     target_count: int = 0        # 目标成功数（0=不限量，达标自动停止）
+    circuit_break_threshold: int = 3  # 连续网络错误暂停阈值（0=关闭）
     want_password: bool = True   # 是否自动设置强登录密码（默认开）
     want_2fa: bool = False
 

@@ -95,6 +95,78 @@ def _render_sub2api_json_all(rows: list[dict]) -> bytes:
     return json.dumps(items, ensure_ascii=False, indent=2).encode("utf-8")
 
 
+def get_or_build_session_data(r: dict) -> dict:
+    """提取或生成标准的 https://chatgpt.com/api/auth/session 完整数据结构。"""
+    import json
+    import time
+    from .oauth_export import _get_account_claims
+
+    extra = r.get("extra") if isinstance(r.get("extra"), dict) else {}
+    if not extra and r.get("extra_json"):
+        try:
+            extra = json.loads(r["extra_json"])
+        except Exception:
+            extra = {}
+    if isinstance(r.get("session_data"), dict) and r["session_data"]:
+        return r["session_data"]
+    if isinstance(extra.get("session_data"), dict) and extra["session_data"]:
+        return extra["session_data"]
+
+    email = _s(r, "email")
+    at = _s(r, "access_token")
+    st = _s(r, "session_token")
+    claims = _get_account_claims(at) if at else {}
+
+    user_id = claims.get("user_id") or f"user-{email.split('@')[0] if '@' in email else email}"
+    account_id = claims.get("account_id") or ""
+    plan_type = claims.get("plan_type") or "free"
+    name = claims.get("name") or (email.split("@")[0] if "@" in email else email)
+    exp_iso = claims.get("exp_iso") or ""
+
+    return {
+        "WARNING_BANNER": "!!!!!!!!!!!!!!!!!!!! DO NOT SHARE ANY PART OF THE INFORMATION YOU SEE HERE. THIS INFORMATION IS SENSITIVE AND CAN GRANT ACCESS TO YOUR ACCOUNT. SHARING THIS INFORMATION IS LIKE SHARING YOUR PASSWORD. !!!!!!!!!!!!!!!!!!!!",
+        "user": {
+            "id": user_id,
+            "name": name,
+            "email": email,
+            "image": "https://cdn.oaistatic.com/assets/favicon-32x32-p60t9m4g.png",
+            "picture": "https://cdn.oaistatic.com/assets/favicon-32x32-p60t9m4g.png",
+            "idp": "auth0",
+            "iat": int(r.get("created_at") or time.time()),
+            "mfa": bool(_s(r, "totp_secret")),
+        },
+        "expires": exp_iso,
+        "account": {
+            "id": account_id,
+            "createdTime": float(r.get("created_at") or time.time()),
+            "planType": plan_type,
+            "structure": "personal",
+            "isUsageBasedSeatEnabled": False,
+            "isConversationClassifierEnabledForWorkspace": True,
+            "hasFloraFeature": False,
+            "isFedrampCompliantWorkspace": False,
+            "isDelinquent": False,
+            "residencyRegion": "no_constraint",
+            "computeResidency": "no_constraint",
+        },
+        "accessToken": at,
+        "authProvider": "openai",
+        "sessionToken": st,
+    }
+
+
+def _render_session_json_all(rows: list[dict]) -> bytes:
+    import json
+    items = [get_or_build_session_data(r) for r in rows or []]
+    return json.dumps(items, ensure_ascii=False, indent=2).encode("utf-8")
+
+
+def _render_session_json_single_line(r: dict) -> str:
+    import json
+    data = get_or_build_session_data(r)
+    return json.dumps(data, ensure_ascii=False)
+
+
 # ──────────────────────── 注册表 ────────────────────────
 
 
@@ -162,6 +234,23 @@ FORMATS: list[ExportFormat] = [
         mime="application/json; charset=utf-8",
         render_all=_render_sub2api_json_all,
         note="Sub2API 标准账号导入 JSON",
+    ),
+    # 🌐 ChatGPT 官方完整 Session JSON (支持批量导出与复制)
+    ExportFormat(
+        id="session_json",
+        label="🌐 ChatGPT Session JSON (完整数组文件)",
+        filename="chatgpt_sessions.json",
+        mode="download",
+        mime="application/json; charset=utf-8",
+        render_all=_render_session_json_all,
+        note="完整 session 接口结构体 (accessToken + sessionToken + user + account)",
+    ),
+    ExportFormat(
+        id="session_json_lines",
+        label="🌐 ChatGPT Session JSON (一行一条)",
+        filename="chatgpt_sessions_lines.txt",
+        render=_render_session_json_single_line,
+        note="每行一个压缩完整的 Session JSON",
     ),
 ]
 

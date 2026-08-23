@@ -223,6 +223,7 @@ async function start() {
       want_refresh_token: form.value.autoWantRefreshToken || false,
       cool_down_seconds: parseFloat(form.value.autoCoolDown) || 0,
       target_count: parseInt(form.value.autoTargetCount, 10) || 0,
+      circuit_break_threshold: form.value.autoCircuitBreak !== undefined ? parseInt(form.value.autoCircuitBreak, 10) : 3,
       want_2fa: form.value.autoWant2fa,
       want_password: form.value.autoWantPassword,
     })
@@ -382,13 +383,13 @@ onUnmounted(() => {
                 <el-input-number v-model="form.autoConcurrency" :min="1" :max="20" class="macos-num-input" />
               </el-form-item>
             </el-col>
-            <el-col :xs="12" :sm="6" :md="3">
-              <el-form-item label="冷却间隔 (秒)">
+            <el-col :xs="12" :sm="6" :md="2">
+              <el-form-item label="冷却 (秒)">
                 <el-input-number v-model="form.autoCoolDown" :min="0" :max="120" class="macos-num-input" />
               </el-form-item>
             </el-col>
             <el-col :xs="24" :sm="12" :md="5">
-              <el-form-item label="代理目标国家 (自动重写代理与时区)">
+              <el-form-item label="代理目标国家 (自动重写时区)">
                 <el-select
                   v-model="form.autoProxyCountry" filterable allow-create
                   placeholder="选择或输入国家代码" class="macos-country-select"
@@ -406,23 +407,34 @@ onUnmounted(() => {
               </el-form-item>
             </el-col>
             <el-col :xs="12" :sm="6" :md="3">
-              <el-form-item label="OTP 超时 (秒)">
+              <el-form-item>
+                <template #label>
+                  <span>失败暂停 (次)</span>
+                  <el-tooltip content="连续网络/环境错误达到该次数时自动暂停保护（填 0 代表关闭自动暂停，抗网络波动持续重试）" placement="top">
+                    <el-icon class="info-ico" style="margin-left: 3px;"><QuestionFilled /></el-icon>
+                  </el-tooltip>
+                </template>
+                <el-input-number v-model="form.autoCircuitBreak" :min="0" :max="100" class="macos-num-input" placeholder="0=关闭" />
+              </el-form-item>
+            </el-col>
+            <el-col :xs="12" :sm="6" :md="2">
+              <el-form-item label="OTP 超时">
                 <el-input-number v-model="form.otpTimeout" :min="10" :max="600" class="macos-num-input" />
               </el-form-item>
             </el-col>
-            <el-col :xs="24" :sm="12" :md="7">
+            <el-col :xs="24" :sm="12" :md="6">
               <el-form-item label="自动化附加功能">
                 <div class="feature-switches">
                   <div class="switch-item">
                     <el-switch v-model="form.autoWantPassword" size="small" />
-                    <span class="switch-label">自动设置密码</span>
+                    <span class="switch-label">自动设密</span>
                     <el-tooltip content="开启后新注册账号自动设置16位强随机登录密码并落盘保存到数据库" placement="top">
                       <el-icon class="info-ico"><QuestionFilled /></el-icon>
                     </el-tooltip>
                   </div>
                   <div class="switch-item">
                     <el-switch v-model="form.autoWant2fa" size="small" />
-                    <span class="switch-label">自动绑定 2FA</span>
+                    <span class="switch-label">自动绑2FA</span>
                     <el-tooltip content="每个账号注册成功后自动绑定 2FA 并将 secret 备份至数据库" placement="top">
                       <el-icon class="info-ico"><QuestionFilled /></el-icon>
                     </el-tooltip>

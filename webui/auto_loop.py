@@ -103,6 +103,15 @@ class AutoLoopController:
             self._proxy_pool = _parse_proxy_pool(pool_text)
             # 目标成功数（0=不限量）
             self._target_count = max(0, int(self._options.get("target_count") or 0))
+            # 连续网络错误自动暂停阈值（0=关闭熔断）
+            raw_cbt = self._options.get("circuit_break_threshold")
+            if raw_cbt is None:
+                raw_cbt = self._options.get("autoCircuitBreak", 3)
+            try:
+                self._circuit_break_threshold = max(0, int(raw_cbt))
+            except Exception:
+                self._circuit_break_threshold = 3
+            logger.info(f"auto-loop 启动: concurrency={self._concurrency}, circuit_break_threshold={self._circuit_break_threshold}, target_count={self._target_count}")
             # 启 manage 线程
             self._manage_thread = threading.Thread(
                 target=self._manage_loop, daemon=True, name="auto-loop-manage"
@@ -208,6 +217,7 @@ class AutoLoopController:
                     if self._target_count else None
                 ),
                 "concurrency": self._concurrency,
+                "circuit_break_threshold": self._circuit_break_threshold,
                 "proxy_pool_size": len(self._proxy_pool),
                 "workers": workers_info,
                 "tasks": tasks_copy,
@@ -254,8 +264,9 @@ class AutoLoopController:
             target_reached = bool(
                 self._target_count and self._registered_ok >= self._target_count
             )
-            trigger_break = (
-                self._consecutive_network_fails >= self._circuit_break_threshold
+            trigger_break = bool(
+                self._circuit_break_threshold > 0
+                and self._consecutive_network_fails >= self._circuit_break_threshold
                 and self._state == AutoLoopState.RUNNING
             )
 
@@ -275,7 +286,7 @@ class AutoLoopController:
                 self._pause_event.set()
                 self._state = AutoLoopState.PAUSED
                 self._last_break_reason = (
-                    f"连续 {self._consecutive_network_fails} 次网络/环境错误，"
+                    f"连续 {self._consecutive_network_fails} 次网络/环境错误（已达设定的 {self._circuit_break_threshold} 次阈值），"
                     f"自动暂停（号已自动 release，请检查代理后点恢复）"
                 )
                 self._last_message = self._last_break_reason

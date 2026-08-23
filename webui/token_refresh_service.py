@@ -296,6 +296,7 @@ def execute_token_refresh_flow(
                 session_token=new_st,
                 cookie_header=existing_cookies,
                 extra_data={
+                    "session_data": s_data if isinstance(s_data, dict) else {},
                     "web_session": {
                         "status": "success",
                         "updated_at": time.time(),
@@ -375,6 +376,8 @@ def execute_token_refresh_flow(
     new_st = result.session_token or ""
     new_it = result.id_token or ""
 
+    claims = _get_account_claims(new_at)
+
     # 区分真实 Codex RT 与普通 Web 登录态：
     # 只有存在真实 refresh_token 时才生成有效的 CPA/Sub2API 凭证
     cpa_doc = None
@@ -399,6 +402,17 @@ def execute_token_refresh_flow(
 
     # 写入数据库：普通 Web 重登更新 Web 会话凭证 (ST/AT/Cookie)
     # 若无新的有效 OAuth refresh_token，则不伪造 oauth_status='success'
+    extra_payload = {
+        "web_session": {
+            "status": "success",
+            "updated_at": time.time(),
+            "method": "full_login",
+            "claims": claims,
+        }
+    }
+    if getattr(result, "session_data", None) and isinstance(result.session_data, dict):
+        extra_payload["session_data"] = result.session_data
+
     db.update_registered_oauth(
         email=email,
         access_token=new_at,
@@ -406,14 +420,7 @@ def execute_token_refresh_flow(
         session_token=new_st,
         id_token=new_it,
         cookie_header=result.cookie_header or "",
-        extra_data={
-            "web_session": {
-                "status": "success",
-                "updated_at": time.time(),
-                "method": "full_login",
-                "claims": claims,
-            }
-        },
+        extra_data=extra_payload,
     )
 
     _log(f"🎉 [Web 登录重获成功] access_token(len={len(new_at)}), session_token(len={len(new_st)}) 已自动更新落库")

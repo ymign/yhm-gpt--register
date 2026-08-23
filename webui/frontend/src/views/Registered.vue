@@ -2343,6 +2343,10 @@ const CRED_KEYS = ['totp_secret', 'totp_factor_id', 'access_token', 'session_tok
 const credRows = computed(() => {
   if (!credData.value) return []
   const items = CRED_KEYS.filter((k) => credData.value[k]).map((k) => ({ key: k, val: credData.value[k] }))
+  const sess = credData.value.session_data || credData.value.extra?.session_data
+  if (sess && typeof sess === 'object') {
+    items.unshift({ key: 'session_data', val: JSON.stringify(sess, null, 2) })
+  }
   const ext = credData.value.extract_link || credData.value.extra?.extract_link
   if (ext && ext.link_url) {
     items.unshift({ key: 'extract_link', val: ext.link_url })
@@ -2351,6 +2355,7 @@ const credRows = computed(() => {
 })
 
 const CRED_META_DICT = {
+  session_data:   { badge: 'SessionJSON', bg: 'rgba(59, 130, 246, 0.25)', color: '#38bdf8' },
   extract_link:   { badge: 'Extract', bg: 'rgba(16, 185, 129, 0.2)', color: '#34d399' },
   totp_secret:    { badge: '2FA', bg: 'rgba(16, 185, 129, 0.2)', color: '#34d399' },
   totp_factor_id: { badge: '2FA', bg: 'rgba(16, 185, 129, 0.15)', color: '#6ee7b7' },
@@ -2696,9 +2701,112 @@ async function handleCopyAtCommand(cmd) {
   }
 }
 
+// 单账号 Session JSON 复制
+async function copySessionJson(email) {
+  try {
+    const { data } = await getRegistered(email)
+    let sess = data?.session_data || data?.extra?.session_data
+    if (!sess || typeof sess !== 'object' || !Object.keys(sess).length) {
+      const at = data?.access_token || ''
+      const st = data?.session_token || ''
+      sess = {
+        WARNING_BANNER: "!!!!!!!!!!!!!!!!!!!! DO NOT SHARE ANY PART OF THE INFORMATION YOU SEE HERE. THIS INFORMATION IS SENSITIVE AND CAN GRANT ACCESS TO YOUR ACCOUNT. SHARING THIS INFORMATION IS LIKE SHARING YOUR PASSWORD. !!!!!!!!!!!!!!!!!!!!",
+        user: {
+          id: `user-${email.split('@')[0]}`,
+          name: email.split('@')[0],
+          email: email,
+          image: "https://cdn.oaistatic.com/assets/favicon-32x32-p60t9m4g.png",
+          picture: "https://cdn.oaistatic.com/assets/favicon-32x32-p60t9m4g.png",
+          idp: "auth0",
+          iat: Math.floor(data?.created_at || Date.now() / 1000),
+          mfa: Boolean(data?.totp_secret),
+        },
+        expires: new Date(Date.now() + 86400000 * 30).toISOString(),
+        account: {
+          id: "",
+          createdTime: data?.created_at || Date.now() / 1000,
+          planType: data?.plus_check?.status || "free",
+          structure: "personal",
+          isUsageBasedSeatEnabled: false,
+          isConversationClassifierEnabledForWorkspace: true,
+          hasFloraFeature: false,
+          isFedrampCompliantWorkspace: false,
+          isDelinquent: false,
+          residencyRegion: "no_constraint",
+          computeResidency: "no_constraint",
+        },
+        accessToken: at,
+        authProvider: "openai",
+        sessionToken: st,
+      }
+    }
+    copyText(JSON.stringify(sess, null, 2), `ChatGPT Session JSON 已复制 (${email})`)
+  } catch (e) {
+    ElMessage.error('复制 Session JSON 失败: ' + e.message)
+  }
+}
+
+// 批量复制 Session JSON 处理器
+async function handleCopySessionCommand(cmd) {
+  try {
+    let emails = []
+    let modeLabel = ''
+    let asLines = false
+
+    if (cmd === 'copy_session_selected' || cmd === 'copy_session_lines_selected') {
+      emails = selected.value.map((r) => r.email)
+      if (!emails.length) {
+        ElMessage.warning('请先勾选要复制 Session JSON 的账号')
+        return
+      }
+      asLines = cmd === 'copy_session_lines_selected'
+      modeLabel = `已复制选中的 ${emails.length} 个账号 Session JSON`
+    } else if (cmd === 'copy_session_page' || cmd === 'copy_session_lines_page') {
+      emails = rows.value.filter((r) => r.st_len > 0 || r.at_len > 0).map((r) => r.email)
+      if (!emails.length) {
+        ElMessage.warning('当前页没有拥有有效 Session 的账号')
+        return
+      }
+      asLines = cmd === 'copy_session_lines_page'
+      modeLabel = `已复制当前页 ${emails.length} 个账号 Session JSON`
+    } else if (cmd === 'copy_session_all' || cmd === 'copy_session_lines_all') {
+      asLines = cmd === 'copy_session_lines_all'
+      modeLabel = '已全量复制所有账号 Session JSON'
+    }
+
+    const payload = {
+      format: asLines ? 'session_json_lines' : 'session_json',
+      emails: emails.length ? emails : undefined,
+      all: !emails.length,
+    }
+
+    const r = await exportRegistered(payload)
+    let text = ''
+    if (r.text) {
+      text = r.text
+    } else if (r.b64) {
+      try {
+        text = decodeURIComponent(escape(atob(r.b64)))
+      } catch (_) {
+        text = atob(r.b64)
+      }
+    }
+
+    if (!text) {
+      ElMessage.warning('未能提取到有效的 Session JSON 数据')
+      return
+    }
+
+    copyText(text, `${modeLabel}`)
+  } catch (e) {
+    ElMessage.error('批量复制 Session JSON 失败: ' + (e.response?.data?.detail || e.message))
+  }
+}
+
 // 6. 行内更多操作菜单处理
 function handleRowMoreCommand(cmd, row) {
   if (cmd === 'edit') openEdit(row)
+  else if (cmd === 'copy_session') copySessionJson(row.email)
   else if (cmd === 'copy_at') copyCell(row.email, 'access_token')
   else if (cmd === 'copy_st') copyCell(row.email, 'session_token')
   else if (cmd === 'copy_rt') copyCell(row.email, 'refresh_token')
@@ -3407,6 +3515,24 @@ onUnmounted(() => {
               </template>
             </el-dropdown>
 
+            <el-dropdown trigger="click" @command="handleCopySessionCommand">
+              <el-button size="small" class="cluster-btn btn-neutral">
+                <el-icon><Document /></el-icon> 复制 Session{{ selected.length ? ` (${selected.length})` : '' }}
+                <el-icon class="el-icon--right"><ArrowDown /></el-icon>
+              </el-button>
+              <template #dropdown>
+                <el-dropdown-menu class="extract-dropdown-menu">
+                  <div class="dropdown-group-title">Session JSON 结构</div>
+                  <el-dropdown-item command="copy_session_selected" :disabled="!selected.length">复制选中 (JSON 数组)</el-dropdown-item>
+                  <el-dropdown-item command="copy_session_lines_selected" :disabled="!selected.length">复制选中 (一行一条)</el-dropdown-item>
+                  <el-dropdown-item command="copy_session_page">复制当前页 (JSON 数组)</el-dropdown-item>
+                  <el-dropdown-item command="copy_session_lines_page">复制当前页 (一行一条)</el-dropdown-item>
+                  <el-dropdown-item command="copy_session_all" divided>全库复制 (JSON 数组)</el-dropdown-item>
+                  <el-dropdown-item command="copy_session_lines_all">全库复制 (一行一条)</el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
+
             <el-dropdown trigger="click" @command="handleRefreshCommand">
               <el-button size="small" class="cluster-btn btn-neutral">
                 <el-icon><Refresh /></el-icon> Token刷新{{ selected.length ? ` (${selected.length})` : '' }}
@@ -3657,6 +3783,7 @@ onUnmounted(() => {
                   <template #dropdown>
                     <el-dropdown-menu class="extract-dropdown-menu">
                       <el-dropdown-item command="edit">编辑凭证</el-dropdown-item>
+                      <el-dropdown-item command="copy_session">🌐 复制 Session JSON (完整结构)</el-dropdown-item>
                       <el-dropdown-item v-if="row.at_len" command="copy_at">🔑 复制 Access Token (AT)</el-dropdown-item>
                       <el-dropdown-item v-if="row.st_len" command="copy_st">🎫 复制 Session Token (ST)</el-dropdown-item>
                       <el-dropdown-item v-if="row.rt_len" command="copy_rt">🔄 复制 Refresh Token (RT)</el-dropdown-item>
@@ -5848,7 +5975,10 @@ onUnmounted(() => {
               凭证总览 ({{ credRows.length }} 项)
             </el-tag>
           </div>
-          <div class="modal-header-actions">
+          <div class="modal-header-actions" style="display: flex; gap: 8px;">
+            <el-button size="small" type="primary" plain class="macos-copy-all-btn" @click="() => copySessionJson(credEmail)">
+              <el-icon><Document /></el-icon>复制 Session JSON
+            </el-button>
             <el-button size="small" class="macos-copy-all-btn" @click="copyAllJson">
               <el-icon><CopyDocument /></el-icon>复制全部 JSON
             </el-button>
@@ -5886,6 +6016,9 @@ onUnmounted(() => {
         <div class="modal-footer">
           <span class="log-count-tip">凭证安全保存在本地 SQLite 数据库中</span>
           <div class="modal-footer-btns">
+            <el-button size="small" type="primary" plain @click="() => copySessionJson(credEmail)">
+              <el-icon><Document /></el-icon>复制 Session JSON
+            </el-button>
             <el-button size="small" @click="copyAllJson">
               <el-icon><CopyDocument /></el-icon>复制全部 JSON
             </el-button>

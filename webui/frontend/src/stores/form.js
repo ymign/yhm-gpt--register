@@ -109,6 +109,7 @@ const defaults = {
   autoConcurrency: 1,
   autoCoolDown: 3,
   autoTargetCount: 0,
+  autoCircuitBreak: 3, // 连续网络错误自动暂停阈值（0=关闭自动暂停）
   // 试用资格高爆推荐配置（对齐指纹浏览器 OTP-First 黄金轨迹，避免触发风控降级）：
   // 1. 默认免密 OTP 注册（不打 legacy user/register 设密接口，避免 Promotion Suppression）
   // 2. 默认不秒绑 2FA 和 Codex（避免注册第 1 秒触发自动化工具特征）
