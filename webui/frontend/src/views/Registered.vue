@@ -1692,9 +1692,7 @@ onMounted(() => {
   loadDomains()
   loadSmsCountries()
   oauthLiveTimer = setInterval(() => {
-    if (oauthRunning.value) {
-      oauthNowTime.value = Date.now()
-    }
+    oauthNowTime.value = Date.now()
   }, 1000)
 })
 
@@ -1703,10 +1701,15 @@ onUnmounted(() => {
 })
 
 function getOAuthRowElapsed(row) {
-  if (row.elapsed) return row.elapsed + 's'
-  if (row.status === 'running' && row.started_at) {
-    const sec = Math.max(0, Math.floor((oauthNowTime.value / 1000) - row.started_at))
-    return sec + 's'
+  if (!row) return '—'
+  if (row.status === 'running') {
+    const st = row.started_at || (Date.now() / 1000)
+    const now = oauthNowTime.value / 1000
+    const sec = Math.max(0, Math.floor(now - st))
+    return `${sec}s`
+  }
+  if (row.elapsed !== undefined && row.elapsed !== null && row.elapsed > 0) {
+    return `${row.elapsed}s`
   }
   return '—'
 }
@@ -1969,11 +1972,18 @@ async function startOAuthExportTask() {
             if (!oauthItems.value[msg.email]) {
               oauthItems.value[msg.email] = { email: msg.email }
             }
-            if (msg.status !== undefined) oauthItems.value[msg.email].status = msg.status
-            if (msg.step !== undefined) oauthItems.value[msg.email].step = msg.step
-            if (msg.step_text !== undefined) oauthItems.value[msg.email].step_text = msg.step_text
-            if (msg.result !== undefined) oauthItems.value[msg.email].result = msg.result
-            if (msg.elapsed !== undefined) oauthItems.value[msg.email].elapsed = msg.elapsed
+            const it = oauthItems.value[msg.email]
+            if (msg.status !== undefined) {
+              it.status = msg.status
+              if (msg.status === 'running' && !it.started_at) {
+                it.started_at = msg.started_at || (Date.now() / 1000)
+              }
+            }
+            if (msg.started_at) it.started_at = msg.started_at
+            if (msg.step !== undefined) it.step = msg.step
+            if (msg.step_text !== undefined) it.step_text = msg.step_text
+            if (msg.result !== undefined) it.result = msg.result
+            if (msg.elapsed !== undefined) it.elapsed = msg.elapsed
           }
         } catch (_) {}
       },
@@ -4563,8 +4573,14 @@ onUnmounted(() => {
                         </el-form-item>
                       </el-col>
                       <el-col :xs="12" :sm="6" :md="4">
-                        <el-form-item label="收码等待超时 (秒)">
-                          <el-input-number v-model="oauthForm.smsTimeout" :min="20" :max="300" :step="10" style="width: 100%" />
+                        <el-form-item>
+                          <template #label>
+                            <span>收码等待超时 (秒)</span>
+                            <el-tooltip content="推荐 60~85 秒。若超过 90 秒，单个号码超时后 OpenAI 整个授权会话会过期并报错 400 invalid_auth_step" placement="top">
+                              <el-icon class="info-ico" style="margin-left: 3px;"><QuestionFilled /></el-icon>
+                            </el-tooltip>
+                          </template>
+                          <el-input-number v-model="oauthForm.smsTimeout" :min="20" :max="120" :step="5" style="width: 100%" />
                         </el-form-item>
                       </el-col>
 

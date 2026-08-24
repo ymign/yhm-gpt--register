@@ -27,8 +27,22 @@ USER_AGENT = (
     "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15"
 )
 
-# TLS 握手瞬断的识别标记（与 AuthFlow._is_tls_error 保持同一套口径）
-_TLS_ERROR_MARKERS = ("curl: (35)", "tls connect error", "openssl_internal", "sslerror")
+# 网络瞬断/TLS握手瞬断/代理断连的识别标记
+_TLS_ERROR_MARKERS = (
+    "curl: (35)",
+    "curl: (28)",
+    "curl: (55)",
+    "curl: (56)",
+    "curl: (52)",
+    "curl: (7)",
+    "tls connect error",
+    "openssl_internal",
+    "sslerror",
+    "connection was reset",
+    "connection reset",
+    "recv failure",
+    "operation timed out",
+)
 
 
 def _is_tls_handshake_error(exc: Exception) -> bool:

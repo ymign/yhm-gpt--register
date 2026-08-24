@@ -464,10 +464,18 @@ def _follow_oauth_callback(
                 _log(f"[5/6] 已捕获 callback code: {_short_url(curr)}")
                 return curr
 
-            try:
-                r = session.get(curr, headers=nav_headers, allow_redirects=False, timeout=timeout)
-            except Exception as e:
-                _log(f"[5/6] 链路请求异常: {e}")
+            r = None
+            for retry_idx in range(3):
+                try:
+                    r = session.get(curr, headers=nav_headers, allow_redirects=False, timeout=timeout)
+                    break
+                except Exception as e:
+                    if retry_idx < 2:
+                        _log(f"[5/6] 链路网络波动 ({e})，正在自动重试第 {retry_idx+1}/2 次...")
+                        time.sleep(1.5)
+                    else:
+                        _log(f"[5/6] 链路请求异常: {e}")
+            if r is None:
                 break
 
             status = r.status_code
@@ -485,7 +493,7 @@ def _follow_oauth_callback(
                 if _callback_has_code(loc, redirect_uri):
                     _log(f"[5/6] 重定向中捕获 callback code: {_short_url(loc)}")
                     return loc
-                if _page_kind_from_url(loc) in ("密码页", "登录页"):
+                if _page_kind_from_url(loc) in ("密码页", "登录页") and hop >= 4:
                     _log("[5/6] 跳转落到登录/密码页，说明当前会话未真正登录，停止这条起点")
                     break
                 curr = loc
@@ -498,7 +506,7 @@ def _follow_oauth_callback(
                 if _callback_has_code(curr, redirect_uri):
                     return curr
 
-                if _page_kind_from_url(curr) in ("密码页", "登录页"):
+                if _page_kind_from_url(curr) in ("密码页", "登录页") and hop >= 4:
                     _log("[5/6] 当前仍是登录/密码页，未进入工作空间，停止这条起点（不会把登录页当成 workspace）")
                     break
 
@@ -541,13 +549,24 @@ def _follow_oauth_callback(
                         ws_headers["oai-device-id"] = device_id
                     try:
                         payload = {"workspace_id": wid} if wid else {}
-                        ws_resp = session.post(
-                            "https://auth.openai.com/api/accounts/workspace/select",
-                            headers=ws_headers,
-                            json=payload,
-                            allow_redirects=False,
-                            timeout=timeout,
-                        )
+                        ws_resp = None
+                        for ws_try in range(3):
+                            try:
+                                ws_resp = session.post(
+                                    "https://auth.openai.com/api/accounts/workspace/select",
+                                    headers=ws_headers,
+                                    json=payload,
+                                    allow_redirects=False,
+                                    timeout=timeout,
+                                )
+                                break
+                            except Exception as ws_err:
+                                if ws_try < 2:
+                                    time.sleep(1.5)
+                                else:
+                                    _log(f"[5/6] workspace/select 网络异常: {ws_err}")
+                        if ws_resp is None:
+                            break
                         ws_loc = (ws_resp.headers.get("Location") or ws_resp.headers.get("location") or "").strip()
                         _log(f"[5/6] workspace/select HTTP {ws_resp.status_code} loc={_short_url(ws_loc) or '无'}")
                         if ws_loc:
@@ -743,16 +762,19 @@ class OAuthExportTask:
         })
 
     def set_step(self, email: str, step: str, step_text: str) -> None:
+        st_at = 0.0
         with self._lock:
             if email in self.items:
                 self.items[email]["step"] = step
                 self.items[email]["step_text"] = step_text
+                st_at = self.items[email].get("started_at") or 0.0
         self.queue.put({
             "kind": "progress",
             "email": email,
             "status": "running",
             "step": step,
             "step_text": step_text,
+            "started_at": st_at,
         })
 
     def mark_done(self, email: str, result: dict) -> None:
@@ -1367,7 +1389,13 @@ def execute_codex_oauth_flow(
         max_price_raw = sms_cfg.get("sms_max_price") or sms_cfg.get("sms_price")
         min_p, max_p, exact_p = parse_price_spec(max_price_raw)
         max_attempts = max(1, min(10, int(sms_cfg.get("sms_max_attempts") or 3)))
-        per_phone_timeout = max(20, int(sms_cfg.get("sms_timeout") or 80))
+        raw_timeout = int(sms_cfg.get("sms_timeout") or 75)
+        # OpenAI 的 /add-phone 授权会话总生命周期仅约 150~180 秒，单个号码超时若超过 90 秒会导致超时后整个会话过期报 400 invalid_auth_step
+        if raw_timeout > 90:
+            _log(f"[sms] 💡 提示: 原配置超时 {raw_timeout}s 过长易致 OpenAI 会话失效，已自动优化为 85s 安全周期")
+            per_phone_timeout = 85
+        else:
+            per_phone_timeout = max(20, raw_timeout)
 
         # 候选国家列表
         if country == "AUTO":
@@ -1469,9 +1497,15 @@ def execute_codex_oauth_flow(
 
                 send_resp = _send_phone()
                 err_msg = (send_resp.text or "")[:180]
-                session_dead = send_resp.status_code == 409 or "no longer valid" in err_msg.lower() or "invalid_state" in err_msg.lower()
+                err_lc = err_msg.lower()
+                session_dead = (
+                    send_resp.status_code in (401, 403, 409)
+                    or "no longer valid" in err_lc
+                    or "invalid_state" in err_lc
+                    or "invalid_auth_step" in err_lc
+                )
                 if session_dead:
-                    _log(f"[sms] add-phone/send HTTP {send_resp.status_code} 会话失效: {err_msg}")
+                    _log(f"[sms] add-phone/send HTTP {send_resp.status_code} 会话失效/步骤过期: {err_msg}")
                     _log("[sms] 不立刻判账号死。重新打开绑手机页再发一次")
                     opened = _enter_auth_page(
                         session,
@@ -1484,20 +1518,26 @@ def execute_codex_oauth_flow(
                     if _page_kind_from_url(opened) in ("登录页", "密码页"):
                         ctrl.mark_send_failed("session_expired")
                         raise RuntimeError(
-                            "绑手机时登录会话已经丢了（打开 add-phone 回到登录页）。"
-                            "账号测活正常，是这次 OAuth 会话断了，已退号"
+                            "绑手机时登录会话已超时失效（打开 add-phone 回到登录页）。"
+                            "通常是因为单个号码等待短信时间过长（超过 OpenAI 会话 TTL），建议将接码超时设为 60~80 秒"
                         )
                     send_resp = _send_phone()
                     err_msg = (send_resp.text or "")[:180]
-                    session_dead = send_resp.status_code == 409 or "no longer valid" in err_msg.lower() or "invalid_state" in err_msg.lower()
+                    err_lc = err_msg.lower()
+                    session_dead = (
+                        send_resp.status_code in (401, 403, 409)
+                        or "no longer valid" in err_lc
+                        or "invalid_state" in err_lc
+                        or "invalid_auth_step" in err_lc
+                    )
 
                 if send_resp.status_code != 200:
                     if session_dead:
-                        _log(f"[sms] 重发后仍是会话失效 HTTP {send_resp.status_code}: {err_msg}，退号")
+                        _log(f"[sms] 会话已失效 HTTP {send_resp.status_code}: {err_msg}，立即停止租号并释放退款")
                         ctrl.mark_send_failed("session_expired")
                         raise RuntimeError(
-                            f"OpenAI 绑手机接口会话失效 HTTP {send_resp.status_code}。"
-                            "这不是测活失败，是这次登录会话没挂上绑手机页，已退号"
+                            f"OpenAI 绑手机接口会话已超时失效 (HTTP {send_resp.status_code})。"
+                            "通常是因为上一号码等待时间过长导致 OpenAI 授权会话过期，已自动释放号码退款。"
                         )
                     _log(f"[sms] OpenAI 拒绝该手机号 HTTP {send_resp.status_code}: {err_msg}，退号换下一个")
                     ctrl.mark_send_failed(err_msg)
@@ -1656,14 +1696,27 @@ def execute_codex_oauth_flow(
         "redirect_uri": redirect_uri,
         "code_verifier": code_verifier,
     }
-    t_resp = session.post(
-        "https://auth.openai.com/oauth/token",
-        headers=token_headers,
-        data=urlencode(token_form),
-        timeout=timeout,
-    )
-    if t_resp.status_code != 200:
-        raise RuntimeError(f"换取 token 失败: HTTP {t_resp.status_code} - {(t_resp.text or '')[:180]}")
+    t_resp = None
+    for token_try in range(3):
+        try:
+            t_resp = session.post(
+                "https://auth.openai.com/oauth/token",
+                headers=token_headers,
+                data=urlencode(token_form),
+                timeout=timeout,
+            )
+            break
+        except Exception as t_err:
+            if token_try < 2:
+                _log(f"[6/6] 换取 Token 网络重试 ({token_try+1}/2): {t_err}")
+                time.sleep(1.5)
+            else:
+                raise RuntimeError(f"换取 token 网络连接异常: {t_err}")
+
+    if t_resp is None or t_resp.status_code != 200:
+        err_body = (getattr(t_resp, "text", "") or "")[:180] if t_resp is not None else "无响应"
+        status_code = getattr(t_resp, "status_code", 0)
+        raise RuntimeError(f"换取 token 失败: HTTP {status_code} - {err_body}")
 
     t_data = t_resp.json()
     at = t_data.get("access_token") or ""
