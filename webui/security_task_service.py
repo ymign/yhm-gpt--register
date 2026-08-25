@@ -16,10 +16,12 @@ try:
     from . import db
     from .official_password import official_set_account_password
     from .two_factor import bind_totp_2fa_adaptive, generate_random_password
+    from .proxy_util import new_proxy_session_id, resolve_target_country, route_proxy_country
 except ImportError:
     import db
     from official_password import official_set_account_password
     from two_factor import bind_totp_2fa_adaptive, generate_random_password
+    from proxy_util import new_proxy_session_id, resolve_target_country, route_proxy_country
 
 logger = logging.getLogger(__name__)
 
@@ -221,10 +223,11 @@ def _process_password_item(task: SecurityTask, email: str, proxy: str, timeout: 
         )
         task.mark_done(email, {
             "password": res.get("password") or new_pw,
-            "official_applied": True,
-            "label": "🎉 官方服务端设密成功",
+            "official_applied": bool(res.get("official_applied", False)),
+            "is_passwordless": bool(res.get("is_passwordless", False)),
+            "label": res.get("label") or ("🎉 官方服务端设密成功" if res.get("official_applied") else "✅ 官方免密已验活"),
         })
-        _log(f"🎉 官方设密完成：密码 {res.get('password') or new_pw} 已在 OpenAI 服务端正式生效！")
+        _log(res.get("message") or f"🎉 设密任务完成：密码 {res.get('password') or new_pw} 已更新！")
     except Exception as e:
         err_str = str(e)
         _log(f"❌ 官方设密失败: {err_str}")
@@ -283,6 +286,14 @@ def _worker_runner(task: SecurityTask, emails_to_run: list[str]) -> None:
             task.mark_skipped(email, "任务已取消")
             return
         proxy = task.next_proxy()
+        raw_country = (task.config.get("proxy_country") or "").strip().upper()
+        if not raw_country:
+            row_info = db.get_registered(email) or {}
+            raw_country = (row_info.get("reg_country") or "").strip().upper()
+        target_country = resolve_target_country(raw_country)
+        if proxy and target_country:
+            proxy = route_proxy_country(proxy, target_country, new_proxy_session_id())
+
         if task.action == "password":
             _process_password_item(task, email, proxy, timeout, official_reset)
         else:

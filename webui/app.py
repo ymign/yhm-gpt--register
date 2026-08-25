@@ -2916,6 +2916,7 @@ class StartSecurityTaskReq(BaseModel):
     official_reset: bool = Field(True, description="是否走官方服务端全自动生效 (密码模式)")
     proxy: Optional[str] = Field("", description="指定代理")
     proxies: Optional[str] = Field("", description="代理池")
+    proxy_country: Optional[str] = Field("", description="代理目标国家代码 (如 BR, JP, US, RANDOM_HOT 等)")
 
 
 def _safe_get_sec_task(q, timeout: float = 2.0):
@@ -2947,6 +2948,7 @@ def api_security_task_start(req: StartSecurityTaskReq):
         "timeout": req.timeout,
         "official_reset": req.official_reset,
         "proxies": proxies,
+        "proxy_country": req.proxy_country or "",
     }
 
     try:

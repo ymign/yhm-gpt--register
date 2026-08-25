@@ -2846,7 +2846,7 @@ const securityForm = reactive({
   action: 'password', // 'password' | '2fa'
   officialReset: true, // 走官方服务端全自动生效 (密码模式)
   proxy: '__POOL__',
-  proxyCountry: 'BR',
+  proxyCountry: 'RANDOM_HOT',
   workers: 5,
   timeout: 60,
 })
@@ -2860,7 +2860,22 @@ const securityModalLogBoxRef = ref(null)
 
 // 实时耗时秒表
 const securityElapsed = ref(0)
+const securityNowTime = ref(Date.now())
 let securityLiveTimer = null
+
+function getSecurityRowElapsed(row) {
+  if (!row) return '—'
+  if (row.status === 'running') {
+    const st = row.started_at || (Date.now() / 1000)
+    const now = securityNowTime.value / 1000
+    const sec = Math.max(0, Math.floor(now - st))
+    return `${sec}s`
+  }
+  if (row.elapsed !== undefined && row.elapsed !== null && row.elapsed > 0) {
+    return `${row.elapsed}s`
+  }
+  return '—'
+}
 
 // ── 安全加固高性能分页、状态筛选与批量节流更新 ──
 const securityPage = ref(1)
@@ -3091,7 +3106,9 @@ async function startSecurityTaskRunner() {
   securityElapsed.value = 0
 
   const secStartTime = Date.now()
+  securityNowTime.value = Date.now()
   securityLiveTimer = setInterval(() => {
+    securityNowTime.value = Date.now()
     if (securityRunning.value) {
       securityElapsed.value = Math.max(0, Math.floor((Date.now() - secStartTime) / 1000))
     }
@@ -3117,6 +3134,7 @@ async function startSecurityTaskRunner() {
       emails,
       proxies: proxiesParam,
       proxy: proxyParam,
+      proxy_country: securityForm.proxyCountry || '',
       official_reset: securityForm.officialReset,
       workers: securityForm.workers || 5,
       timeout: securityForm.timeout || 60,
@@ -3139,11 +3157,18 @@ async function startSecurityTaskRunner() {
           const msg = JSON.parse(ev.data)
           if (msg.email) {
             if (!securityPendingUpdates[msg.email]) securityPendingUpdates[msg.email] = {}
-            if (msg.status !== undefined) securityPendingUpdates[msg.email].status = msg.status
-            if (msg.step_text !== undefined) securityPendingUpdates[msg.email].step_text = msg.step_text
-            if (msg.result !== undefined) securityPendingUpdates[msg.email].result = msg.result
-            if (msg.error !== undefined) securityPendingUpdates[msg.email].error = msg.error
-            if (msg.elapsed !== undefined) securityPendingUpdates[msg.email].elapsed = msg.elapsed
+            const it = securityPendingUpdates[msg.email]
+            if (msg.status !== undefined) {
+              it.status = msg.status
+              if (msg.status === 'running' && !it.started_at) {
+                it.started_at = msg.started_at || (Date.now() / 1000)
+              }
+            }
+            if (msg.started_at) it.started_at = msg.started_at
+            if (msg.step_text !== undefined) it.step_text = msg.step_text
+            if (msg.result !== undefined) it.result = msg.result
+            if (msg.error !== undefined) it.error = msg.error
+            if (msg.elapsed !== undefined) it.elapsed = msg.elapsed
             scheduleSecurityUpdate()
           }
         } catch (_) {}
@@ -3272,7 +3297,7 @@ function handleSecurityCommand(cmd) {
   }
 }
 
-watch(dataVersion, () => load())
+// 账号列表完全自主受控：进入页面或切换 tab 时加载，避免后台并发跑号每次完成都强制全表刷新打扰用户
 onActivated(() => load())
 
 onUnmounted(() => {
@@ -5641,7 +5666,7 @@ onUnmounted(() => {
           <div v-show="!securityConfigCollapsed" class="oa-config-card">
             <el-form label-position="top" :disabled="securityRunning" size="small">
               <el-row :gutter="12">
-                <el-col :xs="24" :sm="12" :md="6">
+                <el-col :xs="24" :sm="12" :md="5">
                   <el-form-item label="任务模式选择">
                     <el-select v-model="securityAction" style="width: 100%">
                       <el-option label="🔑 官方设密 / 补设登录密码" value="password" />
@@ -5649,8 +5674,8 @@ onUnmounted(() => {
                     </el-select>
                   </el-form-item>
                 </el-col>
-                <el-col :xs="24" :sm="12" :md="8">
-                  <el-form-item label="网络代理 (支持全局代理池轮询/直连)">
+                <el-col :xs="24" :sm="12" :md="6">
+                  <el-form-item label="网络代理 (支持全局代理池/直连)">
                     <el-select
                       v-model="securityForm.proxy"
                       filterable
@@ -5669,24 +5694,42 @@ onUnmounted(() => {
                     </el-select>
                   </el-form-item>
                 </el-col>
+                <el-col :xs="24" :sm="12" :md="5">
+                  <el-form-item label="代理目标国家 (自动重写时区与Session)">
+                    <el-select
+                      v-model="securityForm.proxyCountry"
+                      filterable
+                      allow-create
+                      placeholder="选择目标国家"
+                      style="width: 100%"
+                    >
+                      <el-option
+                        v-for="c in COUNTRY_OPTIONS"
+                        :key="c.value"
+                        :label="c.label"
+                        :value="c.value"
+                      />
+                    </el-select>
+                  </el-form-item>
+                </el-col>
                 <el-col :xs="12" :sm="6" :md="3">
                   <el-form-item label="并发 Worker">
                     <el-input-number v-model="securityForm.workers" :min="1" :max="10" style="width: 100%" />
                   </el-form-item>
                 </el-col>
-                <el-col :xs="12" :sm="6" :md="3">
+                <el-col :xs="12" :sm="6" :md="2">
                   <el-form-item label="超时 (秒)">
                     <el-input-number v-model="securityForm.timeout" :min="10" :max="180" style="width: 100%" />
                   </el-form-item>
                 </el-col>
-                <el-col v-if="securityAction === 'password'" :xs="24" :sm="12" :md="4">
+                <el-col v-if="securityAction === 'password'" :xs="24" :sm="12" :md="3">
                   <el-form-item label="服务端生效">
-                    <el-checkbox v-model="securityForm.officialReset" label="官方全自动生效" />
+                    <el-checkbox v-model="securityForm.officialReset" label="官方生效" />
                   </el-form-item>
                 </el-col>
               </el-row>
               <div style="font-size: 11.5px; color: var(--el-text-color-secondary); line-height: 1.5; margin-top: 2px">
-                💡 <b>模式说明</b>：<b>官方设密</b> 将自动向 OpenAI 官方申请重置邮件、收信获取验证码并在官方服务端生效；<b>补绑 2FA</b> 将打官方 MFA enroll/activate 激活 TOTP 并持久化 Secret。
+                💡 <b>运作说明</b>：系统将从选定代理中为每个账号自动重写为<b>【{{ securityForm.proxyCountry || '保持原样' }}】</b>出口并分配独立住宅会话。<b>官方设密</b>将自动向 OpenAI 申请重置验证码并在官方生效；<b>补绑 2FA</b> 将激活 TOTP 并持久化 Secret。
               </div>
             </el-form>
           </div>
@@ -5818,9 +5861,11 @@ onUnmounted(() => {
               </template>
             </el-table-column>
 
-            <el-table-column label="耗时" width="80" align="center">
+            <el-table-column label="耗时" width="85" align="right">
               <template #default="{ row }">
-                <span class="mono" style="font-size: 11px">{{ row.elapsed ? row.elapsed + 's' : '—' }}</span>
+                <span class="mono hint" :style="{ color: row.status === 'running' ? 'var(--el-color-primary)' : '' }">
+                  {{ getSecurityRowElapsed(row) }}
+                </span>
               </template>
             </el-table-column>
 

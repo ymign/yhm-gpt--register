@@ -130,49 +130,66 @@ def official_set_account_password(
     cfg = Config()
     cfg.proxy = proxy or db.get_setting("proxy", "") or None
 
-    _step("正在初始化官方认证会话 (PoW / Sentinel)...")
+    _step("正在初始化官方认证会话 (Warmup 握手)...")
     _log(f"正在建立官方 AuthFlow 握手会话 (代理: {cfg.proxy or '直连'})...")
     flow = AuthFlow(cfg)
     flow.warmup()
     csrf = flow.get_csrf_token()
     auth_url = flow.get_auth_url(csrf, email=email_clean)
     dev_id = flow.auth_oauth_init(auth_url)
+    flow.result.device_id = dev_id
+    flow.result.email = email_clean
+    _step("正在计算 Sentinel PoW 安全挑战...")
+    _log("正在计算官方 PoW (Proof of Work) 验证令牌...")
     st = flow.get_sentinel_token(dev_id)
     t_sent = time.time()
+    _step("正在提交邮箱识别账号认证状态...")
     step_data = flow.authorize_continue(email_clean, st, screen_hint="login")
 
     page = (step_data.get("page") or {}) if isinstance(step_data, dict) else {}
     page_type = (page.get("type") or "").strip()
     continue_url = (step_data.get("continue_url") or "").strip() if isinstance(step_data, dict) else ""
 
+    is_passwordless = (page_type == "email_otp_verification") or ("/email-verification" in continue_url)
+
     # 2. 发码/准备收码
-    # 若已经是 passwordless 免密流程 (email_otp_verification)，服务端在 authorize_continue 时已下发 OTP，直接收码
-    # 若在 log_in_password 密码页，则主动调用 password/send-otp 申请重置邮件
-    if page_type == "email_otp_verification" or "/email-verification" in continue_url:
-        _log("账号处于免密登录状态，服务端已在提交邮箱阶段下发 OTP，正在准备收信...")
-    else:
+    # ── 分支 A：已有密码账号 (login_password)，调用 password/send-otp 请求官方重置邮件
+    # ── 分支 B：原生免密账号 (email_otp_verification)，OpenAI 在提交邮箱时已直接下发登录 OTP
+    if not is_passwordless:
         _step("向 OpenAI 官方申请发送重置密码邮件...")
         _log("正在向 auth.openai.com/api/accounts/password/send-otp 发起重置发码请求...")
-        h = flow._common_headers("https://auth.openai.com/log-in/password")
-        h["Content-Type"] = "application/json"
-        if st:
-            h["openai-sentinel-token"] = st
-        if getattr(flow, "_last_sentinel_so_token", ""):
-            h["openai-sentinel-so-token"] = flow._last_sentinel_so_token
-
         t_sent = time.time()
-        r_otp = flow.session.post("https://auth.openai.com/api/accounts/password/send-otp", headers=h, json={}, timeout=25)
-        if r_otp.status_code != 200:
-            err_msg = (r_otp.text or "")[:200]
-            _log(f"❌ 向 OpenAI 申请发送验证码失败 (HTTP {r_otp.status_code}): {err_msg}")
-            raise RuntimeError(f"向 OpenAI 申请发送重置密码验证码失败 (HTTP {r_otp.status_code}): {err_msg}")
+        ref = continue_url if (continue_url and "auth.openai.com" in continue_url) else "https://auth.openai.com/log-in/password"
+        flow.send_password_reset_otp(referer=ref)
+    else:
+        _step(f"账号处于免密登录状态，正在从 {mail_provider.display_name} 收取 OTP...")
+        _log("检测到账号为 OpenAI 原生免密账号 (Passwordless)，无需官方静态密码，正在执行 OTP + 2FA 验活...")
 
     _step(f"正在从 {mail_provider.display_name} 收取验证码...")
     _log(f"正在轮询邮箱收取验证码 (超时 {timeout}s)...")
 
     # 3. 从邮箱收取验证码（强制要求在发码时间之后产生的新邮件）
-    time.sleep(2)
-    otp_code = mail_provider.wait_for_otp(email_clean, timeout=timeout, issued_after=t_sent - 10)
+    time.sleep(1)
+    t_start_wait = time.time()
+    otp_code = None
+    while time.time() - t_start_wait < timeout:
+        elapsed = int(time.time() - t_start_wait)
+        _step(f"正在从 {mail_provider.display_name} 收信 (已等 {elapsed}s / {timeout}s)...")
+        try:
+            rem = min(8, int(timeout - (time.time() - t_start_wait)))
+            if rem <= 0:
+                break
+            otp_code = mail_provider.wait_for_otp(email_clean, timeout=rem, issued_after=t_sent - 10)
+            if otp_code:
+                break
+        except TimeoutError:
+            pass
+        except Exception as e:
+            if "timeout" in str(e).lower() or "timed out" in str(e).lower():
+                pass
+            else:
+                raise
+
     if not otp_code:
         _log("❌ 等待接收 OpenAI 官方验证码超时")
         raise RuntimeError(f"等待接收 OpenAI 官方验证码超时 ({timeout}s)，未收到邮件")
@@ -187,60 +204,72 @@ def official_set_account_password(
     # 若遇到 2FA TOTP 挑战，自动计算并提交 2FA
     v_page = (verify_resp.get("page") or {}) if isinstance(verify_resp, dict) else {}
     v_type = (v_page.get("type") or "").strip()
-    if v_type in ("mfa_challenge", "totp_verification"):
+    v_continue = (verify_resp.get("continue_url") or "").strip() if isinstance(verify_resp, dict) else ""
+    if v_type in ("mfa_challenge", "totp_verification") or "/mfa-challenge" in v_continue:
         reg_info = db.get_registered(email_clean) or {}
-        totp_sec = reg_info.get("totp_secret", "")
-        if totp_sec:
-            import pyotp
-            totp_code = pyotp.TOTP(totp_sec).now()
-            _log(f"检测到 2FA 挑战，正在提交 TOTP 动态码: {totp_code} ...")
-            flow.session.post(
-                "https://auth.openai.com/api/accounts/mfa/validate",
-                headers=flow._common_headers("https://auth.openai.com/mfa-challenge"),
-                json={"code": totp_code, "type": "totp"},
-                timeout=25,
-            )
+        totp_sec = (reg_info.get("totp_secret") or "").strip()
+        if not totp_sec and account_row:
+            totp_sec = (account_row.get("totp_secret") or "").strip()
+        if not totp_sec:
+            raise RuntimeError(f"账号 {email_clean} 开启了 2FA 两步验证 (mfa-challenge)，但本地数据库未登记 TOTP 密钥")
 
-    # 5. 提交新密码到 /password/reset 或 /user/register
-    _step("正在向 OpenAI 官方服务端提交新密码...")
-    _log(f"正在提交新登录密码...")
-    st_p = flow.get_sentinel_token(dev_id)
-    h_reset = flow._common_headers("https://auth.openai.com/create-account/password")
-    h_reset["Content-Type"] = "application/json"
-    if st_p:
-        h_reset["openai-sentinel-token"] = st_p
+        import pyotp
+        totp_code = pyotp.TOTP(totp_sec).now()
+        challenge_id = v_continue.split("/")[-1] if "/mfa-challenge/" in v_continue else ""
+        _log(f"检测到 2FA 挑战，正在提交 TOTP 动态码: {totp_code} (challenge_id={challenge_id[:8] if challenge_id else '无'})...")
+        mfa_resp = flow.submit_mfa_totp(totp_code, challenge_id)
+        _log("官方 2FA TOTP 校验通过")
+        if isinstance(mfa_resp, dict) and mfa_resp.get("continue_url"):
+            v_continue = str(mfa_resp["continue_url"]).strip()
 
-    r_set = flow.session.post(
-        "https://auth.openai.com/api/accounts/password/reset",
-        headers=h_reset,
-        json={"password": new_password},
-        timeout=25,
-    )
-    if r_set.status_code != 200:
-        # 尝试备用 user/register 设密接口
-        r_set = flow.session.post(
-            "https://auth.openai.com/api/accounts/user/register",
-            headers=h_reset,
-            json={"password": new_password, "username": email_clean},
-            timeout=25,
-        )
+    if not is_passwordless:
+        # 5. 已有密码账号：提交新密码到 /password/reset
+        _step("正在向 OpenAI 官方服务端提交新密码...")
+        _log(f"正在提交新登录密码...")
+        flow.reset_password_submit(new_password)
+        _log(f"🎉 账号 {email_clean} 密码已在 OpenAI 官方服务端成功生效！")
 
-    if r_set.status_code != 200:
-        err_text = (r_set.text or "")[:200]
-        _log(f"❌ 向官方提交新密码失败 (HTTP {r_set.status_code}): {err_text}")
-        raise RuntimeError(f"向 OpenAI 官方提交新密码失败 (HTTP {r_set.status_code}): {err_text}")
+        # 6. 回写本地数据库
+        _step("正在更新数据库并落盘...")
+        db.update_registered_manual(email_clean, password=new_password)
+        _log(f"新密码 {new_password} 已成功回写本地 registered 表")
 
-    _log(f"🎉 账号 {email_clean} 密码已在 OpenAI 官方服务端成功生效！")
+        return {
+            "ok": True,
+            "email": email_clean,
+            "password": new_password,
+            "official_applied": True,
+            "is_passwordless": False,
+            "label": "🎉 官方服务端设密成功",
+            "message": f"密码已在 OpenAI 官方服务端成功生效 ({new_password}) 并持久化到本地",
+        }
+    else:
+        # 免密账号：跟进跳转链获取/刷新 ChatGPT Session，并将随机密码保存在本地供备用
+        _step("免密账号会话就绪，正在刷新官方凭证...")
+        try:
+            target_start = v_continue or continue_url or "https://auth.openai.com/oauth/authorize"
+            if target_start.startswith("/"):
+                target_start = f"https://auth.openai.com{target_start}"
+            flow.follow_redirect_chain(target_start)
+            st_res, at_res = flow.get_auth_session()
+            reg_row = db.get_registered(email_clean) or {}
+            ex = reg_row.get("extra") or {}
+            if flow.result.session_data:
+                ex["session_data"] = flow.result.session_data
+            if at_res:
+                ex["access_token"] = at_res
+            db.update_registered_manual(email_clean, password=new_password, extra=ex)
+        except Exception as e:
+            logger.warning(f"免密账号会话凭证捕获非致命异常: {e}")
+            db.update_registered_manual(email_clean, password=new_password)
 
-    # 6. 回写本地数据库
-    _step("正在更新数据库并落盘...")
-    db.update_registered_manual(email_clean, password=new_password)
-    _log(f"新密码 {new_password} 已成功回写本地 registered 表")
-
-    return {
-        "ok": True,
-        "email": email_clean,
-        "password": new_password,
-        "official_applied": True,
-        "message": "密码已在 OpenAI 官方服务端成功生效并持久化到本地数据库",
-    }
+        _log(f"✅ 账号 {email_clean} 为 OpenAI 原生免密账号 (Passwordless，无需官方静态密码)，全流程验活通过！本地已保存随机密码 ({new_password}) 备用。")
+        return {
+            "ok": True,
+            "email": email_clean,
+            "password": new_password,
+            "official_applied": False,
+            "is_passwordless": True,
+            "label": "✅ 官方免密账号 (已验活)",
+            "message": f"该账号为 OpenAI 原生免密账号 (Passwordless)，无需官方静态密码。已通过官方 OTP + 2FA 验活并就绪，本地已保存备用密码 ({new_password})。",
+        }

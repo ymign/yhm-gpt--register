@@ -2615,9 +2615,9 @@ class AuthFlow:
         except Exception:
             return {}
 
-    def send_password_reset_otp(self) -> dict:
+    def send_password_reset_otp(self, referer: str = "https://auth.openai.com/log-in/password") -> dict:
         """已有账号在 log-in/password 页面触发官方发送重置密码 6 位验证码（/password/send-otp）。"""
-        headers = self._common_headers("https://auth.openai.com/log-in/password")
+        headers = self._common_headers(referer)
         headers["Content-Type"] = "application/json"
         if self._last_sentinel_token:
             headers["openai-sentinel-token"] = self._last_sentinel_token
@@ -3660,6 +3660,28 @@ class AuthFlow:
                     )
                     logger.info(f"✅ 成功获取重置验证码: {otp_code}，正在进行官方验证...")
                     otp_resp = self.verify_otp(otp_code)
+
+                    otp_page_type = self._extract_page_type(otp_resp)
+                    otp_continue = self._normalize_continue_url(
+                        (otp_resp or {}).get("continue_url", "") if isinstance(otp_resp, dict) else ""
+                    )
+                    if self._is_mfa_challenge_state(otp_page_type, otp_continue):
+                        totp_secret = (self.result.totp_secret or "").strip()
+                        if not totp_secret and self._account_callback:
+                            try:
+                                cred = self._account_callback(email)
+                                if cred and cred.get("totp_secret"):
+                                    totp_secret = cred["totp_secret"]
+                                    self.result.totp_secret = totp_secret
+                            except Exception as e:
+                                logger.warning(f"account_callback 异常: {e}")
+                        if not totp_secret:
+                            logger.error(f"❌ 账号 {email} 原号主已开启 2FA 两步验证 (mfa-challenge)，本地无 TOTP 密钥无法完成重置")
+                            raise RuntimeError(f"原号主已开启 2FA 两步验证 (mfa-challenge)，缺少 TOTP 密钥无法登录: {email}")
+                        challenge_id = otp_continue.split("/")[-1] if "/mfa-challenge/" in otp_continue else ""
+                        totp_code = _totp_now(totp_secret)
+                        logger.info(f"提交 TOTP 码进行 2FA 验证（challenge_id={challenge_id[:16]}...）")
+                        self.submit_mfa_totp(totp_code, challenge_id)
 
                     new_password = self._random_password(16)
                     logger.info(f"🔑 正在为账号向官方提交新密码...")
