@@ -1360,6 +1360,21 @@ def get_registered_domains() -> list[dict]:
     return [{"domain": r[0], "count": r[1]} for r in cur.fetchall() if r[0]]
 
 
+def get_registered_countries() -> list[dict]:
+    """统计当前数据库中所有注册账号的出口国家分布及数量。"""
+    con = _conn()
+    cur = con.execute("""
+        SELECT
+            upper(trim(reg_country)) AS country,
+            COUNT(*) AS count
+        FROM registered
+        WHERE reg_country IS NOT NULL AND trim(reg_country) != ''
+        GROUP BY country
+        ORDER BY count DESC
+    """)
+    return [{"country": r[0], "count": r[1]} for r in cur.fetchall() if r[0]]
+
+
 def _registered_where(
     filt: str = "all",
     search: str = "",
@@ -1368,6 +1383,7 @@ def _registered_where(
     filter_extract: str = "",
     filter_oauth: str = "",
     filter_domain: str = "",
+    filter_country: str = "",
 ) -> tuple[str, list]:
     conditions = []
     args = []
@@ -1393,6 +1409,14 @@ def _registered_where(
             conditions.append(c)
             args.extend(d_args)
 
+    if filter_country and filter_country != "all":
+        c_country = filter_country.strip().upper()
+        if c_country in ("NONE", "EMPTY", "UNKNOWN", "NULL"):
+            conditions.append("(reg_country IS NULL OR trim(reg_country) = '')")
+        elif c_country:
+            conditions.append("upper(trim(reg_country)) = ?")
+            args.append(c_country)
+
     search_cleaned = (search or "").strip().lower()
     if search_cleaned:
         conditions.append("lower(email) LIKE ?")
@@ -1411,6 +1435,7 @@ def count_registered(
     filter_extract: str = "",
     filter_oauth: str = "",
     filter_domain: str = "",
+    filter_country: str = "",
 ) -> int:
     con = _conn()
     where, args = _registered_where(
@@ -1418,6 +1443,7 @@ def count_registered(
         filter_plan=filter_plan, filter_sec=filter_sec,
         filter_extract=filter_extract, filter_oauth=filter_oauth,
         filter_domain=filter_domain,
+        filter_country=filter_country,
     )
     cur = con.execute(f"SELECT COUNT(*) FROM registered {where}", args)
     return cur.fetchone()[0]
@@ -1432,6 +1458,7 @@ def list_registered_emails(
     filter_extract: str = "",
     filter_oauth: str = "",
     filter_domain: str = "",
+    filter_country: str = "",
 ) -> list[str]:
     """返回符合过滤条件的所有注册邮箱列表。"""
     con = _conn()
@@ -1440,6 +1467,7 @@ def list_registered_emails(
         filter_plan=filter_plan, filter_sec=filter_sec,
         filter_extract=filter_extract, filter_oauth=filter_oauth,
         filter_domain=filter_domain,
+        filter_country=filter_country,
     )
     cur = con.execute(
         f"SELECT email FROM registered {where} ORDER BY created_at DESC LIMIT ?",
@@ -1458,6 +1486,7 @@ def list_registered(
     filter_extract: str = "",
     filter_oauth: str = "",
     filter_domain: str = "",
+    filter_country: str = "",
 ) -> list[dict]:
     con = _conn()
     where, args = _registered_where(
@@ -1465,6 +1494,7 @@ def list_registered(
         filter_plan=filter_plan, filter_sec=filter_sec,
         filter_extract=filter_extract, filter_oauth=filter_oauth,
         filter_domain=filter_domain,
+        filter_country=filter_country,
     )
     cur = con.execute(
         f"SELECT email, password, totp_secret, reg_country, reg_city, reg_ip, "

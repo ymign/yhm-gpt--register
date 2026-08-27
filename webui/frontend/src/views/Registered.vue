@@ -35,6 +35,7 @@ import {
   listRegistered,
   listRegisteredEmails,
   listRegisteredDomains,
+  listRegisteredCountries,
   getRegistered,
   deleteRegistered,
   bulkDeleteRegistered,
@@ -82,7 +83,7 @@ import {
 } from '@/api/register'
 import { saveSmsConfig, getSmsPriceTiers, getSmsAllCountries } from '@/api/settings'
 import { copyText, fmtTime, createSSE } from '@/api/request'
-import { useFormStore, proxyText, COUNTRY_OPTIONS, formatCountry } from '@/stores/form'
+import { useFormStore, proxyText, COUNTRY_OPTIONS, COUNTRY_NAME_MAP, formatCountry } from '@/stores/form'
 import { useProxyStore } from '@/stores/proxy'
 import { useRuntimeStore } from '@/stores/runtime'
 import StatusDot from '@/components/StatusDot.vue'
@@ -125,6 +126,7 @@ async function openExtractChannel(channelKey) {
         filter_extract: filterExtract.value,
         filter_oauth: filterOAuth.value,
         filter_domain: filterDomain.value,
+        filter_country: filterCountry.value,
         search: searchKeyword.value.trim(),
       })
       extractModalEmails.value = res.emails || []
@@ -144,16 +146,44 @@ const filterExtract = ref('all')
 const filterOAuth = ref('all')
 const filterDomain = ref('all')
 const domainOptions = ref([])
+const filterCountry = ref('all')
+const countryOptions = ref([])
 const searchKeyword = ref('')
 const selected = ref([])
 const loading = ref(false)
 let searchTimer = null
+
+const POPULAR_FILTER_COUNTRIES = [
+  'JP', 'PH', 'VN', 'US', 'GB', 'BR', 'DE', 'PL', 'AR', 'ES', 'TH', 'SG', 'KR', 'ID', 'NL', 'FR', 'CA', 'AU'
+]
+
+function getCountryOptionLabel(code, count) {
+  if (!code || code === 'all') return '全部出口国家'
+  if (code === 'NONE' || code === 'EMPTY') return '⚪ 未记录出口国家'
+  const c = String(code).trim().toUpperCase()
+  const info = COUNTRY_NAME_MAP[c]
+  const flag = info?.flag ? `${info.flag} ` : '🌐 '
+  const name = info?.name ? `${info.name} (${c})` : c
+  if (count !== undefined && count !== null) {
+    return `${flag}${name} · ${count}个`
+  }
+  return `${flag}${name}`
+}
 
 async function loadDomains() {
   try {
     const res = await listRegisteredDomains()
     if (res && res.domains) {
       domainOptions.value = res.domains || []
+    }
+  } catch (_) {}
+}
+
+async function loadCountries() {
+  try {
+    const res = await listRegisteredCountries()
+    if (res && res.countries) {
+      countryOptions.value = res.countries || []
     }
   } catch (_) {}
 }
@@ -165,7 +195,8 @@ const hasActiveFilter = computed(() => {
     filterSec.value !== 'all' ||
     filterExtract.value !== 'all' ||
     filterOAuth.value !== 'all' ||
-    filterDomain.value !== 'all'
+    filterDomain.value !== 'all' ||
+    filterCountry.value !== 'all'
   )
 })
 
@@ -176,6 +207,7 @@ function clearAllFilters() {
   filterExtract.value = 'all'
   filterOAuth.value = 'all'
   filterDomain.value = 'all'
+  filterCountry.value = 'all'
   load(true)
 }
 
@@ -2166,6 +2198,7 @@ async function load(resetPage = false) {
   if (resetPage) page.value = 1
   loading.value = true
   loadDomains()
+  loadCountries()
   try {
     const { items, total: t } = await listRegistered({
       limit: pageSize.value,
@@ -2176,6 +2209,7 @@ async function load(resetPage = false) {
       filter_extract: filterExtract.value,
       filter_oauth: filterOAuth.value,
       filter_domain: filterDomain.value,
+      filter_country: filterCountry.value,
       search: searchKeyword.value.trim(),
     })
     rows.value = items || []
@@ -2303,7 +2337,10 @@ function saveBlob(data, filename, mime) {
 }
 
 function downloadExport() {
-  saveBlob(exportText.value, exportFilename.value, 'text/plain;charset=utf-8')
+  const mime = exportFilename.value.endsWith('.json') || exportFilename.value.endsWith('.jsonl')
+    ? 'application/json;charset=utf-8'
+    : 'text/plain;charset=utf-8'
+  saveBlob(exportText.value, exportFilename.value, mime)
 }
 
 async function downloadAndDelete() {
@@ -2318,7 +2355,7 @@ async function downloadAndDelete() {
     `现在删除这 ${emails.length} 个号：\n` +
     `  · 注册结果（凭证、2FA secret）\n` +
     `  · 邮箱列表（号池那一行，含取件链接）\n\n` +
-    `删掉后只剩刚下载的 txt 这一份，不可恢复。确定？`,
+    `删掉后只剩刚下载的备份文件这一份，不可恢复。确定？`,
   )
   if (!ok) return
 
@@ -2513,16 +2550,81 @@ function closeTotpModal() {
   totpModalVisible.value = false
 }
 
-// 2. 邮箱验证码实时抓取弹窗
+// 2. 现代化邮箱收件箱与验证码实时抓取工作台 (Mailbox Studio)
 const mailOtpModalVisible = ref(false)
 const mailOtpEmail = ref('')
 const mailOtpCode = ref('')
 const mailOtpFound = ref(false)
 const mailOtpProvider = ref('')
+const mailOtpProtocol = ref('')
 const mailOtpMessages = ref([])
 const mailOtpLoading = ref(false)
 const mailOtpError = ref('')
 const mailOtpCustomLine = ref('')
+const mailOtpElapsed = ref(0)
+const mailOtpLastUpdated = ref('')
+const mailOtpAutoPolling = ref(false)
+const mailOtpFilterOnlyOtp = ref(false)
+const mailSearchQuery = ref('')
+const expandedMailIds = ref(new Set())
+let mailPollingTimer = null
+
+function getSenderAvatar(fromStr) {
+  const s = String(fromStr || '').toLowerCase()
+  if (s.includes('openai') || s.includes('chatgpt')) {
+    return { text: 'OAI', color: '#34d399', bg: 'rgba(16, 185, 129, 0.15)' }
+  }
+  if (s.includes('microsoft') || s.includes('outlook') || s.includes('live')) {
+    return { text: 'MS', color: '#38bdf8', bg: 'rgba(56, 189, 248, 0.15)' }
+  }
+  return { text: 'MAIL', color: '#a78bfa', bg: 'rgba(167, 139, 250, 0.15)' }
+}
+
+function formatMailDate(dtStr) {
+  if (!dtStr) return ''
+  try {
+    const d = new Date(dtStr)
+    if (isNaN(d.getTime())) return dtStr
+    const pad = (n) => String(n).padStart(2, '0')
+    const y = d.getFullYear()
+    const m = pad(d.getMonth() + 1)
+    const day = pad(d.getDate())
+    const h = pad(d.getHours())
+    const min = pad(d.getMinutes())
+    const s = pad(d.getSeconds())
+    return `${y}-${m}-${day} ${h}:${min}:${s}`
+  } catch (e) {
+    return dtStr
+  }
+}
+
+const filteredMailMessages = computed(() => {
+  let list = mailOtpMessages.value || []
+  if (mailOtpFilterOnlyOtp.value) {
+    list = list.filter(m => Boolean(m.otp))
+  }
+  const q = mailSearchQuery.value.trim().toLowerCase()
+  if (q) {
+    list = list.filter(m =>
+      (m.subject && m.subject.toLowerCase().includes(q)) ||
+      (m.from && m.from.toLowerCase().includes(q)) ||
+      (m.snippet && m.snippet.toLowerCase().includes(q)) ||
+      (m.otp && m.otp.includes(q))
+    )
+  }
+  return list
+})
+
+function toggleMailExpanded(id) {
+  if (!id) return
+  const s = new Set(expandedMailIds.value)
+  if (s.has(id)) {
+    s.delete(id)
+  } else {
+    s.add(id)
+  }
+  expandedMailIds.value = s
+}
 
 async function openMailOtpModal(row) {
   mailOtpEmail.value = row.email
@@ -2531,43 +2633,105 @@ async function openMailOtpModal(row) {
   mailOtpMessages.value = []
   mailOtpError.value = ''
   mailOtpCustomLine.value = ''
+  mailOtpElapsed.value = 0
+  mailOtpLastUpdated.value = ''
+  mailOtpAutoPolling.value = false
+  mailOtpFilterOnlyOtp.value = false
+  mailSearchQuery.value = ''
+  expandedMailIds.value = new Set()
   mailOtpModalVisible.value = true
-  await doFetchMailOtp()
+  await doFetchMailOtp(true)
 }
 
-async function doFetchMailOtp(customPayload = {}) {
+function handleMailOtpModalClosed() {
+  stopMailPolling()
+  mailSearchQuery.value = ''
+  expandedMailIds.value = new Set()
+}
+
+function toggleMailPolling() {
+  if (mailOtpAutoPolling.value) {
+    startMailPolling()
+  } else {
+    stopMailPolling()
+  }
+}
+
+function startMailPolling() {
+  stopMailPolling()
+  mailOtpAutoPolling.value = true
+  mailPollingTimer = setInterval(async () => {
+    if (!mailOtpModalVisible.value) {
+      stopMailPolling()
+      return
+    }
+    await doFetchMailOtp(false)
+  }, 3500)
+}
+
+function stopMailPolling() {
+  if (mailPollingTimer) {
+    clearInterval(mailPollingTimer)
+    mailPollingTimer = null
+  }
+  mailOtpAutoPolling.value = false
+}
+
+async function doFetchMailOtp(isManual = false) {
   if (!mailOtpEmail.value) return
-  mailOtpLoading.value = true
+  if (isManual) {
+    mailOtpLoading.value = true
+  }
   mailOtpError.value = ''
+  const t0 = Date.now()
   try {
-    const payload = { ...customPayload }
+    const payload = {}
     if (mailOtpCustomLine.value.trim()) {
       payload.raw_line = mailOtpCustomLine.value.trim()
     }
     const res = await fetchMailOtp(mailOtpEmail.value, payload)
+    mailOtpElapsed.value = res.elapsed_s || roundNumber((Date.now() - t0) / 1000, 2)
+    mailOtpLastUpdated.value = new Date().toLocaleTimeString()
     if (res.ok === false && res.error) {
       mailOtpError.value = res.error
       mailOtpProvider.value = res.provider || ''
+      mailOtpProtocol.value = res.protocol || ''
       mailOtpCode.value = ''
       mailOtpFound.value = false
       mailOtpMessages.value = []
       return
     }
+    const previousCode = mailOtpCode.value
     mailOtpCode.value = res.otp || ''
     mailOtpFound.value = Boolean(res.found && res.otp)
     mailOtpProvider.value = res.provider || ''
+    mailOtpProtocol.value = res.protocol || ''
     mailOtpMessages.value = res.messages || []
-    if (res.otp) {
+
+    // 如果展开列表为空，自动展开第一封邮件
+    if (expandedMailIds.value.size === 0 && res.messages && res.messages.length > 0) {
+      expandedMailIds.value = new Set([res.messages[0].id || 'mail_0'])
+    }
+
+    if (res.otp && (!previousCode || isManual)) {
       ElMessage.success(`成功抓取到验证码: ${res.otp}`)
-    } else {
-      ElMessage.info('暂未检索到包含验证码的新邮件')
+    } else if (isManual && !res.otp) {
+      ElMessage.info('已刷新，暂未检索到包含验证码的近期邮件')
     }
   } catch (e) {
     mailOtpError.value = e.response?.data?.detail || e.message
-    ElMessage.error('抓取邮箱验证码失败: ' + mailOtpError.value)
+    if (isManual) {
+      ElMessage.error('抓取邮箱验证码失败: ' + mailOtpError.value)
+    }
   } finally {
-    mailOtpLoading.value = false
+    if (isManual) {
+      mailOtpLoading.value = false
+    }
   }
+}
+
+function roundNumber(num, dec = 2) {
+  return Number(Math.round(num + 'e' + dec) + 'e-' + dec)
 }
 
 // 3. 补设密码弹窗
@@ -3437,6 +3601,39 @@ onUnmounted(() => {
                     :key="d.domain"
                     :label="`${d.domain} (${d.count})`"
                     :value="d.domain"
+                  />
+                </el-option-group>
+              </el-select>
+            </div>
+
+            <div class="filter-item-wrap">
+              <span class="filter-label">国家:</span>
+              <el-select
+                v-model="filterCountry"
+                placeholder="出口国家"
+                size="small"
+                class="acct-select acct-select-country"
+                filterable
+                clearable
+                @change="load(true)"
+                @clear="filterCountry = 'all'; load(true)"
+              >
+                <el-option label="全部出口国家" value="all" />
+                <el-option-group v-if="countryOptions.length > 0" label="库内实际出口">
+                  <el-option
+                    v-for="c in countryOptions"
+                    :key="c.country"
+                    :label="getCountryOptionLabel(c.country, c.count)"
+                    :value="c.country"
+                  />
+                  <el-option label="⚪ 未记录出口国家" value="NONE" />
+                </el-option-group>
+                <el-option-group label="常用国别">
+                  <el-option
+                    v-for="c in POPULAR_FILTER_COUNTRIES"
+                    :key="c"
+                    :label="getCountryOptionLabel(c)"
+                    :value="c"
                   />
                 </el-option-group>
               </el-select>
@@ -6184,25 +6381,67 @@ onUnmounted(() => {
       </template>
     </el-dialog>
 
-    <!-- ──────────────── 邮箱最新验证码抓取 (Mail OTP) 弹窗 ──────────────── -->
+    <!-- ──────────────── 现代化邮箱收件箱与验证码实时工作台 (Mailbox Studio) ──────────────── -->
     <el-dialog
       v-model="mailOtpModalVisible"
-      title="检索邮箱实时验证码 · Mailbox OTP"
-      width="640px"
-      top="10vh"
-      class="macos-custom-dialog"
+      title="邮箱收件箱与实时验证码 · Mailbox Studio"
+      width="900px"
+      top="6vh"
+      class="macos-custom-dialog mailbox-studio-dialog"
+      @closed="handleMailOtpModalClosed"
     >
-      <div v-loading="mailOtpLoading" style="min-height: 180px">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px">
-          <div>
-            <span style="font-size: 13px; font-weight: 700; color: var(--app-title)">{{ mailOtpEmail }}</span>
-            <el-tag size="small" :type="mailOtpProvider === 'outlook' ? 'primary' : 'info'" style="margin-left: 8px">
-              {{ mailOtpProvider || 'mailbox' }}
-            </el-tag>
+      <div v-loading="mailOtpLoading" class="mailbox-studio-body">
+        <!-- 顶部信息与控制操作栏 -->
+        <div class="mb-top-bar">
+          <div class="mb-account-info">
+            <div class="mb-email-chip mono" @click="copyText(mailOtpEmail, '邮箱已复制')" title="点击复制邮箱">
+              <el-icon class="email-icon"><Message /></el-icon>
+              <span class="email-text">{{ mailOtpEmail }}</span>
+              <el-icon class="copy-hint-icon"><CopyDocument /></el-icon>
+            </div>
+            <div class="mb-tags-group">
+              <span class="mb-provider-pill" :class="mailOtpProvider === 'outlook' ? 'pill-ms' : 'pill-other'">
+                {{ mailOtpProvider === 'outlook' ? 'Outlook 微软邮箱' : (mailOtpProvider || 'Mailbox') }}
+              </span>
+              <span class="mb-protocol-pill" :class="mailOtpProtocol === 'graph' ? 'pill-graph' : 'pill-imap'">
+                {{ mailOtpProtocol === 'graph' ? '⚡ Graph API 极速直连' : 'IMAP 协议' }}
+              </span>
+              <span v-if="mailOtpElapsed > 0" class="mb-elapsed-pill mono">
+                ⚡ 响应 {{ mailOtpElapsed }}s
+              </span>
+              <span v-if="mailOtpLastUpdated" class="mb-time-pill mono">
+                {{ mailOtpLastUpdated }} 更新
+              </span>
+            </div>
           </div>
-          <el-button size="small" type="primary" plain :loading="mailOtpLoading" @click="() => doFetchMailOtp()">
-            <el-icon><Refresh /></el-icon>重新检索
-          </el-button>
+
+          <div class="mb-actions-group">
+            <el-tooltip content="开启后每 3.5 秒自动抓取最新邮件，适合刚发码等待收信的场景" placement="top">
+              <div class="mb-polling-toggle" :class="{ 'is-active': mailOtpAutoPolling }">
+                <span v-if="mailOtpAutoPolling" class="polling-live-dot"></span>
+                <span class="polling-label">自动轮询</span>
+                <el-switch
+                  v-model="mailOtpAutoPolling"
+                  size="small"
+                  @change="toggleMailPolling"
+                />
+              </div>
+            </el-tooltip>
+
+            <el-checkbox v-model="mailOtpFilterOnlyOtp" size="small" class="mb-filter-checkbox">
+              仅看含验证码
+            </el-checkbox>
+
+            <el-button
+              size="small"
+              type="primary"
+              :loading="mailOtpLoading"
+              class="mb-refresh-btn"
+              @click="() => doFetchMailOtp(true)"
+            >
+              <el-icon><Refresh /></el-icon>极速检索
+            </el-button>
+          </div>
         </div>
 
         <!-- 错误或无凭证提示 -->
@@ -6211,17 +6450,17 @@ onUnmounted(() => {
           type="warning"
           :closable="false"
           show-icon
-          style="margin-bottom: 14px"
+          class="mb-alert-box"
           :title="mailOtpError"
         />
 
-        <!-- 针对 Outlook/Hotmail 缺少凭证时提供一键补绑卡片 -->
+        <!-- 针对 Outlook/Hotmail 缺少凭证时提供一键补绑自愈卡片 -->
         <div
           v-if="mailOtpError && (mailOtpEmail.includes('@outlook.') || mailOtpEmail.includes('@hotmail.') || mailOtpEmail.includes('@live.') || mailOtpEmail.includes('@msn.'))"
-          style="background: rgba(255,255,255,0.03); border: 1px dashed var(--el-border-color); border-radius: 8px; padding: 12px; margin-bottom: 14px"
+          class="mb-credential-fix-card"
         >
-          <div style="font-size: 12px; font-weight: 600; color: var(--app-title); margin-bottom: 6px">
-            🔑 补充/绑定该账号的微软邮箱凭证 (单行 4 段式或密码)
+          <div class="mb-credential-title">
+            🔑 补充/绑定该账号的微软邮箱凭证 (单行 4 段式或独立密码)
           </div>
           <div style="display: flex; gap: 8px">
             <el-input
@@ -6230,59 +6469,180 @@ onUnmounted(() => {
               size="small"
               placeholder="邮箱----密码----ClientID----RefreshToken"
             />
-            <el-button size="small" type="primary" :loading="mailOtpLoading" @click="() => doFetchMailOtp()">
+            <el-button size="small" type="primary" :loading="mailOtpLoading" @click="() => doFetchMailOtp(true)">
               保存并检索
             </el-button>
           </div>
-          <div style="font-size: 11px; color: var(--el-text-color-secondary); margin-top: 4px">
-            💡 提示：录入后将自动同步回写号池并保存至账号记录，以后查询无需重复输入。
+          <div class="mb-credential-hint">
+            💡 录入后将自动保存至号池及账号记录，后续查询与自动改密无需重复输入。
           </div>
         </div>
 
-        <div v-if="mailOtpCode" class="otp-hero-result">
-          <div style="font-size: 12px; color: var(--el-text-color-secondary); margin-bottom: 6px">
-            ⚡ 检索到最新 6 位验证码
+        <!-- 主视觉区：最新验证码超大 Hero 卡片 -->
+        <div v-if="mailOtpCode" class="otp-hero-card">
+          <div class="otp-hero-left">
+            <div class="otp-hero-subtitle">
+              <span class="pulse-emerald-dot"></span>
+              <span>最新捕获 6 位验证码</span>
+            </div>
+            <div class="otp-huge-number-row" @click="copyText(mailOtpCode, '验证码已复制')" title="点击一键复制">
+              <div class="otp-digits-display mono">
+                <span v-for="(char, cIdx) in mailOtpCode" :key="cIdx" class="otp-char-box">{{ char }}</span>
+              </div>
+              <el-icon class="otp-copy-icon-hover"><CopyDocument /></el-icon>
+            </div>
+            <div class="otp-hero-tip">
+              点击数字卡片或右侧按钮直接复制 · 适合 OpenAI / ChatGPT / 微软账户验证
+            </div>
           </div>
-          <div class="otp-huge-badge mono" @click="copyText(mailOtpCode, '验证码已复制')" title="点击复制验证码">
-            {{ mailOtpCode }}
-            <el-button size="small" text type="success"><el-icon><CopyDocument /></el-icon></el-button>
+          <div class="otp-hero-right">
+            <el-button
+              type="success"
+              size="large"
+              class="otp-copy-hero-btn"
+              @click="copyText(mailOtpCode, '验证码已复制')"
+            >
+              <el-icon><CopyDocument /></el-icon>
+              <span>一键复制验证码</span>
+            </el-button>
           </div>
         </div>
-        <el-alert
-          v-else-if="!mailOtpLoading && !mailOtpError"
-          type="info"
-          :closable="false"
-          show-icon
-          style="margin-bottom: 14px"
-          title="当前未检索到包含 6 位验证码的未读/近期邮件，如刚触发发码请稍等 3~5 秒后点右上角「重新检索」"
-        />
 
-        <div v-if="mailOtpMessages.length > 0">
-          <div style="font-size: 12px; font-weight: 700; margin-bottom: 6px; color: var(--app-title)">
-            📬 近期收到邮件 ({{ mailOtpMessages.length }} 封)
+        <!-- 未检索到验证码时的状态卡片 -->
+        <div v-else-if="!mailOtpLoading && !mailOtpError" class="otp-empty-status-card">
+          <div class="empty-icon-wrap">
+            <el-icon :size="22"><Message /></el-icon>
           </div>
-          <div class="otp-mails-list">
-            <div v-for="m in mailOtpMessages" :key="m.id || m.date" class="otp-mail-card">
-              <div class="mail-header-line">
-                <span style="color: var(--app-title)">{{ m.subject }}</span>
-                <span class="mono" style="font-size: 11px; color: var(--el-text-color-secondary)">{{ m.date }}</span>
-              </div>
-              <div style="display: flex; justify-content: space-between; align-items: center">
-                <span style="font-size: 11px; color: var(--el-color-primary)">发件人: {{ m.from }}</span>
-                <el-tag v-if="m.otp" size="small" type="success" effect="dark" style="cursor: pointer" @click="copyText(m.otp, '验证码已复制')">
-                  OTP: {{ m.otp }}
-                </el-tag>
-              </div>
-              <div v-if="m.snippet" class="mail-snippet">{{ m.snippet }}</div>
+          <div class="empty-text-wrap">
+            <div class="empty-title">当前邮件中暂未提取到 6 位纯数字验证码</div>
+            <div class="empty-desc">
+              如刚触发官方发信，微软邮件投递通常有 5~15 秒延迟。建议开启右上角「自动轮询」或稍后点击「极速检索」。
             </div>
           </div>
         </div>
+
+        <!-- 邮件列表区 (Mail Stream) -->
+        <div class="mb-mails-container">
+          <div class="mb-section-header">
+            <div class="mb-section-title">
+              <span>📬 全部邮件流</span>
+              <span class="mb-count-badge mono">{{ filteredMailMessages.length }} 封</span>
+            </div>
+            <div class="mb-section-tools">
+              <el-input
+                v-model="mailSearchQuery"
+                size="small"
+                placeholder="搜索邮件主题 / 发件人 / OTP..."
+                clearable
+                class="mb-search-input"
+              >
+                <template #prefix>
+                  <el-icon><Search /></el-icon>
+                </template>
+              </el-input>
+            </div>
+          </div>
+
+          <div v-if="filteredMailMessages.length > 0" class="mb-mails-list">
+            <div
+              v-for="(m, idx) in filteredMailMessages"
+              :key="m.id || ('mail_' + idx)"
+              class="mb-mail-card"
+              :class="{ 'has-otp': Boolean(m.otp), 'is-expanded': expandedMailIds.has(m.id || ('mail_' + idx)) }"
+            >
+              <!-- 邮件简要信息主行 (点击折叠/展开) -->
+              <div class="mb-mail-main-row" @click="toggleMailExpanded(m.id || ('mail_' + idx))">
+                <div class="mb-mail-left-group">
+                  <div
+                    class="mb-sender-avatar"
+                    :style="{ color: getSenderAvatar(m.from).color, background: getSenderAvatar(m.from).bg }"
+                  >
+                    {{ getSenderAvatar(m.from).text }}
+                  </div>
+                  <div class="mb-mail-text-block">
+                    <div class="mb-mail-top-line">
+                      <span class="mb-sender-name">{{ m.from }}</span>
+                      <span class="mb-mail-date mono">{{ formatMailDate(m.date) || m.date }}</span>
+                    </div>
+                    <div class="mb-mail-subject-line">
+                      <span class="mb-subject-text">{{ m.subject }}</span>
+                    </div>
+                    <div v-if="!expandedMailIds.has(m.id || ('mail_' + idx)) && m.snippet" class="mb-mail-snippet-line">
+                      {{ m.snippet }}
+                    </div>
+                  </div>
+                </div>
+
+                <div class="mb-mail-right-group">
+                  <span
+                    v-if="m.otp"
+                    class="mb-otp-badge mono"
+                    @click.stop="copyText(m.otp, '验证码已复制')"
+                    title="点击复制此验证码"
+                  >
+                    <el-icon><Key /></el-icon>
+                    <span>{{ m.otp }}</span>
+                  </span>
+                  <div class="mb-expand-caret">
+                    <el-icon><ArrowDown v-if="expandedMailIds.has(m.id || ('mail_' + idx))" /><ArrowRight v-else /></el-icon>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 展开的正文内容区域 -->
+              <div v-if="expandedMailIds.has(m.id || ('mail_' + idx))" class="mb-mail-detail-pane">
+                <div class="mb-detail-toolbar">
+                  <span class="mb-detail-hint">完整邮件正文与内容解析：</span>
+                  <div style="display: flex; gap: 8px">
+                    <el-button
+                      v-if="m.otp"
+                      size="small"
+                      type="success"
+                      plain
+                      @click="copyText(m.otp, '验证码已复制')"
+                    >
+                      <el-icon><CopyDocument /></el-icon>复制验证码 {{ m.otp }}
+                    </el-button>
+                    <el-button
+                      size="small"
+                      @click="copyText(m.content || m.snippet, '邮件正文已复制')"
+                    >
+                      <el-icon><DocumentCopy /></el-icon>复制全文内容
+                    </el-button>
+                  </div>
+                </div>
+                <div class="mb-detail-content-box mono">
+                  {{ m.content || m.snippet || '(该邮件无正文内容)' }}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div v-else class="mb-no-mails-wrap">
+            <el-empty description="暂无符合条件的邮件记录" :image-size="60" />
+          </div>
+        </div>
       </div>
+
       <template #footer>
-        <el-button @click="mailOtpModalVisible = false">关闭</el-button>
-        <el-button v-if="mailOtpCode" type="primary" @click="copyText(mailOtpCode, '验证码已复制')">
-          <el-icon><CopyDocument /></el-icon>复制验证码 ({{ mailOtpCode }})
-        </el-button>
+        <div class="mb-dialog-footer">
+          <div class="mb-footer-left">
+            <span class="mono" style="font-size: 11.5px; color: var(--el-text-color-secondary)">
+              共 {{ mailOtpMessages.length }} 封邮件 · 微软官方 Graph API 毫秒级直连
+            </span>
+          </div>
+          <div class="mb-footer-right">
+            <el-button @click="mailOtpModalVisible = false">关闭</el-button>
+            <el-button
+              v-if="mailOtpCode"
+              type="primary"
+              @click="copyText(mailOtpCode, '验证码已复制')"
+            >
+              <el-icon><CopyDocument /></el-icon>
+              <span>复制验证码 ({{ mailOtpCode }})</span>
+            </el-button>
+          </div>
+        </div>
       </template>
     </el-dialog>
 
@@ -6292,6 +6652,8 @@ onUnmounted(() => {
       title="设置 / 补设登录密码"
       width="500px"
       top="15vh"
+      class="macos-custom-dialog"
+    >
       class="macos-custom-dialog"
     >
       <el-alert
@@ -6512,6 +6874,10 @@ onUnmounted(() => {
 
 .acct-select-domain {
   width: 150px;
+}
+
+.acct-select-country {
+  width: 155px;
 }
 
 .acct-select-proxy {
@@ -7645,63 +8011,581 @@ onUnmounted(() => {
   color: var(--app-title);
 }
 
-/* ──────────── 邮箱 OTP 抓取弹窗样式 ──────────── */
-.otp-hero-result {
-  background: var(--el-fill-color-light);
-  border: 1px solid var(--el-color-success-light-3, #86efac);
-  border-radius: 10px;
-  padding: 14px;
-  text-align: center;
-  margin-bottom: 14px;
+/* ──────────── 现代化邮箱收件箱与验证码工作台 (Mailbox Studio) 主流顶流设计 ──────────── */
+.mailbox-studio-dialog .el-dialog__header {
+  padding: 16px 20px 12px 20px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
 }
 
-.otp-huge-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  font-family: 'SF Mono', Monaco, Menlo, Consolas, monospace;
-  font-size: 30px;
-  font-weight: 800;
-  color: #16a34a;
-  letter-spacing: 4px;
-  cursor: pointer;
-  transition: transform 0.15s ease;
-}
-.otp-huge-badge:hover {
-  transform: scale(1.04);
+.mailbox-studio-dialog .el-dialog__body {
+  padding: 16px 20px 18px 20px;
 }
 
-.otp-mails-list {
+.mailbox-studio-dialog .el-dialog__footer {
+  padding: 12px 20px 16px 20px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.mailbox-studio-body {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  max-height: 280px;
-  overflow-y: auto;
+  gap: 14px;
 }
 
-.otp-mail-card {
-  background: var(--app-card-bg);
-  border: 1px solid var(--app-border);
-  border-radius: 6px;
-  padding: 8px 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.mail-header-line {
+/* 顶部信息与控制栏 */
+.mb-top-bar {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 10px 14px;
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+}
+
+.mb-account-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.mb-email-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--app-title);
+  background: rgba(255, 255, 255, 0.05);
+  padding: 3px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  cursor: pointer;
+  user-select: none;
+  transition: all 0.15s ease;
+}
+
+.mb-email-chip:hover {
+  background: rgba(0, 122, 255, 0.12);
+  border-color: rgba(0, 122, 255, 0.35);
+  color: #38bdf8;
+}
+
+.email-icon {
+  font-size: 13px;
+  color: #38bdf8;
+}
+
+.copy-hint-icon {
   font-size: 12px;
+  opacity: 0.6;
+}
+
+.mb-tags-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.mb-provider-pill,
+.mb-protocol-pill,
+.mb-elapsed-pill,
+.mb-time-pill {
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
   font-weight: 600;
 }
 
-.mail-snippet {
+.pill-ms {
+  background: rgba(2, 132, 199, 0.12);
+  color: #38bdf8;
+  border: 1px solid rgba(2, 132, 199, 0.28);
+}
+
+.pill-other {
+  background: rgba(148, 163, 184, 0.1);
+  color: #94a3b8;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+}
+
+.pill-graph {
+  background: rgba(16, 185, 129, 0.12);
+  color: #34d399;
+  border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+.pill-imap {
+  background: rgba(245, 158, 11, 0.12);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+.mb-elapsed-pill {
+  color: #10b981;
+  background: rgba(16, 185, 129, 0.08);
+  border: 1px solid rgba(16, 185, 129, 0.2);
+}
+
+.mb-time-pill {
+  color: var(--el-text-color-secondary);
+  font-weight: 400;
+}
+
+.mb-actions-group {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.mb-polling-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(255, 255, 255, 0.04);
+  padding: 2px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  transition: all 0.15s ease;
+}
+
+.mb-polling-toggle.is-active {
+  background: rgba(16, 185, 129, 0.08);
+  border-color: rgba(16, 185, 129, 0.35);
+}
+
+.polling-label {
+  font-size: 11.5px;
+  color: var(--app-title);
+  user-select: none;
+}
+
+.polling-live-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #34d399;
+  box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.7);
+  animation: pulse-ring 1.6s infinite;
+}
+
+.mb-filter-checkbox {
+  margin: 0 !important;
+}
+
+.mb-refresh-btn {
+  font-weight: 600;
+}
+
+/* 凭证缺失补录卡片 */
+.mb-credential-fix-card {
+  background: rgba(245, 158, 11, 0.06);
+  border: 1px dashed rgba(245, 158, 11, 0.35);
+  border-radius: 8px;
+  padding: 10px 14px;
+}
+
+.mb-credential-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: #fbbf24;
+  margin-bottom: 5px;
+}
+
+.mb-credential-hint {
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+  margin-top: 4px;
+}
+
+/* 最新验证码 Hero 卡片 (Linear / 极客分块设计) */
+.otp-hero-card {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.1) 0%, rgba(6, 78, 59, 0.16) 100%);
+  border: 1px solid rgba(16, 185, 129, 0.38);
+  box-shadow: 0 4px 18px rgba(16, 185, 129, 0.06);
+  border-radius: 12px;
+  padding: 14px 18px;
+  gap: 16px;
+}
+
+.otp-hero-left {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.otp-hero-subtitle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #34d399;
+}
+
+.pulse-emerald-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #34d399;
+  box-shadow: 0 0 8px #34d399;
+}
+
+.otp-huge-number-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  cursor: pointer;
+  user-select: all;
+  transition: transform 0.15s ease;
+}
+
+.otp-huge-number-row:hover {
+  transform: scale(1.015);
+}
+
+.otp-digits-display {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.otp-char-box {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 44px;
+  background: rgba(16, 185, 129, 0.12);
+  border: 1px solid rgba(52, 211, 153, 0.35);
+  border-radius: 6px;
+  font-size: 28px;
+  font-weight: 800;
+  color: #34d399;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
+}
+
+.otp-copy-icon-hover {
+  font-size: 16px;
+  color: #34d399;
+  opacity: 0.7;
+}
+
+.otp-huge-number-row:hover .otp-copy-icon-hover {
+  opacity: 1;
+}
+
+.otp-hero-tip {
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+}
+
+.otp-copy-hero-btn {
+  font-weight: 700;
+  font-size: 13.5px;
+  padding: 10px 18px;
+  background: linear-gradient(135deg, #10b981 0%, #059669 100%) !important;
+  border: none !important;
+  box-shadow: 0 4px 12px rgba(16, 185, 129, 0.3);
+}
+
+.otp-copy-hero-btn:hover {
+  background: linear-gradient(135deg, #34d399 0%, #10b981 100%) !important;
+  box-shadow: 0 4px 16px rgba(16, 185, 129, 0.45);
+}
+
+/* 未检索到验证码空状态卡片 */
+.otp-empty-status-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 10px;
+}
+
+.empty-icon-wrap {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  background: rgba(0, 122, 255, 0.1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #38bdf8;
+  flex-shrink: 0;
+}
+
+.empty-text-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.empty-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--app-title);
+}
+
+.empty-desc {
   font-size: 11px;
   color: var(--el-text-color-secondary);
   line-height: 1.4;
+}
+
+/* 邮件列表容器与流式布局 (彻底根治 flex-shrink 挤压 bug) */
+.mb-mails-container {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.mb-section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0 2px;
+}
+
+.mb-section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--app-title);
+}
+
+.mb-count-badge {
+  font-size: 11px;
+  color: #38bdf8;
+  background: rgba(2, 132, 199, 0.12);
+  padding: 1px 6px;
+  border-radius: 10px;
+  border: 1px solid rgba(2, 132, 199, 0.25);
+}
+
+.mb-search-input {
+  width: 220px;
+}
+
+.mb-mails-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 380px;
+  overflow-y: auto;
+  padding-right: 4px;
+  overscroll-behavior: contain;
+}
+
+/* 独立卡片：绝对不允许被 flexbox 挤压 */
+.mb-mail-card {
+  flex-shrink: 0 !important;
+  min-height: 56px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 8px;
+  transition: all 0.18s cubic-bezier(0.4, 0, 0.2, 1);
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+.mb-mail-card:hover {
+  background: rgba(255, 255, 255, 0.055);
+  border-color: rgba(255, 255, 255, 0.16);
+}
+
+.mb-mail-card.has-otp {
+  border-left: 3.5px solid #10b981;
+}
+
+.mb-mail-card.is-expanded {
+  background: rgba(255, 255, 255, 0.045);
+  border-color: rgba(0, 122, 255, 0.35);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.2);
+}
+
+.mb-mail-main-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 14px;
+  cursor: pointer;
+  user-select: none;
+  gap: 12px;
+}
+
+.mb-mail-left-group {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+}
+
+.mb-sender-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 0.5px;
+  flex-shrink: 0;
+}
+
+.mb-mail-text-block {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.mb-mail-top-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mb-sender-name {
+  font-size: 11px;
+  font-weight: 600;
+  color: #38bdf8;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mb-mail-date {
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+}
+
+.mb-mail-subject-line {
+  display: flex;
+  align-items: center;
+}
+
+.mb-subject-text {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--app-title);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mb-mail-snippet-line {
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.3;
+}
+
+.mb-mail-right-group {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.mb-otp-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11.5px;
+  font-weight: 800;
+  color: #34d399;
+  background: rgba(16, 185, 129, 0.15);
+  border: 1px solid rgba(52, 211, 153, 0.4);
+  padding: 2px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.mb-otp-badge:hover {
+  background: rgba(16, 185, 129, 0.28);
+  border-color: rgba(52, 211, 153, 0.7);
+  transform: scale(1.04);
+}
+
+.mb-expand-caret {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  display: flex;
+  align-items: center;
+}
+
+/* 邮件详情展开面板 */
+.mb-mail-detail-pane {
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 10px 14px 12px 14px;
+  background: rgba(0, 0, 0, 0.25);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.mb-detail-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.mb-detail-hint {
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+}
+
+.mb-detail-content-box {
+  background: #090a0f;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: #cbd5e1;
+  max-height: 200px;
+  overflow-y: auto;
   word-break: break-all;
+  white-space: pre-wrap;
+  user-select: text;
+}
+
+.mb-no-mails-wrap {
+  padding: 24px 0;
+}
+
+.mb-dialog-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+}
+
+.mb-footer-right {
+  display: flex;
+  gap: 8px;
 }
 
 /* ──────────── 现代化 OAuth 接码与凭证生成控制台样式 ──────────── */

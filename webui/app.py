@@ -11,6 +11,7 @@ import asyncio
 import base64
 import json
 import logging
+import re
 import sys
 import time
 import uuid
@@ -515,6 +516,7 @@ def api_registered(
     filter_extract: str = "",
     filter_oauth: str = "",
     filter_domain: str = "",
+    filter_country: str = "",
 ):
     query_str = (q or search).strip()
     items = db.list_registered(
@@ -527,6 +529,7 @@ def api_registered(
         filter_extract=filter_extract,
         filter_oauth=filter_oauth,
         filter_domain=filter_domain,
+        filter_country=filter_country,
     )
     total = db.count_registered(
         filter_rt=filter,
@@ -536,6 +539,7 @@ def api_registered(
         filter_extract=filter_extract,
         filter_oauth=filter_oauth,
         filter_domain=filter_domain,
+        filter_country=filter_country,
     )
     return {"ok": True, "items": items, "total": total}
 
@@ -550,6 +554,7 @@ def api_registered_emails(
     filter_extract: str = "",
     filter_oauth: str = "",
     filter_domain: str = "",
+    filter_country: str = "",
 ):
     """返回当前过滤条件下的所有账号邮箱列表（用于批量检测未检/全检）。"""
     query_str = (q or search).strip()
@@ -561,6 +566,7 @@ def api_registered_emails(
         filter_extract=filter_extract,
         filter_oauth=filter_oauth,
         filter_domain=filter_domain,
+        filter_country=filter_country,
     )
     return {"ok": True, "emails": emails, "total": len(emails)}
 
@@ -571,6 +577,14 @@ def api_registered_domains():
     """获取所有已注册账号的邮箱后缀域名分布统计。"""
     domains = db.get_registered_domains()
     return {"ok": True, "domains": domains}
+
+
+@app.get("/api/registered/countries")
+@app.get("/api/registered_countries")
+def api_registered_countries():
+    """获取所有已注册账号的出口国家代码及分布统计。"""
+    countries = db.get_registered_countries()
+    return {"ok": True, "countries": countries}
 
 
 @app.get("/api/registered/{email}")
@@ -644,15 +658,27 @@ def api_export_registered(req: ExportRegisteredReq):
     else:
         raise HTTPException(400, "需要 emails 或 all=true")
 
+    filename = fmt.filename
+    mime = fmt.mime
+    if req.format == "cpa_json":
+        if len(rows) == 1 and rows[0].get("email"):
+            filename = f"{rows[0]['email']}.json"
+            mime = "application/json; charset=utf-8"
+        else:
+            filename = "cpa_auth_files.zip"
+            mime = "application/zip"
+    elif req.format == "session_json" and len(rows) == 1 and rows[0].get("email"):
+        filename = f"{rows[0]['email']}_session.json"
+
     # 不跳行：勾了几个号就几行 / 几个文件，字段为空也照样出。
     # 手动导出**不做 refresh_token 刷新、不因为缺 rt 拦截**，这是和自动推送的区别。
     base = {
         "ok": True,
         "count": len(rows),
-        "filename": fmt.filename,
+        "filename": filename,
         "label": fmt.label,
         "mode": fmt.mode,
-        "mime": fmt.mime,
+        "mime": mime,
         # 这一批导出的 email 原样带回去 —— 前端「下载并删除」照着它删，删得准。
         # ⚠️ 必须由后端给：`all=true` 时前端手里只有当前页那 20 行，
         #    自己凑列表会漏删；而用 all/status 那种"全清"接口去删号池，
@@ -1218,52 +1244,68 @@ def api_fetch_mail_otp(email: str, req: Optional[FetchMailOtpReq] = None):
 
     recent_mails = []
     otp_code = None
-
-    try:
-        otp_code = provider.peek_otp(email_clean, wait=2.0)
-    except Exception:
-        pass
+    t0 = time.time()
+    used_protocol = "imap"
 
     try:
         if hasattr(provider, "_get_mails"):
+            if getattr(provider, "client_id", None) and getattr(provider, "refresh_token", None):
+                used_protocol = "graph"
             raw_mails = provider._get_mails(email_clean)
-            for m in raw_mails[:15]:
-                raw_text = str(m.get("raw") or m.get("content") or m.get("text") or m.get("html") or "")
-                c = extract_otp(raw_text) or extract_otp(str(m.get("subject") or ""))
-                if not otp_code and c:
+            for m in raw_mails:
+                raw_text = str(m.get("content") or m.get("raw") or m.get("text") or m.get("html") or "")
+                subject_text = str(m.get("subject") or "(无主题)")
+                from_text = str(m.get("from") or m.get("sender") or m.get("source") or "OpenAI")
+                c = extract_otp(raw_text) or extract_otp(subject_text)
+                # 优先提取来自 OpenAI / ChatGPT 的最新验证码
+                if c and not otp_code:
                     otp_code = c
+                clean_snippet = re.sub(r"<[^>]+>", " ", raw_text)
+                clean_snippet = re.sub(r"\s+", " ", clean_snippet).strip()
                 recent_mails.append({
                     "id": str(m.get("id") or ""),
-                    "subject": str(m.get("subject") or "(无主题)"),
-                    "from": str(m.get("from") or m.get("sender") or m.get("source") or "OpenAI"),
-                    "date": str(m.get("created_at") or m.get("date") or m.get("date_str") or ""),
+                    "subject": subject_text,
+                    "from": from_text,
+                    "date": str(m.get("date") or m.get("created_at") or m.get("date_str") or ""),
                     "otp": c or "",
-                    "snippet": (str(m.get("subject") or "") + " " + raw_text)[:200].strip(),
+                    "snippet": clean_snippet[:350],
+                    "content": raw_text,
                 })
         elif hasattr(provider, "_load"):
             raw_mails = provider._load()
-            for m in raw_mails[:15]:
-                c = m.get("otp") or extract_otp(m.get("body", ""))
-                if not otp_code and c:
+            for m in raw_mails:
+                body_text = str(m.get("body") or m.get("raw") or "")
+                subject_text = str(m.get("subject") or "(无主题)")
+                from_text = str(m.get("sender") or "OpenAI")
+                c = m.get("otp") or extract_otp(body_text) or extract_otp(subject_text)
+                if c and not otp_code:
                     otp_code = c
+                clean_snippet = re.sub(r"<[^>]+>", " ", body_text)
+                clean_snippet = re.sub(r"\s+", " ", clean_snippet).strip()
                 recent_mails.append({
                     "id": str(m.get("uid") or ""),
-                    "subject": str(m.get("subject") or "(无主题)"),
-                    "from": str(m.get("sender") or "OpenAI"),
-                    "date": str(m.get("date_str") or ""),
+                    "subject": subject_text,
+                    "from": from_text,
+                    "date": str(m.get("date_str") or m.get("date") or ""),
                     "otp": c or "",
-                    "snippet": str(m.get("body") or "")[:200].strip(),
+                    "snippet": clean_snippet[:350],
+                    "content": body_text,
                 })
     except Exception as e:
         logger.warning(f"[fetch_otp] 拉取邮件列表异常: {e}")
+
+    elapsed_s = round(time.time() - t0, 2)
 
     return {
         "ok": True,
         "email": email_clean,
         "provider": provider.kind,
+        "protocol": used_protocol,
         "otp": otp_code,
         "found": bool(otp_code),
         "messages": recent_mails,
+        "count": len(recent_mails),
+        "elapsed_s": elapsed_s,
     }
 
 

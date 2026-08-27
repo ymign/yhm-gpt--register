@@ -47,27 +47,73 @@ def _s(row: dict, key: str) -> str:
     return str(v).strip()
 
 
+def get_or_build_cpa_token_data(r: dict) -> dict:
+    """提取或生成标准的 CPA (CLI Proxy API) 单文件认证格式（非数组，单个 JSON 对象）。"""
+    import json
+    from datetime import datetime, timezone, timedelta
+    from .exporter import _decode_jwt_payload, _get_auth, _build_compat_id_token
+
+    email = _s(r, "email")
+    at = _s(r, "access_token")
+    rt = _s(r, "refresh_token")
+    it = _s(r, "id_token")
+
+    if not it and at:
+        try:
+            it = _build_compat_id_token(access_token=at, email=email)
+        except Exception:
+            it = ""
+
+    payload = _decode_jwt_payload(at) if at else {}
+    auth_info = _get_auth(payload)
+    account_id = str(auth_info.get("chatgpt_account_id") or "").strip()
+
+    tz_cn = timezone(timedelta(hours=8))
+    expired_str = ""
+    exp = payload.get("exp")
+    if isinstance(exp, int) and exp > 0:
+        expired_str = datetime.fromtimestamp(exp, tz=tz_cn).strftime("%Y-%m-%dT%H:%M:%S+08:00")
+    last_refresh = datetime.now(tz=tz_cn).strftime("%Y-%m-%dT%H:%M:%S+08:00")
+
+    return {
+        "type": "codex",
+        "email": email,
+        "expired": expired_str,
+        "id_token": it,
+        "account_id": account_id,
+        "access_token": at,
+        "last_refresh": last_refresh,
+        "refresh_token": rt,
+    }
+
+
 def _render_cpa_json_all(rows: list[dict]) -> bytes:
     import json
-    from datetime import datetime, timezone
-    items = []
-    for r in rows or []:
-        email = _s(r, "email")
-        at = _s(r, "access_token")
-        rt = _s(r, "refresh_token")
-        it = _s(r, "id_token")
-        items.append({
-            "type": "codex",
-            "email": email,
-            "access_token": at,
-            "refresh_token": rt,
-            "id_token": it,
-            "account_id": "",
-            "plan_type": "free",
-            "last_refresh": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "expired": "",
-        })
-    return json.dumps(items, ensure_ascii=False, indent=2).encode("utf-8")
+    import io
+    import zipfile
+
+    if not rows:
+        return b"{}"
+
+    # 单个账号：直接输出标准单个 JSON 对象（CPAMC 认证文件管理直接可读，不会报 array unmarshal 错误）
+    if len(rows) == 1:
+        doc = get_or_build_cpa_token_data(rows[0])
+        return json.dumps(doc, ensure_ascii=False, indent=2).encode("utf-8")
+
+    # 多个账号：自动打包为 ZIP（内含每个账号独立的 {email}.json 认证文件），CPAMC 可直接一键批量上传或解压拖入
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for r in rows:
+            em = _s(r, "email") or f"account_{len(zf.namelist()) + 1}"
+            doc = get_or_build_cpa_token_data(r)
+            zf.writestr(f"{em}.json", json.dumps(doc, ensure_ascii=False, indent=2))
+    return buf.getvalue()
+
+
+def _render_cpa_json_single_line(r: dict) -> str:
+    import json
+    data = get_or_build_cpa_token_data(r)
+    return json.dumps(data, ensure_ascii=False)
 
 
 def _render_sub2api_json_all(rows: list[dict]) -> bytes:
@@ -216,19 +262,27 @@ FORMATS: list[ExportFormat] = [
         ),
         note="取件链接含 token，等同收件权限，妥善保管",
     ),
-    # 📦 面板 JSON 格式 (支持直接下载为 CPA / Sub2API 标准 JSON 文件)
+    # 📦 面板 JSON 格式 (支持直接下载为 CPA / Sub2API 标准 JSON 认证文件)
     ExportFormat(
         id="cpa_json",
-        label="📦 CPA JSON (Codex凭证)",
-        filename="cpa_accounts.json",
+        label="📦 CPA 认证文件 (.json 单号 / 批量 .zip 包 · CPAMC专用)",
+        filename="cpa_auth_files.zip",
         mode="download",
-        mime="application/json; charset=utf-8",
+        mime="application/zip",
         render_all=_render_cpa_json_all,
-        note="Codex OAuth 格式，适用于各类 CPA 面板",
+        note="单号直接下载为 {email}.json；多号为 zip 包（解压后可全选所有 .json 批量拖入 CPAMC）",
+    ),
+    ExportFormat(
+        id="cpa_json_lines",
+        label="📦 CPA JSONL (一行一条 JSON 文本 · 脚本专用)",
+        filename="cpa_accounts.jsonl",
+        mime="application/json; charset=utf-8",
+        render=_render_cpa_json_single_line,
+        note="每行一个独立 JSON 字符串，供程序脚本解析（请勿直接将多行文件上传到 CPAMC 网页）",
     ),
     ExportFormat(
         id="sub2api_json",
-        label="📦 Sub2API JSON (账号导入)",
+        label="📦 Sub2API JSON (.json 账号导入)",
         filename="sub2api_accounts.json",
         mode="download",
         mime="application/json; charset=utf-8",
@@ -238,7 +292,7 @@ FORMATS: list[ExportFormat] = [
     # 🌐 ChatGPT 官方完整 Session JSON (支持批量导出与复制)
     ExportFormat(
         id="session_json",
-        label="🌐 ChatGPT Session JSON (完整数组文件)",
+        label="🌐 ChatGPT Session JSON (完整 .json 文件)",
         filename="chatgpt_sessions.json",
         mode="download",
         mime="application/json; charset=utf-8",
@@ -247,8 +301,9 @@ FORMATS: list[ExportFormat] = [
     ),
     ExportFormat(
         id="session_json_lines",
-        label="🌐 ChatGPT Session JSON (一行一条)",
-        filename="chatgpt_sessions_lines.txt",
+        label="🌐 ChatGPT Session JSON (.json 文件 · 一行一条)",
+        filename="chatgpt_sessions.json",
+        mime="application/json; charset=utf-8",
         render=_render_session_json_single_line,
         note="每行一个压缩完整的 Session JSON",
     ),

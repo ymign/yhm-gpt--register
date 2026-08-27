@@ -347,6 +347,7 @@ def execute_token_refresh_flow(
             "password": account_info.get("password") or "",
             "totp_secret": account_info.get("totp_secret") or "",
         },
+        on_password=lambda flow_inst, em, new_pwd: db.update_registered_manual(em, password=new_pwd),
     )
 
     try:

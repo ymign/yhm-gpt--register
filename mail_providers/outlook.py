@@ -781,37 +781,59 @@ class OutlookMailProvider(MailProvider):
         if not has_oauth and not has_password:
             return []
 
-        # ── 1. Graph API 优先 (HTTPS 443，速度快且不受 IMAP 端口封锁影响) ──
+        # ── 1. Graph API 优先 (HTTPS 443，单次请求毫秒级响应，不受 IMAP 端口封锁影响) ──
         if has_oauth:
             try:
-                data = _request_access_token(self.refresh_token, self.client_id, GRAPH_SCOPE)
+                data = _request_access_token(self.refresh_token, self.client_id, GRAPH_SCOPE, timeout=6.0)
                 token = data.get("access_token")
                 if token:
-                    seen_ids = set()
-                    for folder in GRAPH_FOLDERS:
-                        try:
-                            msgs = _graph_list_messages(token, folder, timeout=6.0)
-                            for m in msgs:
-                                msg_id = str(m.get("id") or "")
-                                if msg_id and msg_id in seen_ids:
-                                    continue
-                                if msg_id:
-                                    seen_ids.add(msg_id)
-                                body_obj = m.get("body") or {}
-                                body_content = body_obj.get("content", "") or m.get("bodyPreview", "") or ""
-                                from_obj = m.get("from") or {}
-                                from_addr = (from_obj.get("emailAddress") or {}).get("address", "") or (from_obj.get("emailAddress") or {}).get("name", "OpenAI")
-                                received = m.get("receivedDateTime", "")
-                                results.append({
-                                    "id": msg_id,
-                                    "subject": str(m.get("subject") or "(无主题)"),
-                                    "from": str(from_addr),
-                                    "date": str(received),
-                                    "content": body_content,
-                                    "raw": body_content,
-                                })
-                        except Exception as e:
-                            logger.debug(f"[outlook-graph] 拉取文件夹 {folder} 异常: {e}")
+                    msgs = []
+                    # 优先全局获取全部最新 50 封邮件 (覆盖收件箱与垃圾箱，单次请求仅需 ~300ms)
+                    try:
+                        params = urllib.parse.urlencode({
+                            "$top": "50",
+                            "$orderby": "receivedDateTime DESC",
+                            "$select": "id,subject,bodyPreview,body,receivedDateTime,from,toRecipients,isRead",
+                        })
+                        url = f"{GRAPH_BASE}/me/messages?{params}"
+                        req = urllib.request.Request(url, headers={
+                            "Authorization": f"Bearer {token}",
+                            "Accept": "application/json",
+                        })
+                        resp = urllib.request.urlopen(req, timeout=6.0)
+                        msgs = (json.loads(resp.read().decode("utf-8")) or {}).get("value") or []
+                    except Exception as e:
+                        logger.debug(f"[outlook-graph] 全局拉取 messages 异常: {e}，回退到按文件夹扫描")
+                        msgs = []
+
+                    if not msgs:
+                        seen_ids = set()
+                        for folder in GRAPH_FOLDERS:
+                            try:
+                                folder_msgs = _graph_list_messages(token, folder, timeout=5.0)
+                                for m in folder_msgs:
+                                    msg_id = str(m.get("id") or "")
+                                    if msg_id and msg_id not in seen_ids:
+                                        seen_ids.add(msg_id)
+                                        msgs.append(m)
+                            except Exception as e:
+                                logger.debug(f"[outlook-graph] 拉取文件夹 {folder} 异常: {e}")
+
+                    for m in msgs:
+                        msg_id = str(m.get("id") or "")
+                        body_obj = m.get("body") or {}
+                        body_content = body_obj.get("content", "") or m.get("bodyPreview", "") or ""
+                        from_obj = m.get("from") or {}
+                        from_addr = (from_obj.get("emailAddress") or {}).get("address", "") or (from_obj.get("emailAddress") or {}).get("name", "OpenAI")
+                        received = m.get("receivedDateTime", "")
+                        results.append({
+                            "id": msg_id,
+                            "subject": str(m.get("subject") or "(无主题)"),
+                            "from": str(from_addr),
+                            "date": str(received),
+                            "content": body_content,
+                            "raw": body_content,
+                        })
                     if results:
                         return results
             except Exception as e:
@@ -839,14 +861,14 @@ class OutlookMailProvider(MailProvider):
                     else:
                         continue
 
-                    for folder in ["INBOX", "Junk", "Junk Email"]:
+                    for folder in ["INBOX", "Junk", "Junk Email", "Archive"]:
                         try:
                             status, _ = M.select(f'"{folder}"', readonly=True)
                             if status != "OK":
                                 continue
                             typ, data = M.search(None, "ALL")
                             ids = data[0].split() if data and data[0] else []
-                            for mid in reversed(ids[-8:]):
+                            for mid in reversed(ids[-50:]):
                                 typ, raw = M.fetch(mid, "(BODY.PEEK[])")
                                 if not raw or not raw[0] or len(raw[0]) < 2:
                                     continue

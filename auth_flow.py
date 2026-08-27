@@ -4045,7 +4045,59 @@ class AuthFlow:
                     # 命中已有账号 password 路径：标记之，让 kickoff_otp_delivery 走 resend
                     # 分支（避免 send_passwordless_otp 把 state 弄坏 → wrong_email_otp_code）
                     self._is_existing_account = True
-                    login_resp = self.login_password_verify(login_password)
+                    try:
+                        login_resp = self.login_password_verify(login_password)
+                    except Exception as e_pwd:
+                        err_s = str(e_pwd).lower()
+                        if "deactivated" in err_s or "deleted" in err_s or "403" in err_s or "封禁" in err_s:
+                            raise
+                        if mail_provider and not getattr(mail_provider, "exhausted", False):
+                            logger.warning(f"已知密码登录失败 ({e_pwd})，正在自动切换为官方重置密码自愈流程...")
+                            t_sent = time.time()
+                            self.send_password_reset_otp(referer=continue_url or "https://auth.openai.com/log-in/password")
+                            logger.info(f"📨 重置验证码已发送至邮箱，正在收取 OTP (timeout={otp_timeout}s)...")
+                            otp_code = mail_provider.wait_for_otp(
+                                email,
+                                timeout=otp_timeout,
+                                issued_after=t_sent - 10,
+                            )
+                            logger.info(f"✅ 成功获取重置验证码: {otp_code}，正在进行官方核验...")
+                            otp_resp = self.verify_otp(otp_code)
+                            otp_page_type = (self._extract_page_type(otp_resp) or "").lower()
+                            otp_continue = self._normalize_continue_url(
+                                self._extract_continue_url_from_step(otp_resp)
+                            )
+                            if self._is_mfa_challenge_state(otp_page_type, otp_continue):
+                                totp_secret = (self.result.totp_secret or "").strip()
+                                if not totp_secret and self._account_callback:
+                                    try:
+                                        cred = self._account_callback(email)
+                                        if cred and cred.get("totp_secret"):
+                                            totp_secret = cred["totp_secret"]
+                                            self.result.totp_secret = totp_secret
+                                    except Exception as e_cred:
+                                        logger.warning(f"account_callback 加载 2FA 凭证异常: {e_cred}")
+                                if not totp_secret:
+                                    raise RuntimeError(f"原号主已开启 2FA 两步验证 (mfa-challenge)，缺少 TOTP 密钥无法登录: {email}")
+                                challenge_id = otp_continue.split("/")[-1] if "/mfa-challenge/" in otp_continue else ""
+                                totp_code = _totp_now(totp_secret)
+                                logger.info(f"提交 TOTP 码进行 2FA 验证（challenge_id={challenge_id[:16]}...）")
+                                self.submit_mfa_totp(totp_code, challenge_id)
+
+                            new_password = self._random_password(16)
+                            logger.info(f"🔑 正在为账号向官方提交新密码...")
+                            self.reset_password_submit(new_password)
+                            self.result.password = new_password
+                            if self._on_password:
+                                try:
+                                    self._on_password(self, email, new_password)
+                                except Exception:
+                                    pass
+                            logger.info(f"🎉 官方新密码设置成功 ({new_password})，正在使用新密码自动完成登录...")
+                            login_resp = self.login_password_verify(new_password)
+                        else:
+                            raise e_pwd
+
                     page_type = (self._extract_page_type(login_resp) or "").lower()
                     continue_url = self._normalize_continue_url(
                         self._extract_continue_url_from_step(login_resp)
