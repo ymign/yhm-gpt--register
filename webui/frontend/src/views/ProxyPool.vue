@@ -12,7 +12,7 @@ import {
   DocumentAdd,
 } from '@element-plus/icons-vue'
 import { useProxyStore, isValidProxy, proxyScheme } from '@/stores/proxy'
-import { testProxies } from '@/api/proxy'
+import { testProxies, getProxyHealth, getProxyHealthOverview, setProxyBlacklist } from '@/api/proxy'
 import { copyText } from '@/api/request'
 
 const proxyStore = useProxyStore()
@@ -22,15 +22,148 @@ const draft = ref('')
 const testResults = ref({})
 const testingAll = ref(false)
 
+// ── 代理健康度（死号反哺）：号注册成功计 total，事后验死计 dead ──
+// 动态住宅代理一号一个 session，健康度按「归一化模板 × 国家」聚合（后端算），
+// 前端把代理池条目同样归一化后 join。
+const proxyHealth = ref({}) // template -> {total, dead, blacklisted, countries: []}
+const healthLoading = ref(false)
+const overview = ref(null) // 总览面板数据
+const overviewLoading = ref(false)
+const showOverview = ref(true)
+
+// 与后端 proxy_util.normalize_proxy_key 同规则：抹掉 session/sid 段得到模板
+function normalizeProxyKey(p) {
+  p = String(p || '').trim()
+  if (!p) return ''
+  const m = p.match(/^([a-z0-9+.-]+:\/\/)?([^@]*)@?(.+)$/i)
+  if (!m) return p
+  let [, scheme = 'http://', cred = '', host = ''] = m
+  let [username = '', password = ''] = cred.split(':')
+  username = username.replace(/(-sid-|-session-|_session-)[a-z0-9]+/gi, '$1*')
+  const pm = password.match(/^(.+)-([A-Za-z]{2})-(\d+)-(\d+[A-Za-z]+)$/)
+  if (pm) password = `${pm[1]}-${pm[2]}-*-${pm[4]}`
+  if (!scheme) scheme = 'http://'
+  return username || password ? `${scheme}${username}:${password}@${host}` : `${scheme}${host}`
+}
+
+async function loadHealth() {
+  healthLoading.value = true
+  overviewLoading.value = true
+  try {
+    const [r, ov] = await Promise.all([getProxyHealth(), getProxyHealthOverview()])
+    const map = {}
+    for (const h of r.items || []) map[h.template] = h
+    proxyHealth.value = map
+    overview.value = ov
+  } catch (_) {}
+  finally {
+    healthLoading.value = false
+    overviewLoading.value = false
+  }
+}
+loadHealth()
+
+function fmtAgo(ts) {
+  if (!ts) return ''
+  const s = Math.floor(Date.now() / 1000 - ts)
+  if (s < 60) return `${s}秒前`
+  if (s < 3600) return `${Math.floor(s / 60)}分钟前`
+  if (s < 86400) return `${Math.floor(s / 3600)}小时前`
+  return `${Math.floor(s / 86400)}天前`
+}
+
+function pct(rate) {
+  return (rate * 100).toFixed(rate * 100 >= 10 ? 0 : 1) + '%'
+}
+
+function maskProxy(p) {
+  if (!p) return '（老号无存档）'
+  if (p.length <= 30) return p
+  return p.slice(0, 24) + '…' + p.slice(-6)
+}
+
+// 分国家明细文案（表格 tooltip 用）
+function countryDetail(h) {
+  if (!h || !h.countries?.length) return '暂无分国家数据'
+  return h.countries
+    .map((c) => `${c.country || '?'}: ${c.dead}/${c.total}${c.blacklisted ? ' 🚫' : ''}`)
+    .join('\n')
+}
+
 const rows = computed(() =>
   list.value.map((p, i) => ({
     index: i + 1,
     proxy: p,
     valid: isValidProxy(p),
     result: testResults.value[p] || null,
+    health: proxyHealth.value[normalizeProxyKey(p)] || null,
   })),
 )
 const invalidCount = computed(() => rows.value.filter((r) => !r.valid).length)
+const blacklistedCount = computed(() => rows.value.filter((r) => r.health?.blacklisted).length)
+
+// 死亡率档位：>=25% 红（该拉黑了）、>=10% 黄（警惕）、有死亡但 <10% 灰、没死绿
+function healthClass(h) {
+  if (!h || !h.total) return 'health-none'
+  const rate = h.dead / h.total
+  if (h.blacklisted) return 'health-black'
+  if (rate >= 0.25) return 'health-bad'
+  if (rate >= 0.1) return 'health-warn'
+  return 'health-ok'
+}
+
+function healthText(h) {
+  if (!h) return '无记录'
+  if (!h.total) return '无记录'
+  return `${h.dead}/${h.total}`
+}
+
+async function toggleBlacklist(row) {
+  const on = !row.health?.blacklisted
+  const label = on ? '拉黑' : '取消拉黑'
+  try {
+    if (on && !(await ElMessageBox.confirm(
+      `确定拉黑整个代理模板？\n\n${row.proxy}\n\n动态代理一号一 IP，按「模板×国家」聚合健康度。整模板拉黑后全自动批量立即跳过该代理（正在跑的号不受影响）；只是某国出口脏的话建议在总览面板单独拉黑该国。`,
+      '拉黑代理模板', { type: 'warning', confirmButtonText: '拉黑', cancelButtonText: '取消' },
+    ))) return
+    await setProxyBlacklist(row.proxy, '', on)
+    await loadHealth()
+    ElMessage.success(`已${label}`)
+  } catch (e) {
+    ElMessage.error(`${label}失败: ` + e.message)
+  }
+}
+
+// 面板「按国家死亡率」chip 点击：拉黑 / 取消拉黑该国家出口（所有模板）
+async function toggleCountryBlacklist(c) {
+  const on = !c.blacklisted
+  try {
+    if (on && !(await ElMessageBox.confirm(
+      `确定拉黑 ${c.country} 出口？\n\n该出口累计注册 ${c.total} 个号死了 ${c.dead} 个（死亡率 ${pct(c.rate)}）。\n拉黑后注册时目标国家命中它会自动换国（所有代理模板），其它国家出口不受影响。`,
+      `拉黑 ${c.country} 出口`, { type: 'warning', confirmButtonText: '拉黑', cancelButtonText: '取消' },
+    ))) return
+    await setProxyBlacklist('', c.country, on)
+    await loadHealth()
+    ElMessage.success(`已${on ? '拉黑' : '恢复'} ${c.country} 出口`)
+  } catch (e) {
+    ElMessage.error('操作失败: ' + e.message)
+  }
+}
+
+// 问题出口榜快捷拉黑（组合级：模板×国家）
+async function blacklistCombo(w) {
+  try {
+    if (!(await ElMessageBox.confirm(
+      `确定拉黑 ${w.country} 出口组合？\n\n${w.template}\n\n死亡率 ${w.dead}/${w.total}。拉黑后注册时自动换国。`,
+      `拉黑 ${w.country} 出口`, { type: 'warning', confirmButtonText: '拉黑', cancelButtonText: '取消' },
+    ))) return
+    await setProxyBlacklist(w.template, w.country, true)
+    await loadHealth()
+    ElMessage.success(`已拉黑 ${w.country} 出口`)
+  } catch (e) {
+    ElMessage.error('拉黑失败: ' + e.message)
+  }
+}
 
 async function runTest(targets) {
   if (!targets.length) return
@@ -114,7 +247,105 @@ function editInDraft() {
         </div>
         <div class="header-right">
           <span class="header-badge">共 {{ count }} 个代理节点</span>
+          <span v-if="blacklistedCount" class="header-badge badge-err">🚫 {{ blacklistedCount }} 个已拉黑</span>
           <span v-if="invalidCount" class="header-badge badge-err">{{ invalidCount }} 个异常</span>
+        </div>
+      </div>
+
+      <!-- ── 代理健康度总览面板（死号反哺数据一览） ── -->
+      <div class="health-overview-panel">
+        <div class="overview-header" @click="showOverview = !showOverview">
+          <div class="overview-title">
+            <span>📊 代理健康度总览</span>
+            <span class="overview-sub">死号反哺 · 脏 IP 自动出局</span>
+          </div>
+          <div class="overview-actions">
+            <el-button size="small" text :loading="overviewLoading" @click.stop="loadHealth">
+              <el-icon><Refresh /></el-icon>刷新
+            </el-button>
+            <span class="overview-toggle">{{ showOverview ? '收起 ▲' : '展开 ▼' }}</span>
+          </div>
+        </div>
+
+        <div v-if="showOverview" v-loading="overviewLoading" class="overview-body">
+          <!-- 统计卡横排 -->
+          <div class="stat-cards">
+            <div class="stat-card">
+              <div class="stat-num">{{ overview?.summary?.tracked ?? 0 }}</div>
+              <div class="stat-label">出口组合</div>
+            </div>
+            <div class="stat-card" :class="{ 'stat-danger': overview?.summary?.blacklisted > 0 }">
+              <div class="stat-num">{{ overview?.summary?.blacklisted ?? 0 }}</div>
+              <div class="stat-label">🚫 已拉黑组合</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-num">{{ overview?.summary?.total_registered ?? 0 }}</div>
+              <div class="stat-label">注册号数</div>
+            </div>
+            <div class="stat-card" :class="{ 'stat-danger': overview?.summary?.total_dead > 0 }">
+              <div class="stat-num">{{ overview?.summary?.total_dead ?? 0 }}</div>
+              <div class="stat-label">验死号数</div>
+            </div>
+            <div class="stat-card" :class="overview?.summary?.death_rate >= 0.1 ? 'stat-danger' : overview?.summary?.death_rate >= 0.05 ? 'stat-warn' : 'stat-ok'">
+              <div class="stat-num">{{ pct(overview?.summary?.death_rate || 0) }}</div>
+              <div class="stat-label">总体死亡率</div>
+            </div>
+            <div class="stat-card" :class="{ 'stat-warn': (overview?.worst?.length || 0) > 0 }">
+              <div class="stat-num">{{ overview?.worst?.length ?? 0 }}</div>
+              <div class="stat-label">问题代理</div>
+            </div>
+          </div>
+
+          <!-- 按国家死亡率条（核心视角：哪国出口在杀号） -->
+          <div v-if="overview?.by_country?.length" class="country-bar">
+            <span class="country-bar-title">按国家死亡率：</span>
+            <span
+              v-for="c in overview.by_country"
+              :key="c.country"
+              class="country-chip"
+              :class="c.blacklisted ? 'chip-black' : c.rate >= 0.25 ? 'chip-bad' : c.rate >= 0.1 ? 'chip-warn' : 'chip-ok'"
+              :title="`${c.country}：注册 ${c.total} 死 ${c.dead}${c.blacklisted ? '（已拉黑，注册自动换国）' : '（点击拉黑该出口）'}`"
+              @click="toggleCountryBlacklist(c)"
+            >
+              {{ c.country }} {{ pct(c.rate) }} <small>{{ c.dead }}/{{ c.total }}</small>{{ c.blacklisted ? ' 🚫' : '' }}
+            </span>
+          </div>
+
+          <!-- 双栏：问题出口榜 + 最近死亡号 -->
+          <div class="overview-columns">
+            <div class="overview-col">
+              <div class="col-title">⚠️ 问题出口 TOP（模板×国家，按死亡率）</div>
+              <div v-if="!overview?.worst?.length" class="col-empty">暂无死亡记录，代理池很干净 🎉</div>
+              <div v-for="w in overview?.worst || []" :key="w.template + w.country" class="worst-row">
+                <span class="country-badge">{{ w.country || '?' }}</span>
+                <span class="mono worst-proxy" :title="w.template">{{ maskProxy(w.template) }}</span>
+                <span class="health-pill" :class="w.blacklisted ? 'health-black' : (w.dead / w.total >= 0.25 ? 'health-bad' : 'health-warn')">
+                  {{ w.dead }}/{{ w.total }}
+                </span>
+                <span v-if="w.blacklisted" class="worst-flag">🚫{{ w.blacklist_reason }}</span>
+                <el-button
+                  v-else
+                  size="small" text type="danger"
+                  class="worst-bl-btn"
+                  @click="blacklistCombo(w)"
+                >拉黑</el-button>
+                <span class="worst-time">{{ fmtAgo(w.last_dead) }}</span>
+              </div>
+            </div>
+            <div class="overview-col">
+              <div class="col-title">💀 最近验死号（banned / 凭证失效）</div>
+              <div v-if="!overview?.recent_dead?.length" class="col-empty">暂无记录 —— 新注册的号验活后这里会出现</div>
+              <div v-for="d in overview?.recent_dead || []" :key="d.email" class="dead-row">
+                <span class="mono dead-email">{{ d.email }}</span>
+                <el-tag :type="d.status === 'banned' ? 'danger' : 'warning'" size="small" effect="plain">
+                  {{ d.status === 'banned' ? '封号' : '失效' }}
+                </el-tag>
+                <span class="dead-country">{{ d.country || '—' }}</span>
+                <span class="dead-proxy" :title="d.proxy">{{ d.proxy ? maskProxy(d.proxy) : '老号无存档' }}</span>
+                <span class="worst-time">{{ fmtAgo(d.ts) }}</span>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -224,7 +455,19 @@ function editInDraft() {
                   </el-tooltip>
                 </template>
               </el-table-column>
-              <el-table-column label="操作" width="120" align="center" fixed="right">
+              <el-table-column label="健康度" width="120" align="center">
+                <template #default="{ row }">
+                  <el-tooltip
+                    :content="`该代理注册成功 ${row.health?.total || 0} 个号，其中 ${row.health?.dead || 0} 个事后被验死（banned/凭证失效）${row.health?.blacklisted ? '，已拉黑：批量注册自动跳过' : ''}`"
+                    placement="top"
+                  >
+                    <span class="health-pill" :class="healthClass(row.health)">
+                      {{ row.health?.blacklisted ? '🚫 ' : '' }}{{ healthText(row.health) }}
+                    </span>
+                  </el-tooltip>
+                </template>
+              </el-table-column>
+              <el-table-column label="操作" width="170" align="center" fixed="right">
                 <template #default="{ row }">
                   <el-button
                     size="small"
@@ -234,6 +477,14 @@ function editInDraft() {
                     @click="testOne(row.proxy)"
                   >
                     测试
+                  </el-button>
+                  <el-button
+                    size="small"
+                    text
+                    :type="row.health?.blacklisted ? 'success' : 'warning'"
+                    @click="toggleBlacklist(row)"
+                  >
+                    {{ row.health?.blacklisted ? '恢复' : '拉黑' }}
                   </el-button>
                   <el-button
                     size="small"
@@ -263,6 +514,215 @@ function editInDraft() {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+/* 健康度徽章：死/总。绿=没死号，灰=无记录，黄=死亡率≥10%，红=≥25%该拉黑，黑=已拉黑 */
+.health-pill {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 4px 7px;
+  border-radius: 5px;
+  white-space: nowrap;
+  cursor: default;
+}
+.health-ok    { color: #34d399; background: rgba(52, 211, 153, 0.12); }
+.health-none  { color: #94a3b8; background: rgba(148, 163, 184, 0.12); }
+.health-warn  { color: #fbbf24; background: rgba(251, 191, 36, 0.14); }
+.health-bad   { color: #f87171; background: rgba(248, 113, 113, 0.14); }
+.health-black { color: #f87171; background: rgba(248, 113, 113, 0.2); border: 1px dashed rgba(248, 113, 113, 0.5); }
+
+/* ── 健康度总览面板 ── */
+.health-overview-panel {
+  flex: none;
+  margin: 8px 10px 0;
+  border: 1px solid rgba(120, 130, 150, 0.18);
+  border-radius: 10px;
+  background: rgba(128, 140, 160, 0.05);
+  overflow: hidden;
+}
+.overview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  cursor: pointer;
+  user-select: none;
+}
+.overview-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 700;
+}
+.overview-sub {
+  font-size: 11px;
+  font-weight: 400;
+  color: #94a3b8;
+}
+.overview-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.overview-toggle {
+  font-size: 11px;
+  color: #94a3b8;
+}
+.overview-body {
+  padding: 0 12px 12px;
+}
+.stat-cards {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.stat-card {
+  text-align: center;
+  padding: 8px 4px;
+  border-radius: 8px;
+  background: rgba(128, 140, 160, 0.08);
+  border: 1px solid rgba(120, 130, 150, 0.12);
+}
+.stat-num {
+  font-size: 20px;
+  font-weight: 800;
+  line-height: 1.2;
+}
+.stat-label {
+  font-size: 11px;
+  color: #94a3b8;
+  margin-top: 2px;
+}
+.stat-ok      { border-color: rgba(52, 211, 153, 0.3); }
+.stat-ok .stat-num    { color: #34d399; }
+.stat-warn    { border-color: rgba(251, 191, 36, 0.35); }
+.stat-warn .stat-num  { color: #fbbf24; }
+.stat-danger  { border-color: rgba(248, 113, 113, 0.4); }
+.stat-danger .stat-num { color: #f87171; }
+
+.overview-columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+/* 按国家死亡率 chip 条 */
+.country-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.country-bar-title {
+  font-size: 11.5px;
+  color: #94a3b8;
+}
+.country-chip {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 10px;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+.country-chip small {
+  font-weight: 500;
+  opacity: 0.75;
+}
+.chip-ok   { color: #34d399; background: rgba(52, 211, 153, 0.12); }
+.chip-warn { color: #fbbf24; background: rgba(251, 191, 36, 0.15); }
+.chip-bad  { color: #f87171; background: rgba(248, 113, 113, 0.15); }
+.chip-black { color: #f87171; background: rgba(248, 113, 113, 0.22); border: 1px dashed rgba(248, 113, 113, 0.5); }
+.country-badge {
+  flex: none;
+  font-size: 10.5px;
+  font-weight: 800;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(96, 165, 250, 0.15);
+  color: #60a5fa;
+}
+.worst-bl-btn {
+  padding: 2px 6px;
+  font-size: 10.5px;
+}
+.overview-col {
+  min-width: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(128, 140, 160, 0.06);
+}
+.col-title {
+  font-size: 12px;
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+.col-empty {
+  font-size: 11.5px;
+  color: #94a3b8;
+  padding: 6px 0;
+}
+.worst-row, .dead-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0;
+  font-size: 11.5px;
+  border-top: 1px dashed rgba(120, 130, 150, 0.14);
+}
+.worst-row:first-of-type, .dead-row:first-of-type {
+  border-top: none;
+}
+.worst-proxy {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+}
+.worst-flag {
+  color: #f87171;
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+.worst-time {
+  flex: none;
+  color: #94a3b8;
+  font-size: 10.5px;
+  margin-left: auto;
+}
+.dead-email {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+}
+.dead-country {
+  flex: none;
+  font-weight: 700;
+  font-size: 10.5px;
+}
+.dead-proxy {
+  flex: none;
+  max-width: 130px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #94a3b8;
+  font-size: 10.5px;
+}
+@media (max-width: 1100px) {
+  .stat-cards { grid-template-columns: repeat(3, 1fr); }
+  .overview-columns { grid-template-columns: 1fr; }
 }
 
 .macos-window-panel {

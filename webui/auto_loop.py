@@ -240,9 +240,32 @@ class AutoLoopController:
         self._broadcast("state", self._snapshot())
 
     def _proxy_for_worker(self, worker_id: int) -> str:
-        """按 worker_id 从代理池里挑一个代理。空池时回退到 options.proxy。"""
-        if self._proxy_pool:
-            return self._proxy_pool[worker_id % len(self._proxy_pool)]
+        """按 worker_id 从代理池里挑一个代理。空池时回退到 options.proxy。
+
+        整模板已被拉黑的代理条目（proxy_health 按模板×国家聚合，死亡率
+        超阈值 / 手动整模板拉黑）跳过；全池被拉黑时回退全量并告警 ——
+        宁可用脏代理也不能让 worker 没代理可用。
+        """
+        pool = self._proxy_pool
+        if pool:
+            try:
+                from . import db
+                from .proxy_util import normalize_proxy_key
+                bad_templates = db.get_blacklist()["templates"]
+            except Exception:
+                bad_templates = set()
+            if bad_templates:
+                usable = [
+                    p for p in pool
+                    if normalize_proxy_key(p) not in bad_templates
+                ]
+                if usable:
+                    return usable[worker_id % len(usable)]
+                logger.warning(
+                    f"[auto-loop] 代理池 {len(pool)} 个代理模板已全部被拉黑，回退使用全量池"
+                    "（建议尽快更换代理）"
+                )
+            return pool[worker_id % len(pool)]
         return self._options.get("proxy", "") or ""
 
     def _record_finish(self, ok: bool, category: str):
@@ -337,8 +360,8 @@ class AutoLoopController:
     def _worker_loop(self, worker_id: int):
         """单 worker 循环：claim → 跑 → 等结束 → 继续。"""
         idle_round = 0
-        proxy = self._proxy_for_worker(worker_id)
-        logger.info(f"[worker-{worker_id}] 启动 (proxy={proxy or '直连'})")
+        last_proxy = ""
+        logger.info(f"[worker-{worker_id}] 启动")
 
         while True:
             # 检查停止
@@ -400,7 +423,14 @@ class AutoLoopController:
                 continue
             idle_round = 0
 
-            # 给这个 run 注入 worker 自己的代理与邮箱来源
+            # 给这个 run 注入 worker 自己的代理与邮箱来源。
+            # 代理每轮重新取：池子稳定时 worker_id % len 结果不变（代理固定），
+            # 有代理被健康度拉黑时 usable 列表变化 → 该 worker 自动切到新代理，
+            # 不用等整批跑完重启。
+            proxy = self._proxy_for_worker(worker_id)
+            if proxy != last_proxy:
+                logger.info(f"[worker-{worker_id}] 使用代理: {proxy or '直连'}")
+                last_proxy = proxy
             run_options = dict(self._options)
             run_options["mail_source"] = mail_source
             if proxy:

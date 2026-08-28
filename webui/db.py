@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import sqlite3
 import sys
 import threading
@@ -234,6 +235,47 @@ def init_db():
     con.execute(
         "CREATE INDEX IF NOT EXISTS idx_oauth_feat_combo ON oauth_attempt_features(proxy_country, impersonate, sms_country, outcome)"
     )
+
+    # 代理健康度：按 (代理模板 × 出口国家) 聚合注册号数与验死数。
+    # 动态住宅代理一号一个 session（完整串每号都不同），所以键用抹掉 session
+    # 的归一化模板（网关+账号结构），配合出口国家 —— US 组合脏了不影响 JP。
+    # 死亡率超阈值自动拉黑该组合，注册选国家时跳过 —— 脏出口自动出局。
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS proxy_health (
+            template        TEXT NOT NULL,       -- 归一化代理模板（session 已抹掉）
+            country         TEXT NOT NULL DEFAULT '',  -- 出口国家码（大写）
+            total           INTEGER NOT NULL DEFAULT 0,  -- 该组合注册成功的号数
+            dead            INTEGER NOT NULL DEFAULT 0,  -- 其中事后验死数
+            last_used       REAL,                        -- 最后一次注册成功
+            last_dead       REAL,                        -- 最近一次验死
+            blacklisted     INTEGER NOT NULL DEFAULT 0,  -- 1=已拉黑
+            blacklisted_at  REAL,
+            blacklist_reason TEXT DEFAULT '',
+            PRIMARY KEY (template, country)
+        )
+    """)
+    # 旧版表（按完整代理串做主键，动态代理下每行只有 1 个号，聚合失灵）→ 重建。
+    # 该表 2026-08-28 才上线，最多只有测试数据，直接丢弃换新结构。
+    try:
+        _ph_cols = {r[1] for r in con.execute("PRAGMA table_info(proxy_health)").fetchall()}
+        if _ph_cols and "template" not in _ph_cols:
+            con.execute("DROP TABLE proxy_health")
+            con.execute("""
+                CREATE TABLE proxy_health (
+                    template        TEXT NOT NULL,
+                    country         TEXT NOT NULL DEFAULT '',
+                    total           INTEGER NOT NULL DEFAULT 0,
+                    dead            INTEGER NOT NULL DEFAULT 0,
+                    last_used       REAL,
+                    last_dead       REAL,
+                    blacklisted     INTEGER NOT NULL DEFAULT 0,
+                    blacklisted_at  REAL,
+                    blacklist_reason TEXT DEFAULT '',
+                    PRIMARY KEY (template, country)
+                )
+            """)
+    except Exception as _e:
+        logging.getLogger("db").warning(f"[proxy_health] 旧表迁移失败（忽略）: {_e}")
     con.commit()
 
 
@@ -860,6 +902,14 @@ def save_registered(d: dict) -> None:
         )
         con.commit()
 
+    # 代理健康度记账：只有**新建**的号才 +1（同号重跑覆盖不计）。
+    # reg_proxy 由 registrar 在注册成功时写进 d，随 extra_json 落库；
+    # 按 (归一化模板, 出口国家) 聚合（动态代理一号一 session，完整串不可聚合）。
+    if row is None:
+        note_proxy_registered(
+            str((extra or {}).get("reg_proxy") or ""), reg_country or ""
+        )
+
 
 def update_registered_oauth(
     email: str,
@@ -1210,10 +1260,16 @@ def update_registered_manual(email: str, password: Optional[str] = None,
 
 
 def update_plus_check(email: str, plus_info: dict) -> None:
-    """把 Plus 检查结果写入 extra_json.plus_check。"""
+    """把 Plus 检查结果写入 extra_json.plus_check。
+
+    验死反哺：状态翻转为 banned / token_invalid 时，反查该号注册时的
+    reg_proxy + reg_country 给 proxy_health 计一次死亡（同一号反复验死只计一次）。
+    """
     email = email.lower()
     con = _conn()
-    cur = con.execute("SELECT extra_json FROM registered WHERE email=?", (email,))
+    cur = con.execute(
+        "SELECT extra_json, reg_country FROM registered WHERE email=?", (email,)
+    )
     row = cur.fetchone()
     if not row:
         return
@@ -1223,6 +1279,7 @@ def update_plus_check(email: str, plus_info: dict) -> None:
             extra = json.loads(row["extra_json"])
         except Exception:
             extra = {}
+    old_pc = extra.get("plus_check") or {}
     extra["plus_check"] = plus_info
     with _lock:
         con.execute(
@@ -1230,6 +1287,361 @@ def update_plus_check(email: str, plus_info: dict) -> None:
             (json.dumps(extra, ensure_ascii=False), email),
         )
         con.commit()
+
+    def _is_dead(pc: dict) -> bool:
+        st = str((pc or {}).get("plus_type") or (pc or {}).get("status") or "").lower()
+        return st in ("banned", "token_invalid")
+
+    # 非死 → 死 的翻转才计数，避免反复验活重复累计
+    if _is_dead(plus_info) and not _is_dead(old_pc):
+        note_proxy_dead(
+            str(extra.get("reg_proxy") or ""), (row["reg_country"] or "")
+        )
+
+
+# ──────────────────────── 代理健康度（死号反哺拉黑） ────────────────────────
+# 背景（2026-08 实测数据）：延迟封号按 IP 段连坐 —— US 出口死亡率 3.2% 是
+# JP/PH 的 10~32 倍，且同天同段批量死。按 (代理模板×国家) 记账，死亡率超阈值
+# 自动拉黑该组合，注册选国家时跳过 —— 脏出口无需人工发现就自动出局。
+#
+# 键的形态：动态住宅代理一号一个 session，完整串每号都不同，聚合失灵；
+# 所以用 proxy_util.normalize_proxy_key 抹掉 session 得到模板，配出口国家。
+
+
+# 自动拉黑阈值：该组合注册满 3 个号、死了至少 2 个、且死亡率 >= 25% 才拉黑。
+# 正常组合死亡率应 < 5%；小样本要求更极端（3 个死 2 个 = 67%）。
+_PROXY_BL_MIN_TOTAL = 3
+_PROXY_BL_MIN_DEAD = 2
+_PROXY_BL_RATE = 0.25
+
+
+def _proxy_key(proxy_raw: str, country: str = "") -> tuple[str, str]:
+    """原始代理串 + 国家 → (归一化模板, 国家码)。空串代理返回 ("", "")。"""
+    from .proxy_util import normalize_proxy_key
+
+    t = normalize_proxy_key(proxy_raw or "")
+    if not t:
+        return ("", "")
+    c = (country or "").strip().upper()
+    return (t, c)
+
+
+def note_proxy_registered(proxy_raw: str, country: str = "") -> None:
+    """注册成功记账：该 (模板, 国家) 组合 total+1（save_registered 新建号时自动调用）。"""
+    t, c = _proxy_key(proxy_raw, country)
+    if not t:
+        return
+    now = time.time()
+    with _lock:
+        con = _conn()
+        con.execute(
+            "INSERT INTO proxy_health(template, country, total, last_used) "
+            "VALUES (?, ?, 1, ?) "
+            "ON CONFLICT(template, country) DO UPDATE SET total=total+1, last_used=?",
+            (t, c, now, now),
+        )
+        con.commit()
+
+
+def note_proxy_dead(proxy_raw: str, country: str = "") -> Optional[dict]:
+    """验死记账：该 (模板, 国家) 组合 dead+1，超阈值自动拉黑。返回最新健康行。"""
+    t, c = _proxy_key(proxy_raw, country)
+    if not t:
+        return None
+    now = time.time()
+    with _lock:
+        con = _conn()
+        rc = con.execute(
+            "UPDATE proxy_health SET dead=dead+1, last_dead=? "
+            "WHERE template=? AND country=?",
+            (now, t, c),
+        )
+        if rc.rowcount == 0:
+            return None  # 该组合没记账过（老号无存档），跳过
+        row = con.execute(
+            "SELECT * FROM proxy_health WHERE template=? AND country=?", (t, c)
+        ).fetchone()
+        if row and not row["blacklisted"] \
+                and row["total"] >= _PROXY_BL_MIN_TOTAL \
+                and row["dead"] >= _PROXY_BL_MIN_DEAD \
+                and row["dead"] >= row["total"] * _PROXY_BL_RATE:
+            reason = f"死亡率 {row['dead']}/{row['total']} 自动拉黑"
+            con.execute(
+                "UPDATE proxy_health SET blacklisted=1, blacklisted_at=?, blacklist_reason=? "
+                "WHERE template=? AND country=?",
+                (now, reason, t, c),
+            )
+            row = con.execute(
+                "SELECT * FROM proxy_health WHERE template=? AND country=?", (t, c)
+            ).fetchone()
+            logging.getLogger("db").warning(
+                f"[proxy_health] 出口 {c or '?'} ({t[:40]}…) {reason}"
+            )
+        con.commit()
+        return dict(row) if row else None
+
+
+def get_blacklist() -> dict:
+    """拉黑清单（三种粒度，各自带通配行）：
+    - combos: {(模板, 国家)} 组合级拉黑（注册选国家时跳过）
+    - templates: 整模板拉黑（(模板,'') 通配行 或 全部国家行都黑）
+    - countries: 国家级拉黑（('',国家) 通配行 —— 按国家死亡率 chip 拉黑，
+      对未记账的模板组合也生效）
+    """
+    con = _conn()
+    rows = con.execute(
+        "SELECT template, country FROM proxy_health WHERE blacklisted=1"
+    ).fetchall()
+    combos = {(r["template"], r["country"]) for r in rows if r["template"] and r["country"]}
+    templates = {r["template"] for r in rows if r["template"] and not r["country"]}
+    countries = {r["country"] for r in rows if not r["template"] and r["country"]}
+    # 「已有国家行全部拉黑」也视为整模板黑
+    for r in con.execute(
+        "SELECT template, COUNT(*) AS n, SUM(blacklisted) AS b "
+        "FROM proxy_health WHERE template != '' AND country != '' GROUP BY template"
+    ).fetchall():
+        if (r["b"] or 0) >= r["n"]:
+            templates.add(r["template"])
+    return {"combos": combos, "templates": templates, "countries": countries}
+
+
+def is_combo_blacklisted(proxy_raw: str, country: str = "") -> bool:
+    """该 (模板, 国家) 组合是否已被任一粒度拉黑。"""
+    t, c = _proxy_key(proxy_raw, country)
+    if not t:
+        return False
+    bl = get_blacklist()
+    return (
+        (t, c) in bl["combos"]
+        or t in bl["templates"]
+        or (c in bl["countries"] if c else False)
+    )
+
+
+def pick_healthy_country(proxy_raw: str, candidates: list[str]) -> Optional[str]:
+    """从候选国家里挑一个未拉黑且死亡率最低的。
+
+    给注册流程「目标国家被拉黑时自动换国」用。候选全被拉黑返回 None。
+    """
+    t, _ = _proxy_key(proxy_raw)
+    if not t or not candidates:
+        return None
+    con = _conn()
+    ph = con.execute(
+        "SELECT country, dead, total FROM proxy_health WHERE template=?", (t,)
+    ).fetchall()
+    stats = {r["country"]: (r["dead"], r["total"]) for r in ph}
+    bl = get_blacklist()
+    best, best_rate = None, None
+    for c in candidates:
+        c = (c or "").strip().upper()
+        if not c or (t, c) in bl["combos"] or c in bl["countries"]:
+            continue
+        dead, total = stats.get(c, (0, 0))
+        rate = dead / total if total else 0
+        if best_rate is None or rate < best_rate:
+            best, best_rate = c, rate
+    return best
+
+
+def list_proxy_health() -> list[dict]:
+    """全量健康度清单（前端代理池页展示），按模板聚合并带分国家明细。
+
+    返回 [{template, total, dead, blacklisted, last_used, last_dead,
+           countries: [{country, total, dead, blacklisted}]}]
+    前端拿代理池条目归一化成 template 后 join。
+    """
+    con = _conn()
+    rows = [dict(r) for r in con.execute(
+        "SELECT * FROM proxy_health ORDER BY last_used DESC"
+    ).fetchall()]
+    out: dict[str, dict] = {}
+    for r in rows:
+        t = r["template"]
+        slot = out.setdefault(t, {
+            "template": t, "total": 0, "dead": 0,
+            "blacklisted": False, "last_used": 0, "last_dead": 0,
+            "countries": [],
+        })
+        if not r["country"]:
+            # 通配行（整模板手动拉黑的占位）→ 只影响拉黑态，不计数量
+            if r["blacklisted"]:
+                slot["blacklisted"] = True
+            continue
+        slot["total"] += r["total"]
+        slot["dead"] += r["dead"]
+        if r["blacklisted"]:
+            slot["blacklisted"] = True
+        slot["last_used"] = max(slot["last_used"], r["last_used"] or 0)
+        slot["last_dead"] = max(slot["last_dead"], r["last_dead"] or 0)
+        slot["countries"].append({
+            "country": r["country"], "total": r["total"], "dead": r["dead"],
+            "blacklisted": bool(r["blacklisted"]),
+        })
+    for slot in out.values():
+        slot["countries"].sort(key=lambda c: (-c["dead"], c["country"]))
+    return sorted(out.values(), key=lambda s: (-(s["dead"] or 0), -(s["total"] or 0)))
+
+
+def set_proxy_blacklist(proxy_raw: str, country: str, on: bool, reason: str = "") -> None:
+    """手动拉黑 / 取消拉黑。三种粒度：
+
+    - proxy + 国家码：拉黑该 (模板, 国家) 组合 —— 注册选国家时自动换国
+    - proxy + 空/'*'：整模板拉黑（写 (模板,'') 通配行，未记账国家也挡住）
+    - 空 proxy + 国家码：拉黑**所有模板**的该国家出口（按国家死亡率 chip 用）
+    """
+    t, _ = _proxy_key(proxy_raw) if (proxy_raw or "").strip() else ("", "")
+    c = (country or "").strip().upper()
+    now = time.time()
+    with _lock:
+        con = _conn()
+        if not t and not c:
+            return
+        if on:
+            if not t:
+                # 按国家拉黑所有模板：写 ('', 国家) 通配行 + 已有该国家行也拉黑
+                reason = reason or f"手动拉黑 {c} 出口（全部模板）"
+                con.execute(
+                    "INSERT INTO proxy_health(template, country, blacklisted, blacklisted_at, blacklist_reason) "
+                    "VALUES ('', ?, 1, ?, ?) "
+                    "ON CONFLICT(template, country) DO UPDATE SET blacklisted=1, blacklisted_at=?, blacklist_reason=?",
+                    (c, now, reason, now, reason),
+                )
+                con.execute(
+                    "UPDATE proxy_health SET blacklisted=1, blacklisted_at=?, blacklist_reason=? "
+                    "WHERE country=? AND template != ''",
+                    (now, reason, c),
+                )
+            elif c in ("", "*"):
+                # 整模板拉黑：通配行 + 已有国家行全部拉黑
+                reason = reason or "手动拉黑整个模板"
+                con.execute(
+                    "INSERT INTO proxy_health(template, country, blacklisted, blacklisted_at, blacklist_reason) "
+                    "VALUES (?, '', 1, ?, ?) "
+                    "ON CONFLICT(template, country) DO UPDATE SET blacklisted=1, blacklisted_at=?, blacklist_reason=?",
+                    (t, now, reason, now, reason),
+                )
+                con.execute(
+                    "UPDATE proxy_health SET blacklisted=1, blacklisted_at=?, blacklist_reason=? "
+                    "WHERE template=? AND country != ''",
+                    (now, reason, t),
+                )
+            else:
+                reason = reason or f"手动拉黑 {c} 出口"
+                con.execute(
+                    "INSERT INTO proxy_health(template, country, blacklisted, blacklisted_at, blacklist_reason) "
+                    "VALUES (?, ?, 1, ?, ?) "
+                    "ON CONFLICT(template, country) DO UPDATE SET blacklisted=1, blacklisted_at=?, blacklist_reason=?",
+                    (t, c, now, reason, now, reason),
+                )
+        else:
+            if not t:
+                con.execute(
+                    "UPDATE proxy_health SET blacklisted=0, blacklist_reason='' "
+                    "WHERE country=? AND (template != '' OR template = '')",
+                    (c,),
+                )
+            elif c in ("", "*"):
+                con.execute(
+                    "UPDATE proxy_health SET blacklisted=0, blacklist_reason='' WHERE template=?",
+                    (t,),
+                )
+            else:
+                con.execute(
+                    "UPDATE proxy_health SET blacklisted=0, blacklist_reason='' "
+                    "WHERE template=? AND country=?",
+                    (t, c),
+                )
+        con.commit()
+
+
+def proxy_health_overview() -> dict:
+    """健康度总览面板数据：汇总统计 + 按国家死亡率 + 问题出口榜 + 最近死亡号。"""
+    con = _conn()
+
+    # ── 汇总统计（country='' 通配行不计入跟踪数）──
+    row = con.execute(
+        "SELECT COUNT(*) AS tracked, "
+        "SUM(COALESCE(blacklisted, 0)) AS blacklisted, "
+        "SUM(COALESCE(total, 0)) AS total_reg, "
+        "SUM(COALESCE(dead, 0)) AS dead "
+        "FROM proxy_health WHERE country != ''"
+    ).fetchone()
+    tracked = row["tracked"] or 0
+    blacklisted = row["blacklisted"] or 0
+    total_reg = row["total_reg"] or 0
+    dead = row["dead"] or 0
+
+    # ── 按国家死亡率（面板核心视角：哪国出口在杀号）──
+    by_country = [
+        {
+            "country": r["country"],
+            "total": r["total"],
+            "dead": r["dead"],
+            "rate": round(r["dead"] / r["total"], 4) if r["total"] else 0,
+            "blacklisted": bool(r["bl"]),
+        }
+        for r in con.execute(
+            "SELECT country, SUM(total) AS total, SUM(dead) AS dead, "
+            "MAX(blacklisted) AS bl FROM proxy_health "
+            "WHERE country != '' GROUP BY country "
+            "ORDER BY dead * 1.0 / MAX(total, 1) DESC, dead DESC"
+        ).fetchall()
+    ]
+
+    # ── 问题出口榜：(模板, 国家) 有死亡的按死亡率降序，最多 8 个 ──
+    worst = [
+        dict(r) for r in con.execute(
+            "SELECT template, country, total, dead, blacklisted, blacklist_reason, last_dead "
+            "FROM proxy_health WHERE dead > 0 AND country != '' "
+            "ORDER BY dead * 1.0 / total DESC, dead DESC LIMIT 8"
+        ).fetchall()
+    ]
+
+    # ── 最近死亡号：扫 plus_check 死亡的号（几千行 json 解析，面板打开时一次）──
+    recent_dead = []
+    try:
+        cur = con.execute(
+            "SELECT email, reg_country, created_at, extra_json FROM registered "
+            "WHERE extra_json LIKE '%\"banned\"%' OR extra_json LIKE '%\"token_invalid\"%' "
+            "ORDER BY created_at DESC LIMIT 3000"
+        )
+        for r in cur.fetchall():
+            if len(recent_dead) >= 10:
+                break
+            try:
+                extra = json.loads(r["extra_json"] or "{}")
+            except Exception:
+                continue
+            pc = extra.get("plus_check") or {}
+            st = str(pc.get("plus_type") or pc.get("status") or "").lower()
+            if st not in ("banned", "token_invalid"):
+                continue
+            ts = pc.get("checked_at") or pc.get("updated_at") or r["created_at"] or 0
+            recent_dead.append({
+                "email": r["email"],
+                "status": st,
+                "country": (r["reg_country"] or "").upper(),
+                "proxy": str(extra.get("reg_proxy") or ""),
+                "ts": ts,
+            })
+        recent_dead.sort(key=lambda x: x["ts"], reverse=True)
+        recent_dead = recent_dead[:10]
+    except Exception as e:
+        logging.getLogger("db").warning(f"[proxy_health] 最近死亡号统计失败: {e}")
+
+    return {
+        "summary": {
+            "tracked": tracked,             # 有注册记录的 (模板,国家) 组合数
+            "blacklisted": blacklisted,     # 已拉黑组合数
+            "total_registered": total_reg,  # 有档案号的总注册数
+            "total_dead": dead,             # 总验死数
+            "death_rate": round(dead / total_reg, 4) if total_reg else 0,
+        },
+        "by_country": by_country,
+        "worst": worst,
+        "recent_dead": recent_dead,
+    }
 
 
 def update_oa_check(email: str, oa_info: dict) -> None:

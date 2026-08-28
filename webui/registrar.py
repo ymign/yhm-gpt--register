@@ -28,7 +28,13 @@ from mail_providers import (  # noqa: E402
 from sms_provider import PhoneCallbackController  # noqa: E402
 
 from . import db  # noqa: E402
-from .proxy_util import new_proxy_session_id, resolve_target_country, route_proxy_country  # noqa: E402
+from .proxy_util import (  # noqa: E402
+    ALL_AVAILABLE_COUNTRIES,
+    HOT_COUNTRIES,
+    new_proxy_session_id,
+    resolve_target_country,
+    route_proxy_country,
+)
 
 # run_id -> queue of log strings; sentinel = None 表示流结束
 _run_queues: dict[str, queue.Queue] = {}
@@ -306,11 +312,32 @@ def _do_register(
         # ─ 目标代理国家与动态 Session 路由 ─
         raw_target_country = (options.get("proxy_country") or options.get("target_country") or "").strip().upper()
         target_country = resolve_target_country(raw_target_country)
-        if target_country:
-            env_overrides["TARGET_COUNTRY"] = target_country
 
         raw_proxy = (options.get("proxy") or "").strip()
         final_proxy = raw_proxy
+
+        # ─ 健康度换国：目标国家的 (代理模板, 国家) 组合已被拉黑 → 自动换国 ─
+        # 优先换到同模板下未拉黑且死亡率最低的国家；候选全黑就保持原选择
+        # （固定国家是主人的显式意图，只有确实有更优出口时才换，换了必留日志）。
+        if raw_proxy and target_country:
+            try:
+                from .db import is_combo_blacklisted, pick_healthy_country
+                if is_combo_blacklisted(raw_proxy, target_country):
+                    candidates = HOT_COUNTRIES if raw_target_country in ("RANDOM_HOT", "HOT", "RANDOM") else (
+                        ALL_AVAILABLE_COUNTRIES if raw_target_country in ("RANDOM_ALL", "ALL") else ALL_AVAILABLE_COUNTRIES
+                    )
+                    alt = pick_healthy_country(raw_proxy, candidates)
+                    if alt and alt != target_country:
+                        logging.getLogger("registrar").warning(
+                            f"[register] 出口 {target_country} 已被健康度拉黑，自动切换到 {alt}"
+                        )
+                        target_country = alt
+            except Exception as _e:
+                logging.getLogger("registrar").debug(f"[register] 健康度换国检查跳过: {_e}")
+
+        if target_country:
+            env_overrides["TARGET_COUNTRY"] = target_country
+
         if raw_proxy and target_country:
             routed = route_proxy_country(raw_proxy, target_country, new_proxy_session_id())
             if routed != raw_proxy:
@@ -524,6 +551,10 @@ def _do_register(
         # ─ 记录本次注册出口国家（不再发起外部网络探针，直接使用目标国家或代理地区） ─
         used_proxy_str = getattr(cfg, "proxy", "") or options.get("proxy") or ""
         d["reg_country"] = extract_proxy_country(used_proxy_str, target_country)
+        # 存档所用代理（随 extra_json 落库）：验死反哺用 —— 号事后被封时
+        # 能反查出是哪个代理的号，proxy_health 据此自动拉黑脏 IP。
+        if used_proxy_str:
+            d["reg_proxy"] = used_proxy_str
         d["reg_city"] = ""
         d["reg_ip"] = ""
         if d.get("reg_country"):

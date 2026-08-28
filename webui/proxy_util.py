@@ -96,6 +96,60 @@ def proxy_url_with_credentials(parsed: Any, username: str, password: str) -> str
     return urlunsplit((parsed.scheme or "http", netloc, parsed.path, parsed.query, parsed.fragment))
 
 
+def normalize_proxy_key(proxy: str) -> str:
+    """归一化代理串为健康度记账键：抹掉 session/sid 随机段，保留网关+账号结构。
+
+    动态住宅代理一号一个 session（route_proxy_country 每号重写），完整串每号
+    都不同 —— 按完整串聚合健康度每行永远只有 1 个号，完全失灵。抹掉 session
+    后得到的「模板」才是稳定聚合维度，配合出口国家组成 (模板, 国家) 键。
+
+      user-country-us-session-abc12345:pass@gw:8000
+        → user-country-us-session-*:pass@gw:8000
+      myprefix-CC-session-ttl 密码形态同样抹掉 session 数字段
+    """
+    proxy = normalize_proxy_url(proxy)
+    if not proxy:
+        return ""
+    parsed = urlsplit(proxy)
+    username = unquote(parsed.username or "")
+    password = unquote(parsed.password or "")
+
+    # 用户名里的 -sid-xxx / -session-xxx / _session-xxx → 段名 + *
+    username = re.sub(
+        r"(?i)(-sid-|-session-|_session-)[a-z0-9]+", r"\g<1>*", username
+    )
+
+    # 密码 prefix-CC-session-ttl 形态：session 数字段 → *
+    m = re.fullmatch(
+        r"(?P<prefix>.+)-(?P<country>[A-Za-z]{2})-(?P<session>\d+)-(?P<ttl>\d+[A-Za-z]+)",
+        password,
+    )
+    if m:
+        password = f"{m['prefix']}-{m['country']}-*-{m['ttl']}"
+
+    host = parsed.hostname or ""
+    if not host:
+        return ""
+    host = f"[{host}]" if ":" in host and not host.startswith("[") else host
+    if parsed.port:
+        host = f"{host}:{parsed.port}"
+    scheme = parsed.scheme or "http"
+    if username or password:
+        return f"{scheme}://{username}:{password}@{host}"
+    return f"{scheme}://{host}"
+
+
+def proxy_template_country(proxy: str) -> str:
+    """从代理串里抽国家码（用于 (模板, 国家) 键的快速展示，不精确时返回空）。"""
+    m = re.search(
+        r"(?i)(?:-region-|-country-|_country-)([a-z]{2})\b", str(proxy or "")
+    )
+    if m:
+        return m.group(1).upper()
+    m = re.search(r"(?i)-([a-z]{2})-(\d+)-\d+[a-z]+$", str(proxy or ""))
+    return m.group(1).upper() if m else ""
+
+
 def route_proxy_country(proxy: str, country: str = "", session_id: str = "") -> str:
     """智能重写动态住宅代理的国家与会话 ID。
 

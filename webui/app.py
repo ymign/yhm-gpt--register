@@ -1087,6 +1087,33 @@ def api_save_pow_slots(req: SavePowSlotsReq):
     return {"ok": True, "slots": applied}
 
 
+class ProxyBlacklistReq(BaseModel):
+    proxy: str = Field(..., description="代理串或模板（与代理池条目一致即可，内部归一化）")
+    country: str = Field("", description="国家码=只拉黑该出口组合；空/*=整模板拉黑")
+    on: bool = Field(..., description="true=拉黑 false=取消拉黑")
+    reason: str = Field("", description="手动拉黑原因（可选）")
+
+
+@app.get("/api/proxy_health")
+def api_proxy_health():
+    """代理健康度清单：每个代理注册的号数 / 验死数 / 是否拉黑。"""
+    return {"ok": True, "items": db.list_proxy_health()}
+
+
+@app.get("/api/proxy_health/overview")
+def api_proxy_health_overview():
+    """健康度总览面板：汇总统计 + 问题代理榜 + 最近死亡号动态。"""
+    return {"ok": True, **db.proxy_health_overview()}
+
+
+@app.post("/api/proxy_health/blacklist")
+def api_proxy_blacklist(req: ProxyBlacklistReq):
+    """手动拉黑 / 取消拉黑。整模板拉黑后 auto_loop 立即跳过该代理条目；
+    单国家拉黑后注册选国家时自动换国。"""
+    db.set_proxy_blacklist(req.proxy, req.country, req.on, req.reason)
+    return {"ok": True, "items": db.list_proxy_health()}
+
+
 class TestExportReq(BaseModel):
     target: str = Field(..., description="cpa 或 sub2api")
 
