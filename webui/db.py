@@ -62,8 +62,9 @@ def init_db():
         );
 
         CREATE INDEX IF NOT EXISTS idx_outlook_status ON outlook_accounts(status);
-        CREATE INDEX IF NOT EXISTS idx_registered_lower_email ON registered(lower(email));
         CREATE INDEX IF NOT EXISTS idx_outlook_lower_email ON outlook_accounts(lower(email));
+        -- idx_registered_lower_email 挪到下面 registered 建表之后：
+        -- 全新空库上这个脚本里表还没建，索引放前面会当场报 no such table。
         -- idx_outlook_kind 不在这里建：老库此刻还没有 kind 列，
         -- 建索引会当场报错。放到下面补完列之后再建。
 
@@ -91,6 +92,8 @@ def init_db():
             oa_check        TEXT,
             created_at      REAL
         );
+
+        CREATE INDEX IF NOT EXISTS idx_registered_lower_email ON registered(lower(email));
 
         CREATE TABLE IF NOT EXISTS runs (
             run_id          TEXT PRIMARY KEY,
@@ -157,6 +160,14 @@ def init_db():
         con.commit()
     if "oauth_updated_at" not in reg_cols:
         con.execute("ALTER TABLE registered ADD COLUMN oauth_updated_at REAL")
+        con.commit()
+    # AT 导出留痕：哪些号的 access_token 已经手动导出过、导出时填的备注。
+    # 只在手动导出「access_token」格式时打标（见 app.py /api/registered/export）。
+    if "at_exported_at" not in reg_cols:
+        con.execute("ALTER TABLE registered ADD COLUMN at_exported_at REAL")
+        con.commit()
+    if "at_export_note" not in reg_cols:
+        con.execute("ALTER TABLE registered ADD COLUMN at_export_note TEXT DEFAULT ''")
         con.commit()
 
     # 自动清理历史中没有任何凭证（AT/ST/RT 全为空）的未完成半成品脏数据
@@ -448,7 +459,7 @@ def stats_by_kind() -> dict:
     for r in cur.fetchall():
         k = r["kind"] or "outlook"
         slot = out.setdefault(
-            k, {"available": 0, "in_use": 0, "done": 0, "failed": 0, "total": 0}
+            k, {"available": 0, "in_use": 0, "done": 0, "failed": 0, "archived": 0, "total": 0}
         )
         slot[r["status"]] = r["n"]
         slot["total"] += r["n"]
@@ -662,9 +673,9 @@ def delete_account(email: str) -> bool:
 
 
 def delete_accounts_by_status(status: str) -> int:
-    """按状态批量删除。status 必须是 available/in_use/done/failed 之一；
+    """按状态批量删除。status 必须是 available/in_use/done/failed/archived 之一；
     传 'all' 删全部。返回受影响行数。"""
-    valid = {"available", "in_use", "done", "failed", "all"}
+    valid = {"available", "in_use", "done", "failed", "archived", "all"}
     s = (status or "").strip().lower()
     if s not in valid:
         return 0
@@ -726,12 +737,35 @@ def export_pool_accounts(
 
 
 
+def archive_failed_accounts() -> int:
+    """把所有 failed 号一次性归档为 archived。
+
+    归档 = 只留存、不再使用：claim_next / claim_account 只捞 available/failed，
+    archived 的号自动退出注册与验活队列；fail_reason 原样保留，随时可查证。
+    取消归档见 unarchive_accounts（archived -> failed）。
+    """
+    with _lock:
+        con = _conn()
+        rc = con.execute("UPDATE outlook_accounts SET status='archived' WHERE status='failed'")
+        con.commit()
+        return rc.rowcount
+
+
+def unarchive_accounts() -> int:
+    """把所有 archived 号退回归档，恢复为 failed（失败原因原样保留）。"""
+    with _lock:
+        con = _conn()
+        rc = con.execute("UPDATE outlook_accounts SET status='failed' WHERE status='archived'")
+        con.commit()
+        return rc.rowcount
+
+
 def stats() -> dict:
     con = _conn()
     cur = con.execute(
         "SELECT status, COUNT(*) AS n FROM outlook_accounts GROUP BY status"
     )
-    out = {"available": 0, "in_use": 0, "done": 0, "failed": 0, "total": 0}
+    out = {"available": 0, "in_use": 0, "done": 0, "failed": 0, "archived": 0, "total": 0}
     for r in cur.fetchall():
         out[r["status"]] = r["n"]
         out["total"] += r["n"]
@@ -1384,6 +1418,7 @@ def _registered_where(
     filter_oauth: str = "",
     filter_domain: str = "",
     filter_country: str = "",
+    filter_at_export: str = "",
 ) -> tuple[str, list]:
     conditions = []
     args = []
@@ -1417,6 +1452,12 @@ def _registered_where(
             conditions.append("upper(trim(reg_country)) = ?")
             args.append(c_country)
 
+    # AT 导出留痕筛选：exported = 导出过；unexported = 还没导出过
+    if filter_at_export == "exported":
+        conditions.append("at_exported_at IS NOT NULL AND at_exported_at > 0")
+    elif filter_at_export == "unexported":
+        conditions.append("(at_exported_at IS NULL OR at_exported_at = 0)")
+
     search_cleaned = (search or "").strip().lower()
     if search_cleaned:
         conditions.append("lower(email) LIKE ?")
@@ -1436,6 +1477,7 @@ def count_registered(
     filter_oauth: str = "",
     filter_domain: str = "",
     filter_country: str = "",
+    filter_at_export: str = "",
 ) -> int:
     con = _conn()
     where, args = _registered_where(
@@ -1444,6 +1486,7 @@ def count_registered(
         filter_extract=filter_extract, filter_oauth=filter_oauth,
         filter_domain=filter_domain,
         filter_country=filter_country,
+        filter_at_export=filter_at_export,
     )
     cur = con.execute(f"SELECT COUNT(*) FROM registered {where}", args)
     return cur.fetchone()[0]
@@ -1459,6 +1502,7 @@ def list_registered_emails(
     filter_oauth: str = "",
     filter_domain: str = "",
     filter_country: str = "",
+    filter_at_export: str = "",
 ) -> list[str]:
     """返回符合过滤条件的所有注册邮箱列表。"""
     con = _conn()
@@ -1468,6 +1512,7 @@ def list_registered_emails(
         filter_extract=filter_extract, filter_oauth=filter_oauth,
         filter_domain=filter_domain,
         filter_country=filter_country,
+        filter_at_export=filter_at_export,
     )
     cur = con.execute(
         f"SELECT email FROM registered {where} ORDER BY created_at DESC LIMIT ?",
@@ -1487,6 +1532,7 @@ def list_registered(
     filter_oauth: str = "",
     filter_domain: str = "",
     filter_country: str = "",
+    filter_at_export: str = "",
 ) -> list[dict]:
     con = _conn()
     where, args = _registered_where(
@@ -1495,11 +1541,13 @@ def list_registered(
         filter_extract=filter_extract, filter_oauth=filter_oauth,
         filter_domain=filter_domain,
         filter_country=filter_country,
+        filter_at_export=filter_at_export,
     )
     cur = con.execute(
         f"SELECT email, password, totp_secret, reg_country, reg_city, reg_ip, "
         f"length(access_token) AS at_len, length(session_token) AS st_len, "
         f"length(refresh_token) AS rt_len, oauth_status, oauth_updated_at, "
+        f"at_exported_at, at_export_note, "
         f"extra_json, oa_check, created_at "
         f"FROM registered {where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
         args + [limit, offset],
@@ -1601,6 +1649,34 @@ def list_registered_by_emails(emails: list[str]) -> list[dict]:
 
     out.sort(key=lambda d: d.get("created_at") or 0, reverse=True)
     return out
+
+
+def mark_at_exported(emails: list[str], note: str = "") -> int:
+    """给这批 email 打上 AT 已导出标记（时间 + 备注）。
+
+    只在手动导出「access_token」格式时调用。查不到的 email 静默跳过，
+    返回实际打标的行数。重复导出会覆盖时间与备注（以最后一次为准）。
+    """
+    cleaned = [e.strip().lower() for e in (emails or []) if e and e.strip()]
+    if not cleaned:
+        return 0
+    now = time.time()
+    note = (note or "").strip()
+    with _lock:
+        con = _conn()
+        n = 0
+        CHUNK = 500
+        for i in range(0, len(cleaned), CHUNK):
+            part = cleaned[i:i + CHUNK]
+            placeholders = ",".join("?" * len(part))
+            cur = con.execute(
+                f"UPDATE registered SET at_exported_at=?, at_export_note=? "
+                f"WHERE email IN ({placeholders})",
+                [now, note] + part,
+            )
+            n += cur.rowcount if cur.rowcount > 0 else 0
+        con.commit()
+    return n
 
 
 def get_registered(email: str) -> Optional[dict]:

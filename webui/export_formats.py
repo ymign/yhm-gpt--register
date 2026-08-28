@@ -364,3 +364,45 @@ def render_bytes(rows: list, fmt: "ExportFormat | str") -> bytes:
 # 兼容旧调用名
 def render(rows: list, fmt: "ExportFormat | str") -> str:
     return render_text(rows, fmt)
+
+
+def render_chunked(rows: list, fmt: "ExportFormat | str", chunk_size: int) -> bytes:
+    """分卷导出：每 chunk_size 条一个文件，全部打进一个 zip 返回。
+
+    - text 格式按行分组（行序不变、不跳行），download 格式按行分组后整组
+      走 render_all（如 CPA zip 每卷仍是标准 zip 包，外层再套一层分卷 zip）。
+    - 卷内文件名沿用格式 filename 的主干：`AT_001.txt`、`AT_002.txt` …
+    """
+    import io
+    import zipfile
+
+    f = get_format(fmt) if isinstance(fmt, str) else fmt
+    if f is None:
+        raise KeyError(f"未知导出格式: {fmt}")
+    if chunk_size <= 0:
+        raise ValueError("chunk_size 必须为正整数")
+
+    stem, dot, ext = f.filename.rpartition(".")
+    if not dot:
+        stem, dot, ext = f.filename, ".", ""
+
+    rows = rows or []
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        part = 1
+        for i in range(0, len(rows), chunk_size):
+            grp = rows[i:i + chunk_size]
+            if f.mode == "download":
+                data = render_bytes(grp, f)
+            else:
+                data = render_text(grp, f).encode("utf-8")
+            zf.writestr(f"{stem}_{part:03d}{dot}{ext}", data)
+            part += 1
+    return buf.getvalue()
+
+
+def count_chunks(total: int, chunk_size: int) -> int:
+    """分卷后的文件数（chunk_size 为 0/负数按不分卷算 1）。"""
+    if chunk_size <= 0:
+        return 1
+    return max(1, -(-max(0, total) // chunk_size))

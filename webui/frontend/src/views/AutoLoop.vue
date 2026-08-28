@@ -21,6 +21,8 @@ import {
   autoStop,
   autoStatus as getAutoStatus,
   getRunLog,
+  getPowSlots,
+  savePowSlots,
 } from '@/api/register'
 import { copyText, fmtTime } from '@/api/request'
 import { useFormStore, proxyText, COUNTRY_OPTIONS, formatCountry } from '@/stores/form'
@@ -244,6 +246,32 @@ async function call(fn, name) {
   }
 }
 
+// ──────────── PoW 算力槽位（sentinel 并发碰撞上限，后端全局设置） ────────────
+const powSlots = ref(6)
+const powSlotsLoading = ref(false)
+
+async function loadPowSlots() {
+  try {
+    const r = await getPowSlots()
+    powSlots.value = r.slots || 6
+  } catch (_) {}
+}
+
+async function onPowSlotsChange(val) {
+  if (!val || powSlotsLoading.value) return
+  powSlotsLoading.value = true
+  try {
+    const r = await savePowSlots(val)
+    powSlots.value = r.slots
+    ElMessage.success(`PoW 算力槽位已设为 ${r.slots}（已保存，重启后仍生效）`)
+  } catch (e) {
+    ElMessage.error('PoW 槽位保存失败: ' + e.message)
+    await loadPowSlots()
+  } finally {
+    powSlotsLoading.value = false
+  }
+}
+
 onMounted(() => {
   tickerTimer = setInterval(() => {
     nowTs.value = Math.floor(Date.now() / 1000)
@@ -256,6 +284,7 @@ onMounted(() => {
   }, 3000)
 
   syncAutoStatus()
+  loadPowSlots()
 })
 
 onUnmounted(() => {
@@ -380,7 +409,25 @@ onUnmounted(() => {
           <el-row :gutter="12" class="config-row">
             <el-col :xs="12" :sm="6" :md="3">
               <el-form-item label="并发数 (Workers)">
-                <el-input-number v-model="form.autoConcurrency" :min="1" :max="20" class="macos-num-input" />
+                <el-input-number v-model="form.autoConcurrency" :min="1" :max="50" class="macos-num-input" />
+              </el-form-item>
+            </el-col>
+            <el-col :xs="12" :sm="6" :md="3">
+              <el-form-item>
+                <template #label>
+                  <span>PoW 算力槽位</span>
+                  <el-tooltip content="同时解算 sentinel PoW 的 node 进程数上限。网络并发再高，PoW 碰撞也会在这里排队，保护 CPU 不被打满降频。i5-13500H 建议 4~6；改完立即生效并持久保存，重启不丢。" placement="top">
+                    <el-icon class="info-ico" style="margin-left: 3px;"><QuestionFilled /></el-icon>
+                  </el-tooltip>
+                </template>
+                <el-input-number
+                  v-model="powSlots"
+                  :min="1"
+                  :max="16"
+                  class="macos-num-input"
+                  :loading="powSlotsLoading"
+                  @change="onPowSlotsChange"
+                />
               </el-form-item>
             </el-col>
             <el-col :xs="12" :sm="6" :md="2">

@@ -97,8 +97,8 @@ class AutoLoopController:
             self._worker_status.clear()
             self._consecutive_network_fails = 0
             self._last_message = "auto-loop 启动"
-            # 解析并发参数
-            self._concurrency = max(1, min(20, int(self._options.get("concurrency") or 1)))
+            # 解析并发参数（上限 50：纯协议注册本机余量充足，真正上限在代理池与风控）
+            self._concurrency = max(1, min(50, int(self._options.get("concurrency") or 1)))
             pool_text = self._options.get("proxy_pool") or ""
             self._proxy_pool = _parse_proxy_pool(pool_text)
             # 目标成功数（0=不限量）

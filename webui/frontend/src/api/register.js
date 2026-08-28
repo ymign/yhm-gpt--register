@@ -35,6 +35,10 @@ export { bulkDeleteAccounts } from './accounts'
 export const listExportFormats = () => http.get('/api/registered/export/formats')
 export const exportRegistered = (payload) => http.post('/api/registered/export', payload)
 
+// PoW 算力槽位（sentinel 并发碰撞上限，存后端 settings 表持久化）
+export const getPowSlots = () => http.get('/api/settings/pow_slots')
+export const savePowSlots = (slots) => http.post('/api/settings/pow_slots', { slots })
+
 export const checkPlus = (emails, proxy = '') =>
   http.post('/api/registered/check_plus', { emails, proxy })
 

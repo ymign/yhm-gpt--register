@@ -50,13 +50,20 @@ function onSearch(path) {
   search.value = ''
 }
 
-const statPills = computed(() => [
-  { label: '总数', value: stats.value.total, type: 'info' },
-  { label: '可用', value: stats.value.available, type: 'success' },
-  { label: '运行', value: stats.value.in_use, type: 'warning' },
-  { label: '完成', value: stats.value.done, type: 'primary' },
-  { label: '失败', value: stats.value.failed, type: 'danger' },
-])
+const statPills = computed(() => {
+  const pills = [
+    { label: '总数', value: stats.value.total, type: 'info' },
+    { label: '可用', value: stats.value.available, type: 'success' },
+    { label: '运行', value: stats.value.in_use, type: 'warning' },
+    { label: '完成', value: stats.value.done, type: 'primary' },
+    { label: '失败', value: stats.value.failed, type: 'danger' },
+  ]
+  // 归档号（只留存不再使用）只在真有归档时露出来，免得平时占位
+  if (stats.value.archived > 0) {
+    pills.push({ label: '归档', value: stats.value.archived, type: 'info' })
+  }
+  return pills
+})
 
 onMounted(() => {
   theme.apply()

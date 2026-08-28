@@ -147,6 +147,7 @@ const filterOAuth = ref('all')
 const filterDomain = ref('all')
 const domainOptions = ref([])
 const filterCountry = ref('all')
+const filterAtExport = ref('all') // AT 导出留痕筛选：all / exported / unexported
 const countryOptions = ref([])
 const searchKeyword = ref('')
 const selected = ref([])
@@ -196,7 +197,8 @@ const hasActiveFilter = computed(() => {
     filterExtract.value !== 'all' ||
     filterOAuth.value !== 'all' ||
     filterDomain.value !== 'all' ||
-    filterCountry.value !== 'all'
+    filterCountry.value !== 'all' ||
+    filterAtExport.value !== 'all'
   )
 })
 
@@ -208,6 +210,7 @@ function clearAllFilters() {
   filterOAuth.value = 'all'
   filterDomain.value = 'all'
   filterCountry.value = 'all'
+  filterAtExport.value = 'all'
   load(true)
 }
 
@@ -2210,6 +2213,7 @@ async function load(resetPage = false) {
       filter_oauth: filterOAuth.value,
       filter_domain: filterDomain.value,
       filter_country: filterCountry.value,
+      filter_at_export: filterAtExport.value,
       search: searchKeyword.value.trim(),
     })
     rows.value = items || []
@@ -2275,6 +2279,7 @@ async function deleteAll() {
 
 // ──────────── 批量导出 ────────────
 const exportFormats = ref([])
+const exportChunkSize = ref(0) // 每卷条数，0 = 不分卷（单文件）
 const exporting = ref(false)
 const exportVisible = ref(false)
 const exportText = ref('')
@@ -2296,22 +2301,53 @@ async function loadExportFormats() {
   } catch (e) { ElMessage.error('加载导出格式失败: ' + e.message) }
 }
 
+function atExportTip(row) {
+  const t = row.at_exported_at ? new Date(row.at_exported_at * 1000).toLocaleString('zh-CN') : ''
+  const note = row.at_export_note ? `\n备注：${row.at_export_note}` : ''
+  return `AT 已于 ${t} 导出${note}`
+}
+
 async function doExport(fmt) {
   const emails = selected.value.map((r) => r.email)
-  const payload = emails.length ? { format: fmt.id, emails } : { format: fmt.id, all: true }
+  const chunk = exportChunkSize.value || 0
+  // AT 导出留痕：可填一句备注（留空也打标），顶栏「AT导出」筛选器可查
+  let note = ''
+  if (fmt.id === 'at') {
+    try {
+      const { value } = await ElMessageBox.prompt(
+        emails.length
+          ? `将导出 ${emails.length} 个选中账号的 access_token。\n可填一句备注方便日后回忆这批号的去向（留空也可以）。`
+          : '将导出全部账号的 access_token。\n可填一句备注方便日后回忆这批号的去向（留空也可以）。',
+        'AT 导出备注',
+        {
+          confirmButtonText: '导出', cancelButtonText: '取消',
+          inputPlaceholder: '如：交付给XX · 2026-08-28',
+          inputValidator: () => true,
+          customClass: 'confirm-multiline',
+        },
+      )
+      note = (value || '').trim()
+    } catch (_) { return } // 用户取消导出
+  }
+  const payload = emails.length
+    ? { format: fmt.id, emails, chunk_size: chunk, note }
+    : { format: fmt.id, all: true, chunk_size: chunk, note }
   exporting.value = true
   try {
     const r = await exportRegistered(payload)
     exportedEmails.value = (r.emails || []).filter(Boolean)
     if (r.mode === 'download') {
       saveBlob(b64ToBytes(r.b64), r.filename, r.mime)
-      ElMessage.success(`已下载 ${r.filename}（${r.count} 个号）`)
+      const parts = r.parts ? ` · ${r.parts} 个文件` : ''
+      const mark = fmt.id === 'at' ? ' · 已记录导出状态' : ''
+      ElMessage.success(`已下载 ${r.filename}（${r.count} 个号${parts}）${mark}`)
       return
     }
     exportText.value = r.text || ''
     exportCount.value = r.count || 0
     exportFilename.value = r.filename || 'export.txt'
     exportLabel.value = r.label || fmt.label
+    if (fmt.id === 'at') ElMessage.success(`已记录 ${r.count} 个号的 AT 导出状态`)
     exportVisible.value = true
   } catch (e) { ElMessage.error('导出失败: ' + e.message) }
   finally { exporting.value = false }
@@ -3656,6 +3692,15 @@ onUnmounted(() => {
               </el-select>
             </div>
 
+            <div class="filter-item-wrap">
+              <span class="filter-label">AT导出:</span>
+              <el-select v-model="filterAtExport" placeholder="全部" size="small" class="acct-select acct-select-atexport" @change="load(true)">
+                <el-option label="全部" value="all" />
+                <el-option label="✅ 已导出 AT" value="exported" />
+                <el-option label="⭕ 未导出 AT" value="unexported" />
+              </el-select>
+            </div>
+
             <el-button
               v-if="hasActiveFilter"
               size="small"
@@ -3800,6 +3845,13 @@ onUnmounted(() => {
 
           <!-- 集群 3: 导出与数据清理 -->
           <div class="acct-action-cluster acct-cluster-right">
+            <el-select v-model="exportChunkSize" size="small" class="export-chunk-select">
+              <el-option label="不分卷" :value="0" />
+              <el-option label="50条/文件" :value="50" />
+              <el-option label="100条/文件" :value="100" />
+              <el-option label="200条/文件" :value="200" />
+              <el-option label="500条/文件" :value="500" />
+            </el-select>
             <el-dropdown trigger="click" @command="doExport" @visible-change="(v) => v && loadExportFormats()">
               <el-button size="small" class="cluster-btn btn-neutral" :loading="exporting">
                 <el-icon><Download /></el-icon> {{ exportBtnText }}
@@ -3842,14 +3894,19 @@ onUnmounted(() => {
 
           <el-table-column prop="email" label="邮箱" min-width="190" show-overflow-tooltip>
             <template #default="{ row }">
-              <button
-                class="macos-tag-btn copy-btn"
-                title="点击复制邮箱"
-                @click="copyText(row.email)"
-              >
-                <span class="mono">{{ row.email }}</span>
-                <el-icon class="copy-ico"><CopyDocument /></el-icon>
-              </button>
+              <div class="email-cell">
+                <button
+                  class="macos-tag-btn copy-btn"
+                  title="点击复制邮箱"
+                  @click="copyText(row.email)"
+                >
+                  <span class="mono">{{ row.email }}</span>
+                  <el-icon class="copy-ico"><CopyDocument /></el-icon>
+                </button>
+                <el-tooltip v-if="row.at_exported_at" :content="atExportTip(row)" placement="top">
+                  <span class="at-export-badge">AT✓</span>
+                </el-tooltip>
+              </div>
             </template>
           </el-table-column>
 
@@ -4043,7 +4100,7 @@ onUnmounted(() => {
         </el-table>
       </div>
 
-      <!-- 底部固定 macOS 风格状态与全能分页栏 (10, 20, 30, 50, 100) -->
+      <!-- 底部固定 macOS 风格状态与全能分页栏 (10, 20, 30, 50, 100, 200, 500) -->
       <div class="macos-footer-bar">
         <div class="footer-status-left">
           <span v-if="selected.length" class="selected-badge">已勾选 <b>{{ selected.length }}</b> 项</span>
@@ -4054,7 +4111,7 @@ onUnmounted(() => {
           <el-pagination
             v-model:current-page="page"
             v-model:page-size="pageSize"
-            :page-sizes="[10, 20, 30, 50, 100]"
+            :page-sizes="[10, 20, 30, 50, 100, 200, 500]"
             :total="total"
             layout="total, sizes, prev, pager, next, jumper"
             size="small"
@@ -6866,6 +6923,30 @@ onUnmounted(() => {
 .acct-select {
   width: 120px;
 }
+.acct-select-atexport {
+  width: 128px;
+}
+
+/* 邮箱列：邮箱 + AT 已导出徽章 */
+.email-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.at-export-badge {
+  flex: none;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 3px 5px;
+  border-radius: 4px;
+  color: #34d399;
+  background: rgba(52, 211, 153, 0.12);
+  border: 1px solid rgba(52, 211, 153, 0.28);
+  white-space: nowrap;
+  cursor: default;
+}
 .acct-select :deep(.el-input__wrapper) {
   background: transparent !important;
   box-shadow: none !important;
@@ -6908,6 +6989,14 @@ onUnmounted(() => {
   align-items: center;
   gap: 6px;
   flex-wrap: wrap;
+}
+
+.export-chunk-select {
+  width: 116px;
+}
+.export-chunk-select :deep(.el-select__wrapper) {
+  border-radius: 6px;
+  font-size: 11.5px;
 }
 
 .cluster-btn {

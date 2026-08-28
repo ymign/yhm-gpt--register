@@ -48,10 +48,34 @@ SENTINEL_REQ_URL = "https://sentinel.openai.com/backend-api/sentinel/req"
 
 # ─── PoW 算力槽位并发控制器 ──────────────────────────────────
 # 无论外层网络并发（HTTP / IMAP 邮件 / SMS）开了 10 个还是 20 个，
-# 将 CPU 密集的 Node.js PoW 碰撞限制在最多 4 个同时进行（独占 4 个性能大核最高睿频），
-# 避免 10 个同时算互相争抢 CPU 导致整机发热降频、每个号算力耗时翻倍。
-_DEFAULT_POW_SLOTS = int(os.getenv("SENTINEL_MAX_POW_WORKERS", "4"))
-_POW_SEMAPHORE = threading.BoundedSemaphore(max(1, _DEFAULT_POW_SLOTS))
+# 将 CPU 密集的 Node.js PoW 碰撞限制在「槽位数」个同时进行，
+# 避免高并发时互相争抢 CPU 导致整机发热降频、每个号算力耗时翻倍。
+# 默认 6：i5-13500H 是 4 性能核 + 8 能效核，6 = 4 个 P 核打满 + 2 个 E 核分担。
+# 可被环境变量 SENTINEL_MAX_POW_WORKERS 覆盖；运行期可用 set_pow_slots()
+# 动态调整（WebUI「全自动批量」页的 PoW 槽位设置，存 settings 表持久化）。
+_DEFAULT_POW_SLOTS = int(os.getenv("SENTINEL_MAX_POW_WORKERS", "6"))
+_pow_slots = max(1, min(16, _DEFAULT_POW_SLOTS))
+_POW_SEMAPHORE = threading.BoundedSemaphore(_pow_slots)
+
+
+def get_pow_slots() -> int:
+    """当前 PoW 算力槽位数。"""
+    return _pow_slots
+
+
+def set_pow_slots(n: int) -> int:
+    """运行期动态调整 PoW 算力槽位（WebUI 设置保存时调用）。
+
+    直接替换全局信号量：正在解算的 worker 持有的是旧信号量对象，
+    with 退出时 release 的也是旧对象，计数自洽、安全。替换瞬间会短暂出现
+    旧 N + 新 M 并存（多几个 node 进程跑几秒），槽位本就是软限制，无害。
+    """
+    global _POW_SEMAPHORE, _pow_slots
+    n = int(6 if n is None else n)  # None = 用默认；0/负数会被下面 clamp 到 1
+    n = max(1, min(16, n))
+    _pow_slots = n
+    _POW_SEMAPHORE = threading.BoundedSemaphore(n)
+    return n
 
 
 def _resolve_node_binary() -> str:
@@ -294,7 +318,7 @@ def get_sentinel_token_via_quickjs(
             "behavior_duration_ms": behavior_ms,
         })
 
-        # 核心算力隔离：获取 PoW 算力槽位（限制至多 4 核心并发碰撞，避免 10 并发 CPU 争抢打架）
+        # 核心算力隔离：获取 PoW 算力槽位（限制同时碰撞的核数，避免高并发 CPU 争抢打架）
         with _POW_SEMAPHORE:
             solved = _run_quickjs_action(
                 action="solve",

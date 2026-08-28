@@ -46,6 +46,16 @@ try:
 except Exception as _e:
     logging.getLogger("webui").warning(f"[startup] release_stale 失败: {_e}")
 
+# 启动时应用持久化的 PoW 算力槽位配置（WebUI「全自动批量」页可改，存 settings 表）
+try:
+    import sentinel_quickjs as _sq
+    _slots = int(db.get_setting("sentinel_pow_slots", "") or _sq.get_pow_slots())
+    _applied = _sq.set_pow_slots(_slots)
+    if _applied != 6:
+        logging.getLogger("webui").info(f"[startup] PoW 算力槽位 = {_applied}（已持久化配置）")
+except Exception as _e:
+    logging.getLogger("webui").warning(f"[startup] 应用 PoW 槽位配置失败: {_e}")
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -240,6 +250,20 @@ def api_bulk_delete(req: BulkDeleteReq):
 def api_reset_failed():
     n = db.reset_failed_to_available()
     return {"ok": True, "reset": n, "stats": db.stats()}
+
+
+@app.post("/api/accounts/archive_failed")
+def api_archive_failed():
+    """一键归档：全部 failed → archived（只留存，退出注册/验活领取队列）。"""
+    n = db.archive_failed_accounts()
+    return {"ok": True, "archived": n, "stats": db.stats()}
+
+
+@app.post("/api/accounts/unarchive")
+def api_unarchive():
+    """一键取消归档：全部 archived → failed（失败原因原样保留，可再重置/重试）。"""
+    n = db.unarchive_accounts()
+    return {"ok": True, "unarchived": n, "stats": db.stats()}
 
 
 @app.post("/api/accounts/reset/{email}")
@@ -517,6 +541,7 @@ def api_registered(
     filter_oauth: str = "",
     filter_domain: str = "",
     filter_country: str = "",
+    filter_at_export: str = "",
 ):
     query_str = (q or search).strip()
     items = db.list_registered(
@@ -530,6 +555,7 @@ def api_registered(
         filter_oauth=filter_oauth,
         filter_domain=filter_domain,
         filter_country=filter_country,
+        filter_at_export=filter_at_export,
     )
     total = db.count_registered(
         filter_rt=filter,
@@ -540,6 +566,7 @@ def api_registered(
         filter_oauth=filter_oauth,
         filter_domain=filter_domain,
         filter_country=filter_country,
+        filter_at_export=filter_at_export,
     )
     return {"ok": True, "items": items, "total": total}
 
@@ -555,6 +582,7 @@ def api_registered_emails(
     filter_oauth: str = "",
     filter_domain: str = "",
     filter_country: str = "",
+    filter_at_export: str = "",
 ):
     """返回当前过滤条件下的所有账号邮箱列表（用于批量检测未检/全检）。"""
     query_str = (q or search).strip()
@@ -567,6 +595,7 @@ def api_registered_emails(
         filter_oauth=filter_oauth,
         filter_domain=filter_domain,
         filter_country=filter_country,
+        filter_at_export=filter_at_export,
     )
     return {"ok": True, "emails": emails, "total": len(emails)}
 
@@ -643,6 +672,8 @@ class ExportRegisteredReq(BaseModel):
     format: str = Field(..., description="格式 id，见 GET /api/registered/export/formats")
     emails: Optional[list[str]] = Field(None, description="要导出的 email 列表")
     all: bool = Field(False, description="true = 导出全部（跨页），忽略 emails")
+    chunk_size: int = Field(0, ge=0, description="每卷条数，0 = 不分卷（单文件）")
+    note: str = Field("", description="导出备注（仅 AT 导出留痕时记录）")
 
 
 @app.post("/api/registered/export")
@@ -672,6 +703,14 @@ def api_export_registered(req: ExportRegisteredReq):
 
     # 不跳行：勾了几个号就几行 / 几个文件，字段为空也照样出。
     # 手动导出**不做 refresh_token 刷新、不因为缺 rt 拦截**，这是和自动推送的区别。
+    # AT 导出留痕：手动导出「access_token」格式时给这批号打上已导出标记（时间+备注），
+    # 顶栏「AT导出」筛选器据此区分已导出/未导出。留痕失败不影响导出本身。
+    if fmt.id == "at":
+        try:
+            db.mark_at_exported([(r.get("email") or "") for r in rows], req.note)
+        except Exception as e:
+            logger.warning(f"AT 导出留痕失败（导出不受影响）: {e}")
+
     base = {
         "ok": True,
         "count": len(rows),
@@ -685,6 +724,21 @@ def api_export_registered(req: ExportRegisteredReq):
         #    会把**还没跑过的号**一起清掉。所以这里回传精确列表。
         "emails": [(r.get("email") or "") for r in rows],
     }
+
+    if req.chunk_size > 0:
+        # 分卷导出：每 chunk_size 条一个文件，全部打进一个 zip 一次下载。
+        # 覆盖 mode/filename/mime —— 前端照普通 download 分支存盘即可。
+        blob = export_formats.render_chunked(rows, fmt, req.chunk_size)
+        stem = filename.rsplit(".", 1)[0]
+        return {
+            **base,
+            "mode": "download",
+            "mime": "application/zip",
+            "filename": f"{stem}_分卷{export_formats.count_chunks(len(rows), req.chunk_size)}.zip",
+            "parts": export_formats.count_chunks(len(rows), req.chunk_size),
+            "b64": base64.b64encode(blob).decode("ascii"),
+            "size": len(blob),
+        }
 
     if fmt.mode == "download":
         # 二进制（zip / json 文件）走 base64，前端解出来直接存盘，不弹预览
@@ -1011,6 +1065,26 @@ def api_get_export_config():
 def api_save_export_config(req: SaveExportConfigReq):
     db.save_export_config(req.model_dump(exclude_none=True))
     return {"ok": True, "config": db.get_export_config()}
+
+
+class SavePowSlotsReq(BaseModel):
+    slots: int = Field(..., ge=1, le=16, description="PoW 算力槽位数（1-16）")
+
+
+@app.get("/api/settings/pow_slots")
+def api_get_pow_slots():
+    """当前 PoW 算力槽位（sentinel 并发碰撞的 node 进程数上限）。"""
+    import sentinel_quickjs
+    return {"ok": True, "slots": sentinel_quickjs.get_pow_slots()}
+
+
+@app.post("/api/settings/pow_slots")
+def api_save_pow_slots(req: SavePowSlotsReq):
+    """保存并立即生效 PoW 算力槽位（存 settings 表，重启后仍生效）。"""
+    import sentinel_quickjs
+    applied = sentinel_quickjs.set_pow_slots(req.slots)
+    db.set_setting("sentinel_pow_slots", str(applied))
+    return {"ok": True, "slots": applied}
 
 
 class TestExportReq(BaseModel):

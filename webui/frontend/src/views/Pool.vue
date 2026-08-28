@@ -22,6 +22,8 @@ import {
   resetAccount,
   bulkResetAccounts,
   releaseStale,
+  archiveFailed,
+  unarchiveAccounts,
   cleanRegisteredFromPool,
   startMailboxValidation,
   stopMailboxValidation,
@@ -55,7 +57,9 @@ const loading = ref(false)
 const providers = ref([])
 const byKind = ref({})
 
-const STATUS_TYPE = { available: 'success', in_use: 'warning', done: 'primary', failed: 'danger' }
+const STATUS_TYPE = { available: 'success', in_use: 'warning', done: 'primary', failed: 'danger', archived: 'info' }
+// 状态列中文文案（archived 归档 = 只留存不再使用）
+const STATUS_LABEL = { available: '可用', in_use: '运行中', done: '已完成', failed: '失败', archived: '已归档' }
 
 const kindOptions = computed(() =>
   providers.value.filter((p) => p.pooled).map((p) => ({
@@ -115,8 +119,11 @@ async function confirm(msg, title = '确认') {
 
 const failedCount = computed(() => statsStore.stats?.failed || 0)
 const inUseCount = computed(() => statsStore.stats?.in_use || 0)
+const archivedCount = computed(() => statsStore.stats?.archived || 0)
 const resettingFailed = ref(false)
 const releasingStale = ref(false)
+const archivingFailed = ref(false)
+const unarchiving = ref(false)
 
 async function resetFailedAll() {
   const count = failedCount.value
@@ -167,6 +174,68 @@ async function releaseStaleAll() {
   }
 }
 
+async function archiveFailedAll() {
+  const count = failedCount.value
+  const countMsg = count > 0 ? `全部 ${count} 个` : '全部'
+  const ok = await confirm(
+    `确定将号池中${countMsg}【失败 (failed)】邮箱一键归档为「已归档 (archived)」状态？\n\n` +
+    `归档 = 只留存、不再使用：这些号将退出注册与验活领取队列，但数据与失败原因全部保留，随时可查证。\n` +
+    `如需重新启用，可在「重置操作」里一键取消归档（恢复为 failed）。`,
+    '一键归档所有失败号',
+  )
+  if (!ok) return
+
+  archivingFailed.value = true
+  try {
+    const r = await archiveFailed()
+    ElNotification({
+      title: '归档完成',
+      message: `已成功将 ${r.archived} 个失败邮箱归档 (archived)，不再参与注册与验活。`,
+      type: 'success',
+      duration: 4000,
+    })
+    afterMutate()
+  } catch (e) {
+    ElNotification({
+      title: '归档失败',
+      message: e.message || '请求异常',
+      type: 'error',
+      duration: 4000,
+    })
+  } finally {
+    archivingFailed.value = false
+  }
+}
+
+async function unarchiveAll() {
+  const count = archivedCount.value
+  if (!count) {
+    ElMessage.info('当前没有已归档 (archived) 的邮箱')
+    return
+  }
+  const ok = await confirm(
+    `确定将全部 ${count} 个【已归档 (archived)】邮箱退回归档、恢复为 failed 状态？\n\n失败原因原样保留，可再用「一键重置所有失败号」重新入队。`,
+    '一键取消归档',
+  )
+  if (!ok) return
+
+  unarchiving.value = true
+  try {
+    const r = await unarchiveAccounts()
+    ElNotification({
+      title: '取消归档完成',
+      message: `已将 ${r.unarchived} 个归档邮箱恢复为 failed 状态。`,
+      type: 'success',
+      duration: 4000,
+    })
+    afterMutate()
+  } catch (e) {
+    ElMessage.error(e.message)
+  } finally {
+    unarchiving.value = false
+  }
+}
+
 function handleResetCommand(cmd) {
   if (cmd === 'selected') {
     resetSelected()
@@ -174,6 +243,8 @@ function handleResetCommand(cmd) {
     resetFailedAll()
   } else if (cmd === 'stale') {
     releaseStaleAll()
+  } else if (cmd === 'unarchive') {
+    unarchiveAll()
   }
 }
 
@@ -590,6 +661,7 @@ loadProviders()
             <el-option label="运行中 (in_use)" value="in_use" />
             <el-option label="已完成 (done)" value="done" />
             <el-option label="失败 (failed)" value="failed" />
+            <el-option label="📦 已归档 (archived)" value="archived" />
           </el-select>
 
           <el-select
@@ -621,6 +693,17 @@ loadProviders()
               <span v-if="failedCount > 0" style="margin-left: 2px; font-weight: 700">({{ failedCount }})</span>
             </el-button>
             <el-button size="small" :loading="releasingStale" @click="releaseStaleAll">释放卡死号</el-button>
+            <el-button
+              size="small"
+              type="info"
+              plain
+              class="macos-btn"
+              :loading="archivingFailed"
+              @click="archiveFailedAll"
+            >
+              📦 一键归档失败号
+              <span v-if="failedCount > 0" style="margin-left: 2px; font-weight: 700">({{ failedCount }})</span>
+            </el-button>
             <el-button size="small" type="warning" plain :loading="cleaningRegistered" @click="cleanRegisteredAll">清理已注册老号</el-button>
           </div>
 
@@ -694,6 +777,9 @@ loadProviders()
                 <el-dropdown-item command="stale">
                   ⏱️ 一键释放所有卡死号 (in_use ➔ available)
                 </el-dropdown-item>
+                <el-dropdown-item command="unarchive" :disabled="!archivedCount">
+                  📤 一键取消归档 (共 {{ archivedCount }} 项 · archived ➔ failed)
+                </el-dropdown-item>
               </el-dropdown-menu>
             </template>
           </el-dropdown>
@@ -765,7 +851,7 @@ loadProviders()
 
           <el-table-column label="状态" width="120" align="center">
             <template #default="{ row }">
-              <StatusDot :type="STATUS_TYPE[row.status] || 'info'" :text="row.status" />
+              <StatusDot :type="STATUS_TYPE[row.status] || 'info'" :text="STATUS_LABEL[row.status] || row.status" />
             </template>
           </el-table-column>
 

@@ -20,6 +20,12 @@ export const bulkDeleteAccounts = (payload) =>
 
 export const resetFailed = () => http.post('/api/accounts/reset_failed')
 
+// 归档 = 只留存不再使用：failed 全部 → archived（退出注册/验活领取队列）
+export const archiveFailed = () => http.post('/api/accounts/archive_failed')
+
+// 取消归档：archived 全部 → failed（失败原因保留）
+export const unarchiveAccounts = () => http.post('/api/accounts/unarchive')
+
 export const resetAccount = (email) =>
   http.post(`/api/accounts/reset/${encodeURIComponent(email)}`)
 
