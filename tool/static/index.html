@@ -1,0 +1,1633 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GPT 账号密码2FA管理与Sub2API转换助手</title>
+  <!-- Google Fonts: Inter & JetBrains Mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Roboto', 'sans-serif'],
+            mono: ['JetBrains Mono', 'Menlo', 'Monaco', 'Courier New', 'monospace'],
+          },
+          colors: {
+            brand: {
+              50: '#ecfdf5',
+              100: '#d1fae5',
+              400: '#34d399',
+              500: '#10b981',
+              600: '#059669',
+              700: '#047857',
+            },
+            dark: {
+              bg: '#080c14',
+              surface: '#0f172a',
+              card: 'rgba(17, 24, 39, 0.75)',
+              card2: 'rgba(30, 41, 59, 0.7)',
+              border: 'rgba(255, 255, 255, 0.08)',
+              borderHover: 'rgba(255, 255, 255, 0.16)',
+            }
+          }
+        }
+      }
+    }
+  </script>
+
+  <!-- Vue3 & Element Plus CDN -->
+  <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+  <link rel="stylesheet" href="https://unpkg.com/element-plus/dist/index.css" />
+  <script src="https://unpkg.com/element-plus"></script>
+  <script src="https://unpkg.com/@element-plus/icons-vue"></script>
+
+  <style>
+    /* 全局滚动条与现代暗夜质感 */
+    body {
+      background-color: #080c14;
+      color: #f8fafc;
+      overflow-x: hidden;
+      background-image:
+        radial-gradient(at 15% 15%, rgba(16, 185, 129, 0.08) 0px, transparent 50%),
+        radial-gradient(at 85% 8%, rgba(99, 102, 241, 0.08) 0px, transparent 50%),
+        radial-gradient(at 50% 95%, rgba(14, 165, 233, 0.05) 0px, transparent 60%);
+      background-attachment: fixed;
+    }
+
+    .custom-scroll::-webkit-scrollbar {
+      width: 5px;
+      height: 5px;
+    }
+    .custom-scroll::-webkit-scrollbar-thumb {
+      background: rgba(255, 255, 255, 0.15);
+      border-radius: 4px;
+    }
+    .custom-scroll::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    /* 毛玻璃卡片与发光效果 */
+    .glass-card {
+      background: rgba(15, 23, 42, 0.72);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.05) inset;
+    }
+    .glass-card:hover {
+      border-color: rgba(255, 255, 255, 0.14);
+    }
+
+    /* 现代表格定制 */
+    .el-table {
+      --el-table-bg-color: transparent !important;
+      --el-table-tr-bg-color: transparent !important;
+      --el-table-header-bg-color: rgba(15, 23, 42, 0.95) !important;
+      --el-table-border-color: rgba(255, 255, 255, 0.06) !important;
+      --el-table-text-color: #f1f5f9 !important;
+      --el-table-row-hover-bg-color: rgba(30, 41, 59, 0.5) !important;
+      border-radius: 0.875rem !important;
+      overflow: hidden !important;
+    }
+    .el-table th.el-table__cell {
+      background-color: rgba(15, 23, 42, 0.95) !important;
+      color: #94a3b8 !important;
+      font-weight: 600 !important;
+      font-size: 0.75rem !important;
+      letter-spacing: 0.025em !important;
+      text-transform: uppercase !important;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08) !important;
+      padding: 10px 0 !important;
+    }
+    .el-table td.el-table__cell {
+      border-bottom: 1px solid rgba(255, 255, 255, 0.04) !important;
+      padding: 9px 0 !important;
+    }
+
+    /* 复选框美化 */
+    input[type="checkbox"] {
+      appearance: none;
+      -webkit-appearance: none;
+      width: 1.05rem;
+      height: 1.05rem;
+      background-color: rgba(15, 23, 42, 0.8);
+      border: 1.5px solid rgba(148, 163, 184, 0.4);
+      border-radius: 0.35rem;
+      display: inline-grid;
+      place-content: center;
+      cursor: pointer;
+      transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+    input[type="checkbox"]:hover {
+      border-color: #10b981;
+      box-shadow: 0 0 8px rgba(16, 185, 129, 0.3);
+    }
+    input[type="checkbox"]:checked {
+      background-color: #10b981;
+      border-color: #10b981;
+      box-shadow: 0 0 10px rgba(16, 185, 129, 0.4);
+    }
+    input[type="checkbox"]:checked::before {
+      content: "";
+      width: 0.45rem;
+      height: 0.25rem;
+      border-left: 2px solid #ffffff;
+      border-bottom: 2px solid #ffffff;
+      transform: rotate(-45deg) translate(0.5px, -0.5px);
+    }
+
+    /* 原项目同款胶囊徽章 */
+    .sec-badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1.5px 8px;
+      font-size: 11px;
+      font-weight: 700;
+      border-radius: 9999px;
+      cursor: pointer;
+      user-select: none;
+      transition: all 0.15s ease;
+    }
+    .sec-badge-ok {
+      background: rgba(16, 185, 129, 0.12);
+      color: #34d399;
+      border: 1px solid rgba(16, 185, 129, 0.35);
+    }
+    .sec-badge-ok:hover {
+      background: rgba(16, 185, 129, 0.24);
+      color: #6ee7b7;
+      box-shadow: 0 0 10px rgba(16, 185, 129, 0.3);
+    }
+    .sec-badge-no {
+      background: rgba(148, 163, 184, 0.08);
+      color: #94a3b8;
+      border: 1px solid rgba(148, 163, 184, 0.2);
+    }
+
+    /* 对话框暗黑毛玻璃风格 */
+    .dark-dialog .el-dialog {
+      background: rgba(15, 23, 42, 0.92) !important;
+      backdrop-filter: blur(24px) !important;
+      -webkit-backdrop-filter: blur(24px) !important;
+      border: 1px solid rgba(255, 255, 255, 0.1) !important;
+      border-radius: 1.25rem !important;
+      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.7) !important;
+    }
+    .dark-dialog .el-dialog__title {
+      color: #f8fafc !important;
+      font-weight: 700 !important;
+      font-size: 1rem !important;
+    }
+    .dark-dialog .el-dialog__body {
+      color: #cbd5e1 !important;
+      padding: 1.25rem !important;
+    }
+
+    /* 按钮微光渐变 */
+    .btn-glow-brand {
+      background: linear-gradient(135deg, #059669 0%, #10b981 100%);
+      box-shadow: 0 4px 14px -2px rgba(16, 185, 129, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.15) inset;
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+    .btn-glow-brand:hover {
+      background: linear-gradient(135deg, #10b981 0%, #34d399 100%);
+      box-shadow: 0 6px 20px -2px rgba(16, 185, 129, 0.65), 0 0 0 1px rgba(255, 255, 255, 0.25) inset;
+      transform: translateY(-1px);
+    }
+
+    .btn-glow-amber {
+      background: linear-gradient(135deg, #d97706 0%, #f59e0b 100%);
+      box-shadow: 0 4px 14px -2px rgba(245, 158, 11, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.15) inset;
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+    .btn-glow-amber:hover {
+      background: linear-gradient(135deg, #f59e0b 0%, #fbbf24 100%);
+      box-shadow: 0 6px 20px -2px rgba(245, 158, 11, 0.65), 0 0 0 1px rgba(255, 255, 255, 0.25) inset;
+      transform: translateY(-1px);
+    }
+
+    .btn-neutral {
+      background: rgba(30, 41, 59, 0.7);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      transition: all 0.2s ease;
+    }
+    .btn-neutral:hover {
+      background: rgba(51, 65, 85, 0.85);
+      border-color: rgba(255, 255, 255, 0.18);
+      transform: translateY(-1px);
+    }
+  </style>
+</head>
+<body class="p-3 md:p-6 min-h-screen text-slate-100 antialiased">
+  <div id="app" class="max-w-7xl mx-auto space-y-5">
+
+    <!-- 顶部现代化导航栏 -->
+    <header class="glass-card rounded-2xl p-4 flex flex-col md:flex-row md:items-center justify-between gap-4 border border-dark-border">
+      <div class="flex items-center space-x-3.5">
+        <div class="w-12 h-12 rounded-2xl bg-gradient-to-br from-brand-600 via-emerald-500 to-teal-400 p-[1.5px] shadow-lg shadow-brand-500/20 flex items-center justify-center">
+          <div class="w-full h-full bg-slate-950/80 backdrop-blur-md rounded-[14px] flex items-center justify-center">
+            <span class="text-2xl font-bold bg-gradient-to-tr from-brand-400 to-teal-200 bg-clip-text text-transparent">⚡</span>
+          </div>
+        </div>
+        <div>
+          <div class="flex items-center space-x-2.5">
+            <h1 class="text-xl md:text-2xl font-extrabold tracking-tight bg-gradient-to-r from-white via-slate-100 to-slate-400 bg-clip-text text-transparent">
+              GPT 账号密码2FA管理与Sub2API转换助手
+            </h1>
+            <span class="px-2 py-0.5 text-[10px] font-bold tracking-wider uppercase bg-brand-500/10 text-brand-400 border border-brand-500/30 rounded-md">
+              SQLite 持久化版
+            </span>
+          </div>
+          <p class="text-xs text-slate-400 mt-0.5 flex items-center space-x-1.5">
+            <span>🛡️ 账密+2FA批量登录</span>
+            <span>·</span>
+            <span>🔑 官方免邮箱改密</span>
+            <span>·</span>
+            <span>⏱️ 实时 2FA 动态码</span>
+            <span>·</span>
+            <span>⚡ 一号一独立 IP 防风控</span>
+          </p>
+        </div>
+      </div>
+
+      <!-- 顶部 macOS 风格胶囊 Tab 切换 -->
+      <div class="flex items-center space-x-3 flex-wrap">
+        <div class="flex bg-slate-950/60 p-1.5 rounded-xl border border-white/10 shadow-inner">
+          <button @click="currentTab = 'accounts'"
+                  class="px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all flex items-center space-x-1.5"
+                  :class="currentTab === 'accounts' ? 'bg-gradient-to-r from-brand-600 to-emerald-600 text-white shadow-md shadow-brand-600/30 font-bold' : 'text-slate-400 hover:text-slate-200'">
+            <span>📋</span>
+            <span>账号管理中心</span>
+            <span v-if="accountStats.total > 0" class="px-1.5 py-0.2 bg-black/40 rounded-full text-[10px] ml-1 font-mono">
+              {{ accountStats.total }}
+            </span>
+          </button>
+          <button @click="currentTab = 'import'"
+                  class="px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all flex items-center space-x-1.5"
+                  :class="currentTab === 'import' ? 'bg-gradient-to-r from-brand-600 to-emerald-600 text-white shadow-md shadow-brand-600/30 font-bold' : 'text-slate-400 hover:text-slate-200'">
+            <span>📥</span>
+            <span>批量导入</span>
+          </button>
+          <button @click="currentTab = 'settings'"
+                  class="px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all flex items-center space-x-1.5"
+                  :class="currentTab === 'settings' ? 'bg-gradient-to-r from-brand-600 to-emerald-600 text-white shadow-md shadow-brand-600/30 font-bold' : 'text-slate-400 hover:text-slate-200'">
+            <span>⚙️</span>
+            <span>系统与代理池</span>
+          </button>
+          <button @click="openTotpCalcModal = true"
+                  class="px-3 py-1.5 text-xs font-semibold rounded-lg transition text-slate-400 hover:text-slate-200 flex items-center space-x-1.5">
+            <span>⏱️</span>
+            <span>2FA 速查</span>
+          </button>
+        </div>
+
+        <!-- 任务运行状态指示 -->
+        <span class="px-3 py-1.5 text-xs rounded-xl border flex items-center space-x-2"
+              :class="taskStatusBadgeClass">
+          <span class="w-2 h-2 rounded-full animate-pulse" :class="taskStatusDotClass"></span>
+          <span class="font-medium tracking-wide">{{ taskStatusText }}</span>
+        </span>
+      </div>
+    </header>
+
+    <!-- ──────────────────────── TAB 1: 账号管理中心 ──────────────────────── -->
+    <div v-if="currentTab === 'accounts'" class="space-y-4">
+
+      <!-- 现代化 KPI 仪表盘指标卡片 -->
+      <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+        <div class="glass-card rounded-2xl p-4 flex flex-col justify-between hover:-translate-y-0.5 transition-all">
+          <span class="text-xs text-slate-400 font-medium tracking-wide">总账号数</span>
+          <div class="flex items-baseline space-x-1 mt-1.5">
+            <span class="text-2xl font-black text-white font-mono">{{ accountStats.total }}</span>
+            <span class="text-xs text-slate-500 font-medium">个</span>
+          </div>
+        </div>
+
+        <div class="glass-card rounded-2xl p-4 flex flex-col justify-between border-brand-500/20 hover:-translate-y-0.5 transition-all">
+          <span class="text-xs text-brand-400 font-semibold tracking-wide flex items-center space-x-1">
+            <span>⚡ Sub2API 就绪</span>
+          </span>
+          <div class="flex items-baseline space-x-1 mt-1.5">
+            <span class="text-2xl font-black text-brand-400 font-mono">{{ accountStats.hasToken }}</span>
+            <span class="text-xs text-slate-500 font-medium">个</span>
+          </div>
+        </div>
+
+        <div class="glass-card rounded-2xl p-4 flex flex-col justify-between hover:-translate-y-0.5 transition-all">
+          <span class="text-xs text-emerald-400 font-semibold tracking-wide">执行成功</span>
+          <div class="flex items-baseline space-x-1 mt-1.5">
+            <span class="text-2xl font-black text-emerald-400 font-mono">{{ accountStats.success }}</span>
+            <span class="text-xs text-slate-500 font-medium">个</span>
+          </div>
+        </div>
+
+        <div class="glass-card rounded-2xl p-4 flex flex-col justify-between hover:-translate-y-0.5 transition-all">
+          <span class="text-xs text-rose-400 font-semibold tracking-wide">执行失败</span>
+          <div class="flex items-baseline space-x-1 mt-1.5">
+            <span class="text-2xl font-black text-rose-400 font-mono">{{ accountStats.failed }}</span>
+            <span class="text-xs text-slate-500 font-medium">个</span>
+          </div>
+        </div>
+
+        <div class="glass-card rounded-2xl p-4 flex flex-col justify-between hover:-translate-y-0.5 transition-all">
+          <span class="text-xs text-amber-400 font-semibold tracking-wide">已改密账号</span>
+          <div class="flex items-baseline space-x-1 mt-1.5">
+            <span class="text-2xl font-black text-amber-400 font-mono">{{ accountStats.changedPwd }}</span>
+            <span class="text-xs text-slate-500 font-medium">个</span>
+          </div>
+        </div>
+
+        <div class="glass-card rounded-2xl p-4 flex flex-col justify-between hover:-translate-y-0.5 transition-all">
+          <span class="text-xs text-cyan-400 font-semibold flex items-center justify-between">
+            <span>2FA 刷新周期</span>
+            <span class="text-xs text-cyan-300 font-mono font-bold">{{ totpRemaining }}s</span>
+          </span>
+          <div class="w-full bg-slate-900/80 h-2 rounded-full mt-2.5 overflow-hidden border border-white/5">
+            <div class="bg-gradient-to-r from-cyan-500 to-teal-400 h-full transition-all duration-1000 shadow-sm" :style="{ width: `${(totpRemaining / 30) * 100}%` }"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 操作工具栏与筛选器 -->
+      <div class="glass-card rounded-2xl p-4 space-y-3.5">
+        <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+
+          <!-- 批量操作主按钮组 -->
+          <div class="flex items-center space-x-2 flex-wrap gap-y-2">
+            <!-- 勾选状态与快捷全选/反选栏 -->
+            <div class="flex items-center bg-slate-950/70 border border-white/10 rounded-xl px-3 py-1.5 space-x-2 text-xs shadow-inner">
+              <span class="font-medium text-slate-300">
+                已选 <b class="text-brand-400 font-mono text-sm">{{ selectedEmails.length }}</b> / {{ accountList.length }}
+              </span>
+              <button @click="selectAllCurrentPage" class="px-2 py-0.5 bg-slate-800/80 hover:bg-slate-700 text-slate-200 rounded text-[11px] transition">
+                全选
+              </button>
+              <button @click="invertSelection" class="px-2 py-0.5 bg-slate-800/80 hover:bg-slate-700 text-slate-200 rounded text-[11px] transition">
+                反选
+              </button>
+              <button @click="clearSelection" class="px-2 py-0.5 bg-slate-800/80 hover:bg-slate-700 text-slate-400 rounded text-[11px] transition">
+                清空
+              </button>
+            </div>
+
+            <!-- 批量 OAuth 授权 -->
+            <button @click="openBatchAuthModal"
+                    class="px-4 py-2 btn-glow-brand text-white text-xs font-bold rounded-xl flex items-center space-x-1.5">
+              <span>⚡</span>
+              <span>批量 OAuth 授权并提取 Sub2API</span>
+            </button>
+
+            <!-- 批量修改密码 -->
+            <button @click="openBatchChangePwdModal"
+                    class="px-3.5 py-2 btn-glow-amber text-white text-xs font-bold rounded-xl flex items-center space-x-1.5">
+              <span>🔑</span>
+              <span>批量修改密码</span>
+            </button>
+
+            <!-- 多格式导出下拉菜单 -->
+            <el-dropdown trigger="click" @command="handleExportCommand">
+              <button class="px-3.5 py-2 btn-neutral text-slate-200 text-xs font-bold rounded-xl flex items-center space-x-1.5">
+                <span>📥</span>
+                <span>导出数据</span>
+                <span class="text-[10px] opacity-70">▼</span>
+              </button>
+              <template #dropdown>
+                <el-dropdown-menu class="dark:bg-slate-900 border-dark-border">
+                  <el-dropdown-item command="sub2api">
+                    <span class="font-bold text-brand-400">⚡ 导出 Sub2API JSON (sub2api_accounts.json)</span>
+                  </el-dropdown-item>
+                  <el-dropdown-item command="session">
+                    <span>🌐 导出 ChatGPT Session JSON (chatgpt_sessions.json)</span>
+                  </el-dropdown-item>
+                  <el-dropdown-item divided command="email_pwd_2fa">
+                    <span>📄 导出 邮箱----新密码----2FA (txt)</span>
+                  </el-dropdown-item>
+                  <el-dropdown-item command="email_pwd">
+                    <span>📄 导出 邮箱----新密码 (txt)</span>
+                  </el-dropdown-item>
+                  <el-dropdown-item command="email_at">
+                    <span>📄 导出 邮箱----AccessToken (txt)</span>
+                  </el-dropdown-item>
+                  <el-dropdown-item command="at">
+                    <span>📄 导出 纯 AccessToken 列表 (txt)</span>
+                  </el-dropdown-item>
+                  <el-dropdown-item command="rt">
+                    <span>📄 导出 纯 RefreshToken 列表 (txt)</span>
+                  </el-dropdown-item>
+                  <el-dropdown-item divided command="failed">
+                    <span class="text-rose-400">❌ 导出 失败账号及原因 (txt)</span>
+                  </el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
+
+            <!-- 批量删除 -->
+            <button v-if="selectedEmails.length > 0"
+                    @click="batchDeleteAccounts"
+                    class="px-3 py-2 bg-rose-950/60 hover:bg-rose-900 border border-rose-700/50 text-rose-300 text-xs font-semibold rounded-xl transition flex items-center space-x-1 shadow">
+              <span>🗑️</span>
+              <span>删除选中 ({{ selectedEmails.length }})</span>
+            </button>
+          </div>
+
+          <!-- 搜索与状态过滤 -->
+          <div class="flex items-center space-x-2 flex-wrap gap-y-2">
+            <el-select v-model="filterStatus" placeholder="全部状态" size="small" style="width: 120px" @change="fetchAccountList">
+              <el-option label="全部状态" value="" />
+              <el-option label="待处理" value="idle" />
+              <el-option label="运行中" value="running" />
+              <el-option label="成功" value="success" />
+              <el-option label="失败" value="failed" />
+            </el-select>
+
+            <div class="relative w-48 sm:w-64">
+              <input v-model="searchKeyword"
+                     @keyup.enter="fetchAccountList"
+                     placeholder="搜索邮箱 / 备注..."
+                     class="w-full pl-8 pr-3 py-1.5 text-xs bg-slate-950/80 border border-white/10 rounded-lg text-slate-200 focus:outline-none focus:border-brand-500 transition" />
+              <span class="absolute left-2.5 top-2 text-xs text-slate-500">🔍</span>
+            </div>
+
+            <button @click="fetchAccountList"
+                    title="刷新账号列表"
+                    class="p-2 btn-neutral text-slate-300 rounded-lg text-xs transition">
+              🔄
+            </button>
+          </div>
+        </div>
+
+        <!-- 任务运行时快捷控制条 -->
+        <div v-if="taskStatus.state === 'running' || taskStatus.state === 'paused'"
+             class="bg-slate-950/80 border border-brand-500/30 rounded-xl p-3 flex items-center justify-between shadow-lg shadow-brand-500/10">
+          <div class="flex items-center space-x-3">
+            <span class="w-3 h-3 rounded-full bg-brand-500 animate-ping"></span>
+            <span class="text-xs text-slate-300">
+              正在执行批量任务: 完成 <b>{{ taskStatus.done }}</b> / <b>{{ taskStatus.total }}</b>
+              (成功 <span class="text-brand-400 font-bold">{{ taskStatus.success }}</span>, 失败 <span class="text-rose-400 font-bold">{{ taskStatus.fail }}</span>)
+              · 耗时 {{ taskStatus.elapsed_seconds }}s
+            </span>
+          </div>
+          <div class="flex items-center space-x-2">
+            <button v-if="taskStatus.state === 'running'" @click="pauseTask" class="px-2.5 py-1 bg-amber-600 hover:bg-amber-500 text-white text-xs rounded-lg font-medium">暂停</button>
+            <button v-if="taskStatus.state === 'paused'" @click="resumeTask" class="px-2.5 py-1 bg-brand-600 hover:bg-brand-500 text-white text-xs rounded-lg font-medium">继续</button>
+            <button @click="stopTask" class="px-2.5 py-1 bg-rose-600 hover:bg-rose-500 text-white text-xs rounded-lg font-medium">终止</button>
+          </div>
+        </div>
+
+        <!-- 账号主表格 -->
+        <div class="overflow-x-auto rounded-xl border border-white/5 bg-slate-950/40">
+          <el-table
+            :data="accountList"
+            row-key="email"
+            style="width: 100%"
+            size="small"
+            empty-text="暂无账号数据，请点击上方【批量导入】进行添加">
+
+            <!-- 第一列：原生多选复选框列 -->
+            <el-table-column width="48" align="center" header-align="center">
+              <template #header>
+                <div class="flex items-center justify-center">
+                  <input type="checkbox"
+                         :checked="isAllSelected"
+                         @change="toggleSelectAll($event.target.checked)"
+                         title="全选 / 清空当前页" />
+                </div>
+              </template>
+              <template #default="{ row }">
+                <div class="flex items-center justify-center">
+                  <input type="checkbox"
+                         :value="row.email"
+                         v-model="selectedEmails" />
+                </div>
+              </template>
+            </el-table-column>
+
+            <!-- 邮箱列 -->
+            <el-table-column label="账号邮箱" min-width="190">
+              <template #default="{ row }">
+                <div class="flex items-center justify-between group">
+                  <span class="font-mono text-xs text-slate-200 select-all font-medium">{{ row.email }}</span>
+                  <button @click="copyText(row.email, '邮箱已复制')" class="opacity-0 group-hover:opacity-100 p-1 text-[10px] text-slate-400 hover:text-slate-100 transition">
+                    📋
+                  </button>
+                </div>
+              </template>
+            </el-table-column>
+
+            <!-- 密码/2FA 徽章与实时动态码列 -->
+            <el-table-column label="密码 / 2FA 状态" min-width="170">
+              <template #default="{ row }">
+                <div class="space-y-1 py-1">
+                  <div class="flex items-center space-x-1.5 flex-wrap gap-y-1">
+                    <span class="sec-badge sec-badge-ok"
+                          @click="copyText(row.password, '密码已复制')"
+                          :title="'当前密码: ' + row.password + ' (点击一键复制)'">
+                      密码✓
+                    </span>
+                    <span v-if="row.totp_secret"
+                          class="sec-badge sec-badge-ok"
+                          @click="copyText(row.totp_secret, '2FA 密钥已复制')"
+                          :title="'2FA Base32 密钥: ' + row.totp_secret + ' (点击复制密钥)'">
+                      2FA✓
+                    </span>
+                    <span v-else class="sec-badge sec-badge-no" title="未设置 2FA 密钥">
+                      2FA×
+                    </span>
+                  </div>
+
+                  <!-- 实时 6 位 TOTP 动态码绿色大字 -->
+                  <div v-if="row.totp_secret" class="flex items-center space-x-1">
+                    <span class="font-mono font-bold text-xs text-brand-400 bg-brand-950/80 px-2 py-0.5 rounded border border-brand-500/40 cursor-pointer hover:bg-brand-900 transition flex items-center space-x-1"
+                          @click="copyText(row.current_totp, '2FA 动态码已复制')"
+                          title="点击一键复制 6 位 2FA 动态码">
+                      <span>🔑</span>
+                      <span>{{ row.current_totp || '计算中' }}</span>
+                    </span>
+                  </div>
+                </div>
+              </template>
+            </el-table-column>
+
+            <!-- 新密码（改密后） -->
+            <el-table-column label="新密码" min-width="130">
+              <template #default="{ row }">
+                <div v-if="row.new_password" class="flex items-center justify-between group">
+                  <span class="font-mono text-xs text-amber-300 font-semibold truncate max-w-[100px]" :title="row.new_password">
+                    {{ row.new_password }}
+                  </span>
+                  <button @click="copyText(row.new_password, '新密码已复制')" class="opacity-0 group-hover:opacity-100 p-1 text-[10px] text-amber-400 hover:text-amber-200">
+                    📋
+                  </button>
+                </div>
+                <span v-else class="text-[11px] text-slate-600">-</span>
+              </template>
+            </el-table-column>
+
+            <!-- 状态 -->
+            <el-table-column label="状态" width="95" align="center">
+              <template #default="{ row }">
+                <span v-if="row.status === 'success'" class="px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider bg-emerald-950/80 text-emerald-400 border border-emerald-600/40 rounded-full shadow-sm">
+                  成功
+                </span>
+                <span v-else-if="row.status === 'failed'" class="px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider bg-rose-950/80 text-rose-400 border border-rose-600/40 rounded-full shadow-sm">
+                  失败
+                </span>
+                <span v-else-if="row.status === 'running'" class="px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider bg-cyan-950/80 text-cyan-400 border border-cyan-600/40 rounded-full animate-pulse">
+                  运行中
+                </span>
+                <span v-else class="px-2.5 py-0.5 text-[10px] font-semibold bg-slate-900 text-slate-400 border border-white/10 rounded-full">
+                  待处理
+                </span>
+              </template>
+            </el-table-column>
+
+            <!-- 凭证就绪情况 -->
+            <el-table-column label="凭证/套餐" min-width="120">
+              <template #default="{ row }">
+                <div class="flex items-center space-x-1.5 flex-wrap gap-y-1">
+                  <span v-if="row.access_token" class="px-1.5 py-0.5 text-[10px] font-bold bg-brand-950/90 text-brand-300 border border-brand-500/50 rounded shadow-sm" title="AccessToken 就绪">
+                    AT✓
+                  </span>
+                  <span v-if="row.refresh_token" class="px-1.5 py-0.5 text-[10px] font-bold bg-blue-950/90 text-blue-300 border border-blue-500/50 rounded shadow-sm" title="Codex RefreshToken 就绪 (永久免登)">
+                    RT✓
+                  </span>
+                  <span v-if="row.plan_type" class="px-1.5 py-0.5 text-[10px] font-semibold bg-purple-950/70 text-purple-300 border border-purple-500/40 rounded uppercase">
+                    {{ row.plan_type }}
+                  </span>
+                </div>
+              </template>
+            </el-table-column>
+
+            <!-- 进度/错误信息 -->
+            <el-table-column label="最新步骤/结果" min-width="150">
+              <template #default="{ row }">
+                <div class="truncate text-xs font-mono" :class="row.error ? 'text-rose-400' : 'text-slate-400'" :title="row.error || row.step">
+                  {{ row.error || row.step || '就绪' }}
+                </div>
+              </template>
+            </el-table-column>
+
+            <!-- 操作按钮组 -->
+            <el-table-column label="操作" width="260" fixed="right" align="center">
+              <template #default="{ row }">
+                <div class="flex items-center justify-center space-x-1">
+                  <!-- 单独授权 -->
+                  <button @click="startSingleAuth(row)"
+                          title="单号 OAuth 授权并获取 Sub2API 凭据"
+                          class="p-1 px-2 text-xs bg-emerald-950/80 hover:bg-emerald-900 text-emerald-300 border border-emerald-700/60 rounded-lg transition font-medium">
+                    ⚡ 授权
+                  </button>
+                  <!-- 导出 Sub2 JSON 按钮 -->
+                  <button @click="exportSingleSub2(row)"
+                          title="导出此账号的 Sub2API 标准 JSON"
+                          class="p-1 px-2 text-xs bg-teal-950/80 hover:bg-teal-900 text-teal-300 border border-teal-700/60 rounded-lg transition font-medium">
+                    📦 导出Sub2
+                  </button>
+                  <!-- 单独改密 -->
+                  <button @click="openSingleChangePwdModal(row)"
+                          title="向 OpenAI 官方申请免邮箱改密"
+                          class="p-1 px-2 text-xs bg-amber-950/80 hover:bg-amber-900 text-amber-300 border border-amber-700/60 rounded-lg transition font-medium">
+                    🔑 改密
+                  </button>
+                  <!-- 弹出日志 -->
+                  <button @click="openAccountLogModal(row)"
+                          title="查看该账号详细时序日志"
+                          class="p-1 px-1.5 text-xs bg-slate-900/80 hover:bg-slate-800 text-slate-300 border border-white/10 rounded-lg transition">
+                    📄 日志
+                  </button>
+                  <!-- 删除 -->
+                  <button @click="deleteSingleAccount(row.email)"
+                          title="从数据库删除该账号"
+                          class="p-1 px-1.5 text-xs bg-rose-950/50 hover:bg-rose-900/80 text-rose-400 border border-rose-800/40 rounded-lg transition">
+                    🗑️
+                  </button>
+                </div>
+              </template>
+            </el-table-column>
+          </el-table>
+        </div>
+
+        <!-- 分页控件 -->
+        <div class="flex items-center justify-between pt-2">
+          <span class="text-xs text-slate-400 font-medium">
+            共 <b class="text-slate-200 font-mono">{{ accountStats.total }}</b> 个账号记录
+          </span>
+          <el-pagination
+            v-model:current-page="pagination.page"
+            v-model:page-size="pagination.pageSize"
+            :page-sizes="[50, 100, 200, 500]"
+            layout="sizes, prev, pager, next"
+            :total="accountStats.total"
+            @size-change="fetchAccountList"
+            @current-change="fetchAccountList"
+            size="small" />
+        </div>
+      </div>
+    </div>
+
+    <!-- ──────────────────────── TAB 2: 批量导入数据 ──────────────────────── -->
+    <div v-if="currentTab === 'import'" class="glass-card rounded-2xl p-6 space-y-4">
+      <div class="flex items-center justify-between">
+        <div>
+          <h2 class="text-base font-bold text-white flex items-center space-x-2">
+            <span>📥</span>
+            <span>批量导入账号数据 (自动持久化到 SQLite)</span>
+          </h2>
+          <p class="text-xs text-slate-400 mt-1">
+            支持标准格式：<code class="text-brand-400 font-mono font-bold">邮箱----密码----2FA</code> 或 <code class="text-amber-400 font-mono font-bold">邮箱----密码----2FA----指定新密码</code>，每行一条。
+          </p>
+        </div>
+        <button @click="importText = ''" class="text-xs text-slate-400 hover:text-slate-200 transition">清空输入</button>
+      </div>
+
+      <textarea
+        v-model="importText"
+        rows="12"
+        placeholder="示例格式：&#10;adelinastrawther1956@outlook.com----xp1%QKOu*aor4ZRF----YX6JQLZL3ENV4B3AHLMZ6Q3LTMNTLFKE&#10;bettiedestra39016@outlook.com----NBO^Wt!vFXYKBL4n----NFPFEEOFG3MOSXOO77QANC5RVFOEKKJE----Yhm080634!NewPass"
+        class="w-full p-4 bg-slate-950/80 border border-white/10 rounded-xl font-mono text-xs text-slate-200 focus:outline-none focus:border-brand-500 transition leading-relaxed custom-scroll"></textarea>
+
+      <div class="flex items-center justify-between pt-2">
+        <span class="text-xs text-slate-400">
+          已输入 <b class="text-brand-400 font-mono font-bold text-sm">{{ importLinesCount }}</b> 行数据
+        </span>
+        <div class="flex items-center space-x-3">
+          <button @click="handleImportOnly"
+                  :disabled="importLinesCount === 0"
+                  class="px-5 py-2.5 btn-neutral disabled:opacity-50 text-slate-200 font-bold text-xs rounded-xl shadow transition">
+            💾 仅导入并持久化入库
+          </button>
+          <button @click="handleImportAndRun"
+                  :disabled="importLinesCount === 0"
+                  class="px-6 py-2.5 btn-glow-brand disabled:opacity-50 text-white font-bold text-xs rounded-xl flex items-center space-x-1.5">
+            <span>⚡</span>
+            <span>导入并立即启动授权/改密</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ──────────────────────── TAB 3: 系统与代理池配置 ──────────────────────── -->
+    <div v-if="currentTab === 'settings'" class="glass-card rounded-2xl p-6 space-y-6">
+      <div>
+        <h2 class="text-base font-bold text-white flex items-center space-x-2">
+          <span>⚙️</span>
+          <span>系统参数与代理池持久化配置</span>
+        </h2>
+        <p class="text-xs text-slate-400 mt-1">配置将自动保存至 SQLite settings 表，页面刷新或重启服务后永不丢失。</p>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+
+        <!-- 代理池设置 -->
+        <div class="space-y-3">
+          <div class="flex items-center justify-between">
+            <label class="text-xs font-bold text-slate-300">全局代理池 (支持动态住宅代理 / 一号一独立 IP)</label>
+            <span class="text-[11px] text-slate-500">支持 SOCKS5 / HTTP 格式</span>
+          </div>
+          <textarea
+            v-model="systemSettings.proxy_pool"
+            rows="8"
+            placeholder="socks5h://user:pass@host:port&#10;http://user:pass@host:port"
+            class="w-full p-3.5 bg-slate-950/80 border border-white/10 rounded-xl font-mono text-xs text-slate-200 focus:outline-none focus:border-brand-500 transition leading-relaxed custom-scroll"></textarea>
+          <p class="text-[11px] text-slate-500">💡 支持动态住宅代理。多线程并发执行时，系统自动为每个账号分配独立动态 Session ID，实现「一号一独立 IP」彻底防风控。</p>
+        </div>
+
+        <!-- 并发与运行参数 -->
+        <div class="space-y-4 bg-slate-950/60 p-4 rounded-xl border border-white/5">
+          <div>
+            <div class="flex justify-between text-xs font-bold text-slate-300 mb-1">
+              <span>并发线程数 (Concurrency)</span>
+              <span class="text-brand-400 font-mono font-bold">{{ systemSettings.concurrency }} 线程</span>
+            </div>
+            <el-slider v-model="systemSettings.concurrency" :min="1" :max="50" />
+            <span class="text-[11px] text-slate-500">推荐 5~15 线程以保障网络与 PoW 求解稳定性</span>
+          </div>
+
+          <div>
+            <div class="flex justify-between text-xs font-bold text-slate-300 mb-1">
+              <span>单号超时时间 (Timeout)</span>
+              <span class="text-brand-400 font-mono font-bold">{{ systemSettings.timeout }} 秒</span>
+            </div>
+            <el-slider v-model="systemSettings.timeout" :min="15" :max="120" />
+          </div>
+
+          <div>
+            <label class="text-xs font-bold text-slate-300 block mb-1">改密默认前缀</label>
+            <input v-model="systemSettings.password_prefix"
+                   placeholder="Gpt@"
+                   class="w-full px-3 py-2 bg-slate-900 border border-white/10 rounded-lg text-xs font-mono text-slate-200 focus:outline-none focus:border-brand-500" />
+          </div>
+        </div>
+      </div>
+
+      <div class="flex justify-end pt-2">
+        <button @click="saveSystemSettings"
+                class="px-6 py-2.5 btn-glow-brand text-white font-bold text-xs rounded-xl">
+          💾 保存配置到 SQLite 数据库
+        </button>
+      </div>
+    </div>
+
+    <!-- ──────────────────────── 模态弹窗: 单账号官方改密 ──────────────────────── -->
+    <el-dialog v-model="singleChangePwdModalVisible" title="🔑 单账号官方免邮箱改密" width="480px" class="dark-dialog">
+      <div class="space-y-4 text-xs">
+        <div class="p-3 bg-slate-950/80 rounded-xl border border-white/10 space-y-1.5">
+          <div class="flex justify-between">
+            <span class="text-slate-400">目标邮箱:</span>
+            <span class="font-mono font-bold text-slate-200">{{ singlePwdForm.email }}</span>
+          </div>
+          <div class="flex justify-between">
+            <span class="text-slate-400">当前密码:</span>
+            <span class="font-mono text-slate-300 truncate max-w-[240px]">{{ singlePwdForm.currentPassword }}</span>
+          </div>
+        </div>
+
+        <div>
+          <label class="font-bold text-slate-300 block mb-1.5">输入新密码 (将在 OpenAI 服务端正式生效)：</label>
+          <div class="flex items-center space-x-2">
+            <input v-model="singlePwdForm.newPassword"
+                   placeholder="输入新密码 (大小写+数字+特殊符号)"
+                   class="flex-1 px-3 py-2 bg-slate-950 border border-white/10 rounded-lg text-xs font-mono text-amber-300 focus:outline-none focus:border-amber-500 font-bold" />
+            <button @click="genSingleRandomPwd" class="px-2.5 py-2 btn-neutral text-slate-200 text-xs rounded-lg" title="生成强随机密码">
+              🎲 随机
+            </button>
+            <button @click="genSinglePrefixPwd" class="px-2.5 py-2 btn-neutral text-slate-200 text-xs rounded-lg" title="生成前缀密码">
+              🏷️ 前缀
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <template #footer>
+        <div class="flex justify-end space-x-2">
+          <button @click="singleChangePwdModalVisible = false" class="px-4 py-2 btn-neutral text-slate-300 text-xs rounded-lg">取消</button>
+          <button @click="submitSingleChangePwd" class="px-5 py-2 btn-glow-amber text-white font-bold text-xs rounded-lg shadow">🚀 提交官方改密</button>
+        </div>
+      </template>
+    </el-dialog>
+
+    <!-- ──────────────────────── 模态弹窗: 批量修改密码 ──────────────────────── -->
+    <el-dialog v-model="batchChangePwdModalVisible" title="🔑 批量官方免邮箱改密" width="520px" class="dark-dialog">
+      <div class="space-y-4 text-xs">
+        <div class="p-3 bg-slate-950/80 rounded-xl border border-white/10">
+          <span class="text-slate-400">修改范围：</span>
+          <b class="text-amber-400 ml-1 font-bold">
+            {{ selectedEmails.length > 0 ? `已选中的 ${selectedEmails.length} 个账号` : `全部 ${accountStats.total} 个账号` }}
+          </b>
+        </div>
+
+        <div>
+          <label class="font-bold text-slate-300 block mb-2">选择改密策略：</label>
+          <el-radio-group v-model="batchPwdForm.mode" size="small">
+            <el-radio-button label="custom">统一自定义新密码</el-radio-button>
+            <el-radio-button label="random">每号独立强随机密码</el-radio-button>
+            <el-radio-button label="prefix">前缀+随机码</el-radio-button>
+          </el-radio-group>
+        </div>
+
+        <div v-if="batchPwdForm.mode === 'custom'">
+          <label class="font-bold text-slate-300 block mb-1">统一新密码：</label>
+          <input v-model="batchPwdForm.customPassword"
+                 placeholder="请输入新密码（大小写+数字+特殊符号）"
+                 class="w-full px-3 py-2 bg-slate-950 border border-white/10 rounded-lg text-xs font-mono text-amber-300 focus:outline-none focus:border-amber-500 font-bold" />
+        </div>
+
+        <div v-if="batchPwdForm.mode === 'prefix'">
+          <label class="font-bold text-slate-300 block mb-1">密码前缀：</label>
+          <input v-model="batchPwdForm.passwordPrefix"
+                 placeholder="例如: Gpt@"
+                 class="w-full px-3 py-2 bg-slate-950 border border-white/10 rounded-lg text-xs font-mono text-amber-300 focus:outline-none focus:border-amber-500 font-bold" />
+        </div>
+      </div>
+
+      <template #footer>
+        <div class="flex justify-end space-x-2">
+          <button @click="batchChangePwdModalVisible = false" class="px-4 py-2 btn-neutral text-slate-300 text-xs rounded-lg">取消</button>
+          <button @click="submitBatchChangePwd" class="px-5 py-2 btn-glow-amber text-white font-bold text-xs rounded-lg shadow">🚀 启动批量官方改密</button>
+        </div>
+      </template>
+    </el-dialog>
+
+    <!-- ──────────────────────── 模态弹窗: 批量 OAuth 授权配置 ──────────────────────── -->
+    <el-dialog v-model="batchAuthModalVisible" title="⚡ 批量 OAuth 授权并提取 Sub2API" width="520px" class="dark-dialog">
+      <div class="space-y-4 text-xs">
+        <div class="p-3 bg-slate-950/80 rounded-xl border border-white/10">
+          <span class="text-slate-400">授权执行范围：</span>
+          <b class="text-brand-400 ml-1 font-bold">
+            {{ selectedEmails.length > 0 ? `已选中的 ${selectedEmails.length} 个账号` : `全部 ${accountStats.total} 个账号` }}
+          </b>
+        </div>
+
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="font-bold text-slate-300 block mb-1">并发线程数：</label>
+            <el-input-number v-model="taskConfig.concurrency" :min="1" :max="50" size="small" style="width: 100%" />
+          </div>
+          <div>
+            <label class="font-bold text-slate-300 block mb-1">超时秒数：</label>
+            <el-input-number v-model="taskConfig.timeout" :min="15" :max="120" size="small" style="width: 100%" />
+          </div>
+        </div>
+      </div>
+
+      <template #footer>
+        <div class="flex justify-end space-x-2">
+          <button @click="batchAuthModalVisible = false" class="px-4 py-2 btn-neutral text-slate-300 text-xs rounded-lg">取消</button>
+          <button @click="submitBatchAuth" class="px-5 py-2 btn-glow-brand text-white font-bold text-xs rounded-lg shadow">🚀 立即开始授权</button>
+        </div>
+      </template>
+    </el-dialog>
+
+    <!-- ──────────────────────── 模态弹窗: 账号详细时序日志 ──────────────────────── -->
+    <el-dialog v-model="logModalVisible" width="750px" class="dark-dialog">
+      <template #header>
+        <div class="flex items-center justify-between pr-4">
+          <div class="flex items-center space-x-2">
+            <span class="text-base font-bold text-white">账号详细时序日志</span>
+            <span class="font-mono text-xs text-brand-400 bg-brand-950/80 px-2 py-0.5 rounded border border-brand-500/40">
+              {{ currentLogAccount.email }}
+            </span>
+          </div>
+          <div class="flex items-center space-x-2">
+            <label class="text-xs text-slate-400 flex items-center space-x-1 cursor-pointer">
+              <input type="checkbox" v-model="autoScrollLog" class="rounded bg-slate-900" />
+              <span>自动滚动</span>
+            </label>
+            <button @click="copyLogsText" class="px-2.5 py-1 text-xs btn-neutral text-slate-200 rounded">
+              复制日志
+            </button>
+          </div>
+        </div>
+      </template>
+
+      <div class="space-y-3">
+        <!-- 账号基础凭据面板 -->
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 p-3 bg-slate-950/80 rounded-xl border border-white/10 text-xs">
+          <div>
+            <span class="text-slate-400 block text-[11px]">当前状态</span>
+            <span class="font-bold font-mono" :class="currentLogAccount.status === 'success' ? 'text-brand-400' : (currentLogAccount.status === 'failed' ? 'text-rose-400' : 'text-cyan-400')">
+              {{ currentLogAccount.status || '待处理' }}
+            </span>
+          </div>
+          <div>
+            <span class="text-slate-400 block text-[11px]">当前密码</span>
+            <span class="font-mono text-slate-200 truncate block">{{ currentLogAccount.password || '-' }}</span>
+          </div>
+          <div>
+            <span class="text-slate-400 block text-[11px]">新密码</span>
+            <span class="font-mono text-amber-300 truncate block font-bold">{{ currentLogAccount.new_password || '未修改' }}</span>
+          </div>
+          <div>
+            <span class="text-slate-400 block text-[11px]">2FA 实时验证码</span>
+            <span class="font-mono font-bold text-brand-400">{{ currentLogAccount.current_totp || '-' }}</span>
+          </div>
+        </div>
+
+        <!-- 详细时序终端日志流 -->
+        <div ref="logContainerRef"
+             class="h-96 overflow-y-auto p-4 bg-black/90 rounded-xl border border-white/10 font-mono text-xs space-y-1.5 custom-scroll select-text">
+          <div v-if="!currentLogAccount.logs || currentLogAccount.logs.length === 0" class="text-slate-500 italic">
+            暂无时序日志记录...
+          </div>
+          <div v-for="(log, idx) in currentLogAccount.logs" :key="idx"
+               class="flex items-start space-x-2 leading-relaxed"
+               :class="log.level === 'error' || log.message.includes('失败') || log.message.includes('❌') ? 'text-rose-400' : (log.level === 'success' || log.message.includes('✅') || log.message.includes('🎉') ? 'text-brand-400' : 'text-slate-300')">
+            <span class="text-slate-500 shrink-0 select-none">[{{ log.time }}]</span>
+            <span class="break-all">{{ log.message }}</span>
+          </div>
+        </div>
+      </div>
+    </el-dialog>
+
+    <!-- ──────────────────────── 模态弹窗: 2FA 实时速查器 ──────────────────────── -->
+    <el-dialog v-model="openTotpCalcModal" title="⏱️ 2FA 动态码实时计算器" width="460px" class="dark-dialog">
+      <div class="space-y-4 text-xs">
+        <div>
+          <label class="font-bold text-slate-300 block mb-1">输入 2FA Base32 密钥：</label>
+          <input v-model="totpCalcSecret"
+                 @input="calcSingleTotp"
+                 placeholder="例如: YX6JQLZL3ENV4B3AHLMZ6Q3LTMNTLFKE"
+                 class="w-full px-3 py-2 bg-slate-950 border border-white/10 rounded-lg text-xs font-mono text-slate-200 focus:outline-none focus:border-brand-500" />
+        </div>
+
+        <div v-if="totpCalcResult" class="p-4 bg-slate-950/80 rounded-xl border border-white/10 text-center space-y-2">
+          <span class="text-xs text-slate-400">当前 6 位动态验证码：</span>
+          <div class="text-3xl font-extrabold font-mono text-brand-400 tracking-widest cursor-pointer hover:scale-105 transition"
+               @click="copyText(totpCalcResult, '2FA 动态码已复制')">
+            {{ totpCalcResult }}
+          </div>
+          <div class="text-xs text-cyan-400">
+            剩余有效时间: <b>{{ totpCalcRemaining }}</b> 秒
+          </div>
+        </div>
+      </div>
+    </el-dialog>
+
+  </div>
+
+  <script>
+    const { createApp, ref, computed, onMounted, onUnmounted, nextTick } = Vue;
+
+    const app = createApp({
+      setup() {
+        const currentTab = ref("accounts");
+        const accountList = ref([]);
+        const selectedEmails = ref([]);
+        const searchKeyword = ref("");
+        const filterStatus = ref("");
+        const importText = ref("");
+
+        const pagination = ref({ page: 1, pageSize: 100 });
+        const accountStats = ref({ total: 0, hasToken: 0, success: 0, failed: 0, changedPwd: 0 });
+        const totpRemaining = ref(30);
+
+        // 系统设置
+        const systemSettings = ref({
+          proxy_pool: "",
+          concurrency: 5,
+          timeout: 55,
+          password_prefix: "Gpt@",
+        });
+
+        // 任务状态
+        const taskStatus = ref({ state: "idle", total: 0, done: 0, success: 0, fail: 0, elapsed_seconds: 0 });
+        const taskConfig = ref({
+          concurrency: 5,
+          timeout: 55,
+        });
+
+        // 弹窗状态
+        const batchAuthModalVisible = ref(false);
+        const batchChangePwdModalVisible = ref(false);
+        const singleChangePwdModalVisible = ref(false);
+
+        const singlePwdForm = ref({
+          email: "",
+          currentPassword: "",
+          newPassword: "",
+        });
+
+        const batchPwdForm = ref({
+          mode: "custom",
+          customPassword: "",
+          passwordPrefix: "Gpt@",
+        });
+
+        // 日志弹窗
+        const logModalVisible = ref(false);
+        const currentLogAccount = ref({});
+        const autoScrollLog = ref(true);
+        const logContainerRef = ref(null);
+
+        // 2FA 计算器
+        const openTotpCalcModal = ref(false);
+        const totpCalcSecret = ref("");
+        const totpCalcResult = ref("");
+        const totpCalcRemaining = ref(30);
+
+        let timer = null;
+
+        // 计算属性
+        const importLinesCount = computed(() => {
+          return importText.value.split("\n").filter(l => l.trim() && !l.startsWith("#")).length;
+        });
+
+        const isAllSelected = computed(() => {
+          return accountList.value.length > 0 && selectedEmails.value.length === accountList.value.length;
+        });
+
+        const taskStatusBadgeClass = computed(() => {
+          if (taskStatus.value.state === "running") return "border-brand-500/40 bg-brand-950 text-brand-400";
+          if (taskStatus.value.state === "paused") return "border-amber-500/40 bg-amber-950 text-amber-400";
+          if (taskStatus.value.state === "finished") return "border-blue-500/40 bg-blue-950 text-blue-400";
+          return "border-white/10 bg-slate-950/60 text-slate-400";
+        });
+
+        const taskStatusDotClass = computed(() => {
+          if (taskStatus.value.state === "running") return "bg-brand-500";
+          if (taskStatus.value.state === "paused") return "bg-amber-500";
+          if (taskStatus.value.state === "finished") return "bg-blue-500";
+          return "bg-slate-600";
+        });
+
+        const taskStatusText = computed(() => {
+          if (taskStatus.value.state === "running") return "任务并发运行中";
+          if (taskStatus.value.state === "paused") return "任务已暂停";
+          if (taskStatus.value.state === "finished") return "任务已全部完成";
+          return "引擎空闲";
+        });
+
+        // ──────────────────────── 勾选操作 ────────────────────────
+
+        const toggleSelectAll = (checked) => {
+          if (checked) {
+            selectedEmails.value = accountList.value.map(a => a.email);
+          } else {
+            selectedEmails.value = [];
+          }
+        };
+
+        const selectAllCurrentPage = () => {
+          selectedEmails.value = accountList.value.map(a => a.email);
+        };
+
+        const clearSelection = () => {
+          selectedEmails.value = [];
+        };
+
+        const invertSelection = () => {
+          const currentSet = new Set(selectedEmails.value);
+          selectedEmails.value = accountList.value.filter(a => !currentSet.has(a.email)).map(a => a.email);
+        };
+
+        // ──────────────────────── API 交互方法 ────────────────────────
+
+        const fetchAccountList = async () => {
+          try {
+            const offset = (pagination.value.page - 1) * pagination.value.pageSize;
+            const params = new URLSearchParams({
+              keyword: searchKeyword.value,
+              status: filterStatus.value,
+              limit: pagination.value.pageSize,
+              offset: offset,
+            });
+            const res = await fetch(`/api/accounts?${params.toString()}`);
+            const json = await res.json();
+            if (json.ok) {
+              accountList.value = json.data.items || [];
+              totpRemaining.value = json.data.totp_remaining_seconds || 30;
+
+              let hasTok = 0, succ = 0, fail = 0, chPwd = 0;
+              for (const a of accountList.value) {
+                if (a.access_token || a.refresh_token) hasTok++;
+                if (a.status === "success") succ++;
+                if (a.status === "failed") fail++;
+                if (a.new_password) chPwd++;
+              }
+              accountStats.value = {
+                total: json.data.total || 0,
+                hasToken: hasTok,
+                success: succ,
+                failed: fail,
+                changedPwd: chPwd,
+              };
+
+              if (logModalVisible.value && currentLogAccount.value.email) {
+                const fresh = accountList.value.find(a => a.email === currentLogAccount.value.email);
+                if (fresh) {
+                  currentLogAccount.value = fresh;
+                  if (autoScrollLog.value) {
+                    nextTick(() => {
+                      if (logContainerRef.value) {
+                        logContainerRef.value.scrollTop = logContainerRef.value.scrollHeight;
+                      }
+                    });
+                  }
+                }
+              }
+            }
+          } catch (e) {
+            console.error("fetchAccountList failed:", e);
+          }
+        };
+
+        const fetchSettings = async () => {
+          try {
+            const res = await fetch("/api/settings");
+            const json = await res.json();
+            if (json.ok) {
+              const d = json.data || {};
+              if (d.proxy_pool) systemSettings.value.proxy_pool = d.proxy_pool;
+              if (d.concurrency) systemSettings.value.concurrency = parseInt(d.concurrency);
+              if (d.timeout) systemSettings.value.timeout = parseInt(d.timeout);
+              if (d.password_prefix) systemSettings.value.password_prefix = d.password_prefix;
+            }
+          } catch (e) {
+            console.error("fetchSettings failed:", e);
+          }
+        };
+
+        const saveSystemSettings = async () => {
+          try {
+            const res = await fetch("/api/settings", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ settings: systemSettings.value }),
+            });
+            const json = await res.json();
+            if (json.ok) {
+              ElementPlus.ElMessage.success("系统配置已成功保存到数据库！");
+            }
+          } catch (e) {
+            ElementPlus.ElMessage.error(`保存失败: ${e.message}`);
+          }
+        };
+
+        const fetchTaskStatus = async () => {
+          try {
+            const res = await fetch("/api/task/status");
+            const json = await res.json();
+            if (json.ok) {
+              taskStatus.value = json.data || {};
+            }
+          } catch (e) {
+            console.error("fetchTaskStatus failed:", e);
+          }
+        };
+
+        // 仅导入入库
+        const handleImportOnly = async () => {
+          if (!importText.value.trim()) return;
+          try {
+            const res = await fetch("/api/accounts/import", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ text: importText.value }),
+            });
+            const json = await res.json();
+            if (json.ok) {
+              ElementPlus.ElMessage.success(`导入完成！新增 ${json.data.inserted} 个，更新 ${json.data.updated} 个账号`);
+              importText.value = "";
+              currentTab.value = "accounts";
+              fetchAccountList();
+            } else {
+              ElementPlus.ElMessage.error(json.detail || "导入失败");
+            }
+          } catch (e) {
+            ElementPlus.ElMessage.error(`导入异常: ${e.message}`);
+          }
+        };
+
+        // 导入并立即启动执行
+        const handleImportAndRun = async () => {
+          if (!importText.value.trim()) return;
+          try {
+            await handleImportOnly();
+            openBatchAuthModal();
+          } catch (e) {
+            ElementPlus.ElMessage.error(`操作异常: ${e.message}`);
+          }
+        };
+
+        // ──────────────────────── 单账号改密 ────────────────────────
+
+        const openSingleChangePwdModal = (row) => {
+          singlePwdForm.value.email = row.email;
+          singlePwdForm.value.currentPassword = row.password;
+          singlePwdForm.value.newPassword = row.new_password || "";
+          singleChangePwdModalVisible.value = true;
+        };
+
+        const genSingleRandomPwd = async () => {
+          try {
+            const res = await fetch("/api/accounts/generate_password?length=16");
+            const json = await res.json();
+            if (json.ok) singlePwdForm.value.newPassword = json.password;
+          } catch (e) {}
+        };
+
+        const genSinglePrefixPwd = async () => {
+          try {
+            const p = systemSettings.value.password_prefix || "Gpt@";
+            const res = await fetch(`/api/accounts/generate_password?prefix=${encodeURIComponent(p)}`);
+            const json = await res.json();
+            if (json.ok) singlePwdForm.value.newPassword = json.password;
+          } catch (e) {}
+        };
+
+        const submitSingleChangePwd = async () => {
+          if (!singlePwdForm.value.newPassword.trim()) {
+            ElementPlus.ElMessage.warning("新密码不能为空");
+            return;
+          }
+          const targetEmail = singlePwdForm.value.email;
+          const targetNewPwd = singlePwdForm.value.newPassword.trim();
+          try {
+            const res = await fetch("/api/accounts/update_password", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                email: targetEmail,
+                new_password: targetNewPwd,
+              }),
+            });
+            const json = await res.json();
+            if (json.ok) {
+              ElementPlus.ElMessage.success(`已启动 ${targetEmail} 官方免邮箱改密任务！`);
+              singleChangePwdModalVisible.value = false;
+              const row = accountList.value.find(a => a.email === targetEmail) || { email: targetEmail };
+              openAccountLogModal(row);
+              fetchAccountList();
+              fetchTaskStatus();
+            } else {
+              ElementPlus.ElMessage.error(json.detail || "修改失败");
+            }
+          } catch (e) {
+            ElementPlus.ElMessage.error(`修改异常: ${e.message}`);
+          }
+        };
+
+        // ──────────────────────── 批量改密 ────────────────────────
+
+        const openBatchChangePwdModal = () => {
+          batchPwdForm.value.passwordPrefix = systemSettings.value.password_prefix || "Gpt@";
+          batchChangePwdModalVisible.value = true;
+        };
+
+        const submitBatchChangePwd = async () => {
+          const targets = selectedEmails.value.length > 0 ? selectedEmails.value : accountList.value.map(a => a.email);
+          if (!targets.length) {
+            ElementPlus.ElMessage.warning("没有可修改密码的账号");
+            return;
+          }
+          try {
+            const res = await fetch("/api/accounts/update_password", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                emails: targets,
+                mode: batchPwdForm.value.mode,
+                custom_password: batchPwdForm.value.customPassword,
+                password_prefix: batchPwdForm.value.passwordPrefix,
+              }),
+            });
+            const json = await res.json();
+            if (json.ok) {
+              ElementPlus.ElMessage.success(json.message || "已启动批量官方免邮箱改密任务！");
+              batchChangePwdModalVisible.value = false;
+              fetchAccountList();
+              fetchTaskStatus();
+            } else {
+              ElementPlus.ElMessage.error(json.detail || "批量修改失败");
+            }
+          } catch (e) {
+            ElementPlus.ElMessage.error(`操作异常: ${e.message}`);
+          }
+        };
+
+        // ──────────────────────── 批量与单账号 OAuth 授权 ────────────────────────
+
+        const openBatchAuthModal = () => {
+          taskConfig.value.concurrency = systemSettings.value.concurrency;
+          taskConfig.value.timeout = systemSettings.value.timeout;
+          batchAuthModalVisible.value = true;
+        };
+
+        const submitBatchAuth = async () => {
+          try {
+            const payload = {
+              emails: selectedEmails.value.length > 0 ? selectedEmails.value : null,
+              new_password_mode: "keep",
+              concurrency: taskConfig.value.concurrency,
+              timeout: taskConfig.value.timeout,
+              proxy: systemSettings.value.proxy_pool,
+            };
+
+            const res = await fetch("/api/task/start", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(payload),
+            });
+            const json = await res.json();
+            if (json.ok) {
+              ElementPlus.ElMessage.success("批量 OAuth 授权任务已成功启动！");
+              batchAuthModalVisible.value = false;
+              currentTab.value = "accounts";
+              fetchAccountList();
+              fetchTaskStatus();
+            } else {
+              ElementPlus.ElMessage.error(json.detail || "启动失败");
+            }
+          } catch (e) {
+            ElementPlus.ElMessage.error(`启动失败: ${e.message}`);
+          }
+        };
+
+        const startSingleAuth = async (row) => {
+          try {
+            const res = await fetch("/api/task/start", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                emails: [row.email],
+                new_password_mode: "keep",
+                concurrency: 1,
+                timeout: systemSettings.value.timeout,
+                proxy: systemSettings.value.proxy_pool,
+              }),
+            });
+            const json = await res.json();
+            if (json.ok) {
+              ElementPlus.ElMessage.success(`已开始为 ${row.email} 执行 OAuth 授权！`);
+              openAccountLogModal(row);
+              fetchAccountList();
+            } else {
+              ElementPlus.ElMessage.error(json.detail || "启动失败");
+            }
+          } catch (e) {
+            ElementPlus.ElMessage.error(`操作异常: ${e.message}`);
+          }
+        };
+
+        // 单账号导出 Sub2API JSON
+        const exportSingleSub2 = async (row) => {
+          if (!row.access_token && !row.refresh_token) {
+            try {
+              await ElementPlus.ElMessageBox.confirm(
+                `账号 ${row.email} 尚未获取 OAuth 凭证，是否立即启动授权流程并提取 Sub2API JSON？`,
+                'OAuth 授权提示',
+                { confirmButtonText: '立即授权', cancelButtonText: '取消', type: 'info' }
+              );
+              startSingleAuth(row);
+            } catch (_) {}
+            return;
+          }
+
+          try {
+            const res = await fetch("/api/export", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                format: "sub2api",
+                emails: [row.email],
+                only_success: false,
+              }),
+            });
+
+            if (!res.ok) throw new Error("导出失败");
+
+            const blob = await res.blob();
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = `sub2api_${row.email.split('@')[0]}.json`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            window.URL.revokeObjectURL(url);
+            ElementPlus.ElMessage.success(`Sub2API JSON 导出成功: ${row.email}`);
+          } catch (e) {
+            ElementPlus.ElMessage.error(`导出异常: ${e.message}`);
+          }
+        };
+
+        const pauseTask = async () => {
+          await fetch("/api/task/pause", { method: "POST" });
+          fetchTaskStatus();
+        };
+
+        const resumeTask = async () => {
+          await fetch("/api/task/resume", { method: "POST" });
+          fetchTaskStatus();
+        };
+
+        const stopTask = async () => {
+          await fetch("/api/task/stop", { method: "POST" });
+          fetchTaskStatus();
+        };
+
+        const deleteSingleAccount = async (email) => {
+          try {
+            await fetch("/api/accounts/delete", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ emails: [email] }),
+            });
+            ElementPlus.ElMessage.success("账号已删除");
+            fetchAccountList();
+          } catch (e) {
+            ElementPlus.ElMessage.error(`删除失败: ${e.message}`);
+          }
+        };
+
+        const batchDeleteAccounts = async () => {
+          if (!selectedEmails.value.length) return;
+          try {
+            await fetch("/api/accounts/delete", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ emails: selectedEmails.value }),
+            });
+            ElementPlus.ElMessage.success(`已成功删除 ${selectedEmails.value.length} 个账号`);
+            selectedEmails.value = [];
+            fetchAccountList();
+          } catch (e) {
+            ElementPlus.ElMessage.error(`删除失败: ${e.message}`);
+          }
+        };
+
+        const handleExportCommand = async (format) => {
+          try {
+            const res = await fetch("/api/export", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                format: format,
+                emails: selectedEmails.value.length > 0 ? selectedEmails.value : null,
+                only_success: true,
+              }),
+            });
+
+            if (!res.ok) {
+              const err = await res.json();
+              throw new Error(err.detail || "导出失败");
+            }
+
+            const blob = await res.blob();
+            const disposition = res.headers.get("content-disposition") || "";
+            let filename = `${format}_export.txt`;
+            if (disposition.includes("filename*=")) {
+              filename = decodeURIComponent(disposition.split("filename*=UTF-8''")[1]);
+            }
+
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            window.URL.revokeObjectURL(url);
+            ElementPlus.ElMessage.success(`导出成功: ${filename}`);
+          } catch (e) {
+            ElementPlus.ElMessage.error(`导出异常: ${e.message}`);
+          }
+        };
+
+        const openAccountLogModal = (row) => {
+          currentLogAccount.value = { ...row };
+          logModalVisible.value = true;
+          nextTick(() => {
+            if (logContainerRef.value) {
+              logContainerRef.value.scrollTop = logContainerRef.value.scrollHeight;
+            }
+          });
+        };
+
+        const copyText = (text, successMsg = "复制成功") => {
+          if (!text) return;
+          navigator.clipboard.writeText(text).then(() => {
+            ElementPlus.ElMessage.success(successMsg);
+          });
+        };
+
+        const copyLogsText = () => {
+          const logs = currentLogAccount.value.logs || [];
+          const text = logs.map(l => `[${l.time}] ${l.message}`).join("\n");
+          copyText(text, "日志已全部复制到剪贴板");
+        };
+
+        const calcSingleTotp = async () => {
+          const sec = totpCalcSecret.value.trim();
+          if (!sec) {
+            totpCalcResult.value = "";
+            return;
+          }
+          try {
+            const res = await fetch("/api/totp/calc", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ secret: sec }),
+            });
+            const json = await res.json();
+            if (json.ok) {
+              totpCalcResult.value = json.code;
+              totpCalcRemaining.value = json.remaining_seconds;
+            }
+          } catch (e) {
+            totpCalcResult.value = "密钥无效";
+          }
+        };
+
+        onMounted(() => {
+          fetchAccountList();
+          fetchSettings();
+          fetchTaskStatus();
+
+          timer = setInterval(() => {
+            fetchAccountList();
+            fetchTaskStatus();
+          }, 1500);
+        });
+
+        onUnmounted(() => {
+          if (timer) clearInterval(timer);
+        });
+
+        return {
+          currentTab,
+          accountList,
+          selectedEmails,
+          searchKeyword,
+          filterStatus,
+          importText,
+          importLinesCount,
+          pagination,
+          accountStats,
+          totpRemaining,
+          systemSettings,
+          taskStatus,
+          taskStatusBadgeClass,
+          taskStatusDotClass,
+          taskStatusText,
+          isAllSelected,
+          batchAuthModalVisible,
+          batchChangePwdModalVisible,
+          singleChangePwdModalVisible,
+          singlePwdForm,
+          batchPwdForm,
+          taskConfig,
+          logModalVisible,
+          currentLogAccount,
+          autoScrollLog,
+          logContainerRef,
+          openTotpCalcModal,
+          totpCalcSecret,
+          totpCalcResult,
+          totpCalcRemaining,
+          toggleSelectAll,
+          selectAllCurrentPage,
+          clearSelection,
+          invertSelection,
+          fetchAccountList,
+          saveSystemSettings,
+          handleImportOnly,
+          handleImportAndRun,
+          openSingleChangePwdModal,
+          genSingleRandomPwd,
+          genSinglePrefixPwd,
+          submitSingleChangePwd,
+          openBatchChangePwdModal,
+          submitBatchChangePwd,
+          openBatchAuthModal,
+          submitBatchAuth,
+          startSingleAuth,
+          exportSingleSub2,
+          pauseTask,
+          resumeTask,
+          stopTask,
+          deleteSingleAccount,
+          batchDeleteAccounts,
+          handleExportCommand,
+          openAccountLogModal,
+          copyText,
+          copyLogsText,
+          calcSingleTotp,
+        };
+      }
+    });
+
+    app.use(ElementPlus);
+    app.mount("#app");
+  </script>
+</body>
+</html>
