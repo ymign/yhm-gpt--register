@@ -317,6 +317,39 @@ class RemailICloudProvider(MailProvider):
             logger.debug(f"[Remail] pickup 请求提示: {e}")
             return []
 
+    def _get_mails(self, email_addr: str = "") -> list[dict]:
+        """获取并标准化该邮箱的所有邮件列表（供 WebUI「查验证码」/ 收件箱工作台使用）。"""
+        email_clean = (email_addr or self.current_email).strip().lower()
+        token_clean = self.current_token or self._extract_token_from_url(self.pickup_url)
+        raw_items = self._fetch_pickup_messages(email_clean, token_clean)
+        out = []
+        for m in raw_items:
+            m_id = str(m.get("id") or m.get("_id") or "")
+            subj = str(m.get("subject") or "(无主题)")
+            from_sender = str(m.get("from") or m.get("sender") or m.get("source") or "OpenAI")
+            date_val = str(m.get("receivedAt") or m.get("createdAt") or m.get("date") or "")
+            body = str(
+                m.get("bodyPreview")
+                or m.get("body")
+                or m.get("content")
+                or m.get("text")
+                or m.get("html")
+                or ""
+            )
+            otp = self._parse_message_otp(m) or extract_otp(f"{subj}\n{body}")
+            out.append({
+                "id": m_id,
+                "subject": subj,
+                "from": from_sender,
+                "date": date_val,
+                "date_str": date_val,
+                "content": body,
+                "raw": body,
+                "text": body,
+                "otp": otp or "",
+            })
+        return out
+
     def _parse_message_otp(self, msg: dict, issued_after: Optional[float] = None) -> Optional[str]:
         """从单封邮件对象中提取有效 OTP。"""
         if not isinstance(msg, dict):

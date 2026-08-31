@@ -1396,17 +1396,49 @@ def api_fetch_mail_otp(email: str, req: Optional[FetchMailOtpReq] = None):
         except Exception as e:
             logger.warning(f"[fetch_otp] 动态解析补充凭证异常: {e}")
 
-    # 若号池中未找到，尝试从已注册账号的 extra.mail_oauth 中恢复
+    # 若号池中未找到，尝试从已注册账号的 extra.mail_oauth 或 remail_recycle_pool 中恢复
     if not account_row and registered_row.get("extra"):
         saved_oauth = registered_row["extra"].get("mail_oauth")
-        if isinstance(saved_oauth, dict) and (saved_oauth.get("refresh_token") or saved_oauth.get("password")):
-            account_row = {
-                "email": email_clean,
-                "password": saved_oauth.get("password", ""),
-                "client_id": saved_oauth.get("client_id", ""),
-                "refresh_token": saved_oauth.get("refresh_token", ""),
-                "kind": saved_oauth.get("kind", "outlook"),
-            }
+        if isinstance(saved_oauth, dict):
+            if saved_oauth.get("kind") == "remail" or saved_oauth.get("service_token") or saved_oauth.get("pickup_url"):
+                account_row = {
+                    "email": email_clean,
+                    "service_token": saved_oauth.get("service_token", ""),
+                    "pickup_url": saved_oauth.get("pickup_url", ""),
+                    "order_no": saved_oauth.get("order_no", ""),
+                    "project_id": saved_oauth.get("project_id", 2),
+                    "email_suffix": saved_oauth.get("email_suffix", "outlook.com"),
+                    "service_mode": saved_oauth.get("service_mode", "purchase"),
+                    "kind": "remail",
+                }
+            elif saved_oauth.get("refresh_token") or saved_oauth.get("password"):
+                account_row = {
+                    "email": email_clean,
+                    "password": saved_oauth.get("password", ""),
+                    "client_id": saved_oauth.get("client_id", ""),
+                    "refresh_token": saved_oauth.get("refresh_token", ""),
+                    "kind": saved_oauth.get("kind", "outlook"),
+                }
+
+    # 兜底：检查 remail_recycle_pool
+    if not account_row:
+        try:
+            cur_pool = db._conn().execute(
+                "SELECT service_token, order_no, project_id, email_suffix, service_mode FROM remail_recycle_pool WHERE email=? AND service_token IS NOT NULL AND service_token != '' ORDER BY id DESC LIMIT 1",
+                (email_clean,),
+            ).fetchone()
+            if cur_pool and cur_pool["service_token"]:
+                account_row = {
+                    "email": email_clean,
+                    "service_token": cur_pool["service_token"],
+                    "order_no": cur_pool.get("order_no", ""),
+                    "project_id": cur_pool.get("project_id", 2),
+                    "email_suffix": cur_pool.get("email_suffix", "outlook.com"),
+                    "service_mode": cur_pool.get("service_mode", "purchase"),
+                    "kind": "remail",
+                }
+        except Exception:
+            pass
 
     # 确定邮箱类型
     kind = (
@@ -1415,13 +1447,14 @@ def api_fetch_mail_otp(email: str, req: Optional[FetchMailOtpReq] = None):
         or ""
     ).strip().lower()
 
-    if not kind or kind not in ("outlook", "cf_temp", "icloud_relay"):
+    if not kind or kind not in ("remail", "outlook", "cf_temp", "icloud_relay"):
         if any(dom in email_clean for dom in ("@outlook.", "@hotmail.", "@live.", "@msn.")):
             kind = "outlook"
         elif any(dom in email_clean for dom in ("@icloud.", "@me.", "@mac.")):
-            kind = "icloud_relay"
+            def_source = (db.get_setting("mail_source", "") or "").strip().lower()
+            kind = "remail" if def_source == "remail" else "icloud_relay"
         else:
-            kind = "cf_temp"
+            kind = (db.get_setting("mail_source", "") or "cf_temp").strip().lower()
 
     # 若是 Outlook 邮箱，但无任何凭证，绝对不能静默降级为 cf_temp（会导致前端标签显示 cf_temp 且永远查不到邮件）
     if kind == "outlook" and (not account_row or (not account_row.get("refresh_token") and not account_row.get("password"))):
@@ -1438,22 +1471,22 @@ def api_fetch_mail_otp(email: str, req: Optional[FetchMailOtpReq] = None):
     try:
         provider = create_mail_provider(kind, settings, account_row)
     except Exception as e:
-        if kind == "outlook":
+        if kind in ("outlook", "remail"):
             return {
                 "ok": False,
                 "email": email_clean,
-                "provider": "outlook",
+                "provider": kind,
                 "otp": None,
                 "found": False,
                 "messages": [],
-                "error": f"初始化 Outlook 邮箱 Provider 异常: {e}",
+                "error": f"初始化 {kind} 邮箱 Provider 异常: {e}",
             }
         provider = create_mail_provider("cf_temp", settings)
 
     recent_mails = []
     otp_code = None
     t0 = time.time()
-    used_protocol = "imap"
+    used_protocol = "remail_pickup" if kind == "remail" else "imap"
 
     try:
         if hasattr(provider, "_get_mails"):
