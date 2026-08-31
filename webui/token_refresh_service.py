@@ -793,19 +793,37 @@ def export_refreshed_tokens_cpa_json(task_id: str) -> list[dict]:
         return []
     out = []
     with task._lock:
-        for it in task.items.values():
+        for email, it in task.items.items():
             if it.get("cpa"):
                 out.append(it["cpa"])
+            elif it.get("status") == "done" and it.get("result", {}).get("status") == "success":
+                cred = db.get_registered(email) or {}
+                if cred.get("access_token") or cred.get("refresh_token"):
+                    from .export_formats import get_or_build_cpa_token_data
+                    out.append(get_or_build_cpa_token_data(cred))
     return out
 
 
 def export_refreshed_tokens_sub2api_json(task_id: str) -> dict:
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    now_iso_ms = now.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
     task = get_token_refresh_task(task_id)
     if not task:
-        return {"accounts": []}
+        return {"exported_at": now_iso_ms, "proxies": [], "accounts": []}
     accounts = []
     with task._lock:
-        for it in task.items.values():
+        for email, it in task.items.items():
             if it.get("sub2api"):
                 accounts.append(it["sub2api"])
-    return {"accounts": accounts}
+            elif it.get("status") == "done" and it.get("result", {}).get("status") == "success":
+                cred = db.get_registered(email) or {}
+                if cred.get("access_token") or cred.get("refresh_token"):
+                    from .export_formats import get_or_build_sub2api_account_data
+                    accounts.append(get_or_build_sub2api_account_data(cred))
+    return {
+        "exported_at": now_iso_ms,
+        "proxies": [],
+        "accounts": accounts,
+    }

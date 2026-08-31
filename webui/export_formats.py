@@ -54,9 +54,16 @@ def get_or_build_cpa_token_data(r: dict) -> dict:
     from .exporter import _decode_jwt_payload, _get_auth, _build_compat_id_token
 
     email = _s(r, "email")
-    at = _s(r, "access_token")
-    rt = _s(r, "refresh_token")
-    it = _s(r, "id_token")
+    at = _s(r, "access_token") or _s(r, "accessToken")
+    rt = _s(r, "refresh_token") or _s(r, "refreshToken")
+    it = _s(r, "id_token") or _s(r, "idToken")
+
+    if isinstance(r.get("user"), dict):
+        u = r["user"]
+        if not email:
+            email = str(u.get("email") or u.get("name") or "").strip()
+        if not it:
+            it = str(u.get("id_token") or "").strip()
 
     if not it and at:
         try:
@@ -65,8 +72,16 @@ def get_or_build_cpa_token_data(r: dict) -> dict:
             it = ""
 
     payload = _decode_jwt_payload(at) if at else {}
+    if not email and payload.get("email"):
+        email = str(payload.get("email")).strip()
+
     auth_info = _get_auth(payload)
-    account_id = str(auth_info.get("chatgpt_account_id") or "").strip()
+    account_id = str(
+        auth_info.get("chatgpt_account_id")
+        or (r.get("account") or {}).get("id")
+        or r.get("account_id")
+        or ""
+    ).strip()
 
     tz_cn = timezone(timedelta(hours=8))
     expired_str = ""
@@ -116,29 +131,113 @@ def _render_cpa_json_single_line(r: dict) -> str:
     return json.dumps(data, ensure_ascii=False)
 
 
+def get_or_build_sub2api_account_data(r: dict) -> dict:
+    """提取或生成标准的 Sub2API 单账号 JSON 结构 (支持从 Session 数据或 DB 行动态转换)。"""
+    import json
+    from datetime import datetime, timezone
+    from .exporter import _decode_jwt_payload, _get_auth, _build_compat_id_token
+
+    email = _s(r, "email")
+    at = _s(r, "access_token") or _s(r, "accessToken")
+    rt = _s(r, "refresh_token") or _s(r, "refreshToken")
+    it = _s(r, "id_token") or _s(r, "idToken")
+
+    # 若输入本身包含 user 对象 (ChatGPT 官方 session 格式)
+    if isinstance(r.get("user"), dict):
+        u = r["user"]
+        if not email:
+            email = str(u.get("email") or u.get("name") or "").strip()
+        if not it:
+            it = str(u.get("id_token") or "").strip()
+
+    if not it and at:
+        try:
+            it = _build_compat_id_token(access_token=at, email=email)
+        except Exception:
+            it = ""
+
+    payload = _decode_jwt_payload(at) if at else {}
+    auth_info = _get_auth(payload)
+    if not email and payload.get("email"):
+        email = str(payload.get("email")).strip()
+
+    chatgpt_account_id = str(
+        auth_info.get("chatgpt_account_id")
+        or (r.get("account") or {}).get("id")
+        or r.get("account_id")
+        or ""
+    ).strip()
+    chatgpt_user_id = str(
+        auth_info.get("chatgpt_user_id")
+        or auth_info.get("user_id")
+        or payload.get("sub")
+        or (r.get("user") or {}).get("id")
+        or ""
+    ).strip()
+
+    plan_type = str(
+        r.get("plan_type")
+        or (r.get("account") or {}).get("planType")
+        or auth_info.get("chatgpt_plan_type")
+        or auth_info.get("plan_type")
+        or "free"
+    ).strip().lower()
+
+    now = datetime.now(timezone.utc)
+    now_iso_ms = now.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+    now_ts = now.timestamp()
+    exp = payload.get("exp")
+    expires_at = datetime.fromtimestamp(exp, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z") if exp else ""
+    expires_in = max(0, int(exp - now_ts)) if exp else 864000
+    email_key = email.replace("@", "_").replace(".", "_")
+
+    return {
+        "name": email,
+        "platform": "openai",
+        "type": "oauth",
+        "concurrency": 10,
+        "priority": 1,
+        "credentials": {
+            "access_token": at,
+            "refresh_token": rt,
+            "id_token": it,
+            "chatgpt_account_id": chatgpt_account_id,
+            "chatgpt_user_id": chatgpt_user_id,
+            "email": email,
+            "expires_at": expires_at,
+            "expires_in": expires_in,
+            "plan_type": plan_type,
+        },
+        "extra": {
+            "email": email,
+            "email_key": email_key,
+            "name": email,
+            "source": "chatgpt_web_session",
+            "last_refresh": now_iso_ms,
+        },
+    }
+
+
 def _render_sub2api_json_all(rows: list[dict]) -> bytes:
     import json
     from datetime import datetime, timezone
-    items = []
+
+    now = datetime.now(timezone.utc)
+    now_iso_ms = now.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+    accounts = []
     for r in rows or []:
-        email = _s(r, "email")
-        at = _s(r, "access_token")
-        rt = _s(r, "refresh_token")
-        it = _s(r, "id_token")
-        items.append({
-            "name": email.split("@")[0] if "@" in email else email,
-            "platform": "openai",
-            "type": "oauth",
-            "email": email,
-            "credentials": {
-                "access_token": at,
-                "refresh_token": rt,
-                "id_token": it,
-            },
-            "status": 1,
-            "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        })
-    return json.dumps(items, ensure_ascii=False, indent=2).encode("utf-8")
+        at = _s(r, "access_token") or _s(r, "accessToken")
+        rt = _s(r, "refresh_token") or _s(r, "refreshToken")
+        if not at and not rt:
+            continue
+        accounts.append(get_or_build_sub2api_account_data(r))
+
+    root = {
+        "exported_at": now_iso_ms,
+        "proxies": [],
+        "accounts": accounts,
+    }
+    return json.dumps(root, ensure_ascii=False, indent=2).encode("utf-8")
 
 
 def get_or_build_session_data(r: dict) -> dict:
@@ -214,6 +313,56 @@ def _render_session_json_single_line(r: dict) -> str:
 
 
 # ──────────────────────── 注册表 ────────────────────────
+
+
+def convert_session_payload_to_sub2api(data: Any) -> dict:
+    """将任意单个或多个 Session 数据 (JSON对象、列表或包含 user/accessToken 的字典) 转换为标准的 Sub2API 导入结构。"""
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc)
+    now_iso_ms = now.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+    rows = []
+    if isinstance(data, list):
+        rows = data
+    elif isinstance(data, dict):
+        if "accounts" in data and isinstance(data["accounts"], list):
+            rows = data["accounts"]
+        else:
+            rows = [data]
+
+    accounts = []
+    for r in rows:
+        if isinstance(r, dict):
+            acc = get_or_build_sub2api_account_data(r)
+            if acc.get("credentials", {}).get("access_token") or acc.get("credentials", {}).get("refresh_token"):
+                accounts.append(acc)
+
+    return {
+        "exported_at": now_iso_ms,
+        "proxies": [],
+        "accounts": accounts,
+    }
+
+
+def convert_session_payload_to_cpa(data: Any) -> list[dict]:
+    """将任意单个或多个 Session 数据转换为 CPA 对象列表。"""
+    rows = []
+    if isinstance(data, list):
+        rows = data
+    elif isinstance(data, dict):
+        if "accounts" in data and isinstance(data["accounts"], list):
+            rows = data["accounts"]
+        else:
+            rows = [data]
+
+    cpa_list = []
+    for r in rows:
+        if isinstance(r, dict):
+            cpa = get_or_build_cpa_token_data(r)
+            if cpa.get("access_token") or cpa.get("refresh_token"):
+                cpa_list.append(cpa)
+    return cpa_list
 
 
 FORMATS: list[ExportFormat] = [

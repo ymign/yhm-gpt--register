@@ -542,6 +542,7 @@ def api_registered(
     filter_domain: str = "",
     filter_country: str = "",
     filter_at_export: str = "",
+    filter_health: str = "",
 ):
     query_str = (q or search).strip()
     items = db.list_registered(
@@ -556,6 +557,7 @@ def api_registered(
         filter_domain=filter_domain,
         filter_country=filter_country,
         filter_at_export=filter_at_export,
+        filter_health=filter_health,
     )
     total = db.count_registered(
         filter_rt=filter,
@@ -567,6 +569,7 @@ def api_registered(
         filter_domain=filter_domain,
         filter_country=filter_country,
         filter_at_export=filter_at_export,
+        filter_health=filter_health,
     )
     return {"ok": True, "items": items, "total": total}
 
@@ -583,6 +586,7 @@ def api_registered_emails(
     filter_domain: str = "",
     filter_country: str = "",
     filter_at_export: str = "",
+    filter_health: str = "",
 ):
     """返回当前过滤条件下的所有账号邮箱列表（用于批量检测未检/全检）。"""
     query_str = (q or search).strip()
@@ -596,6 +600,7 @@ def api_registered_emails(
         filter_domain=filter_domain,
         filter_country=filter_country,
         filter_at_export=filter_at_export,
+        filter_health=filter_health,
     )
     return {"ok": True, "emails": emails, "total": len(emails)}
 
@@ -653,6 +658,17 @@ def api_clean_invalid_registered():
     """清理没有任何有效凭证（AT/ST/RT 全为空）的未完成废号。"""
     n = db.clean_empty_token_accounts()
     return {"ok": True, "deleted": n}
+
+
+class RecoverOAuthReq(BaseModel):
+    emails: Optional[list[str]] = Field(None, description="要找回/自愈的邮箱列表（留空则扫描全库）")
+
+
+@app.post("/api/registered/recover_oauth")
+def api_recover_oauth(req: RecoverOAuthReq):
+    """一键扫描并找回/自愈历史 OAuth 授权凭证 (支持库内 RT 自愈与本地 exports 历史文件找回)。"""
+    res = db.recover_oauth_credentials(req.emails)
+    return {"ok": True, "data": res}
 
 
 # ──────────────────────── 批量导出（文本） ────────────────────────
@@ -746,6 +762,64 @@ def api_export_registered(req: ExportRegisteredReq):
         return {**base, "b64": base64.b64encode(blob).decode("ascii"), "size": len(blob)}
 
     return {**base, "text": export_formats.render_text(rows, fmt)}
+
+
+class ConvertSessionReq(BaseModel):
+    session_json: Optional[str] = Field("", description="待转换的 ChatGPT Web Session JSON / 文本 / 数组")
+    email: Optional[str] = Field(None, description="可选：指定数据库中某个邮箱")
+
+
+@app.post("/api/convert/session_to_sub2")
+def api_convert_session_to_sub2(req: ConvertSessionReq):
+    """将输入的 Session 数据或指定数据库账号的 Session 实时转换为 Sub2API 导入 JSON。"""
+    try:
+        raw_data = None
+        if req.session_json and req.session_json.strip():
+            txt = req.session_json.strip()
+            if txt.startswith("{") or txt.startswith("["):
+                raw_data = json.loads(txt)
+            else:
+                # 支持多行 JSONL 结构
+                lines = [json.loads(line) for line in txt.splitlines() if line.strip() and (line.strip().startswith("{") or line.strip().startswith("["))]
+                raw_data = lines if lines else txt
+        elif req.email:
+            row = db.get_registered(req.email)
+            if not row:
+                raise HTTPException(404, f"未找到账号 {req.email}")
+            raw_data = export_formats.get_or_build_session_data(row)
+        else:
+            raise HTTPException(400, "请提供 session_json 内容或 email")
+
+        sub2_res = export_formats.convert_session_payload_to_sub2api(raw_data)
+        return {"ok": True, "data": sub2_res, "count": len(sub2_res.get("accounts") or [])}
+    except Exception as e:
+        raise HTTPException(400, f"转换 Sub2API 格式失败: {e}")
+
+
+@app.post("/api/convert/session_to_cpa")
+def api_convert_session_to_cpa(req: ConvertSessionReq):
+    """将输入的 Session 数据或指定数据库账号的 Session 实时转换为 CPA JSON 结构。"""
+    try:
+        raw_data = None
+        if req.session_json and req.session_json.strip():
+            txt = req.session_json.strip()
+            if txt.startswith("{") or txt.startswith("["):
+                raw_data = json.loads(txt)
+            else:
+                lines = [json.loads(line) for line in txt.splitlines() if line.strip() and (line.strip().startswith("{") or line.strip().startswith("["))]
+                raw_data = lines if lines else txt
+        elif req.email:
+            row = db.get_registered(req.email)
+            if not row:
+                raise HTTPException(404, f"未找到账号 {req.email}")
+            raw_data = export_formats.get_or_build_session_data(row)
+        else:
+            raise HTTPException(400, "请提供 session_json 内容或 email")
+
+        cpa_res = export_formats.convert_session_payload_to_cpa(raw_data)
+        return {"ok": True, "data": cpa_res, "count": len(cpa_res)}
+    except Exception as e:
+        raise HTTPException(400, f"转换 CPA 格式失败: {e}")
 
 
 # ──────────────────────── 邮箱来源配置 ────────────────────────
@@ -857,6 +931,29 @@ def api_fetch_cf_domains(req: FetchCfDomainsReq):
         raise HTTPException(400, "请先填写 Cloudflare Worker API 地址")
     domains = cf_list_domains(api_url, admin_token=admin_token, site_password=site_pw)
     return {"ok": True, "domains": domains}
+
+
+class FetchRemailProjectsReq(BaseModel):
+    api_key: Optional[str] = None
+    base_url: Optional[str] = None
+
+
+@app.post("/api/mail/remail/projects")
+def api_fetch_remail_projects(req: FetchRemailProjectsReq):
+    """从 Remail 开放平台拉取当前钱包余额及所有可用项目和价格明细。"""
+    from mail_providers.remail_icloud import fetch_remail_projects_and_wallet
+    settings = db.get_mail_settings()
+    api_key = (req.api_key or settings.get("remail_api_key") or "").strip()
+    if api_key == "***":
+        api_key = settings.get("remail_api_key") or ""
+    base_url = (req.base_url or settings.get("remail_base_url") or "").strip()
+    if not api_key:
+        api_key = "rk-a18f1eed-cc59-4eaf-9c5f-ac4d711c758d"
+    try:
+        data = fetch_remail_projects_and_wallet(api_key=api_key, base_url=base_url)
+        return data
+    except Exception as e:
+        raise HTTPException(400, f"拉取 Remail 项目与价格失败: {e}")
 
 
 # ──────────────────────── SMS 接码配置 ────────────────────────

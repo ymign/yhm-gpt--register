@@ -31,6 +31,9 @@ const starting = ref(false)
 const regEmail = ref('')
 
 const emailPlaceholder = computed(() => {
+  if (form.value.mailSource === 'remail') {
+    return '留空 = 自动调用 Remail 接口购买全新临时邮箱并注册 / 或填入指定邮箱'
+  }
   if (form.value.mailSource === 'cf_temp') {
     return '留空 = 自动由 CF 临时邮箱动态生成新地址 / 或填入指定自定义地址'
   }
@@ -119,12 +122,14 @@ async function copyField(email, field) {
               <!-- 核心：邮箱接收渠道选择 -->
               <el-form-item label="接码邮箱渠道 (选择本次注册使用的邮箱来源)">
                 <el-radio-group v-model="form.mailSource" class="macos-radio-group full-width-radio">
+                  <el-radio-button value="remail">🍎 Remail 自动购号</el-radio-button>
                   <el-radio-button value="cf_temp">⚡ CF 临时邮箱</el-radio-button>
                   <el-radio-button value="outlook">📦 微软 Outlook</el-radio-button>
                   <el-radio-button value="icloud_relay">✉️ iCloud 邮箱</el-radio-button>
                 </el-radio-group>
                 <div class="mail-source-hint">
-                  <span v-if="form.mailSource === 'cf_temp'" class="hint-cf">⚡ 无需号池：由 Cloudflare Worker 动态生成临时地址并全自动收信</span>
+                  <span v-if="form.mailSource === 'remail'" class="hint-remail" style="color: #10b981">🍎 Remail 全自动购号：支持按需购买 Project 2 (ChatGPT专属 30积分 iCloud/15积分 微软邮箱) 及多平台临时邮箱，在「邮箱配置」可随时自定义项目与后缀</span>
+                  <span v-else-if="form.mailSource === 'cf_temp'" class="hint-cf">⚡ 无需号池：由 Cloudflare Worker 动态生成临时地址并全自动收信</span>
                   <span v-else-if="form.mailSource === 'outlook'" class="hint-outlook">📦 号池接码：自动从微软号池 Claim 可用账号（需提前导入）</span>
                   <span v-else-if="form.mailSource === 'icloud_relay'" class="hint-ic">✉️ iCloud 中转：自动从 iCloud 号池领取带中转链接的账号</span>
                 </div>

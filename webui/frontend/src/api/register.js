@@ -27,6 +27,9 @@ export const bulkDeleteRegistered = (payload) =>
 export const cleanInvalidRegistered = () =>
   http.post('/api/registered/clean_invalid')
 
+export const recoverOAuthCredentials = (payload = {}) =>
+  http.post('/api/registered/recover_oauth', payload) // { emails }
+
 // 导出后清理用：把号池那一行也删掉。
 // 从 accounts.js 转出来一份，省得 Registered.vue 同时 import 两个 api 模块。
 export { bulkDeleteAccounts } from './accounts'
@@ -34,6 +37,10 @@ export { bulkDeleteAccounts } from './accounts'
 // 批量导出：格式清单由后端 export_formats.py 提供，加格式前端不用改
 export const listExportFormats = () => http.get('/api/registered/export/formats')
 export const exportRegistered = (payload) => http.post('/api/registered/export', payload)
+
+// Session 实时转换 (参考 GPTSession2CPAandSub2API)
+export const convertSessionToSub2 = (payload) => http.post('/api/convert/session_to_sub2', payload)
+export const convertSessionToCpa = (payload) => http.post('/api/convert/session_to_cpa', payload)
 
 // PoW 算力槽位（sentinel 并发碰撞上限，存后端 settings 表持久化）
 export const getPowSlots = () => http.get('/api/settings/pow_slots')

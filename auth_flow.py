@@ -906,7 +906,7 @@ class AuthFlow:
                 logger.warning("Codex 登录推进需要 OTP，但未提供 mail_provider")
                 return continue_url or ""
             try:
-                otp_timeout = max(10, int(self._get_env("OTP_TIMEOUT", "60")))
+                otp_timeout = max(60, int(self._get_env("OTP_TIMEOUT", "60")))
             except Exception:
                 otp_timeout = 180
             otp_sent_at = time.time()
@@ -3570,7 +3570,7 @@ class AuthFlow:
                         self.send_otp()
 
             try:
-                otp_timeout = max(10, int(self._get_env("OTP_TIMEOUT", "60")))
+                otp_timeout = max(60, int(self._get_env("OTP_TIMEOUT", "60")))
             except Exception:
                 otp_timeout = 180
 
@@ -3627,7 +3627,7 @@ class AuthFlow:
             continue_url = ""
 
             try:
-                otp_timeout = max(10, int(self._get_env("OTP_TIMEOUT", "60")))
+                otp_timeout = max(60, int(self._get_env("OTP_TIMEOUT", "60")))
             except Exception:
                 otp_timeout = 180
 
@@ -4010,7 +4010,7 @@ class AuthFlow:
 
         continue_url = ""
         try:
-            otp_timeout = max(10, int(self._get_env("OTP_TIMEOUT", "60")))
+            otp_timeout = max(60, int(self._get_env("OTP_TIMEOUT", "60")))
         except Exception:
             otp_timeout = 180
 

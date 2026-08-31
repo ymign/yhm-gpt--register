@@ -30,6 +30,7 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from .exporter import decode_jwt_payload
+from .proxy_util import route_proxy_for_worker
 from .sentinel import get_sentinel_token
 from .totp import get_totp_token
 

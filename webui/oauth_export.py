@@ -919,6 +919,8 @@ def execute_codex_oauth_flow(
     device_id = str(account_info.get("device_id") or "").strip() or str(uuid.uuid4())
     trace = trace if isinstance(trace, dict) else {}
     path_steps: list[str] = []
+    phone_verified = False
+    verified_phone = ""
 
     country_code = (target_country or account_info.get("reg_country") or "JP").strip().upper()
     lang_full = COUNTRY_LANG_MAP.get(country_code, "ja-JP,ja;q=0.9,en-US;q=0.8" if country_code == "JP" else "en-US,en;q=0.9")
@@ -1748,6 +1750,8 @@ def execute_codex_oauth_flow(
         "account_id": account_id,
         "plan_type": plan_type,
         "exp_iso": exp_iso,
+        "phone_verified": phone_verified,
+        "verified_phone": verified_phone,
         "trace": dict(trace) if isinstance(trace, dict) else {},
     }
 
@@ -1948,6 +1952,11 @@ def _run_one_oauth_export(task: OAuthExportTask, email: str) -> None:
         cpa_file.write_text(json.dumps(cpa_data, ensure_ascii=False, indent=2), encoding="utf-8")
         sub2_file.write_text(json.dumps(sub2_account, ensure_ascii=False, indent=2), encoding="utf-8")
 
+        phone_verified = bool(flow_res.get("phone_verified") or (flow_res.get("trace") or {}).get("phone_verified"))
+        verified_phone = str(flow_res.get("verified_phone") or (flow_res.get("trace") or {}).get("sms_phone_prefix") or "")
+        auth_method = "phone_verified" if phone_verified else "no_phone_needed"
+        oauth_status = "success_phone" if phone_verified else "success_direct"
+
         # 回写数据库 registered 表
         db.update_registered_oauth(
             email=email,
@@ -1955,8 +1964,13 @@ def _run_one_oauth_export(task: OAuthExportTask, email: str) -> None:
             refresh_token=rt,
             id_token=it,
             cookie_header=cred.get("cookie_header") or "",
+            oauth_status=oauth_status,
             extra_data={
                 "oauth_export": {
+                    "status": oauth_status,
+                    "auth_method": auth_method,
+                    "phone_verified": phone_verified,
+                    "verified_phone": verified_phone,
                     "exported_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                     "plan_type": plan_type,
                     "account_id": account_id,

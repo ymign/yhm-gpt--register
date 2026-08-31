@@ -984,14 +984,18 @@ def update_registered_oauth(
 
 
 def update_registered_oauth_status(email: str, status: str, error: str = "") -> bool:
-    """更新账号的 OAuth 授权状态 (success / need_phone / failed)。"""
+    """更新账号的 OAuth 授权状态 (success / need_phone / failed)。
+
+    安全防呆保护：如果账号原本已有有效的 Refresh Token，偶发网络重试失败时
+    绝不将整体状态直接抹杀为 failed，保留其原本的授权成功标记，避免用户误判凭证丢失。
+    """
     email = (email or "").strip().lower()
     if not email:
         return False
     status = (status or "").strip().lower()
     with _lock:
         con = _conn()
-        row = con.execute("SELECT extra_json FROM registered WHERE email=?", (email,)).fetchone()
+        row = con.execute("SELECT refresh_token, oauth_status, extra_json FROM registered WHERE email=?", (email,)).fetchone()
         if not row:
             return False
         extra = {}
@@ -1001,18 +1005,154 @@ def update_registered_oauth_status(email: str, status: str, error: str = "") -> 
             except Exception:
                 extra = {}
         oauth_meta = extra.get("oauth_export") or {}
-        oauth_meta["status"] = status
+
+        # 核心防呆保护：如果原本有有效 RT，重试遇到网络错误时不抹除成功态
+        existing_rt = str(row["refresh_token"] or "").strip()
+        existing_st = str(row["oauth_status"] or "").strip().lower()
+        final_status = status
+        if existing_rt and status in ("failed", "error", "cancelled"):
+            if existing_st.startswith("success"):
+                final_status = existing_st
+            else:
+                final_status = "success"
+            oauth_meta["last_retry_error"] = error or status
+        else:
+            oauth_meta["status"] = status
+            if error:
+                oauth_meta["error"] = error
+
         oauth_meta["updated_at"] = time.time()
-        if error:
-            oauth_meta["error"] = error
         extra["oauth_export"] = oauth_meta
 
         con.execute(
             "UPDATE registered SET oauth_status=?, oauth_updated_at=?, extra_json=? WHERE email=?",
-            (status, time.time(), json.dumps(extra, ensure_ascii=False), email),
+            (final_status, time.time(), json.dumps(extra, ensure_ascii=False), email),
         )
         con.commit()
         return True
+
+
+def recover_oauth_credentials(emails: Optional[list[str]] = None) -> dict:
+    """一键扫描并找回/自愈历史授权凭证。
+
+    双重找回策略：
+      1. 数据库内存盘自愈：账号已具备 RT/AT 但 status 误被置为 failed/空时，立即修复为 success；
+         同时将历史在 oauth_attempt_features 中接码成功的账号自动打标为 success_phone；
+      2. 本地历史导出文件全自动溯源找回：扫描 webui/exports/cpa/ 和 webui/exports/sub2api/，
+         提取历史已导出的 Codex RT/AT 并自动回填入库，瞬间满血恢复！
+    """
+    from pathlib import Path
+
+    con = _conn()
+    cpa_dir = Path(__file__).resolve().parent / "exports" / "cpa"
+    sub2_dir = Path(__file__).resolve().parent / "exports" / "sub2api"
+
+    # 先查询所有在 oauth_attempt_features 表里成功接码过的邮箱集合
+    phone_verified_emails = set()
+    try:
+        cur_pv = con.execute("SELECT DISTINCT lower(email) FROM oauth_attempt_features WHERE phone_verified = 1")
+        phone_verified_emails = {r[0].strip().lower() for r in cur_pv.fetchall() if r[0]}
+    except Exception:
+        phone_verified_emails = set()
+
+    target_emails = [e.strip().lower() for e in emails if e and e.strip()] if emails else []
+    if target_emails:
+        placeholders = ",".join("?" for _ in target_emails)
+        cur = con.execute(f"SELECT email, access_token, refresh_token, id_token, oauth_status, extra_json FROM registered WHERE lower(email) IN ({placeholders})", target_emails)
+    else:
+        cur = con.execute("SELECT email, access_token, refresh_token, id_token, oauth_status, extra_json FROM registered")
+
+    rows = [dict(r) for r in cur.fetchall()]
+    recovered_from_db = 0
+    recovered_from_files = 0
+
+    with _lock:
+        for r in rows:
+            em = r["email"].strip().lower()
+            at = str(r.get("access_token") or "").strip()
+            rt = str(r.get("refresh_token") or "").strip()
+            it = str(r.get("id_token") or "").strip()
+            st = str(r.get("oauth_status") or "").strip().lower()
+            extra = {}
+            if r.get("extra_json"):
+                try:
+                    extra = json.loads(r["extra_json"])
+                except Exception:
+                    extra = {}
+
+            is_phone = (em in phone_verified_emails) or bool(extra.get("oauth_export", {}).get("phone_verified"))
+
+            # 策略 1: 库内已有 RT 但状态未同步、误打为 failed 或需补齐接码成功标记
+            if rt:
+                need_update = False
+                new_st = "success_phone" if is_phone else (st if st in ("success_phone", "success_direct") else "success")
+                if not st.startswith("success") or st in ("failed", "error", ""):
+                    need_update = True
+                elif is_phone and st != "success_phone":
+                    new_st = "success_phone"
+                    need_update = True
+
+                if need_update:
+                    extra.setdefault("oauth_export", {})["status"] = new_st
+                    if is_phone:
+                        extra["oauth_export"]["phone_verified"] = True
+                        extra["oauth_export"]["auth_method"] = "phone_verified"
+                    extra["oauth_export"]["updated_at"] = time.time()
+                    con.execute(
+                        "UPDATE registered SET oauth_status=?, extra_json=? WHERE lower(email)=?",
+                        (new_st, json.dumps(extra, ensure_ascii=False), em),
+                    )
+                    recovered_from_db += 1
+                    continue
+
+            # 策略 2: 库内缺 RT，尝试从本地 exports 历史文件找回
+            if not rt:
+                file_found = False
+                cpa_file = cpa_dir / f"codex-{em}.json"
+                sub2_file = sub2_dir / f"sub2-{em}.json"
+                file_at, file_rt, file_it = "", "", ""
+                if cpa_file.exists():
+                    try:
+                        c_data = json.loads(cpa_file.read_text(encoding="utf-8"))
+                        file_at = str(c_data.get("access_token") or "").strip()
+                        file_rt = str(c_data.get("refresh_token") or "").strip()
+                        file_it = str(c_data.get("id_token") or "").strip()
+                        file_found = bool(file_rt or file_at)
+                    except Exception:
+                        pass
+                if not file_found and sub2_file.exists():
+                    try:
+                        s_data = json.loads(sub2_file.read_text(encoding="utf-8"))
+                        creds = s_data.get("credentials") or {}
+                        file_at = str(creds.get("access_token") or "").strip()
+                        file_rt = str(creds.get("refresh_token") or "").strip()
+                        file_it = str(creds.get("id_token") or "").strip()
+                        file_found = bool(file_rt or file_at)
+                    except Exception:
+                        pass
+
+                if file_found and file_rt:
+                    new_st = "success_phone" if is_phone else "success_direct"
+                    extra.setdefault("oauth_export", {})["status"] = new_st
+                    if is_phone:
+                        extra["oauth_export"]["phone_verified"] = True
+                        extra["oauth_export"]["auth_method"] = "phone_verified"
+                    extra["oauth_export"]["recovered_from_file"] = True
+                    extra["oauth_export"]["updated_at"] = time.time()
+                    con.execute(
+                        "UPDATE registered SET access_token=?, refresh_token=?, id_token=?, oauth_status=?, extra_json=? WHERE lower(email)=?",
+                        (file_at or at, file_rt, file_it or it, new_st, json.dumps(extra, ensure_ascii=False), em),
+                    )
+                    recovered_from_files += 1
+
+        con.commit()
+
+    return {
+        "recovered_from_db": recovered_from_db,
+        "recovered_from_files": recovered_from_files,
+        "total_recovered": recovered_from_db + recovered_from_files,
+        "total_checked": len(rows),
+    }
 
 
 _OAUTH_FEATURE_COLS = (
@@ -1692,7 +1832,7 @@ def _parse_single_filter_clause(filt: str) -> Optional[str]:
         return "length(refresh_token) > 0"
     if f == "no_rt":
         return "coalesce(length(refresh_token),0) = 0"
-    if f == "unchecked":
+    if f in ("unchecked", "health_unchecked", "unverified"):
         return "(extra_json IS NULL OR extra_json NOT LIKE '%\"plus_check\"%')"
     if f == "pro":
         return "(extra_json LIKE '%\"pro_20x\"%' OR extra_json LIKE '%\"pro_5x\"%' OR extra_json LIKE '%\"pro_active\"%' OR extra_json LIKE '%\"pro_eligible\"%')"
@@ -1700,12 +1840,48 @@ def _parse_single_filter_clause(filt: str) -> Optional[str]:
         return "extra_json LIKE '%\"team_active\"%'"
     if f == "plus":
         return "(extra_json LIKE '%\"plus_eligible\"%' OR extra_json LIKE '%\"plus_active\"%')"
+    if f == "plus_active":
+        return "extra_json LIKE '%\"plus_active\"%'"
+    if f == "plus_eligible":
+        return "extra_json LIKE '%\"plus_eligible\"%'"
     if f == "free":
-        return "extra_json LIKE '%\"free\"%'"
-    if f == "banned":
-        return "extra_json LIKE '%\"banned\"%'"
-    if f == "token_invalid":
-        return "extra_json LIKE '%\"token_invalid\"%'"
+        return "(extra_json LIKE '%\"free\"%' AND extra_json NOT LIKE '%\"banned\"%' AND extra_json NOT LIKE '%\"token_invalid\"%' AND extra_json NOT LIKE '%\"account_deactivated\"%')"
+    # ── 封号检测与凭证失效精准/健壮筛选 ──
+    if f in ("banned", "deactivated", "account_deactivated", "disabled"):
+        return (
+            "(extra_json LIKE '%\"banned\"%' "
+            "OR extra_json LIKE '%\"account_deactivated\"%' "
+            "OR extra_json LIKE '%\"deactivated\"%' "
+            "OR extra_json LIKE '%封号%' "
+            "OR extra_json LIKE '%账号已被禁用%')"
+        )
+    if f in ("token_invalid", "invalid_token", "token_expired", "expired", "401"):
+        return (
+            "(extra_json LIKE '%\"token_invalid\"%' "
+            "OR extra_json LIKE '%\"token_expired\"%' "
+            "OR extra_json LIKE '%\"401 Unauthorized\"%' "
+            "OR extra_json LIKE '%凭证失效%' "
+            "OR extra_json LIKE '%Token失效%')"
+        )
+    if f in ("dead", "all_dead", "invalid_or_banned", "failed_check", "bad"):
+        return (
+            "(extra_json LIKE '%\"banned\"%' "
+            "OR extra_json LIKE '%\"token_invalid\"%' "
+            "OR extra_json LIKE '%\"account_deactivated\"%' "
+            "OR extra_json LIKE '%\"token_expired\"%' "
+            "OR extra_json LIKE '%封号%' "
+            "OR extra_json LIKE '%凭证失效%')"
+        )
+    if f in ("alive", "valid", "normal", "healthy"):
+        return (
+            "(extra_json LIKE '%\"plus_check\"%' "
+            "AND extra_json NOT LIKE '%\"banned\"%' "
+            "AND extra_json NOT LIKE '%\"token_invalid\"%' "
+            "AND extra_json NOT LIKE '%\"account_deactivated\"%' "
+            "AND extra_json NOT LIKE '%\"token_expired\"%' "
+            "AND extra_json NOT LIKE '%封号%' "
+            "AND extra_json NOT LIKE '%凭证失效%')"
+        )
     # ── OAICS 资格检测筛选 ──
     if f == "oa_unchecked":
         return "(oa_check IS NULL OR oa_check = '')"
@@ -1715,7 +1891,11 @@ def _parse_single_filter_clause(filt: str) -> Optional[str]:
         return "(oa_check IS NOT NULL AND oa_check != '' AND oa_check NOT LIKE '%\"state\":\"OAICS\"%')"
     # ── OAuth 授权状态筛选 ──
     if f == "oauth_success":
-        return "oauth_status = 'success'"
+        return "(oauth_status = 'success' OR oauth_status = 'success_phone' OR oauth_status = 'success_direct')"
+    if f in ("oauth_phone_verified", "phone_verified", "oauth_phone"):
+        return "(oauth_status = 'success_phone' OR extra_json LIKE '%\"phone_verified\": true%' OR extra_json LIKE '%\"phone_verified\":true%')"
+    if f in ("oauth_no_phone", "no_phone_needed", "oauth_direct"):
+        return "(oauth_status = 'success_direct' OR (oauth_status = 'success' AND (extra_json NOT LIKE '%\"phone_verified\": true%' AND extra_json NOT LIKE '%\"phone_verified\":true%')))"
     if f == "oauth_need_phone":
         return "oauth_status = 'need_phone'"
     if f in ("oauth_failed", "failed"):
@@ -1831,6 +2011,7 @@ def _registered_where(
     filter_domain: str = "",
     filter_country: str = "",
     filter_at_export: str = "",
+    filter_health: str = "",
 ) -> tuple[str, list]:
     conditions = []
     args = []
@@ -1844,7 +2025,7 @@ def _registered_where(
                 conditions.append(c)
 
     # 支持多维度组合参数
-    for sub in (filter_plan, filter_sec, filter_extract, filter_oauth):
+    for sub in (filter_health, filter_plan, filter_sec, filter_extract, filter_oauth):
         if sub and sub != "all":
             c = _parse_single_filter_clause(sub)
             if c and c not in conditions:
@@ -1890,6 +2071,7 @@ def count_registered(
     filter_domain: str = "",
     filter_country: str = "",
     filter_at_export: str = "",
+    filter_health: str = "",
 ) -> int:
     con = _conn()
     where, args = _registered_where(
@@ -1899,6 +2081,7 @@ def count_registered(
         filter_domain=filter_domain,
         filter_country=filter_country,
         filter_at_export=filter_at_export,
+        filter_health=filter_health,
     )
     cur = con.execute(f"SELECT COUNT(*) FROM registered {where}", args)
     return cur.fetchone()[0]
@@ -1915,6 +2098,7 @@ def list_registered_emails(
     filter_domain: str = "",
     filter_country: str = "",
     filter_at_export: str = "",
+    filter_health: str = "",
 ) -> list[str]:
     """返回符合过滤条件的所有注册邮箱列表。"""
     con = _conn()
@@ -1925,6 +2109,7 @@ def list_registered_emails(
         filter_domain=filter_domain,
         filter_country=filter_country,
         filter_at_export=filter_at_export,
+        filter_health=filter_health,
     )
     cur = con.execute(
         f"SELECT email FROM registered {where} ORDER BY created_at DESC LIMIT ?",
@@ -1945,6 +2130,7 @@ def list_registered(
     filter_domain: str = "",
     filter_country: str = "",
     filter_at_export: str = "",
+    filter_health: str = "",
 ) -> list[dict]:
     con = _conn()
     where, args = _registered_where(
@@ -1954,6 +2140,7 @@ def list_registered(
         filter_domain=filter_domain,
         filter_country=filter_country,
         filter_at_export=filter_at_export,
+        filter_health=filter_health,
     )
     cur = con.execute(
         f"SELECT email, password, totp_secret, reg_country, reg_city, reg_ip, "

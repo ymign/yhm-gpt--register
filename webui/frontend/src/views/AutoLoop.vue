@@ -392,12 +392,14 @@ onUnmounted(() => {
               <el-form-item label="接码邮箱渠道 (选择并发注册使用的邮箱来源)">
                 <div class="mail-source-selector-row">
                   <el-radio-group v-model="form.autoMailSource" class="macos-radio-group">
+                    <el-radio-button value="remail">🍎 Remail 自动购号</el-radio-button>
                     <el-radio-button value="cf_temp">⚡ CF 临时邮箱 (动态造号)</el-radio-button>
                     <el-radio-button value="outlook">📦 微软 Outlook (号池)</el-radio-button>
                     <el-radio-button value="icloud_relay">✉️ iCloud 邮箱 (中转)</el-radio-button>
                   </el-radio-group>
                   <span class="mail-source-badge-tip">
-                    <span v-if="form.autoMailSource === 'cf_temp'" class="text-cf">⚡ 无需号池：Worker 动态无限生成地址并发注册，推荐</span>
+                    <span v-if="form.autoMailSource === 'remail'" class="text-remail" style="color: #10b981">🍎 Remail 自动购号：每次并发注册按需购买全新邮箱 (iCloud/微软等多后缀 · 30积分/个)，可前往「邮箱配置」自定项目与后缀</span>
+                    <span v-else-if="form.autoMailSource === 'cf_temp'" class="text-cf">⚡ 无需号池：Worker 动态无限生成地址并发注册，推荐</span>
                     <span v-else-if="form.autoMailSource === 'outlook'" class="text-outlook">📦 微软号池并发：自动从号池领取可用账号，池空自动等待</span>
                     <span v-else-if="form.autoMailSource === 'icloud_relay'" class="text-ic">✉️ iCloud 号池并发：自动从号池领取带中转链接的账号</span>
                   </span>

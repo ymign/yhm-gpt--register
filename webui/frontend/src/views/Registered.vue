@@ -40,9 +40,12 @@ import {
   deleteRegistered,
   bulkDeleteRegistered,
   cleanInvalidRegistered,
+  recoverOAuthCredentials,
   bulkDeleteAccounts,
   listExportFormats,
   exportRegistered,
+  convertSessionToSub2,
+  convertSessionToCpa,
   updateCredentials,
   getAccountTotp,
   fetchMailOtp,
@@ -121,12 +124,14 @@ async function openExtractChannel(channelKey) {
         { confirmButtonText: '确定', cancelButtonText: '取消', type: 'info' }
       )
       const res = await listRegisteredEmails({
+        filter_health: filterHealth.value,
         filter_plan: filterPlan.value,
         filter_sec: filterSec.value,
         filter_extract: filterExtract.value,
         filter_oauth: filterOAuth.value,
         filter_domain: filterDomain.value,
         filter_country: filterCountry.value,
+        filter_at_export: filterAtExport.value,
         search: searchKeyword.value.trim(),
       })
       extractModalEmails.value = res.emails || []
@@ -140,6 +145,7 @@ const rows = ref([])
 const total = ref(0)
 const page = ref(1)
 const pageSize = ref(20)
+const filterHealth = ref('all') // 验活/存活状态筛选: all / token_invalid / banned / dead / alive / ...
 const filterPlan = ref('all')
 const filterSec = ref('all')
 const filterExtract = ref('all')
@@ -192,6 +198,7 @@ async function loadCountries() {
 const hasActiveFilter = computed(() => {
   return (
     searchKeyword.value.trim() !== '' ||
+    filterHealth.value !== 'all' ||
     filterPlan.value !== 'all' ||
     filterSec.value !== 'all' ||
     filterExtract.value !== 'all' ||
@@ -204,6 +211,7 @@ const hasActiveFilter = computed(() => {
 
 function clearAllFilters() {
   searchKeyword.value = ''
+  filterHealth.value = 'all'
   filterPlan.value = 'all'
   filterSec.value = 'all'
   filterExtract.value = 'all'
@@ -245,15 +253,29 @@ function plusOf(row) {
 }
 
 const OAUTH_STATUS_META = {
-  success:    { type: 'success', label: '✅ 成功', effect: 'light' },
-  need_phone: { type: 'warning', label: '📱 需接码', effect: 'light' },
-  failed:     { type: 'danger',  label: '❌ 失败', effect: 'light' },
-  error:      { type: 'danger',  label: '⚠️ 异常', effect: 'light' },
+  success:        { type: 'success', label: '✅ 授权成功', effect: 'light' },
+  success_phone:  { type: 'success', label: '✅ 成功(已接码📱)', effect: 'dark' },
+  success_direct: { type: 'success', label: '⚡ 成功(免接码)', effect: 'light' },
+  need_phone:     { type: 'warning', label: '📱 需接码', effect: 'light' },
+  failed:         { type: 'danger',  label: '❌ 失败', effect: 'light' },
+  error:          { type: 'danger',  label: '⚠️ 异常', effect: 'light' },
 }
 
 function oauthMeta(row) {
   const st = (row.oauth_status || row.oauth_export?.status || '').toLowerCase().trim()
   if (!st) return null
+  const isPhone = Boolean(
+    row.oauth_export?.phone_verified
+    || st === 'success_phone'
+    || (row.oauth_export?.auth_method === 'phone_verified')
+  )
+  if (isPhone) return OAUTH_STATUS_META.success_phone
+  if (st === 'success_direct' || row.oauth_export?.auth_method === 'no_phone_needed') {
+    return OAUTH_STATUS_META.success_direct
+  }
+  if (st === 'success' || st.startsWith('success')) {
+    return OAUTH_STATUS_META.success
+  }
   return OAUTH_STATUS_META[st] || { type: 'info', label: st, effect: 'plain' }
 }
 
@@ -1865,6 +1887,18 @@ const oauthStats = computed(() => {
   }
 })
 
+function handleOAuthCommand(cmd) {
+  if (cmd === 'oauth_selected') {
+    openOAuthExport('selected')
+  } else if (cmd === 'oauth_all') {
+    openOAuthExport('all')
+  } else if (cmd === 'recover_selected') {
+    doRecoverOAuth('selected')
+  } else if (cmd === 'recover_all') {
+    doRecoverOAuth('all')
+  }
+}
+
 async function openOAuthExport(target = 'selected') {
   let emails = []
   if (target === 'selected') {
@@ -2144,13 +2178,28 @@ async function downloadSub2Json() {
   }
 }
 
-// 下载单账号 CPA / Codex JSON
+// 下载单账号 CPA / Codex JSON (优先从本地 Session 极速转换导出，无需重跑 OAuth)
 async function downloadSingleOAuthJson(email) {
   if (!email) return
   try {
+    const res = await convertSessionToCpa({ email })
+    if (res && res.data && res.data.length > 0) {
+      const cpaDoc = res.data[0]
+      const blob = new Blob([JSON.stringify(cpaDoc, null, 2)], { type: 'application/json' })
+      const url = window.URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `codex-${email}.json`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      window.URL.revokeObjectURL(url)
+      ElMessage.success(`账号 ${email} 的 CPA JSON 凭证已生成并下载`)
+      return
+    }
     const taskId = oauthTaskId.value || 'single'
-    const res = await downloadOAuthExportCpa(taskId, email)
-    const blob = new Blob([res.data || res], { type: 'application/json' })
+    const oRes = await downloadOAuthExportCpa(taskId, email)
+    const blob = new Blob([oRes.data || oRes], { type: 'application/json' })
     const url = window.URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
@@ -2161,17 +2210,31 @@ async function downloadSingleOAuthJson(email) {
     window.URL.revokeObjectURL(url)
     ElMessage.success(`账号 ${email} 的 CPA JSON 下载成功`)
   } catch (e) {
-    ElMessage.error('下载 JSON 失败: ' + (e.response?.data?.detail || e.message))
+    ElMessage.error('生成/下载 CPA JSON 失败: ' + (e.response?.data?.detail || e.message))
   }
 }
 
-// 下载单账号 Sub2API JSON
+// 下载单账号 Sub2API JSON (优先从本地 Session 极速转换导出，无需重跑 OAuth)
 async function downloadSingleSub2Json(email) {
   if (!email) return
   try {
+    const res = await convertSessionToSub2({ email })
+    if (res && res.data) {
+      const blob = new Blob([JSON.stringify(res.data, null, 2)], { type: 'application/json' })
+      const url = window.URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `sub2api-${email}.json`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      window.URL.revokeObjectURL(url)
+      ElMessage.success(`账号 ${email} 的 Sub2API JSON 凭证已生成并下载`)
+      return
+    }
     const taskId = oauthTaskId.value || 'single'
-    const res = await downloadOAuthExportSub2(taskId, email)
-    const blob = new Blob([res.data || res], { type: 'application/json' })
+    const oRes = await downloadOAuthExportSub2(taskId, email)
+    const blob = new Blob([oRes.data || oRes], { type: 'application/json' })
     const url = window.URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
@@ -2182,7 +2245,7 @@ async function downloadSingleSub2Json(email) {
     window.URL.revokeObjectURL(url)
     ElMessage.success(`账号 ${email} 的 Sub2API JSON 下载成功`)
   } catch (e) {
-    ElMessage.error('下载 Sub2API JSON 失败: ' + (e.response?.data?.detail || e.message))
+    ElMessage.error('生成/下载 Sub2API JSON 失败: ' + (e.response?.data?.detail || e.message))
   }
 }
 
@@ -2207,6 +2270,7 @@ async function load(resetPage = false) {
       limit: pageSize.value,
       offset: (page.value - 1) * pageSize.value,
       filter: 'all',
+      filter_health: filterHealth.value,
       filter_plan: filterPlan.value,
       filter_sec: filterSec.value,
       filter_extract: filterExtract.value,
@@ -2267,6 +2331,37 @@ async function cleanInvalid() {
     load()
   } catch (e) {
     ElMessage.error(e.message)
+  }
+}
+
+// 🛡️ 一键自愈/找回历史授权凭据（防止因网络超时重跑误判为失败）
+async function doRecoverOAuth(emails = null) {
+  const isBatch = Array.isArray(emails) && emails.length > 0
+  const isSelected = selected.value.length > 0
+  const targetEmails = isBatch ? emails : (isSelected ? selected.value.map(r => r.email) : null)
+  const tip = targetEmails
+    ? `确定扫描并自愈选中的 ${targetEmails.length} 个账号的历史 OAuth 授权与 Refresh Token？`
+    : '将全库扫描所有已有 RT 凭据及本地 exports 历史导出文件，自动找回并修复所有授权成功的账号，确定？'
+
+  if (!(await confirm(tip))) return
+  loading.value = true
+  try {
+    const res = await recoverOAuthCredentials({ emails: targetEmails })
+    const data = res.data || {}
+    const totalRec = data.total_recovered || 0
+    if (totalRec > 0) {
+      ElMessage.success({
+        message: `🎉 成功找回/修复 ${totalRec} 个账号的授权凭证！(库内自愈: ${data.recovered_from_db || 0}, 本地历史文件追回: ${data.recovered_from_files || 0})，已满血恢复状态！`,
+        duration: 5000,
+      })
+    } else {
+      ElMessage.info('扫描完成，当前所选账号均已是最新正常状态，无需找回')
+    }
+    load(false)
+  } catch (e) {
+    ElMessage.error('找回凭证失败: ' + (e.response?.data?.detail || e.message))
+  } finally {
+    loading.value = false
   }
 }
 
@@ -3016,6 +3111,7 @@ async function handleCopySessionCommand(cmd) {
 // 6. 行内更多操作菜单处理
 function handleRowMoreCommand(cmd, row) {
   if (cmd === 'edit') openEdit(row)
+  else if (cmd === 'recover_oauth') doRecoverOAuth([row.email])
   else if (cmd === 'copy_session') copySessionJson(row.email)
   else if (cmd === 'copy_at') copyCell(row.email, 'access_token')
   else if (cmd === 'copy_st') copyCell(row.email, 'session_token')
@@ -3556,6 +3652,38 @@ onUnmounted(() => {
         <!-- 筛选区域：模块化容器 + 标签分组 -->
         <div class="acct-filters-panel">
           <div class="acct-filters-row">
+            <!-- 验活与健康状态筛选（排查凭证失效与封号核心入口） -->
+            <div class="filter-item-wrap">
+              <span class="filter-label">验活:</span>
+              <el-select
+                v-model="filterHealth"
+                placeholder="全部验活状态"
+                size="small"
+                class="acct-select acct-select-health"
+                clearable
+                @change="load(true)"
+                @clear="filterHealth = 'all'; load(true)"
+              >
+                <el-option label="全部验活状态" value="all" />
+                <el-option-group label="⚠️ 异常与死号（精准排查）">
+                  <el-option label="❌ 凭证失效 (401/过期)" value="token_invalid" />
+                  <el-option label="🚫 账号封禁 (Deactivated)" value="banned" />
+                  <el-option label="💀 失效与封号 (全部坏号)" value="dead" />
+                </el-option-group>
+                <el-option-group label="✅ 正常与存活">
+                  <el-option label="✅ 全部存活有效" value="alive" />
+                  <el-option label="💎 Plus 生效中" value="plus_active" />
+                  <el-option label="🎁 可领 Plus 免单" value="plus_eligible" />
+                  <el-option label="👑 Pro 订阅" value="pro" />
+                  <el-option label="💎 Team 订阅" value="team" />
+                  <el-option label="⚪ Free 正常" value="free" />
+                </el-option-group>
+                <el-option-group label="其它">
+                  <el-option label="⏳ 未验活" value="unchecked" />
+                </el-option-group>
+              </el-select>
+            </div>
+
             <div class="filter-item-wrap">
               <span class="filter-label">套餐:</span>
               <el-select v-model="filterPlan" placeholder="全部套餐" size="small" class="acct-select" @change="load(true)">
@@ -3588,8 +3716,11 @@ onUnmounted(() => {
               <span class="filter-label">授权:</span>
               <el-select v-model="filterOAuth" placeholder="OAuth授权" size="small" class="acct-select" @change="load(true)">
                 <el-option label="全部授权" value="all" />
-                <el-option label="✅ 授权成功" value="oauth_success" />
-                <el-option label="📱 需接码" value="oauth_need_phone" />
+                <el-option label="✅ 授权成功 (全部)" value="oauth_success" />
+                <el-option label="📱 手机接码成功" value="oauth_phone_verified" />
+                <el-option label="⚡ 免接码授权成功" value="oauth_no_phone" />
+                <el-option label="🔄 具备 RT 凭据 (可找回/导出)" value="has_rt" />
+                <el-option label="📱 需接码 (未接)" value="oauth_need_phone" />
                 <el-option label="❌ 授权失败" value="oauth_failed" />
                 <el-option label="⚠️ 授权异常" value="oauth_error" />
                 <el-option label="⚪ 从未授权" value="oauth_unchecked" />
@@ -3737,9 +3868,22 @@ onUnmounted(() => {
               </template>
             </el-dropdown>
 
-            <el-button type="success" size="small" class="cluster-btn btn-emerald" :disabled="!selected.length" @click="openOAuthExport('selected')">
-              <el-icon><Phone /></el-icon> OAuth接码{{ selected.length ? ` (${selected.length})` : '' }}
-            </el-button>
+            <el-dropdown trigger="click" @command="handleOAuthCommand">
+              <el-button type="success" size="small" class="cluster-btn btn-emerald">
+                <el-icon><Phone /></el-icon> OAuth接码{{ selected.length ? ` (${selected.length})` : '' }}
+                <el-icon class="el-icon--right"><ArrowDown /></el-icon>
+              </el-button>
+              <template #dropdown>
+                <el-dropdown-menu class="extract-dropdown-menu">
+                  <div class="dropdown-group-title">Codex OAuth 授权与接码</div>
+                  <el-dropdown-item command="oauth_selected" :disabled="!selected.length">OAuth 导出选中 ({{ selected.length }})</el-dropdown-item>
+                  <el-dropdown-item command="oauth_all">OAuth 导出全部</el-dropdown-item>
+                  <div class="dropdown-group-title divider-title">凭证防丢与自愈恢复</div>
+                  <el-dropdown-item command="recover_selected" :disabled="!selected.length">🔄 一键找回选中账号授权 (从已有RT自愈)</el-dropdown-item>
+                  <el-dropdown-item command="recover_all">⚡ 全量找回所有已授权状态 (扫描RT与历史文件)</el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
 
             <el-dropdown trigger="click" @command="openExtractChannel">
               <el-button size="small" class="cluster-btn btn-amber">
@@ -3870,6 +4014,9 @@ onUnmounted(() => {
 
             <el-button size="small" type="danger" plain class="cluster-btn btn-danger-soft" :disabled="!selected.length" @click="deleteSelected">
               <el-icon><Delete /></el-icon> 删除{{ selected.length ? ` (${selected.length})` : '' }}
+            </el-button>
+            <el-button size="small" class="cluster-btn btn-neutral" title="扫描数据库存量RT及本地已导出文件，自动修复并找回授权状态" @click="() => doRecoverOAuth()">
+              <el-icon><CircleCheckFilled /></el-icon> 找回授权{{ selected.length ? ` (${selected.length})` : '' }}
             </el-button>
             <el-button size="small" class="cluster-btn btn-neutral" @click="cleanInvalid">清理空号</el-button>
             <el-button size="small" type="danger" plain class="cluster-btn btn-danger-soft" @click="deleteAll">清空</el-button>
@@ -4072,13 +4219,14 @@ onUnmounted(() => {
                   <template #dropdown>
                     <el-dropdown-menu class="extract-dropdown-menu">
                       <el-dropdown-item command="edit">编辑凭证</el-dropdown-item>
+                      <el-dropdown-item command="recover_oauth">🛡️ 找回历史授权凭据</el-dropdown-item>
                       <el-dropdown-item command="copy_session">🌐 复制 Session JSON (完整结构)</el-dropdown-item>
+                      <el-dropdown-item command="download_sub2">📦 Session 转换并下载 Sub2API JSON</el-dropdown-item>
+                      <el-dropdown-item command="download_cpa">📄 Session 转换并下载 CPA JSON</el-dropdown-item>
                       <el-dropdown-item v-if="row.at_len" command="copy_at">🔑 复制 Access Token (AT)</el-dropdown-item>
                       <el-dropdown-item v-if="row.st_len" command="copy_st">🎫 复制 Session Token (ST)</el-dropdown-item>
                       <el-dropdown-item v-if="row.rt_len" command="copy_rt">🔄 复制 Refresh Token (RT)</el-dropdown-item>
-                      <el-dropdown-item command="download_cpa">📥 下载 CPA JSON 凭证</el-dropdown-item>
-                      <el-dropdown-item command="download_sub2">📥 下载 Sub2API JSON 凭证</el-dropdown-item>
-                      <el-dropdown-item command="oauth_export">📱 OAuth 导出 / 手机接码</el-dropdown-item>
+                      <el-dropdown-item command="oauth_export">📱 Codex OAuth 完整授权 / 手机接码</el-dropdown-item>
                       <el-dropdown-item command="fetch_mail">✉️ 检索/获取邮箱验证码</el-dropdown-item>
                       <el-dropdown-item v-if="!row.password" command="repair_pwd">🔑 补设密码</el-dropdown-item>
                       <el-dropdown-item v-if="!row.totp_secret" command="repair_2fa">🛡️ 补绑 2FA</el-dropdown-item>
@@ -6922,6 +7070,9 @@ onUnmounted(() => {
 
 .acct-select {
   width: 120px;
+}
+.acct-select-health {
+  width: 140px;
 }
 .acct-select-atexport {
   width: 128px;
