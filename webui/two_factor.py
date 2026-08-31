@@ -86,12 +86,32 @@ def generate_random_password(length: int = 16) -> str:
     return "".join(chars)
 
 
-def bind_totp_2fa_by_token(access_token: str, proxy: str = "") -> dict:
+def bind_totp_2fa_by_token(
+    access_token: str,
+    proxy: str = "",
+    log_cb: Optional[Callable[[str], None]] = None,
+    step_cb: Optional[Callable[[str], None]] = None,
+) -> dict:
     """使用 access_token 独立打官方接口执行 2FA 绑定。
 
     请求 OpenAI 官方 mfa/enroll + activate_enrollment 接口，
     确保 mfa_enabled 真正生效并返回 secret。
     """
+    def _l(msg: str):
+        logger.info(f"[2fa-token] {msg}")
+        if log_cb:
+            try:
+                log_cb(msg)
+            except Exception:
+                pass
+
+    def _s(step: str):
+        if step_cb:
+            try:
+                step_cb(step)
+            except Exception:
+                pass
+
     try:
         from curl_cffi.requests import Session as CffiSession
         session = CffiSession(impersonate="chrome136")
@@ -114,15 +134,21 @@ def bind_totp_2fa_by_token(access_token: str, proxy: str = "") -> dict:
         }
 
         # 1. 检查是否已绑
+        _s("1/4 检查官方 2FA 状态...")
+        _l("🔍 正在调用 OpenAI 官方 /backend-api/accounts/mfa_info 检查当前 2FA 绑定状态...")
         r2 = session.get("https://chatgpt.com/backend-api/accounts/mfa_info", headers=headers, timeout=30)
         if r2.status_code == 200:
             info = r2.json() or {}
             if info.get("mfa_enabled") and (info.get("factors", {}) or {}).get("totp"):
+                _l("ℹ️ OpenAI 官方服务端检测：该账号已开启 2FA TOTP 双重认证保护")
                 return {"ok": True, "already_bound": True, "message": "该账号已在 OpenAI 官方服务端绑定 2FA"}
+            _l("🔓 官方服务端检测：账号尚未开启 2FA，准备申请下发 TOTP 密钥...")
         elif r2.status_code in (401, 403):
             raise RuntimeError(f"Access Token 已过期或未授权 (HTTP {r2.status_code})")
 
         # 2. enroll
+        _s("2/4 申请官方 TOTP 密钥...")
+        _l("🔑 正在向 OpenAI 官方 /backend-api/accounts/mfa/enroll 请求下发 TOTP 密钥...")
         headers["Content-Type"] = "application/json"
         r3 = session.post("https://chatgpt.com/backend-api/accounts/mfa/enroll", headers=headers, json={"factor_type": "totp"}, timeout=30)
         if r3.status_code != 200:
@@ -134,8 +160,12 @@ def bind_totp_2fa_by_token(access_token: str, proxy: str = "") -> dict:
         if not secret or not session_id:
             raise RuntimeError(f"OpenAI 官方 enroll 响应缺少 secret 或 session_id: {en}")
 
+        _l(f"📥 成功获取官方下发的 2FA Secret: {secret} (共 {len(secret)} 位密钥)")
+
         # 3. 计算 6 位当前动态码并 activate
         code = totp_now(secret)
+        _s("3/4 计算验证码并提交激活...")
+        _l(f"⏱️ 正在依据 RFC 6238 算法计算当前 6 位动态验证码: {code}，提交官方激活...")
         r4 = session.post(
             "https://chatgpt.com/backend-api/accounts/mfa/user/activate_enrollment",
             headers=headers,
@@ -145,13 +175,22 @@ def bind_totp_2fa_by_token(access_token: str, proxy: str = "") -> dict:
         if r4.status_code != 200:
             raise RuntimeError(f"OpenAI 官方 activate_enrollment 失败 ({r4.status_code}): {(r4.text or '')[:200]}")
 
+        _l(f"✨ 官方动态码校验通过 (HTTP 200)")
+
         # 4. 激活成功后复核 mfa_info 确保服务端 mfa_enabled 为 True
+        _s("4/4 复核官方状态...")
+        _l("🔄 正在复核官方 /backend-api/accounts/mfa_info 确认 mfa_enabled 状态...")
         time.sleep(1)
         r5 = session.get("https://chatgpt.com/backend-api/accounts/mfa_info", headers=headers, timeout=30)
         mfa_confirmed = False
         if r5.status_code == 200:
             info5 = r5.json() or {}
             mfa_confirmed = bool(info5.get("mfa_enabled"))
+
+        if mfa_confirmed:
+            _l(f"✅ 官方复核确认：mfa_enabled=true (双重认证正式生效)")
+        else:
+            _l(f"⚠️ 官方复核提示：enroll 已成功，但 mfa_info 暂未刷新")
 
         return {
             "ok": True,
@@ -219,10 +258,14 @@ def bind_totp_2fa_adaptive(
         try:
             _step("正在通过现有 Access Token 请求官方 mfa/enroll...")
             _log("使用现有 Access Token 打官方 mfa_info 检查...")
-            res = bind_totp_2fa_by_token(token, proxy=proxy)
+            res = bind_totp_2fa_by_token(token, proxy=proxy, log_cb=_log, step_cb=_step)
             if res.get("secret"):
                 db.update_registered_manual(email, totp_secret=res["secret"])
-                _log(f"🎉 2FA 绑定成功！Secret={res['secret']}")
+                _log(f"🎉 2FA 绑定成功！Secret={res['secret']} | 当前动态码: {totp_now(res['secret'])}")
+            elif res.get("already_bound") and current_secret:
+                res["secret"] = current_secret
+                res["totp_secret"] = current_secret
+                _log(f"✅ 官方服务端确认已开启 2FA！Secret: {current_secret} | 当前动态码: {totp_now(current_secret)}")
             return res
         except Exception as e:
             err_msg = str(e)
@@ -240,11 +283,15 @@ def bind_totp_2fa_adaptive(
                 db.update_registered_manual(email, access_token=new_at, refresh_token=new_rt)
                 _step("新 Token 换取成功，正在提交官方 2FA 激活...")
                 _log(f"凭证刷新成功，正在向 OpenAI 官方提交 2FA 激活...")
-                res = bind_totp_2fa_by_token(new_at, proxy=proxy)
+                res = bind_totp_2fa_by_token(new_at, proxy=proxy, log_cb=_log, step_cb=_step)
                 if res.get("secret"):
                     db.update_registered_manual(email, totp_secret=res["secret"])
-                    _log(f"🎉 2FA 绑定成功！Secret={res['secret']}")
-                    return res
+                    _log(f"🎉 2FA 绑定成功！Secret={res['secret']} | 当前动态码: {totp_now(res['secret'])}")
+                elif res.get("already_bound") and current_secret:
+                    res["secret"] = current_secret
+                    res["totp_secret"] = current_secret
+                    _log(f"✅ 官方服务端确认已开启 2FA！Secret: {current_secret} | 当前动态码: {totp_now(current_secret)}")
+                return res
         except Exception as e2:
             _log(f"⚠️ RT 刷新后绑定 2FA 提示: {e2}，准备启动官方交互式登录链重获认证...")
 
@@ -339,10 +386,12 @@ def bind_totp_2fa_adaptive(
         password=pwd,
         mail_provider=mail_provider,
         env_overrides={"OTP_TIMEOUT": "60"},
+        log_cb=_log,
+        step_cb=_step,
     )
     if slow_res and slow_res.get("secret"):
         db.update_registered_manual(email, totp_secret=slow_res["secret"])
-        _log(f"🎉 官方深度登录链 2FA 绑定成功！Secret={slow_res['secret']}")
+        _log(f"🎉 官方深度登录链 2FA 绑定成功！Secret={slow_res['secret']} | 当前动态码: {totp_now(slow_res['secret'])}")
         return {
             "ok": True,
             "secret": slow_res["secret"],
@@ -356,14 +405,35 @@ def bind_totp_2fa_adaptive(
 
 
 # ── 真正干活的三步：查已绑 → enroll → activate ────────────────────
-def _enroll_and_activate(flow: AuthFlow, at: str) -> dict | None:
+def _enroll_and_activate(
+    flow: AuthFlow,
+    at: str,
+    log_cb: Optional[Callable[[str], None]] = None,
+    step_cb: Optional[Callable[[str], None]] = None,
+) -> dict | None:
     """拿 flow.session + access_token 完成 enroll/activate，成功返回 dict。
 
     快慢两条路唯一的区别只在【怎么弄到这个 at】，弄到之后的动作完全一样，
     所以抽出来共用，免得两份代码各改各的漂移掉。
     """
+    def _l(msg: str):
+        logger.info(f"[2fa] {msg}")
+        if log_cb:
+            try:
+                log_cb(msg)
+            except Exception:
+                pass
+
+    def _s(step: str):
+        if step_cb:
+            try:
+                step_cb(step)
+            except Exception:
+                pass
+
     # 幂等保护：已绑 totp 则不重复 enroll（secret 取不回，只能日志提示）
-    logger.info("[2fa] 检查是否已绑定...")
+    _s("1/4 检查官方 2FA 状态...")
+    _l("🔍 正在调用 OpenAI 官方 /backend-api/accounts/mfa_info 检查当前 2FA 绑定状态...")
     hh = flow._common_headers("https://chatgpt.com/backend-api/accounts/mfa_info")
     hh["Authorization"] = f"Bearer {at}"
     r2 = flow.session.get(
@@ -372,10 +442,11 @@ def _enroll_and_activate(flow: AuthFlow, at: str) -> dict | None:
     if r2.status_code == 200:
         info = r2.json() or {}
         if info.get("mfa_enabled") and (info.get("factors", {}) or {}).get("totp"):
-            logger.info("[2fa] 该号已绑 totp，跳过（secret 无法从服务端取回）")
+            _l("ℹ️ OpenAI 官方服务端检测：该账号已开启 2FA TOTP 双重认证（Secret 仅在初次生成时下发）")
             return None
 
-    logger.info("[2fa] enroll TOTP（★secret 只在本次响应出现）...")
+    _s("2/4 申请官方 TOTP 密钥...")
+    _l("🔑 正在向 OpenAI 官方 /backend-api/accounts/mfa/enroll 请求下发 TOTP 密钥...")
     hh = flow._common_headers("https://chatgpt.com/backend-api/accounts/mfa/enroll")
     hh["Authorization"] = f"Bearer {at}"
     hh["Content-Type"] = "application/json"
@@ -384,20 +455,21 @@ def _enroll_and_activate(flow: AuthFlow, at: str) -> dict | None:
         headers=hh, json={"factor_type": "totp"}, timeout=30,
     )
     if r3.status_code != 200:
-        logger.warning(
-            "[2fa] enroll %s: %s", r3.status_code, (r3.text or "")[:200]
-        )
+        _l(f"❌ OpenAI 官方 enroll 失败 ({r3.status_code}): {(r3.text or '')[:200]}")
         return None
     en = r3.json() or {}
     secret = en.get("secret", "")
     session_id = en.get("session_id", "")
     factor_id = (en.get("factor", {}) or {}).get("id", "")
     if not secret or not session_id:
-        logger.warning("[2fa] enroll 响应缺 secret/session_id，跳过: %s", json.dumps(en)[:200])
+        _l(f"❌ OpenAI 官方 enroll 响应缺少 secret 或 session_id: {json.dumps(en)[:200]}")
         return None
 
-    logger.info("[2fa] 算码并激活...")
+    _l(f"📥 成功获取官方下发的 2FA Secret: {secret} (共 {len(secret)} 位密钥)")
+
+    _s("3/4 计算验证码并激活...")
     code = totp_now(secret)
+    _l(f"⏱️ 正在依据 RFC 6238 算法计算当前 6 位动态验证码: {code}，提交官方激活...")
     hh = flow._common_headers(
         "https://chatgpt.com/backend-api/accounts/mfa/user/activate_enrollment"
     )
@@ -410,48 +482,31 @@ def _enroll_and_activate(flow: AuthFlow, at: str) -> dict | None:
         timeout=30,
     )
     if r4.status_code != 200:
-        logger.warning(
-            "[2fa] activate_enrollment %s: %s（429 可等 60s 换码重试）",
-            r4.status_code, (r4.text or "")[:200]
-        )
+        _l(f"❌ OpenAI 官方 activate_enrollment 失败 ({r4.status_code}): {(r4.text or '')[:200]}")
         return None
 
+    _l(f"✨ 官方动态码校验通过 (HTTP 200)")
+
     # 验证（失败不影响返回：enroll+activate 都 200 即视为成功，secret 已到手）
-    time.sleep(2)
+    _s("4/4 复核官方状态...")
+    _l("🔄 正在复核官方 /backend-api/accounts/mfa_info 确认 mfa_enabled 状态...")
+    time.sleep(1)
     hh = flow._common_headers("https://chatgpt.com/backend-api/accounts/mfa_info")
     hh["Authorization"] = f"Bearer {at}"
     r5 = flow.session.get(
         "https://chatgpt.com/backend-api/accounts/mfa_info", headers=hh, timeout=30
     )
     if r5.status_code == 200 and (r5.json() or {}).get("mfa_enabled"):
-        logger.info("[2fa] ✅ 绑定成功，mfa_enabled=true")
+        _l(f"✅ 官方复核确认：mfa_enabled=true (双重认证正式生效)")
     else:
-        logger.warning(
-            "[2fa] enroll/activate 已 200，但 mfa_info 复核异常: %s %s",
-            r5.status_code, (r5.text or "")[:120]
-        )
+        _l(f"⚠️ 官方复核提示：enroll 已成功，但 mfa_info 暂未刷新")
 
     return {"secret": secret, "factor_id": factor_id, "session_id": session_id}
 
 
 # ── 快路径：复用注册会话，不重新登录 ──────────────────────────────
 def bind_totp_2fa_inline(flow: AuthFlow, access_token: str = "") -> dict | None:
-    """注册刚跑完，直接用同一个 flow 绑 2FA。成功返回 dict，失败返回 None。
-
-    【为什么这条能走通】桌面文档说注册会话直接 enroll 会 401 recent_auth_required，
-    必须重走 login 正式链 —— 实测**不成立**。2026-08-08 探针 <测试号>@<自建域>：
-        GET  mfa_info -> 200 (mfa_enabled:false)
-        POST enroll   -> 200 (secret 32 位)
-        POST activate -> 200 {"success":true}
-        GET  mfa_info -> 200 mfa_enabled=true
-    合理性：注册链本身几十秒前刚做完 OTP 验证 + create_account，服务端眼里
-    这就是"最近认证过"，login_challenge 那套要求它已经满足了。
-
-    【省了多少】重走登录链要 ~40s，含一次 PoW（约 18s，最贵的一步）和一封
-    验证码邮件；这条 6.2s、零 PoW、零邮件。
-
-    失败返回 None 让调用方回落到慢路径，不做异常抛出。
-    """
+    """注册刚跑完，直接用同一个 flow 绑 2FA。成功返回 dict，失败返回 None。"""
     try:
         at = access_token or getattr(getattr(flow, "result", None), "access_token", "")
         if not at:
@@ -470,6 +525,8 @@ def bind_totp_2fa(
     password: str,
     mail_provider=None,
     env_overrides: dict | None = None,
+    log_cb: Optional[Callable[[str], None]] = None,
+    step_cb: Optional[Callable[[str], None]] = None,
 ) -> dict | None:
     """
     注册成功后为账号绑定 TOTP 2FA。
@@ -477,55 +534,56 @@ def bind_totp_2fa(
     成功 → 返回 {"secret", "factor_id", "session_id"}；
     任何一步失败 / 前提不满足 / 已绑定 → 返回 None（仅记日志，绝不抛异常，
     以免拖垮已经注册成功的号 —— 调用方 registrar 再套一层 try/except 兜底）。
-
-    ⚠️ 用【独立的 AuthFlow 实例】重走一遍 login 正式链（而非复用注册那个已完成
-       signup 的 flow）：enroll 要求 session 有 login_challenge，注册走的是 signup
-       链且已登录 chatgpt.com，直接 enroll 会 401 recent_auth_required。
-       独立实例 = 独立 device_id + 随机 UA，也符合防风控的批量绑定建议。
     """
+    def _l(msg: str):
+        logger.info(f"[2fa-authflow] {msg}")
+        if log_cb:
+            try:
+                log_cb(msg)
+            except Exception:
+                pass
+
+    def _s(step: str):
+        if step_cb:
+            try:
+                step_cb(step)
+            except Exception:
+                pass
+
     if not email:
-        logger.warning("[2fa] 缺邮箱，跳过绑定")
+        _l("⚠️ 缺少邮箱，跳过绑定")
         return None
 
     try:
         flow = AuthFlow(cfg, env_overrides=dict(env_overrides or {}))
-
-        # OTP 水印：本条绑定链一开始就打，往后到的信都算「本轮的」。
-        # 【为什么不卡在 authorize/continue 前一刻】实测 kj5bvjma7o：绑定挑战的码
-        # 在 05:50:54 就投出来了，而 authorize/continue 是 05:51:37 才发的 ——
-        # 服务端早在 oauth_init 阶段就发码了，比那个位置的水印还早 43 秒。
-        # 那次侥幸没炸只因为后面又补投了两封；万一只发早的那封，水印会把唯一
-        # 带对码的信判成旧信 → 又是干等超时。
-        # 【为什么敢放宽】实测同一次 challenge 内多封信【码完全相同】
-        # （1310/1311/1312 全是 124854），resend 只是把同一个码再投一遍，
-        # 所以抓到哪一封都对，放宽窗口不会抓错码。
-        # 【为什么不会串上注册那个码】注册和绑定是两个 challenge、码不同
-        # （869765 vs 124854），而注册最后一封码信到本函数被调用之间，隔着
-        # 建账号 / 重定向链 / 换 session 一大串，实测有 60 秒富余，够拉开。
         chain_started_at = time.time()
 
-        logger.info("[2fa] 1/11 检查代理 / 预热...")
+        _s("1/11 检查代理与预热...")
+        _l("[2FA] 1/11 检查代理连通性并预热会话...")
         flow.check_proxy()
-        # 没拿到 oai-did 就直接 409，不如早退：2FA 是注册后置步骤，
-        # 失败只告警不废号（见调用方 registrar），所以这里 raise 是安全的。
         if not flow.warmup():
             raise RuntimeError(
                 "warmup 失败：未拿到 oai-did cookie，绑定链路必然 409 invalid_state"
             )
 
-        logger.info("[2fa] 2/11 获取 csrf_token...")
+        _s("2/11 获取 CSRF Token...")
+        _l("[2FA] 2/11 获取 csrf_token...")
         csrf = flow.get_csrf_token()
 
-        logger.info("[2fa] 3/11 获取 OAuth 授权地址...")
+        _s("3/11 获取 OAuth 地址...")
+        _l("[2FA] 3/11 获取 OAuth 授权地址...")
         auth_url = flow.get_auth_url(csrf, email=email)
 
-        logger.info("[2fa] 4/11 OAuth 初始化（拿 device_id）...")
+        _s("4/11 初始化 OAuth 会话...")
+        _l("[2FA] 4/11 OAuth 初始化（获取 device_id）...")
         device_id = flow.auth_oauth_init(auth_url)
 
-        logger.info("[2fa] 5/11 获取 sentinel token（PoW）...")
+        _s("5/11 计算 PoW 算力证明...")
+        _l("[2FA] 5/11 获取 Sentinel Token (PoW 算力证明)...")
         flow.get_sentinel_token(device_id)
 
-        logger.info("[2fa] 6/11 authorize/continue 提交邮箱（★正式链，建 login_challenge）...")
+        _s("6/11 提交邮箱建认证会话...")
+        _l("[2FA] 6/11 authorize/continue 提交邮箱建立 Login Challenge...")
         step = flow.authorize_continue(
             email, flow._last_sentinel_token,
             screen_hint="login",
@@ -536,12 +594,12 @@ def bind_totp_2fa(
         continue_url = flow._normalize_continue_url(
             flow._extract_continue_url_from_step(step)
         )
-        logger.info("[2fa] page.type = %r", page_type)
+        _l(f"[2FA] page.type = {page_type!r}")
 
         # ── 7/11 密码链（服务端给密码页时才走）──
-        # 判据和 auth_flow.run_protocol_login 保持一致：page.type 与 continue_url 任一命中。
         if page_type == "login_password" or "/log-in/password" in continue_url:
-            logger.info("[2fa] 7/11 打开密码页 + 密码验证...")
+            _s("7/11 验证账号密码...")
+            _l("[2FA] 7/11 打开密码页并提交密码验证...")
             flow.session.get(
                 f"https://auth.openai.com/log-in/password?email={urllib.parse.quote(email)}",
                 headers=flow._common_headers("https://auth.openai.com/log-in/password"),
@@ -552,46 +610,23 @@ def bind_totp_2fa(
             continue_url = flow._normalize_continue_url(
                 flow._extract_continue_url_from_step(step)
             )
-            logger.info("[2fa] 密码验证后 page.type = %r", page_type)
+            _l(f"[2FA] 密码验证后 page.type = {page_type!r}")
 
         # ── 7.5/11 邮件 OTP 链 ──
-        # 【实跑定性 2026-08-08，日志 c189580cb8f6】刚注册完几十秒的新号，即使已经
-        # 设过密码，authorize_continue 也直接返回 email_otp_verification —— 服务端对
-        # 低信任新号强制走邮箱验证。所以绑 2FA 途中【确实要接一封邮件】。
-        # 这段逻辑不是我新发明的，照抄 auth_flow.py:826-849（run_protocol_login 里
-        # 早已实测跑通的同款分支），改个 mode 字符串而已。
         need_otp = (page_type == "email_otp_verification") or (
             "/email-verification" in (continue_url or "")
         )
         if need_otp:
             if mail_provider is None:
-                logger.warning("[2fa] 该号需邮件 OTP，但未提供 mail_provider，跳过绑定")
+                _l("⚠️ 该号需邮件 OTP，但未提供 mail_provider，跳过绑定")
                 return None
             try:
                 otp_timeout = max(10, int(flow._get_env("OTP_TIMEOUT", "60")))
             except Exception:
                 otp_timeout = 60
-            logger.info("[2fa] 7.5/11 需要邮件 OTP（timeout=%ss）...", otp_timeout)
+            _s("7.5/11 接收邮件验证码...")
+            _l(f"[2FA] 7.5/11 需要邮件 OTP 验证（等待超时 {otp_timeout}s）...")
 
-            # ── 先瞄一眼：码很可能【已经在信箱里了】────────────────────
-            # 实测 <测试号>@<自建域>：本轮 challenge 一共收到 3 封信，
-            # 码全都一样（808510）——
-            #   14:17:19  get_auth_url 带 login_hint 触发，服务端抢跑发的
-            #   14:17:39  authorize/continue 提交邮箱触发
-            #   14:17:39  ← 我们自己调 resend 触发的第三封
-            # 也就是说走到这一步时，前两封早就到了，第三封纯属多余。每个号白
-            # 白多两封验证码信，看着就像在刷码，对风控没好处。
-            #
-            # 【为什么这里敢省，注册链那边不敢】区别在服务端状态动没动：
-            #   绑定链 —— resend 明确是「复用同一个 challenge state 再投一遍」，
-            #             不改状态，所以已投递的那封本来就有效，省掉无损。
-            #   注册链 —— auth_flow.py:2846 那段是实测结论：POST user/register
-            #             成功后服务端会把流程切到 email_otp_send 页，signup
-            #             阶段发的码【当场失效】，拿它 verify 直接 409
-            #             invalid_state。那次 send_otp 是在重置状态，不是单纯
-            #             为了送信，删了就炸。所以注册链一行不动。
-            #
-            # 探不到就安静回退到原来的发码路径，只多花 4 秒。
             otp_code = None
             try:
                 peek = getattr(mail_provider, "peek_otp", None)
@@ -601,46 +636,46 @@ def bind_totp_2fa(
                 logger.debug("[2fa] 预读 OTP 异常（回退到发码）: %s", e)
 
             if not otp_code:
-                logger.info("[2fa] 信箱里还没有码，主动发一封...")
-                # 走 existing 分支：这号已经存在了，必须 resend 复用同一个 challenge state。
-                # 调 send_otp 新建 challenge 会让服务端已投递的那封码当场失效 → verify 报
-                # wrong_email_otp_code（kickoff_otp_delivery 里写得很清楚的坑）。
+                _l("[2FA] 正在主动触发官方重发验证码邮件...")
                 if not flow.kickoff_otp_delivery("existing_bind_2fa"):
                     flow.send_otp(referer="https://auth.openai.com/email-verification")
                 otp_code = mail_provider.wait_for_otp(
                     email, timeout=otp_timeout, issued_after=chain_started_at,
                 )
+            _l(f"📥 成功获取验证码: {otp_code}，提交验证...")
             otp_resp = flow.verify_otp(otp_code)
             page_type = flow._extract_page_type(otp_resp)
             continue_url = flow._normalize_continue_url(
                 flow._extract_continue_url_from_step(otp_resp)
             )
-            logger.info("[2fa] OTP 验证通过，page.type = %r", page_type)
+            _l(f"[2FA] OTP 验证通过，page.type = {page_type!r}")
 
         cu = continue_url
         if not cu:
-            logger.warning("[2fa] 登录链没拿到 continue_url（page.type=%r），跳过", page_type)
+            _l(f"⚠️ 登录链没拿到 continue_url（page.type={page_type!r}），跳过")
             return None
 
         # 已绑 2FA 的号验证完直接进 mfa-challenge（此时不该重复绑定）
         if "/mfa-challenge/" in cu:
-            logger.info("[2fa] 该号已启用 2FA（进入 mfa-challenge），跳过重复绑定")
+            _l("ℹ️ 该号在官方已启用 2FA（进入 mfa-challenge），跳过重复绑定")
             return None
 
-        logger.info("[2fa] 8/11 消费 callback，建立会话...")
+        _s("8/11 消费 Callback...")
+        _l("[2FA] 8/11 消费 callback，建立授权会话...")
         if not flow._consume_callback_for_session(cu):
-            logger.warning("[2fa] 消费 callback 失败，跳过")
+            _l("⚠️ 消费 callback 失败，跳过")
             return None
 
-        logger.info("[2fa] 9/11 获取 access_token...")
+        _s("9/11 获取 Token...")
+        _l("[2FA] 9/11 获取 access_token...")
         _st, at = flow.get_auth_session()
         if not at:
-            logger.warning("[2fa] 未拿到 access_token，跳过")
+            _l("⚠️ 未拿到 access_token，跳过")
             return None
 
-        # 9.5 ~ 11/11：和快路径完全同一套动作，共用 _enroll_and_activate
-        return _enroll_and_activate(flow, at)
+        # 10 ~ 11/11：完成 enroll + activate
+        return _enroll_and_activate(flow, at, log_cb=_l, step_cb=_s)
 
-    except Exception as e:  # noqa: BLE001 — 绑定任何异常都不能拖垮已注册成功的号
-        logger.warning("[2fa] 绑定过程异常（账号仍有效，仅未绑 2FA）: %s", e)
+    except Exception as e:  # noqa: BLE001
+        _l(f"❌ 绑定过程异常: {e}")
         return None

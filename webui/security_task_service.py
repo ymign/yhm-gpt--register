@@ -249,10 +249,14 @@ def _process_2fa_item(task: SecurityTask, email: str, proxy: str) -> None:
         task.mark_failed(email, "数据库中未找到该账号")
         return
 
+    from .two_factor import totp_now
+
     if (row.get("totp_secret") or "").strip():
-        _log("该账号已在本地登记有 2FA Secret，无需重复绑定")
+        current_sec = row["totp_secret"].strip()
+        code_now = totp_now(current_sec)
+        _log(f"ℹ️ 该账号本地已登记有 2FA Secret: {current_sec} (当前动态验证码: {code_now})，无需重复绑定")
         task.mark_done(email, {
-            "totp_secret": row["totp_secret"].strip(),
+            "totp_secret": current_sec,
             "already_bound": True,
             "label": "✅ 已绑定 2FA",
         })
@@ -262,11 +266,28 @@ def _process_2fa_item(task: SecurityTask, email: str, proxy: str) -> None:
         _step("正在启动自适应 2FA 绑定...")
         res = bind_totp_2fa_adaptive(row=row, proxy=proxy, step_cb=_step, log_cb=_log)
         sec = res.get("secret") or res.get("totp_secret") or ""
-        task.mark_done(email, {
-            "totp_secret": sec,
-            "label": "🎉 2FA 绑定成功",
-        })
-        _log(f"🎉 2FA 官方激活成功！Secret: {sec}")
+        if res.get("already_bound"):
+            if sec:
+                code_now = totp_now(sec)
+                task.mark_done(email, {
+                    "totp_secret": sec,
+                    "already_bound": True,
+                    "label": "✅ 已绑定 2FA",
+                })
+                _log(f"✅ 官方服务端确认已开启 2FA！Secret: {sec} | 当前动态码: {code_now}")
+            else:
+                task.mark_done(email, {
+                    "already_bound": True,
+                    "label": "✅ 官方已开启 2FA",
+                })
+                _log("ℹ️ 官方服务端确认已开启 2FA TOTP（注：OpenAI 官方仅在首次生成时下发 Secret 明文）")
+        else:
+            code_now = totp_now(sec) if sec else ""
+            task.mark_done(email, {
+                "totp_secret": sec,
+                "label": "🎉 2FA 绑定成功",
+            })
+            _log(f"🎉 2FA 官方激活成功！Secret: {sec} | 即时动态码: {code_now}，已落库保存")
     except Exception as e:
         err_str = str(e)
         _log(f"❌ 2FA 绑定失败: {err_str}")
