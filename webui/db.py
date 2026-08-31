@@ -307,6 +307,36 @@ def init_db():
         con.execute("ALTER TABLE remail_recycle_pool ADD COLUMN fail_count INTEGER NOT NULL DEFAULT 0")
         con.commit()
 
+    # 默认开箱即用设置预置（新电脑 clone 后自动就绪，无需手动配置）
+    default_kvs = {
+        "mail_source": "remail",
+        "remail_api_key": "rk-a18f1eed-cc59-4eaf-9c5f-ac4d711c758d",
+        "remail_project_id": "2",
+        "remail_email_suffix": "outlook.com",
+        "remail_service_mode": "purchase",
+        "remail_base_url": "https://remail.aishop6.com",
+        "remail_max_recycle_retries": "3",
+        "proxy": "socks5h://egyd1230749-region-US-sid-auto:3wnuqht8@us.cliproxy.io:3010",
+        "cf_api_url": "https://mail-api.shaosiming.online",
+        "cf_admin_token": "sayd82k4lzbmp6g3",
+        "cf_domain": "yhmsiming.site",
+        "sms_provider": "smsbower",
+        "sms_country": "6",
+        "sms_max_price": "0.008",
+        "sms_max_phone_attempts": "3",
+        "sms_per_phone_timeout": "120",
+        "sms_enabled": "0",
+        "sms_api_key": "NnsAKSMAA7IhyTNQXk0J4I2om6bpdb1Q",
+        "sms_provider_ids": "3237",
+        "sms_except_provider_ids": "3327,1170,2953,3251",
+    }
+    for k, v in default_kvs.items():
+        con.execute(
+            "INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)",
+            (k, str(v)),
+        )
+    con.commit()
+
 
 # ──────────────────────── outlook 号池 ────────────────────────
 

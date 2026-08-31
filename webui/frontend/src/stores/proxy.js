@@ -24,6 +24,11 @@ export const useProxyStore = defineStore('proxy', () => {
     } catch (_) { /* ignore */ }
   }
 
+  // 默认开箱即用代理预置（新设备首次打开自动填入）
+  if (!saved.length) {
+    saved = ['socks5h://egyd1230749-region-US-sid-auto:3wnuqht8@us.cliproxy.io:3010']
+  }
+
   const list = ref(saved)
   const text = computed(() => list.value.join('\n'))
   const count = computed(() => list.value.length)

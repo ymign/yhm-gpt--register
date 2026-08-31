@@ -100,23 +100,20 @@ export const COUNTRY_OPTIONS = [
 // 跨页面共享 + localStorage 持久化的表单字段
 // （proxy 在 注册 / 自动跑号 / Plus 检测 三处共用）
 const defaults = {
-  mailSource: 'cf_temp',          // 注册邮箱来源: 'remail' | 'cf_temp' | 'outlook' | 'icloud_relay'
-  autoMailSource: 'cf_temp',      // 自动跑号邮箱来源
-  proxy: '',
-  proxyCountry: 'RANDOM_HOT',      // 单次注册代理目标国家 (默认高爆智能轮换)
-  autoProxyCountry: 'RANDOM_HOT',  // 全自动批量代理目标国家
+  mailSource: 'remail',           // 默认 Remail 自动购号（开箱即用）
+  autoMailSource: 'remail',       // 自动跑号默认 Remail
+  proxy: 'socks5h://egyd1230749-region-US-sid-auto:3wnuqht8@us.cliproxy.io:3010',
+  proxyCountry: 'US',             // 单次注册代理目标国家 (默认 US)
+  autoProxyCountry: 'US',         // 全自动批量代理目标国家
   otpTimeout: 60,
   autoConcurrency: 1,
   autoCoolDown: 3,
   autoTargetCount: 0,
-  autoCircuitBreak: 3, // 连续网络错误自动暂停阈值（0=关闭自动暂停）
-  // 试用资格高爆推荐配置（对齐指纹浏览器 OTP-First 黄金轨迹，避免触发风控降级）：
-  // 1. 默认免密 OTP 注册（不打 legacy user/register 设密接口，避免 Promotion Suppression）
-  // 2. 默认不秒绑 2FA 和 Codex（避免注册第 1 秒触发自动化工具特征）
-  want2fa: false,
-  autoWant2fa: false,
-  wantPassword: false,
-  autoWantPassword: false,
+  autoCircuitBreak: 3,            // 连续网络错误自动暂停阈值
+  want2fa: true,
+  autoWant2fa: true,
+  wantPassword: true,
+  autoWantPassword: true,
   wantRefreshToken: false,
   autoWantRefreshToken: false,
 }

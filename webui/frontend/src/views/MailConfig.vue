@@ -105,7 +105,7 @@ const source = ref('remail')
 const form = ref({
   remail_api_key: 'rk-a18f1eed-cc59-4eaf-9c5f-ac4d711c758d',
   remail_project_id: '2',
-  remail_email_suffix: 'icloud.com',
+  remail_email_suffix: 'outlook.com',
   remail_service_mode: 'purchase',
   remail_max_recycle_retries: 3,
   remail_base_url: 'https://remail.aishop6.com',
