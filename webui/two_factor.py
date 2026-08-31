@@ -227,8 +227,6 @@ def bind_totp_2fa_adaptive(
         except Exception as e:
             err_msg = str(e)
             _log(f"⚠️ 账号使用现有 AT 绑定失败 ({err_msg})，尝试 RT 换取新 Token...")
-            if not refresh_token:
-                raise
 
     # 尝试使用 refresh_token 刷新 access_token
     if refresh_token:
@@ -246,12 +244,115 @@ def bind_totp_2fa_adaptive(
                 if res.get("secret"):
                     db.update_registered_manual(email, totp_secret=res["secret"])
                     _log(f"🎉 2FA 绑定成功！Secret={res['secret']}")
-                return res
+                    return res
         except Exception as e2:
-            _log(f"❌ RT 刷新后绑定 2FA 仍失败: {e2}")
-            raise RuntimeError(f"Token 已失效且刷新失败: {e2}")
+            _log(f"⚠️ RT 刷新后绑定 2FA 提示: {e2}，准备启动官方交互式登录链重获认证...")
 
-    raise RuntimeError("该账号无可用 Access Token 或 Refresh Token，无法向 OpenAI 官方申请绑定 2FA")
+    # 3. 终极回落：当快路径遇到 recent_auth_required 或无可用 Token 时，自动启动官方 AuthFlow 登录链重走认证
+    _step("正在通过官方 AuthFlow 交互式认证链申请绑定 2FA...")
+    _log("⚠️ 遇到 OpenAI recent_auth_required 安全限制（要求近期交互式认证），自动启动官方 AuthFlow 登录链重新获取认证并绑定 2FA...")
+
+    cfg = Config()
+    cfg.proxy = proxy or db.get_setting("proxy", "") or None
+
+    settings = db.get_mail_settings()
+    account_row = db.get_account(email) or {}
+    saved_oauth = {}
+    if row.get("extra"):
+        saved_oauth = row["extra"].get("mail_oauth") or {}
+
+    mail_source = ""
+    if saved_oauth.get("kind") == "remail" or saved_oauth.get("service_token") or saved_oauth.get("pickup_url"):
+        mail_source = "remail"
+        account_row = {
+            "email": email,
+            "service_token": saved_oauth.get("service_token", ""),
+            "pickup_url": saved_oauth.get("pickup_url", ""),
+            "order_no": saved_oauth.get("order_no", ""),
+            "project_id": saved_oauth.get("project_id", 2),
+            "email_suffix": saved_oauth.get("email_suffix", "outlook.com"),
+            "service_mode": saved_oauth.get("service_mode", "purchase"),
+            "kind": "remail",
+        }
+    elif saved_oauth.get("kind") == "outlook" or saved_oauth.get("refresh_token") or saved_oauth.get("password"):
+        mail_source = "outlook"
+        account_row = {
+            "email": email,
+            "password": saved_oauth.get("password", ""),
+            "client_id": saved_oauth.get("client_id", ""),
+            "refresh_token": saved_oauth.get("refresh_token", ""),
+            "kind": "outlook",
+        }
+    elif saved_oauth.get("kind") == "icloud_relay" or saved_oauth.get("relay_url"):
+        mail_source = "icloud_relay"
+        account_row = {
+            "email": email,
+            "relay_url": saved_oauth.get("relay_url", ""),
+            "kind": "icloud_relay",
+        }
+
+    # 兜底 remail_recycle_pool
+    if not mail_source:
+        try:
+            cur_pool = db._conn().execute(
+                "SELECT service_token, order_no, project_id, email_suffix, service_mode FROM remail_recycle_pool WHERE email=? AND service_token IS NOT NULL AND service_token != '' ORDER BY id DESC LIMIT 1",
+                (email,),
+            ).fetchone()
+            if cur_pool and cur_pool["service_token"]:
+                mail_source = "remail"
+                account_row = {
+                    "email": email,
+                    "service_token": cur_pool["service_token"],
+                    "order_no": cur_pool.get("order_no", ""),
+                    "project_id": cur_pool.get("project_id", 2),
+                    "email_suffix": cur_pool.get("email_suffix", "outlook.com"),
+                    "service_mode": cur_pool.get("service_mode", "purchase"),
+                    "kind": "remail",
+                }
+        except Exception:
+            pass
+
+    if not mail_source:
+        if any(dom in email for dom in ("@outlook.", "@hotmail.", "@live.", "@msn.")):
+            mail_source = "outlook"
+        elif any(dom in email for dom in ("@icloud.", "@me.", "@mac.")):
+            def_source = (db.get_setting("mail_source", "") or "").strip().lower()
+            mail_source = "remail" if def_source == "remail" else "icloud_relay"
+        else:
+            mail_source = (db.get_setting("mail_source", "") or "cf_temp").strip().lower()
+
+    try:
+        from mail_providers import create_mail_provider
+        mail_provider = create_mail_provider(mail_source, settings, account_row)
+    except Exception as e:
+        _log(f"构造收信渠道异常: {e}，回退 cf_temp")
+        from mail_providers import create_mail_provider
+        mail_provider = create_mail_provider("cf_temp", settings)
+
+    pwd = (row.get("password") or "").strip()
+    if not pwd and account_row:
+        pwd = (account_row.get("password") or "").strip()
+
+    slow_res = bind_totp_2fa(
+        cfg=cfg,
+        email=email,
+        password=pwd,
+        mail_provider=mail_provider,
+        env_overrides={"OTP_TIMEOUT": "60"},
+    )
+    if slow_res and slow_res.get("secret"):
+        db.update_registered_manual(email, totp_secret=slow_res["secret"])
+        _log(f"🎉 官方深度登录链 2FA 绑定成功！Secret={slow_res['secret']}")
+        return {
+            "ok": True,
+            "secret": slow_res["secret"],
+            "code": totp_now(slow_res["secret"]),
+            "factor_id": slow_res.get("factor_id", ""),
+            "session_id": slow_res.get("session_id", ""),
+            "mfa_enabled": True,
+        }
+
+    raise RuntimeError("未能通过官方认证链完成 2FA 绑定，请检查账号密码或收信状态")
 
 
 # ── 真正干活的三步：查已绑 → enroll → activate ────────────────────
@@ -382,8 +483,8 @@ def bind_totp_2fa(
        链且已登录 chatgpt.com，直接 enroll 会 401 recent_auth_required。
        独立实例 = 独立 device_id + 随机 UA，也符合防风控的批量绑定建议。
     """
-    if not email or not password:
-        logger.warning("[2fa] 缺邮箱或密码，跳过绑定（passwordless 号无法程序化绑定）")
+    if not email:
+        logger.warning("[2fa] 缺邮箱，跳过绑定")
         return None
 
     try:

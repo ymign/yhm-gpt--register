@@ -6623,11 +6623,11 @@ onUnmounted(() => {
               <el-icon class="copy-hint-icon"><CopyDocument /></el-icon>
             </div>
             <div class="mb-tags-group">
-              <span class="mb-provider-pill" :class="mailOtpProvider === 'outlook' ? 'pill-ms' : 'pill-other'">
-                {{ mailOtpProvider === 'outlook' ? 'Outlook 微软邮箱' : (mailOtpProvider || 'Mailbox') }}
+              <span class="mb-provider-pill" :class="mailOtpProvider === 'outlook' ? 'pill-ms' : (mailOtpProvider === 'remail' ? 'pill-remail' : 'pill-other')">
+                {{ mailOtpProvider === 'outlook' ? 'Outlook 微软邮箱' : (mailOtpProvider === 'remail' ? '🍎 Remail 临时邮箱' : (mailOtpProvider || 'Mailbox')) }}
               </span>
-              <span class="mb-protocol-pill" :class="mailOtpProtocol === 'graph' ? 'pill-graph' : 'pill-imap'">
-                {{ mailOtpProtocol === 'graph' ? '⚡ Graph API 极速直连' : 'IMAP 协议' }}
+              <span class="mb-protocol-pill" :class="mailOtpProtocol === 'graph' ? 'pill-graph' : (mailOtpProtocol === 'remail_pickup' ? 'pill-remail-pickup' : 'pill-imap')">
+                {{ mailOtpProtocol === 'graph' ? '⚡ Graph API 极速直连' : (mailOtpProtocol === 'remail_pickup' ? '🍎 Remail 开放平台 API' : 'IMAP 协议') }}
               </span>
               <span v-if="mailOtpElapsed > 0" class="mb-elapsed-pill mono">
                 ⚡ 响应 {{ mailOtpElapsed }}s
@@ -6851,7 +6851,7 @@ onUnmounted(() => {
         <div class="mb-dialog-footer">
           <div class="mb-footer-left">
             <span class="mono" style="font-size: 11.5px; color: var(--el-text-color-secondary)">
-              共 {{ mailOtpMessages.length }} 封邮件 · 微软官方 Graph API 毫秒级直连
+              共 {{ mailOtpMessages.length }} 封邮件 · {{ mailOtpProtocol === 'remail_pickup' ? 'Remail 开放平台直连' : (mailOtpProtocol === 'graph' ? '微软官方 Graph API 毫秒级直连' : '邮件协议直连') }}
             </span>
           </div>
           <div class="mb-footer-right">
@@ -8367,6 +8367,12 @@ onUnmounted(() => {
   border: 1px solid rgba(2, 132, 199, 0.28);
 }
 
+.pill-remail {
+  background: rgba(16, 185, 129, 0.15);
+  color: #10b981;
+  border: 1px solid rgba(16, 185, 129, 0.35);
+}
+
 .pill-other {
   background: rgba(148, 163, 184, 0.1);
   color: #94a3b8;
@@ -8377,6 +8383,12 @@ onUnmounted(() => {
   background: rgba(16, 185, 129, 0.12);
   color: #34d399;
   border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+.pill-remail-pickup {
+  background: rgba(168, 85, 247, 0.15);
+  color: #c084fc;
+  border: 1px solid rgba(168, 85, 247, 0.35);
 }
 
 .pill-imap {

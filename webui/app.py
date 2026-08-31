@@ -1486,7 +1486,7 @@ def api_fetch_mail_otp(email: str, req: Optional[FetchMailOtpReq] = None):
     recent_mails = []
     otp_code = None
     t0 = time.time()
-    used_protocol = "remail_pickup" if kind == "remail" else "imap"
+    used_protocol = "remail_pickup" if kind == "remail" else ("graph" if getattr(account_row, "get", lambda k: "")("client_id") and getattr(account_row, "get", lambda k: "")("refresh_token") else "imap")
 
     try:
         if hasattr(provider, "_get_mails"):
@@ -1497,10 +1497,20 @@ def api_fetch_mail_otp(email: str, req: Optional[FetchMailOtpReq] = None):
                 raw_text = str(m.get("content") or m.get("raw") or m.get("text") or m.get("html") or "")
                 subject_text = str(m.get("subject") or "(无主题)")
                 from_text = str(m.get("from") or m.get("sender") or m.get("source") or "OpenAI")
-                c = extract_otp(raw_text) or extract_otp(subject_text)
-                # 优先提取来自 OpenAI / ChatGPT 的最新验证码
-                if c and not otp_code:
+                # 优先使用 Remail / Provider 已解析好的 otp 字段或 verificationCode，兜底使用全局提取
+                c = (
+                    str(m.get("otp") or "").strip()
+                    or str(m.get("verificationCode") or m.get("code") or "").strip()
+                    or extract_otp(raw_text)
+                    or extract_otp(subject_text)
+                )
+                if c and not (c.isdigit() and len(c) == 6):
+                    c = extract_otp(c) or ""
+
+                # 优先提取来自 OpenAI / ChatGPT 的最新 6 位验证码
+                if c and not otp_code and c.isdigit() and len(c) == 6:
                     otp_code = c
+
                 clean_snippet = re.sub(r"<[^>]+>", " ", raw_text)
                 clean_snippet = re.sub(r"\s+", " ", clean_snippet).strip()
                 recent_mails.append({
@@ -1508,7 +1518,7 @@ def api_fetch_mail_otp(email: str, req: Optional[FetchMailOtpReq] = None):
                     "subject": subject_text,
                     "from": from_text,
                     "date": str(m.get("date") or m.get("created_at") or m.get("date_str") or ""),
-                    "otp": c or "",
+                    "otp": c if (c and c.isdigit() and len(c) == 6) else "",
                     "snippet": clean_snippet[:350],
                     "content": raw_text,
                 })
