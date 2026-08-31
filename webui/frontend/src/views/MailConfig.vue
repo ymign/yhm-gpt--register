@@ -235,8 +235,16 @@ async function load() {
     const next = { ...form.value }
     for (const p of providers.value) {
       for (const f of p.config_fields || []) {
-        if (saved.value[f.key] !== undefined) {
+        if (saved.value[f.key] !== undefined && saved.value[f.key] !== '') {
           next[f.key] = saved.value[f.key]
+        }
+      }
+    }
+    // 强行合并 saved 中的全部已知属性，避免遗漏
+    if (saved.value) {
+      for (const k of Object.keys(saved.value)) {
+        if (saved.value[k] !== undefined && saved.value[k] !== '') {
+          next[k] = saved.value[k]
         }
       }
     }
