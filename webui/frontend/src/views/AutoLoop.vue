@@ -101,6 +101,51 @@ const nowTs = ref(Math.floor(Date.now() / 1000))
 let tickerTimer = null
 let statusPollTimer = null
 
+function formatClock(ts) {
+  if (!ts) return '—'
+  const d = new Date(typeof ts === 'number' ? (ts < 1e11 ? ts * 1000 : ts) : ts)
+  if (isNaN(d.getTime())) return '—'
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+}
+
+function formatDuration(sec) {
+  if (sec == null || sec <= 0) return '0秒'
+  const s = Math.floor(sec)
+  if (s < 60) return `${s}秒`
+  const m = Math.floor(s / 60)
+  const rem = s % 60
+  if (m < 60) return `${m}分${rem}秒`
+  const h = Math.floor(m / 60)
+  const remM = m % 60
+  return `${h}时${remM}分${rem}秒`
+}
+
+const batchStartedAt = computed(() => autoStatus.value.started_at || null)
+const batchFinishedAt = computed(() => autoStatus.value.finished_at || null)
+
+const batchElapsedSec = computed(() => {
+  if (st.value === 'running' || st.value === 'paused') {
+    if (batchStartedAt.value) {
+      return Math.max(0, nowTs.value - batchStartedAt.value)
+    }
+  }
+  if (autoStatus.value.elapsed) {
+    return Math.round(autoStatus.value.elapsed)
+  }
+  if (batchFinishedAt.value && batchStartedAt.value) {
+    return Math.max(0, Math.round(batchFinishedAt.value - batchStartedAt.value))
+  }
+  return 0
+})
+
+const batchAvgSpeed = computed(() => {
+  const total = (autoStatus.value.registered_ok || 0) + (autoStatus.value.registered_fail || 0)
+  if (total === 0 || batchElapsedSec.value <= 0) return '—'
+  const avg = (batchElapsedSec.value / total).toFixed(1)
+  return `${avg}s / 账号`
+})
+
 function formatElapsed(row) {
   if (!row) return '—'
   if (row.status === 'running') {
@@ -272,6 +317,18 @@ async function onPowSlotsChange(val) {
   }
 }
 
+// Remail 模式下自动锁定开启设密与 2FA 绑定
+watch(
+  () => form.value.autoMailSource,
+  (src) => {
+    if (src === 'remail') {
+      form.value.autoWantPassword = true
+      form.value.autoWant2fa = true
+    }
+  },
+  { immediate: true },
+)
+
 onMounted(() => {
   tickerTimer = setInterval(() => {
     nowTs.value = Math.floor(Date.now() / 1000)
@@ -342,6 +399,29 @@ onUnmounted(() => {
         </div>
       </div>
 
+      <!-- 批次总耗时与时序卡片 (实时动态走秒) -->
+      <div class="kpi-card timing-card" :class="{ 'timing-card-running': st === 'running' }">
+        <div class="kpi-info">
+          <div class="timing-kpi-header">
+            <span class="kpi-title">批次总耗时</span>
+            <span v-if="st === 'running'" class="pulse-dot-live"></span>
+          </div>
+          <div class="kpi-num-row">
+            <span class="kpi-num" :class="{ 'text-primary': st === 'running', 'text-success': st === 'stopped' && (autoStatus.registered_ok || 0) > 0 }">
+              {{ formatDuration(batchElapsedSec) }}
+            </span>
+          </div>
+          <div class="timing-sub-row">
+            <span class="timing-sub-time" title="开始时间">🕒 {{ formatClock(batchStartedAt) }}</span>
+            <span class="timing-sub-arrow">→</span>
+            <span class="timing-sub-time">
+              <span v-if="st === 'running'" class="text-running-sub">🟢 运行中</span>
+              <span v-else title="结束时间">🏁 {{ formatClock(batchFinishedAt) }}</span>
+            </span>
+          </div>
+        </div>
+      </div>
+
       <!-- 代理池卡片 -->
       <div class="kpi-card proxy-card" @click="router.push('/proxy')">
         <div class="kpi-info">
@@ -360,6 +440,17 @@ onUnmounted(() => {
         <div class="panel-header-title">
           <span class="macos-pill-tag">BATCH</span>
           <span class="title">全自动批量参数调度</span>
+
+          <!-- 顶部批次实时耗时与均速摘要胶囊 -->
+          <div v-if="batchStartedAt" class="header-timing-pill" :class="{ 'header-timing-running': st === 'running' }">
+            <span class="pill-dot" :class="{ 'pulse': st === 'running' }"></span>
+            <span>🕒 开始: {{ formatClock(batchStartedAt) }}</span>
+            <span class="pill-sep">|</span>
+            <span v-if="st === 'running'">⏱️ 耗时: <strong>{{ formatDuration(batchElapsedSec) }}</strong></span>
+            <span v-else>🏁 结束: {{ formatClock(batchFinishedAt) }} (总耗时 {{ formatDuration(batchElapsedSec) }})</span>
+            <span v-if="batchAvgSpeed !== '—'" class="pill-sep">|</span>
+            <span v-if="batchAvgSpeed !== '—'">⚡ 均速: {{ batchAvgSpeed }}</span>
+          </div>
         </div>
 
         <!-- 一体化控制操作按钮组（含停止任务按钮） -->
@@ -473,7 +564,7 @@ onUnmounted(() => {
             </el-col>
             <el-col :xs="24" :sm="12" :md="6">
               <el-form-item label="自动化附加功能">
-                <div class="feature-switches">
+                <div class="feature-switches" :class="{ 'remail-active-features': form.autoMailSource === 'remail' }">
                   <div class="switch-item">
                     <el-switch v-model="form.autoWantPassword" size="small" />
                     <span class="switch-label">自动设密</span>
@@ -611,7 +702,7 @@ onUnmounted(() => {
           </el-table-column>
 
           <!-- 出口国家 -->
-          <el-table-column label="出口国家" width="135" align="center" show-overflow-tooltip>
+          <el-table-column label="出口国家" width="125" align="center" show-overflow-tooltip>
             <template #default="{ row }">
               <span
                 v-if="row.reg_country"
@@ -625,19 +716,28 @@ onUnmounted(() => {
             </template>
           </el-table-column>
 
+          <!-- 启动时间 -->
+          <el-table-column label="启动时间" width="95" align="center">
+            <template #default="{ row }">
+              <span class="mono-date">{{ row.started_at ? formatClock(row.started_at) : '—' }}</span>
+            </template>
+          </el-table-column>
+
+          <!-- 结束时间 -->
+          <el-table-column label="结束时间" width="95" align="center">
+            <template #default="{ row }">
+              <span v-if="row.finished_at" class="mono-date">{{ formatClock(row.finished_at) }}</span>
+              <span v-else-if="row.status === 'running'" class="text-running-sub" style="font-size: 11px;">🟢 运行中</span>
+              <span v-else class="mono-date">—</span>
+            </template>
+          </el-table-column>
+
           <!-- 耗时 -->
           <el-table-column label="耗时" width="85" align="right">
             <template #default="{ row }">
               <span class="mono elapsed-badge" :class="{ 'elapsed-running': row.status === 'running' }">
                 {{ formatElapsed(row) }}
               </span>
-            </template>
-          </el-table-column>
-
-          <!-- 启动时间 -->
-          <el-table-column label="启动时间" width="140" align="center">
-            <template #default="{ row }">
-              <span class="mono-date">{{ row.started_at ? fmtTime(row.started_at) : '—' }}</span>
             </template>
           </el-table-column>
 
@@ -754,13 +854,18 @@ onUnmounted(() => {
 /* ──────────── 顶部 KPI 指标网格 ──────────── */
 .kpi-grid {
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(6, 1fr);
   gap: 10px;
   flex-shrink: 0;
 }
-@media (max-width: 900px) {
+@media (max-width: 1100px) {
   .kpi-grid {
     grid-template-columns: repeat(3, 1fr);
+  }
+}
+@media (max-width: 680px) {
+  .kpi-grid {
+    grid-template-columns: repeat(2, 1fr);
   }
 }
 
@@ -783,6 +888,46 @@ onUnmounted(() => {
 }
 .kpi-card.proxy-card:hover {
   background: var(--el-fill-color-light);
+}
+
+.timing-card {
+  border-left: 3px solid var(--el-color-primary);
+}
+.timing-card-running {
+  border-left-color: #10b981;
+  background: linear-gradient(135deg, var(--el-bg-color) 0%, rgba(16, 185, 129, 0.04) 100%);
+}
+.timing-kpi-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.pulse-dot-live {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #10b981;
+  animation: pulse-ring 1.3s infinite;
+}
+.timing-sub-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 2px;
+  font-size: 10.5px;
+  color: var(--el-text-color-secondary);
+}
+.timing-sub-time {
+  font-family: var(--el-font-family-monospace, monospace);
+  white-space: nowrap;
+}
+.timing-sub-arrow {
+  color: var(--el-text-color-placeholder);
+  font-size: 10px;
+}
+.text-running-sub {
+  color: #10b981;
+  font-weight: 600;
 }
 
 .kpi-icon-dot {
@@ -886,6 +1031,41 @@ onUnmounted(() => {
   font-size: 13.5px;
   font-weight: 600;
   color: var(--el-text-color-primary);
+}
+
+.header-timing-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 10px;
+  border-radius: 12px;
+  background: var(--el-fill-color-light);
+  border: 1px solid var(--el-border-color-lighter);
+  font-size: 11.5px;
+  color: var(--el-text-color-regular);
+  margin-left: 10px;
+}
+.header-timing-running {
+  background: rgba(16, 185, 129, 0.08);
+  border-color: rgba(16, 185, 129, 0.3);
+  color: #065f46;
+}
+:root.dark .header-timing-running {
+  color: #6ee7b7;
+}
+.header-timing-pill .pill-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #94a3b8;
+}
+.header-timing-pill .pill-dot.pulse {
+  background: #10b981;
+  animation: pulse-ring 1.3s infinite;
+}
+.header-timing-pill .pill-sep {
+  color: var(--el-border-color);
+  margin: 0 2px;
 }
 
 .control-actions {

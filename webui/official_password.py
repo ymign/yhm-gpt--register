@@ -43,8 +43,9 @@ def official_set_account_password(
     timeout: int = 60,
     step_cb: Optional[Callable[[str], None]] = None,
     log_cb: Optional[Callable[[str], None]] = None,
+    mail_provider: Optional[MailProvider] = None,
 ) -> dict:
-    """全自动向 OpenAI 官方申请重置邮件并设置新密码。
+    """全自动向 OpenAI 官方申请重置邮件并设置新密码（支持已有密码改密及免密账号补设官方密码）。
 
     Args:
         email: 目标账号邮箱
@@ -53,6 +54,7 @@ def official_set_account_password(
         timeout: 收信等待超时时间（秒）
         step_cb: 步骤变更回调
         log_cb: 详细日志回调
+        mail_provider: 外部已初始化的 MailProvider 实例（可选，注册链路直接传入防丢凭证）
 
     Returns:
         dict: {"ok": True, "email": email, "password": new_password, "official_applied": True, "message": "..."}
@@ -79,51 +81,97 @@ def official_set_account_password(
     if not new_password:
         new_password = generate_random_password(16)
 
-    # 1. 查找邮箱底层 Provider 凭证
-    _step("正在查找并初始化收信渠道...")
-    _log(f"开始为 {email_clean} 检索收信渠道凭证...")
-    row = db.get_registered(email_clean) or {}
-    account_row = db.get_account(email_clean) or {}
+    # 1. 查找邮箱底层 Provider 凭证（若外部已传入 mail_provider 则直接复用）
+    account_row = {}
+    if not mail_provider:
+        _step("正在查找并初始化收信渠道...")
+        _log(f"开始为 {email_clean} 检索收信渠道凭证...")
+        row = db.get_registered(email_clean) or {}
+        account_row = db.get_account(email_clean) or {}
 
-    # 若号池无记录，尝试从 registered.extra.mail_oauth 中恢复
-    if not account_row and row.get("extra"):
-        saved_oauth = row["extra"].get("mail_oauth")
-        if isinstance(saved_oauth, dict) and (saved_oauth.get("refresh_token") or saved_oauth.get("password")):
+        saved_oauth = {}
+        if row.get("extra"):
+            saved_oauth = row["extra"].get("mail_oauth") or {}
+        if not isinstance(saved_oauth, dict):
+            saved_oauth = {}
+
+        mail_source = ""
+        # 优先使用注册时绑定的 mail_oauth 凭证（涵盖 Remail / 微软 OAuth / iCloud 中转）
+        if saved_oauth.get("kind") == "remail" or saved_oauth.get("service_token") or saved_oauth.get("pickup_url"):
+            mail_source = "remail"
+            account_row = {
+                "email": email_clean,
+                "service_token": saved_oauth.get("service_token", ""),
+                "pickup_url": saved_oauth.get("pickup_url", ""),
+                "order_no": saved_oauth.get("order_no", ""),
+                "project_id": saved_oauth.get("project_id", 2),
+                "email_suffix": saved_oauth.get("email_suffix", "icloud.com"),
+                "service_mode": saved_oauth.get("service_mode", "purchase"),
+                "kind": "remail",
+            }
+        elif saved_oauth.get("kind") == "icloud_relay" or saved_oauth.get("relay_url"):
+            mail_source = "icloud_relay"
+            account_row = {
+                "email": email_clean,
+                "relay_url": saved_oauth.get("relay_url", ""),
+                "kind": "icloud_relay",
+            }
+        elif saved_oauth.get("kind") == "outlook" or saved_oauth.get("refresh_token") or saved_oauth.get("client_id"):
+            mail_source = "outlook"
             account_row = {
                 "email": email_clean,
                 "password": saved_oauth.get("password", ""),
                 "client_id": saved_oauth.get("client_id", ""),
                 "refresh_token": saved_oauth.get("refresh_token", ""),
-                "kind": saved_oauth.get("kind", "outlook"),
+                "kind": "outlook",
             }
 
-    is_ms = any(dom in email_clean for dom in ("@outlook.", "@hotmail.", "@live.", "@msn."))
-    is_icloud = any(dom in email_clean for dom in ("@icloud.", "@me.", "@mac."))
+        # 兜底：如果 registered 没记全，但该邮箱在 remail_recycle_pool 中有记录
+        if not mail_source:
+            try:
+                cur_pool = db._conn().execute(
+                    "SELECT service_token, order_no, project_id, email_suffix, service_mode FROM remail_recycle_pool WHERE email=? AND service_token IS NOT NULL AND service_token != '' ORDER BY id DESC LIMIT 1",
+                    (email_clean,),
+                ).fetchone()
+                if cur_pool and cur_pool["service_token"]:
+                    mail_source = "remail"
+                    account_row = {
+                        "email": email_clean,
+                        "service_token": cur_pool["service_token"],
+                        "order_no": cur_pool.get("order_no", ""),
+                        "project_id": cur_pool.get("project_id", 2),
+                        "email_suffix": cur_pool.get("email_suffix", "icloud.com"),
+                        "service_mode": cur_pool.get("service_mode", "purchase"),
+                        "kind": "remail",
+                    }
+            except Exception:
+                pass
 
-    if is_ms:
-        mail_source = "outlook"
-    elif is_icloud:
-        mail_source = "icloud_relay"
-    elif account_row and account_row.get("kind"):
-        mail_source = str(account_row.get("kind")).strip().lower()
-    elif row.get("kind"):
-        mail_source = str(row.get("kind")).strip().lower()
-    else:
-        mail_source = (db.get_setting("mail_source", "") or "cf_temp").strip().lower()
+        # 若仍未确定，根据号池或域名后缀推断
+        if not mail_source:
+            if account_row and account_row.get("kind"):
+                mail_source = str(account_row.get("kind")).strip().lower()
+            elif any(dom in email_clean for dom in ("@outlook.", "@hotmail.", "@live.", "@msn.")):
+                mail_source = "outlook"
+            elif any(dom in email_clean for dom in ("@icloud.", "@me.", "@mac.")):
+                def_source = (db.get_setting("mail_source", "") or "").strip().lower()
+                mail_source = "remail" if def_source == "remail" else "icloud_relay"
+            else:
+                mail_source = (db.get_setting("mail_source", "") or "cf_temp").strip().lower()
 
-    if mail_source == "outlook" and (not account_row or (not account_row.get("refresh_token") and not account_row.get("password"))):
-        raise RuntimeError(
-            f"未在号池中找到 {email_clean} 的微软 OAuth 凭证或密码。若该账号为外部导入或号池已清空，请先在「号池管理」中导入 4 段式凭证以支持官方自动改密收信。"
-        )
+        if mail_source == "outlook" and (not account_row or (not account_row.get("refresh_token") and not account_row.get("password"))):
+            raise RuntimeError(
+                f"未在号池中找到 {email_clean} 的微软 OAuth 凭证或密码。若该账号为外部导入或号池已清空，请先在「号池管理」中导入 4 段式凭证以支持官方自动改密收信。"
+            )
 
-    settings = db.get_mail_settings()
-    try:
-        mail_provider = create_mail_provider(mail_source, settings, account_row)
-    except Exception as e:
-        if mail_source == "outlook":
-            raise RuntimeError(f"初始化 Outlook 邮箱 Provider 异常: {e}")
-        _log(f"⚠️ 邮箱 Provider 初始化异常: {e}，回退到 cf_temp")
-        mail_provider = create_mail_provider("cf_temp", settings)
+        settings = db.get_mail_settings()
+        try:
+            mail_provider = create_mail_provider(mail_source, settings, account_row)
+        except Exception as e:
+            if mail_source in ("outlook", "remail"):
+                raise RuntimeError(f"初始化 {mail_source} 邮箱 Provider 异常: {e}")
+            _log(f"⚠️ 邮箱 Provider 初始化异常: {e}，回退到 cf_temp")
+            mail_provider = create_mail_provider("cf_temp", settings)
 
     _log(f"已选用收件渠道: {mail_provider.display_name}")
 
@@ -152,18 +200,15 @@ def official_set_account_password(
 
     is_passwordless = (page_type == "email_otp_verification") or ("/email-verification" in continue_url)
 
-    # 2. 发码/准备收码
-    # ── 分支 A：已有密码账号 (login_password)，调用 password/send-otp 请求官方重置邮件
-    # ── 分支 B：原生免密账号 (email_otp_verification)，OpenAI 在提交邮箱时已直接下发登录 OTP
-    if not is_passwordless:
-        _step("向 OpenAI 官方申请发送重置密码邮件...")
-        _log("正在向 auth.openai.com/api/accounts/password/send-otp 发起重置发码请求...")
-        t_sent = time.time()
-        ref = continue_url if (continue_url and "auth.openai.com" in continue_url) else "https://auth.openai.com/log-in/password"
+    # 2. 发送重置密码邮件 / 准备接收验证码
+    _step("向 OpenAI 官方申请发送重置密码邮件...")
+    _log("正在向 auth.openai.com/api/accounts/password/send-otp 发起重置发码请求...")
+    t_sent = time.time()
+    ref = continue_url if (continue_url and "auth.openai.com" in continue_url) else "https://auth.openai.com/log-in/password"
+    try:
         flow.send_password_reset_otp(referer=ref)
-    else:
-        _step(f"账号处于免密登录状态，正在从 {mail_provider.display_name} 收取 OTP...")
-        _log("检测到账号为 OpenAI 原生免密账号 (Passwordless)，无需官方静态密码，正在执行 OTP + 2FA 验活...")
+    except Exception as e:
+        _log(f"重置发码提示: {e}，继续监听邮箱接收验证码...")
 
     _step(f"正在从 {mail_provider.display_name} 收取验证码...")
     _log(f"正在轮询邮箱收取验证码 (超时 {timeout}s)...")
@@ -222,54 +267,23 @@ def official_set_account_password(
         if isinstance(mfa_resp, dict) and mfa_resp.get("continue_url"):
             v_continue = str(mfa_resp["continue_url"]).strip()
 
-    if not is_passwordless:
-        # 5. 已有密码账号：提交新密码到 /password/reset
-        _step("正在向 OpenAI 官方服务端提交新密码...")
-        _log(f"正在提交新登录密码...")
-        flow.reset_password_submit(new_password)
-        _log(f"🎉 账号 {email_clean} 密码已在 OpenAI 官方服务端成功生效！")
+    # 5. 向 OpenAI 官方服务端提交新登录密码（无论是改密还是免密账号补设密码）
+    _step("正在向 OpenAI 官方服务端提交新密码...")
+    _log(f"正在向官方提交新登录密码...")
+    flow.reset_password_submit(new_password)
+    _log(f"🎉 账号 {email_clean} 密码已在 OpenAI 官方服务端成功生效！")
 
-        # 6. 回写本地数据库
-        _step("正在更新数据库并落盘...")
-        db.update_registered_manual(email_clean, password=new_password)
-        _log(f"新密码 {new_password} 已成功回写本地 registered 表")
+    # 6. 回写本地数据库
+    _step("正在更新数据库并落盘...")
+    db.update_registered_manual(email_clean, password=new_password)
+    _log(f"新密码 {new_password} 已成功回写本地 registered 表")
 
-        return {
-            "ok": True,
-            "email": email_clean,
-            "password": new_password,
-            "official_applied": True,
-            "is_passwordless": False,
-            "label": "🎉 官方服务端设密成功",
-            "message": f"密码已在 OpenAI 官方服务端成功生效 ({new_password}) 并持久化到本地",
-        }
-    else:
-        # 免密账号：跟进跳转链获取/刷新 ChatGPT Session，并将随机密码保存在本地供备用
-        _step("免密账号会话就绪，正在刷新官方凭证...")
-        try:
-            target_start = v_continue or continue_url or "https://auth.openai.com/oauth/authorize"
-            if target_start.startswith("/"):
-                target_start = f"https://auth.openai.com{target_start}"
-            flow.follow_redirect_chain(target_start)
-            st_res, at_res = flow.get_auth_session()
-            reg_row = db.get_registered(email_clean) or {}
-            ex = reg_row.get("extra") or {}
-            if flow.result.session_data:
-                ex["session_data"] = flow.result.session_data
-            if at_res:
-                ex["access_token"] = at_res
-            db.update_registered_manual(email_clean, password=new_password, extra=ex)
-        except Exception as e:
-            logger.warning(f"免密账号会话凭证捕获非致命异常: {e}")
-            db.update_registered_manual(email_clean, password=new_password)
-
-        _log(f"✅ 账号 {email_clean} 为 OpenAI 原生免密账号 (Passwordless，无需官方静态密码)，全流程验活通过！本地已保存随机密码 ({new_password}) 备用。")
-        return {
-            "ok": True,
-            "email": email_clean,
-            "password": new_password,
-            "official_applied": False,
-            "is_passwordless": True,
-            "label": "✅ 官方免密账号 (已验活)",
-            "message": f"该账号为 OpenAI 原生免密账号 (Passwordless)，无需官方静态密码。已通过官方 OTP + 2FA 验活并就绪，本地已保存备用密码 ({new_password})。",
-        }
+    return {
+        "ok": True,
+        "email": email_clean,
+        "password": new_password,
+        "official_applied": True,
+        "is_passwordless": False,
+        "label": "🎉 官方服务端设密成功",
+        "message": f"密码已在 OpenAI 官方服务端成功生效 ({new_password}) 并持久化到本地",
+    }

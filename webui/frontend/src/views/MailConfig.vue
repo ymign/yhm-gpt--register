@@ -83,6 +83,7 @@ const form = ref({
   remail_project_id: '2',
   remail_email_suffix: 'icloud.com',
   remail_service_mode: 'purchase',
+  remail_max_recycle_retries: 3,
   remail_base_url: 'https://remail.aishop6.com',
   cf_api_url: 'https://mail-api.shaosiming.online',
   cf_domain: 'yhmsiming.site',
@@ -572,7 +573,7 @@ onActivated(() => load())
                 </div>
               </el-form-item>
 
-              <!-- 3. 服务模式选择 -->
+              <!-- 3. 服务模式与复用重试上限 -->
               <el-row :gutter="12">
                 <el-col :span="12">
                   <el-form-item label="3. 服务模式 (Service Mode)">
@@ -583,25 +584,39 @@ onActivated(() => load())
                   </el-form-item>
                 </el-col>
                 <el-col :span="12">
-                  <el-form-item label="4. 平台 API 地址">
-                    <el-input v-model="form.remail_base_url" placeholder="https://remail.aishop6.com" clearable />
+                  <el-form-item label="4. 暂存邮箱最大重试复用次数 (相同账号上限)">
+                    <el-input-number
+                      v-model="form.remail_max_recycle_retries"
+                      :min="1"
+                      :max="10"
+                      style="width: 100%"
+                    />
+                    <div class="hint-text" style="font-size: 11px; margin-top: 4px; color: var(--el-text-color-secondary);">
+                      同一购买暂存邮箱失败重试超过此次数（默认 3 次）后自动放弃复用并重新购号。
+                    </div>
                   </el-form-item>
                 </el-col>
               </el-row>
 
-              <!-- 4. API Key -->
-              <el-form-item label="5. Remail API Key (平台密钥)" required>
-                <div class="generic-input-wrapper">
-                  <el-input
-                    v-model="form.remail_api_key"
-                    type="password"
-                    show-password
-                    placeholder="rk-a18f1eed-cc59-4eaf-9c5f-ac4d711c758d"
-                    clearable
-                  />
-                  <div class="hint-text">Remail 开放平台的个人专属 API Key（以 rk- 开头）。</div>
-                </div>
-              </el-form-item>
+              <!-- 4. 平台 API 地址与 Key -->
+              <el-row :gutter="12">
+                <el-col :span="12">
+                  <el-form-item label="5. 平台 API 地址">
+                    <el-input v-model="form.remail_base_url" placeholder="https://remail.aishop6.com" clearable />
+                  </el-form-item>
+                </el-col>
+                <el-col :span="12">
+                  <el-form-item label="6. Remail API Key (平台密钥)" required>
+                    <el-input
+                      v-model="form.remail_api_key"
+                      type="password"
+                      show-password
+                      placeholder="rk-a18f1eed-cc59-4eaf-9c5f-ac4d711c758d"
+                      clearable
+                    />
+                  </el-form-item>
+                </el-col>
+              </el-row>
             </el-form>
           </div>
 

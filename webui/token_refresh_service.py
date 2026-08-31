@@ -642,15 +642,39 @@ def _worker_loop(task: TokenRefreshTask, email: str):
 
     # 自动识别邮箱提供商渠道
     email_lower = (email or "").strip().lower()
-    is_ms = any(dom in email_lower for dom in ("@outlook.", "@hotmail.", "@live.", "@msn."))
-    is_icloud = any(dom in email_lower for dom in ("@icloud.", "@me.", "@mac."))
+    saved_oauth = {}
+    if openai_cred_info.get("extra"):
+        saved_oauth = openai_cred_info["extra"].get("mail_oauth") or {}
+    if not isinstance(saved_oauth, dict):
+        saved_oauth = {}
 
-    if is_ms:
-        mail_source = "outlook"
-    elif is_icloud:
+    mail_source = ""
+    if saved_oauth.get("kind") == "remail" or saved_oauth.get("service_token") or saved_oauth.get("pickup_url"):
+        mail_source = "remail"
+        mail_account_info = {
+            "email": email_lower,
+            "service_token": saved_oauth.get("service_token", ""),
+            "pickup_url": saved_oauth.get("pickup_url", ""),
+            "order_no": saved_oauth.get("order_no", ""),
+            "project_id": saved_oauth.get("project_id", 2),
+            "email_suffix": saved_oauth.get("email_suffix", "icloud.com"),
+            "service_mode": saved_oauth.get("service_mode", "purchase"),
+            "kind": "remail",
+        }
+    elif saved_oauth.get("kind") == "icloud_relay" or saved_oauth.get("relay_url"):
         mail_source = "icloud_relay"
+        mail_account_info = {
+            "email": email_lower,
+            "relay_url": saved_oauth.get("relay_url", ""),
+            "kind": "icloud_relay",
+        }
     elif mail_account_info and mail_account_info.get("kind"):
         mail_source = str(mail_account_info.get("kind")).strip().lower()
+    elif any(dom in email_lower for dom in ("@outlook.", "@hotmail.", "@live.", "@msn.")):
+        mail_source = "outlook"
+    elif any(dom in email_lower for dom in ("@icloud.", "@me.", "@mac.")):
+        def_source = (db.get_setting("mail_source", "") or "").strip().lower()
+        mail_source = "remail" if def_source == "remail" else "icloud_relay"
     else:
         mail_source = (db.get_setting("mail_source", "") or "cf_temp").strip().lower()
 

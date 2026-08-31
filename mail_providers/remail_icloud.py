@@ -88,6 +88,14 @@ class RemailICloudProvider(MailProvider):
             required=False,
             help="purchase (长效购买，默认) 或 code (短效接码)",
         ),
+        ConfigField(
+            "remail_max_recycle_retries",
+            "暂存邮箱最大重试复用次数",
+            type="number",
+            placeholder="3",
+            required=False,
+            help="同一个购买暂存的邮箱最多允许失败复用几次（默认 3 次），达到该上限后自动废弃不再复用，自动重新购入新邮箱",
+        ),
     ]
 
     def __init__(
@@ -113,6 +121,9 @@ class RemailICloudProvider(MailProvider):
         self.current_email: str = ""
         self.current_token: str = ""
         self.current_order_no: str = ""
+        self.current_receive_until: str = ""
+        self.current_expires_at: float = 0.0
+        self.is_recycled: bool = False
         self.pickup_url: str = ""
         self._seen_mail_ids: set[str] = set()
 
@@ -125,6 +136,11 @@ class RemailICloudProvider(MailProvider):
                 self.current_token = self._extract_token_from_url(relay_url)
             if not self.current_token and account_info.get("service_token"):
                 self.current_token = str(account_info["service_token"]).strip()
+            if account_info.get("expires_at"):
+                try:
+                    self.current_expires_at = float(account_info["expires_at"])
+                except Exception:
+                    pass
 
     # ──────────────────────── 构造入口 ────────────────────────
 
@@ -158,14 +174,39 @@ class RemailICloudProvider(MailProvider):
     # ──────────────────────── 下单购买邮箱 ────────────────────────
 
     def create_mailbox(self) -> str:
-        """调用 Remail API 自动下单购买全新邮箱，返回 deliveryEmail。"""
+        """优先从智能复用池领取仍有效的未用邮箱（免花积分）；池空时才调用 OpenAPI 下单购买全新邮箱。"""
         if self.current_email and self.current_token:
             return self.current_email
+
+        # 1. 优先从 SQLite 未用复用池检索（剩余安全时效 >= 8分钟）
+        try:
+            from webui import db
+            recycled = db.claim_remail_recycled(
+                project_id=self.project_id,
+                email_suffix=self.email_suffix,
+                service_mode=self.service_mode,
+                min_remaining_sec=480,
+            )
+            if recycled and recycled.get("email") and recycled.get("service_token"):
+                self.current_email = str(recycled["email"]).strip().lower()
+                self.current_token = str(recycled["service_token"]).strip()
+                self.current_order_no = str(recycled.get("order_no") or "").strip()
+                self.current_receive_until = str(recycled.get("receive_until") or "")
+                self.current_expires_at = float(recycled.get("expires_at") or 0.0)
+                self.is_recycled = True
+                self.pickup_url = f"{self.base_url}/pickup?email={urllib.parse.quote(self.current_email)}&token={self.current_token}"
+                logger.info(
+                    f"[Remail] ♻️ 成功复用未用邮箱（免花积分）: email={self.current_email}, "
+                    f"project={self.project_id}, 剩余有效时长={int((self.current_expires_at - time.time())/60)}分钟"
+                )
+                return self.current_email
+        except Exception as e:
+            logger.debug(f"[Remail] 检索复用池跳过: {e}")
 
         if not self.api_key:
             raise RuntimeError("Remail API Key 为空，请在「邮箱配置」中填写")
 
-        # 候选项目 ID 列表（配置指定的优先）
+        # 2. 池中无可用邮箱，执行 OpenAPI 下单
         candidate_pids = [self.project_id]
         if 2 not in candidate_pids:
             candidate_pids.append(2)
@@ -178,13 +219,32 @@ class RemailICloudProvider(MailProvider):
                     self.current_email = str(order_data["deliveryEmail"]).strip().lower()
                     self.current_token = str(order_data["serviceToken"]).strip()
                     self.current_order_no = str(order_data.get("orderNo") or "").strip()
+                    self.current_receive_until = str(order_data.get("receiveUntil") or "")
+
+                    # 解析截止时间戳
+                    now = time.time()
+                    if self.current_receive_until:
+                        try:
+                            if "T" in self.current_receive_until:
+                                dt = datetime.fromisoformat(self.current_receive_until.replace("Z", "+00:00"))
+                            else:
+                                dt = parsedate_to_datetime(self.current_receive_until)
+                            self.current_expires_at = dt.timestamp()
+                        except Exception:
+                            self.current_expires_at = now + (3300 if self.service_mode == "purchase" else 540)
+                    else:
+                        self.current_expires_at = now + (3300 if self.service_mode == "purchase" else 540)
+
+                    self.is_recycled = False
                     self.pickup_url = f"{self.base_url}/pickup?email={urllib.parse.quote(self.current_email)}&token={self.current_token}"
                     self.project_id = pid
                     pay_amt = order_data.get("payAmount", "30.00")
+                    valid_min = round((self.current_expires_at - now) / 60, 1)
                     logger.info(
                         f"[Remail] 邮箱购买成功: email={self.current_email}, "
                         f"orderNo={self.current_order_no}, project={pid}, "
-                        f"payAmount={pay_amt} 积分, mode={self.service_mode}"
+                        f"payAmount={pay_amt} 积分, mode={self.service_mode}, "
+                        f"有效时效={valid_min}分钟 (至 {self.current_receive_until or '自动计算'})"
                     )
                     return self.current_email
             except Exception as e:

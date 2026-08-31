@@ -96,6 +96,7 @@ class AuthFlow:
         on_password: Optional[Any] = None,
         on_session_ready: Optional[Any] = None,
         account_callback: Optional[Any] = None,
+        on_email_assigned: Optional[Any] = None,
     ):
         # 本次流程专属的配置覆盖（WEBUI_ALLOW_LOGIN / OTP_TIMEOUT / OAuth 开关等）。
         # ⚠️ 以前 registrar 是直接写 os.environ 再在 finally 里还原的，
@@ -135,6 +136,8 @@ class AuthFlow:
         #    （:3051 OAUTH_CODEX_RT_BEFORE_CALLBACK），否则 Codex 会跑在钩子前面，
         #    顺序就白调了。不传则一个字节都不变，老行为。
         self._on_session_ready = on_session_ready
+        # 邮箱分配/认领成功回调：通知外界真实邮箱已就绪（取代 placeholder）
+        self._on_email_assigned = on_email_assigned
         # 账号凭证回调：已有账号登录时从数据库加载密码和 totp_secret。
         # 签名 (email: str) -> dict，返回 {"password": "...", "totp_secret": "..."}。
         # 用于 mfa-challenge 路径：密码验证后需要 TOTP 码，从库里读 secret。
@@ -1734,26 +1737,52 @@ class AuthFlow:
         统一走 _navigation_headers 后，用真实 CF 域名跑完整 run_register
         **3/3 全成功**（各约 100s，password + access_token 齐全），409 = 0。
         """
-        headers = self._navigation_headers()
+        # 候选回退指纹池：包含同族及高过率跨家族指纹（如 safari / chrome / firefox 互相兜底）
+        extended_candidates = list(self._impersonate_candidates)
+        for high_pass in ("safari17_0", "safari15_3", "safari18_0", "chrome142", "firefox133"):
+            if high_pass not in extended_candidates:
+                extended_candidates.append(high_pass)
 
-        for attempt in range(4):
+        for attempt in range(5):
+            headers = self._navigation_headers()
             if attempt:
-                # 只换出口 IP（新 session = 新出口），指纹保持不变：
-                # 403 是缺 client hints 导致的，已在头里修好，不是指纹的锅。
-                time.sleep(3 + attempt * 2)
+                time.sleep(2 + attempt)
+                # 1. 动态住宅代理一号一 IP：严格保持用户当前选择的目标国家不变，仅在同国家下轮换全新 session IP
+                try:
+                    from webui.proxy_util import new_proxy_session_id, proxy_template_country, route_proxy_country
+                    curr_country = (self._country_code or proxy_template_country(self.config.proxy or "") or "").strip().upper()
+                    if curr_country and self.config.proxy:
+                        self.config.proxy = route_proxy_country(
+                            self.config.proxy, country=curr_country, session_id=new_proxy_session_id()
+                        )
+                        logger.info(f"warmup 重试 (第 {attempt + 1}/5 次)：保持目标国家 [{curr_country}] 不变，已自动刷新同国新 IP 会话...")
+                except Exception as _px_err:
+                    logger.debug(f"warmup 代理轮换跳过: {_px_err}")
+
+                # 2. 如果遇到 403 或 TLS 异常，自动切换指纹库
+                if attempt < len(extended_candidates):
+                    imp = extended_candidates[attempt]
+                    self._ua = ua_for_impersonate(imp, self._ua)
+                    try:
+                        self._fingerprint = fingerprint_for_impersonate(imp, self._fingerprint)
+                    except Exception as _sync_err:
+                        logger.debug(f"client hints 同步跳过: {_sync_err}")
+                    headers = self._navigation_headers()
+                    logger.info(f"warmup 自动轮换 TLS 指纹: impersonate={imp}")
+
                 self.session = create_http_session(
                     proxy=self.config.proxy,
-                    impersonate=self._impersonate_candidates[self._impersonate_idx],
+                    impersonate=extended_candidates[min(attempt, len(extended_candidates) - 1)],
                     user_agent=self._ua,
                 )
             try:
                 resp = self.session.get(
-                    "https://chatgpt.com", headers=headers, timeout=40,
+                    "https://chatgpt.com", headers=headers, timeout=35,
                 )
                 status = resp.status_code
             except Exception as e:
                 status = None
-                logger.warning(f"warmup 第 {attempt + 1}/4 次请求失败: {e}")
+                logger.warning(f"warmup 第 {attempt + 1}/5 次请求失败: {e}")
 
             # 唯一判据：cookie 到底种上没有。HTTP 200 不代表拿到 oai-did（CF 403 只给
             # __cf_bm），请求抛异常也不代表没拿到（超时前可能已经种上了）。
@@ -1769,12 +1798,12 @@ class AuthFlow:
                 return True
 
             logger.warning(
-                f"warmup 第 {attempt + 1}/4 次未种到 oai-did"
+                f"warmup 第 {attempt + 1}/5 次未种到 oai-did"
                 + (f"（HTTP {status}）" if status is not None else "")
                 + (f"，已有 cookie: {sorted(cookies)}" if cookies else "，无任何 cookie")
             )
 
-        logger.error("warmup 4 次均未种到 oai-did cookie —— 此时继续走注册链必然 409 invalid_state")
+        logger.error("warmup 5 次均未种到 oai-did cookie —— 此时继续走注册链必然 409 invalid_state")
         return False
 
     # ── Step 1: 检查代理连通性 ──
@@ -2724,13 +2753,24 @@ class AuthFlow:
         logger.info("[7/10] 验证 OTP...")
         headers = self._common_headers("https://auth.openai.com/email-verification")
         headers["Content-Type"] = "application/json"
-        resp = self.session.post(
-            "https://auth.openai.com/api/accounts/email-otp/validate",
-            headers=headers,
-            json={"code": otp_code},
-            timeout=30,
-        )
-        self._trace_http("validate_email_otp", resp)
+
+        resp = None
+        for attempt in range(2):
+            if attempt > 0:
+                time.sleep(1.5)
+                logger.info("[7/10] 遇到 OpenAI 服务端 500 波动，正在按官方提示自动重试提交 OTP...")
+            resp = self.session.post(
+                "https://auth.openai.com/api/accounts/email-otp/validate",
+                headers=headers,
+                json={"code": otp_code},
+                timeout=30,
+            )
+            self._trace_http(f"validate_email_otp_try_{attempt+1}", resp)
+            if resp.status_code == 200:
+                break
+            if resp.status_code < 500:
+                break
+
         if resp.status_code != 200:
             body = (resp.text or "")
             logger.warning(f"verify_otp FULL body ({resp.status_code}): {body[:2000]}")
@@ -3484,6 +3524,15 @@ class AuthFlow:
         # 创建邮箱
         email = mail_provider.create_mailbox()
         self.result.email = email
+        if self._on_email_assigned:
+            try:
+                self._on_email_assigned(email, {
+                    "is_recycled": getattr(mail_provider, "is_recycled", False),
+                    "order_no": getattr(mail_provider, "current_order_no", ""),
+                    "expires_at": getattr(mail_provider, "current_expires_at", 0.0),
+                })
+            except Exception as _cb_err:
+                logger.debug(f"on_email_assigned 回调异常: {_cb_err}")
 
         # 登录/注册链路
         csrf_token = self.get_csrf_token()

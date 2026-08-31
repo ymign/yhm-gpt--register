@@ -956,6 +956,16 @@ def api_fetch_remail_projects(req: FetchRemailProjectsReq):
         raise HTTPException(400, f"拉取 Remail 项目与价格失败: {e}")
 
 
+@app.get("/api/mail/remail/recycle_pool")
+def api_get_remail_recycle_pool():
+    """获取 Remail 暂存复用池中的有效未用邮箱数量与列表。"""
+    return {
+        "ok": True,
+        "count": db.count_remail_recycled(),
+        "items": db.list_remail_recycled(),
+    }
+
+
 # ──────────────────────── SMS 接码配置 ────────────────────────
 
 

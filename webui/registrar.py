@@ -299,8 +299,16 @@ def _do_register(
         # 单号 WebUI 场景下 fast-fail 没意义（批量跑才需要"跳过被识别的号"），故强制 ON。
         env_overrides["WEBUI_ALLOW_LOGIN"] = "1"
         env_overrides["OTP_TIMEOUT"] = str(int(options.get("otp_timeout") or 180))
-        # 自动设置登录密码开关（支持前端开关控制）
+        # 自动设置登录密码开关（支持前端开关控制，Remail 渠道强制开启）
         want_password = bool(options.get("want_password", True))
+        if mail_source == "remail":
+            want_password = True
+            options["want_password"] = True
+            options["want_2fa"] = True
+            logging.getLogger("registrar").info(
+                "[register] 🔒 Remail 短效邮箱安全策略生效：强制自动设置强随机密码 + 自动绑定 2FA TOTP（保障邮箱失效后凭 账密+2FA 终身登录）"
+            )
+
         env_overrides["WANT_PASSWORD"] = "1" if want_password else "0"
         # 默认不抢跑 Codex OAuth（避免注册 1 秒内触发自动化工具特征）
         want_refresh = bool(options.get("want_refresh_token", False))
@@ -394,6 +402,20 @@ def _do_register(
                 logging.getLogger("registrar").warning(f"[register] account_callback 异常: {e}")
             return {}
 
+        def _on_email_assigned_hook(assigned_email: str, meta: dict) -> None:
+            nonlocal email
+            email = assigned_email
+            db.update_run_email(run_id, assigned_email)
+            is_rec = meta.get("is_recycled", False)
+            tag = " [♻️ 复用已购]" if is_rec else " [💰 全新购号]"
+            logging.getLogger("registrar").info(f"[register] 邮箱已就绪: {assigned_email}{tag}")
+            _emit_status(run_id, "email_assigned", {
+                "email": assigned_email,
+                "is_recycled": is_rec,
+                "order_no": meta.get("order_no", ""),
+                "expires_at": meta.get("expires_at", 0.0),
+            })
+
         flow = AuthFlow(
             cfg,
             sms_callback=_build_sms_callback(run_id),
@@ -401,6 +423,7 @@ def _do_register(
             on_password=_save_password_early,
             on_session_ready=_bind_2fa_hook if options.get("want_2fa") else None,
             account_callback=_account_callback_for_flow,
+            on_email_assigned=_on_email_assigned_hook,
         )
         _emit_status(run_id, "phase", {"phase": "starting", "email": email})
         logging.getLogger("registrar").info(f"[register] 开始: {email}")
@@ -482,10 +505,12 @@ def _do_register(
                 )
                 from .official_password import official_set_account_password
                 used_proxy_for_pwd = getattr(cfg, "proxy", "") or options.get("proxy") or ""
+                # 传递当前已持有的真实 mail 实例，保障包含完整的 serviceToken 与取件凭证
                 res_pwd = official_set_account_password(
                     email=d.get("email"),
                     proxy=used_proxy_for_pwd,
                     timeout=min(int(options.get("otp_timeout") or 60), 60),
+                    mail_provider=mail,
                 )
                 if res_pwd.get("password"):
                     d["password"] = res_pwd["password"]
@@ -565,16 +590,34 @@ def _do_register(
         if target_country:
             d["target_country"] = target_country
 
-        if is_pooled and account:
+        # 终身绑定邮箱底层取件凭证（包含 Remail 购买凭证、微软 OAuth 凭证、iCloud 中转凭证）
+        if mail_source == "remail" or getattr(mail, "kind", "") == "remail":
+            d["mail_oauth"] = {
+                "kind": "remail",
+                "service_token": getattr(mail, "current_token", ""),
+                "pickup_url": getattr(mail, "pickup_url", ""),
+                "order_no": getattr(mail, "current_order_no", ""),
+                "project_id": getattr(mail, "project_id", 2),
+                "email_suffix": getattr(mail, "email_suffix", "icloud.com"),
+                "service_mode": getattr(mail, "service_mode", "purchase"),
+                "receive_until": getattr(mail, "current_receive_until", ""),
+                "expires_at": getattr(mail, "current_expires_at", 0.0),
+            }
+        elif is_pooled and account:
             d["mail_oauth"] = {
                 "client_id": account.get("client_id", ""),
                 "refresh_token": account.get("refresh_token", ""),
                 "password": account.get("password", ""),
                 "kind": account.get("kind", mail_source),
+                "relay_url": account.get("relay_url", ""),
             }
 
         # 落库（密码已在 2FA 之前回读补齐，这里 d 里该有的都有了）
         db.save_registered(d)
+        # Remail 邮箱已成功消费
+        if mail_source == "remail":
+            db.mark_remail_consumed(d.get("email") or getattr(mail, "current_email", ""))
+
         # 非池化 provider 的 email 是虚拟占位（xxx_placeholder_N@placeholder.local），
         # 号池里根本没这行，不能去 mark。判据用 provider 的 pooled，不写死 kind。
         if is_pooled:
@@ -632,6 +675,25 @@ def _do_register(
             pass  # flow 还没建出来（异常发生在 AuthFlow 之前），没密码可救
         if category != "account":
             logging.getLogger("registrar").error(traceback.format_exc())
+        # Remail 已购邮箱未完成注册时自动回收进暂存复用池（严格按时效暂存，下一轮自动复用，零损耗）
+        if mail_source == "remail":
+            try:
+                bought_email = getattr(mail, "current_email", "")
+                bought_token = getattr(mail, "current_token", "")
+                if bought_email and bought_token and "placeholder" not in bought_email:
+                    db.push_remail_recycled(
+                        email=bought_email,
+                        service_token=bought_token,
+                        order_no=getattr(mail, "current_order_no", ""),
+                        project_id=getattr(mail, "project_id", 2),
+                        email_suffix=getattr(mail, "email_suffix", "icloud.com"),
+                        service_mode=getattr(mail, "service_mode", "purchase"),
+                        receive_until=getattr(mail, "current_receive_until", ""),
+                        expires_at=getattr(mail, "current_expires_at", 0.0),
+                    )
+            except Exception as _re_err:
+                logging.getLogger("registrar").debug(f"[remail] 暂存未用邮箱异常: {_re_err}")
+
         # 非池化 provider 没有号池记录，不操作
         if is_pooled:
             if category == "network":

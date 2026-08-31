@@ -1805,31 +1805,76 @@ def _run_one_oauth_export(task: OAuthExportTask, email: str) -> None:
     # 2. 邮箱取码准备
     email_lower = (email or "").strip().lower()
     mail_account = db.get_account(email_lower)
-    if not mail_account and cred.get("extra"):
-        saved_oauth = cred["extra"].get("mail_oauth")
-        if isinstance(saved_oauth, dict) and (saved_oauth.get("refresh_token") or saved_oauth.get("password")):
-            mail_account = {
-                "email": email_lower,
-                "password": saved_oauth.get("password", ""),
-                "client_id": saved_oauth.get("client_id", ""),
-                "refresh_token": saved_oauth.get("refresh_token", ""),
-                "kind": saved_oauth.get("kind", "outlook"),
-            }
+    saved_oauth = {}
+    if cred.get("extra"):
+        saved_oauth = cred["extra"].get("mail_oauth") or {}
+    if not isinstance(saved_oauth, dict):
+        saved_oauth = {}
 
-    # 优先根据邮箱域名后缀精准匹配 Provider，绝不让微软邮箱误走 cf_temp
-    is_ms = any(dom in email_lower for dom in ("@outlook.", "@hotmail.", "@live.", "@msn."))
-    is_icloud = any(dom in email_lower for dom in ("@icloud.", "@me.", "@mac."))
-
-    if is_ms:
-        mail_source = "outlook"
-    elif is_icloud:
+    mail_source = ""
+    # 优先使用注册时绑定的 mail_oauth 凭证（涵盖 Remail / 微软 OAuth / iCloud 中转）
+    if saved_oauth.get("kind") == "remail" or saved_oauth.get("service_token") or saved_oauth.get("pickup_url"):
+        mail_source = "remail"
+        mail_account = {
+            "email": email_lower,
+            "service_token": saved_oauth.get("service_token", ""),
+            "pickup_url": saved_oauth.get("pickup_url", ""),
+            "order_no": saved_oauth.get("order_no", ""),
+            "project_id": saved_oauth.get("project_id", 2),
+            "email_suffix": saved_oauth.get("email_suffix", "icloud.com"),
+            "service_mode": saved_oauth.get("service_mode", "purchase"),
+            "kind": "remail",
+        }
+    elif saved_oauth.get("kind") == "icloud_relay" or saved_oauth.get("relay_url"):
         mail_source = "icloud_relay"
-    elif mail_account and mail_account.get("kind"):
-        mail_source = str(mail_account.get("kind")).strip().lower()
-    elif cred.get("kind"):
-        mail_source = str(cred.get("kind")).strip().lower()
-    else:
-        mail_source = (db.get_setting("mail_source", "") or "cf_temp").strip().lower()
+        mail_account = {
+            "email": email_lower,
+            "relay_url": saved_oauth.get("relay_url", ""),
+            "kind": "icloud_relay",
+        }
+    elif not mail_account and (saved_oauth.get("refresh_token") or saved_oauth.get("password")):
+        mail_account = {
+            "email": email_lower,
+            "password": saved_oauth.get("password", ""),
+            "client_id": saved_oauth.get("client_id", ""),
+            "refresh_token": saved_oauth.get("refresh_token", ""),
+            "kind": saved_oauth.get("kind", "outlook"),
+        }
+
+    # 兜底：如果 registered 没记全，但该邮箱在 remail_recycle_pool 中有记录
+    if not mail_source:
+        try:
+            cur_pool = db._conn().execute(
+                "SELECT service_token, order_no, project_id, email_suffix, service_mode FROM remail_recycle_pool WHERE email=?",
+                (email_lower,),
+            ).fetchone()
+            if cur_pool and cur_pool["service_token"]:
+                mail_source = "remail"
+                mail_account = {
+                    "email": email_lower,
+                    "service_token": cur_pool["service_token"],
+                    "order_no": cur_pool.get("order_no", ""),
+                    "project_id": cur_pool.get("project_id", 2),
+                    "email_suffix": cur_pool.get("email_suffix", "icloud.com"),
+                    "service_mode": cur_pool.get("service_mode", "purchase"),
+                    "kind": "remail",
+                }
+        except Exception:
+            pass
+
+    # 若仍未确定，根据号池或域名后缀推断
+    if not mail_source:
+        if mail_account and mail_account.get("kind"):
+            mail_source = str(mail_account.get("kind")).strip().lower()
+        elif any(dom in email_lower for dom in ("@outlook.", "@hotmail.", "@live.", "@msn.")):
+            mail_source = "outlook"
+        elif any(dom in email_lower for dom in ("@icloud.", "@me.", "@mac.")):
+            def_source = (db.get_setting("mail_source", "") or "").strip().lower()
+            mail_source = "remail" if def_source == "remail" else "icloud_relay"
+        elif cred.get("kind"):
+            mail_source = str(cred.get("kind")).strip().lower()
+        else:
+            mail_source = (db.get_setting("mail_source", "") or "cf_temp").strip().lower()
 
     mail = None
     account_for_mail = {**cred, **(mail_account or {"email": email_lower})}

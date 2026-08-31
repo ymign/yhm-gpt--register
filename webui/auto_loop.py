@@ -60,6 +60,7 @@ class AutoLoopController:
         self._pause_event = threading.Event()  # set = 暂停
         # 进度统计
         self._started_at: float = 0.0
+        self._finished_at: float = 0.0
         self._registered_ok = 0
         self._registered_fail = 0
         # 当前每个 worker 在跑啥（worker_id → email）
@@ -92,6 +93,7 @@ class AutoLoopController:
             self._options = dict(options or {})
             self._state = AutoLoopState.RUNNING
             self._started_at = time.time()
+            self._finished_at = 0.0
             self._registered_ok = 0
             self._registered_fail = 0
             self._worker_status.clear()
@@ -195,6 +197,15 @@ class AutoLoopController:
             for t in self._tasks:
                 item = dict(t)
                 rid = item.get("run_id")
+                # 实时同步真实邮箱（从 placeholder 升级为分配/复用的真正邮箱）
+                if rid and "placeholder" in (item.get("email") or ""):
+                    try:
+                        cur_em = db._conn().execute("SELECT email FROM runs WHERE run_id=?", (rid,)).fetchone()
+                        if cur_em and cur_em["email"] and "placeholder" not in cur_em["email"]:
+                            item["email"] = cur_em["email"]
+                            t["email"] = cur_em["email"]
+                    except Exception:
+                        pass
                 if item.get("status") == "running":
                     if item.get("started_at"):
                         item["elapsed"] = round(now - item["started_at"], 1)
@@ -205,10 +216,18 @@ class AutoLoopController:
                         item["percent"] = p_info.get("percent", 15)
                 tasks_copy.append(item)
 
+            elapsed = 0.0
+            if self._started_at:
+                if self._state in (AutoLoopState.RUNNING, AutoLoopState.PAUSED):
+                    elapsed = now - self._started_at
+                elif self._finished_at:
+                    elapsed = self._finished_at - self._started_at
+
             return {
                 "state": self._state,
                 "started_at": self._started_at,
-                "elapsed": (now - self._started_at) if self._started_at else 0,
+                "finished_at": self._finished_at,
+                "elapsed": elapsed,
                 "registered_ok": self._registered_ok,
                 "registered_fail": self._registered_fail,
                 "target_count": self._target_count,
@@ -351,6 +370,7 @@ class AutoLoopController:
             heartbeat_stop.set()
             with self._lock:
                 self._state = AutoLoopState.STOPPED
+                self._finished_at = time.time()
                 self._worker_status.clear()
                 self._last_message = (
                     f"已停止（成功 {self._registered_ok} / 失败 {self._registered_fail}）"
@@ -496,12 +516,21 @@ class AutoLoopController:
                     t["status"] = "done" if ok else "failed"
                     t["finished_at"] = finish_ts
                     t["elapsed"] = round(finish_ts - t["started_at"], 1)
+
+                    # 同步真实邮箱
+                    try:
+                        cur_em = db._conn().execute("SELECT email FROM runs WHERE run_id=?", (run_id,)).fetchone()
+                        if cur_em and cur_em["email"] and "placeholder" not in cur_em["email"]:
+                            t["email"] = cur_em["email"]
+                    except Exception:
+                        pass
+
                     if ok:
                         t["phase"] = "done"
                         t["phase_text"] = "注册完成"
                         # 从 db 获取出口信息
                         try:
-                            reg = db.get_registered(account["email"])
+                            reg = db.get_registered(t.get("email") or account["email"])
                             if reg:
                                 t["reg_country"] = reg.get("reg_country", "")
                                 t["reg_city"] = reg.get("reg_city", "")

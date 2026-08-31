@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onActivated, ref } from 'vue'
+import { computed, onActivated, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import { ElMessage } from 'element-plus'
@@ -29,6 +29,72 @@ const { runningSingle, lastRunResult } = storeToRefs(runtime)
 
 const starting = ref(false)
 const regEmail = ref('')
+
+// ──────────── 实时任务耗时与时序监控 ────────────
+const taskStartTime = ref(null)
+const taskEndTime = ref(null)
+const currentElapsedSec = ref(0)
+let timerHandle = null
+
+function startTiming() {
+  taskStartTime.value = new Date()
+  taskEndTime.value = null
+  currentElapsedSec.value = 0
+  if (timerHandle) clearInterval(timerHandle)
+  timerHandle = setInterval(() => {
+    if (taskStartTime.value) {
+      currentElapsedSec.value = Number(((Date.now() - taskStartTime.value.getTime()) / 1000).toFixed(1))
+    }
+  }, 100)
+}
+
+function stopTiming() {
+  if (timerHandle) {
+    clearInterval(timerHandle)
+    timerHandle = null
+  }
+  if (taskStartTime.value && !taskEndTime.value) {
+    taskEndTime.value = new Date()
+    currentElapsedSec.value = Number(((taskEndTime.value.getTime() - taskStartTime.value.getTime()) / 1000).toFixed(1))
+  }
+}
+
+watch(
+  () => runningSingle.value,
+  (isRunning) => {
+    if (isRunning) {
+      startTiming()
+    } else {
+      stopTiming()
+    }
+  },
+)
+
+function formatClock(d) {
+  if (!d) return '—'
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+}
+
+function formatDuration(sec) {
+  if (sec == null || sec <= 0) return '0.0s'
+  if (sec < 60) return `${sec.toFixed(1)}s`
+  const mins = Math.floor(sec / 60)
+  const remainSec = (sec % 60).toFixed(1)
+  return `${mins}分${remainSec}秒 (${sec.toFixed(1)}s)`
+}
+
+// 当切换到 Remail 短效邮箱时，自动激活设密与 2FA 绑定保护
+watch(
+  () => form.value.mailSource,
+  (src) => {
+    if (src === 'remail') {
+      form.value.wantPassword = true
+      form.value.want2fa = true
+    }
+  },
+  { immediate: true },
+)
 
 const emailPlaceholder = computed(() => {
   if (form.value.mailSource === 'remail') {
@@ -184,7 +250,11 @@ async function copyField(email, field) {
               </el-row>
 
               <!-- 自动化附加功能卡片 -->
-              <div class="feature-switches-card">
+              <div class="feature-switches-card" :class="{ 'remail-auto-protect': form.mailSource === 'remail' }">
+                <div v-if="form.mailSource === 'remail'" class="remail-protect-tag">
+                  🔒 Remail 短效邮箱保护生效：已自动锁定开启【强随机密码 + 2FA 绑定】，确保邮箱失效后凭 账密+2FA 终身稳定登录
+                </div>
+
                 <div class="switch-row">
                   <div class="switch-meta">
                     <span class="switch-title">自动设置强随机密码</span>
@@ -216,6 +286,29 @@ async function copyField(email, field) {
                   {{ starting || runningSingle ? '正在执行注册流程...' : '开始单次注册' }}
                 </el-button>
               </div>
+
+              <!-- 任务实时耗时与时序监控卡片 -->
+              <div v-if="taskStartTime" class="task-timing-dashboard" :class="{ 'timing-running': runningSingle, 'timing-done': !runningSingle && lastRunResult && !lastRunResult.error, 'timing-failed': !runningSingle && lastRunResult && lastRunResult.error }">
+                <div class="timing-col">
+                  <span class="timing-label">🕒 开始时间</span>
+                  <span class="timing-val mono">{{ formatClock(taskStartTime) }}</span>
+                </div>
+                <div class="timing-divider"></div>
+                <div class="timing-col">
+                  <span class="timing-label">🏁 结束时间</span>
+                  <span class="timing-val mono">
+                    <span v-if="runningSingle" class="timing-live-badge"><span class="pulse-dot"></span>进行中...</span>
+                    <span v-else>{{ formatClock(taskEndTime) }}</span>
+                  </span>
+                </div>
+                <div class="timing-divider"></div>
+                <div class="timing-col">
+                  <span class="timing-label">⏱️ 本次总耗时</span>
+                  <span class="timing-val mono highlight-timing">
+                    {{ formatDuration(currentElapsedSec) }}
+                  </span>
+                </div>
+              </div>
             </el-form>
 
             <!-- 注册成功凭证卡片 -->
@@ -224,6 +317,7 @@ async function copyField(email, field) {
                 <div class="result-header">
                   <span class="result-badge">SUCCESS</span>
                   <span class="result-email mono">{{ lastRunResult.email }}</span>
+                  <span v-if="currentElapsedSec > 0" class="result-time-tag">⏱️ 耗时 {{ formatDuration(currentElapsedSec) }}</span>
                 </div>
 
                 <div class="result-grid">
@@ -424,6 +518,19 @@ async function copyField(email, field) {
   gap: 10px;
   margin-bottom: 14px;
 }
+.remail-auto-protect {
+  border-color: #10b981;
+  background: rgba(16, 185, 129, 0.05);
+}
+.remail-protect-tag {
+  font-size: 11px;
+  font-weight: 600;
+  color: #10b981;
+  background: rgba(16, 185, 129, 0.1);
+  padding: 6px 10px;
+  border-radius: 6px;
+  line-height: 1.4;
+}
 .switch-row {
   display: flex;
   align-items: center;
@@ -458,6 +565,96 @@ async function copyField(email, field) {
   font-size: 13px;
   font-weight: 600;
   border-radius: 8px;
+}
+
+/* 任务实时耗时与时序监控卡片 */
+.task-timing-dashboard {
+  margin-top: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--el-fill-color);
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  padding: 10px 14px;
+  transition: all 0.3s ease;
+}
+.timing-running {
+  border-color: var(--el-color-primary, #409eff);
+  background: rgba(64, 158, 255, 0.06);
+}
+.timing-done {
+  border-color: #10b981;
+  background: rgba(16, 185, 129, 0.06);
+}
+.timing-failed {
+  border-color: #ef4444;
+  background: rgba(239, 68, 68, 0.06);
+}
+
+.timing-col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  flex: 1;
+}
+.timing-label {
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+}
+.timing-val {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--app-title);
+}
+.highlight-timing {
+  color: var(--el-color-primary, #409eff);
+  font-size: 13px;
+}
+.timing-done .highlight-timing {
+  color: #10b981;
+}
+.timing-failed .highlight-timing {
+  color: #ef4444;
+}
+
+.timing-divider {
+  width: 1px;
+  height: 22px;
+  background: var(--app-border);
+}
+
+.timing-live-badge {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: #10b981;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+.pulse-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #10b981;
+  animation: pulse-glow 1.2s infinite ease-in-out;
+}
+@keyframes pulse-glow {
+  0% { transform: scale(0.9); opacity: 0.6; }
+  50% { transform: scale(1.3); opacity: 1; }
+  100% { transform: scale(0.9); opacity: 0.6; }
+}
+
+.result-time-tag {
+  font-size: 11px;
+  font-weight: 600;
+  color: #10b981;
+  background: rgba(16, 185, 129, 0.12);
+  border: 1px solid rgba(16, 185, 129, 0.3);
+  padding: 1px 8px;
+  border-radius: 12px;
+  margin-left: auto;
 }
 
 .terminal-pane {

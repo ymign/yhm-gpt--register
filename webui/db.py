@@ -276,7 +276,36 @@ def init_db():
             """)
     except Exception as _e:
         logging.getLogger("db").warning(f"[proxy_health] 旧表迁移失败（忽略）: {_e}")
+
+    # Remail 已购未用邮箱智能复用池（未完成注册时自动回收，杜绝非账号异常浪费积分）
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS remail_recycle_pool (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            email           TEXT NOT NULL UNIQUE,
+            service_token   TEXT NOT NULL,
+            order_no        TEXT DEFAULT '',
+            project_id      INTEGER NOT NULL DEFAULT 2,
+            email_suffix    TEXT NOT NULL DEFAULT 'icloud.com',
+            service_mode    TEXT NOT NULL DEFAULT 'purchase',
+            receive_until   TEXT DEFAULT '',
+            expires_at      REAL NOT NULL,
+            created_at      REAL NOT NULL,
+            is_used         INTEGER NOT NULL DEFAULT 0,  -- 0: 未用且有效, 1: 注册成功已消费, 2: 超时/超限废弃, 3: 处理锁定中
+            fail_count      INTEGER NOT NULL DEFAULT 0   -- 累计失败重试次数
+        );
+    """)
+    con.execute("""
+        CREATE INDEX IF NOT EXISTS idx_remail_pool_query
+        ON remail_recycle_pool(project_id, email_suffix, service_mode, is_used, expires_at);
+    """)
     con.commit()
+
+    # 老 DB migrate：remail_recycle_pool 补 fail_count 列
+    cur = con.execute("PRAGMA table_info(remail_recycle_pool)")
+    rp_cols = {r[1] for r in cur.fetchall()}
+    if "fail_count" not in rp_cols:
+        con.execute("ALTER TABLE remail_recycle_pool ADD COLUMN fail_count INTEGER NOT NULL DEFAULT 0")
+        con.commit()
 
 
 # ──────────────────────── outlook 号池 ────────────────────────
@@ -2344,13 +2373,29 @@ def create_run(run_id: str, email: str, log_path: str) -> None:
         con.commit()
 
 
-def finish_run(run_id: str, status: str, error: str = "", category: str = "") -> None:
+def update_run_email(run_id: str, email: str) -> None:
+    """更新任务运行记录的真实邮箱（从虚拟占位符替换为真正分配/购买的邮箱）。"""
+    if not run_id or not email:
+        return
     with _lock:
         con = _conn()
-        con.execute(
-            "UPDATE runs SET status=?, finished_at=?, error=?, error_category=? WHERE run_id=?",
-            (status, time.time(), (error or "")[:500], category or None, run_id),
-        )
+        con.execute("UPDATE runs SET email=? WHERE run_id=?", (email.strip().lower(), run_id))
+        con.commit()
+
+
+def finish_run(run_id: str, status: str, error: str = "", category: str = "", email: str = "") -> None:
+    with _lock:
+        con = _conn()
+        if email:
+            con.execute(
+                "UPDATE runs SET status=?, finished_at=?, error=?, error_category=?, email=? WHERE run_id=?",
+                (status, time.time(), (error or "")[:500], category or None, email.strip().lower(), run_id),
+            )
+        else:
+            con.execute(
+                "UPDATE runs SET status=?, finished_at=?, error=?, error_category=? WHERE run_id=?",
+                (status, time.time(), (error or "")[:500], category or None, run_id),
+            )
         con.commit()
 
 
@@ -2514,6 +2559,227 @@ def save_sms_config(data: dict) -> None:
     # API key（'***' 不修改）
     if data.get("sms_api_key") and data["sms_api_key"] != "***":
         set_setting("sms_api_key", str(data["sms_api_key"]).strip())
+
+
+# ──────────────────────── Remail 已购未用邮箱智能复用池 ────────────────────────
+
+
+def push_remail_recycled(
+    email: str,
+    service_token: str,
+    order_no: str = "",
+    project_id: int = 2,
+    email_suffix: str = "icloud.com",
+    service_mode: str = "purchase",
+    receive_until: str = "",
+    expires_at: float = 0.0,
+) -> bool:
+    """将已购买但尚未完成注册（未消耗 OTP）的 Remail 邮箱暂存入复用池（严格校验时效与失败重试次数）。"""
+    email_clean = (email or "").strip().lower()
+    token_clean = (service_token or "").strip()
+    if not email_clean or not token_clean:
+        return False
+
+    now = time.time()
+    if not expires_at or expires_at <= now:
+        window = 3300 if service_mode == "purchase" else 540
+        expires_at = now + window
+
+    # 剩余安全窗口不足 8 分钟（480 秒）的不入池，直接废弃
+    if (expires_at - now) < 480:
+        logging.getLogger("db").info(
+            f"[remail_pool] 邮箱 {email_clean} 剩余时效不足 8 分钟 ({int(expires_at - now)}s)，不暂存"
+        )
+        return False
+
+    # 读取最大允许重试复用次数（默认 3 次）
+    max_retries = 3
+    try:
+        max_retries = int(get_setting("remail_max_recycle_retries", "3") or 3)
+    except Exception:
+        max_retries = 3
+
+    with _lock:
+        con = _conn()
+        cur_row = con.execute(
+            "SELECT fail_count FROM remail_recycle_pool WHERE email=?", (email_clean,)
+        ).fetchone()
+        cur_fails = (int(cur_row["fail_count"] or 0) if cur_row else 0) + 1
+
+        # 超过配置的最大失败次数则直接标记为 2 (超限废弃)，不再复用，防止异常账号无限死循环
+        if cur_fails >= max_retries:
+            new_is_used = 2
+            log_msg = (
+                f"[remail_pool] ⚠️ 邮箱 {email_clean} 失败复用次数已达上限 ({cur_fails}/{max_retries} 次)，"
+                f"已自动标记废弃不再复用（下次将直接重新购入新邮箱）"
+            )
+            logging.getLogger("db").warning(log_msg)
+        else:
+            new_is_used = 0
+            rem_min = int((expires_at - now) / 60)
+            log_msg = (
+                f"[remail_pool] ♻️ 成功暂存未用邮箱: {email_clean} (项目={project_id}, "
+                f"失败重试={cur_fails}/{max_retries}次, 剩余有效={rem_min}分钟, 待后续复用)"
+            )
+            logging.getLogger("db").info(log_msg)
+
+        con.execute(
+            """
+            INSERT INTO remail_recycle_pool(
+                email, service_token, order_no, project_id, email_suffix,
+                service_mode, receive_until, expires_at, created_at, is_used, fail_count
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(email) DO UPDATE SET
+                service_token=excluded.service_token,
+                order_no=excluded.order_no,
+                expires_at=excluded.expires_at,
+                is_used=excluded.is_used,
+                fail_count=excluded.fail_count
+            """,
+            (
+                email_clean,
+                token_clean,
+                str(order_no or ""),
+                int(project_id or 2),
+                str(email_suffix or "icloud.com").strip().lower(),
+                str(service_mode or "purchase").strip().lower(),
+                str(receive_until or ""),
+                float(expires_at),
+                float(now),
+                new_is_used,
+                cur_fails,
+            ),
+        )
+        con.commit()
+    return True
+
+
+def claim_remail_recycled(
+    project_id: int = 2,
+    email_suffix: str = "icloud.com",
+    service_mode: str = "purchase",
+    min_remaining_sec: int = 480,
+) -> Optional[dict]:
+    """从复用池检索并锁定一个仍在有效时效内且重试次数未超限的未用邮箱（优先复用，杜绝积分浪费）。"""
+    now = time.time()
+    min_expire = now + max(60, min_remaining_sec)
+    pid = int(project_id or 2)
+    suf = str(email_suffix or "icloud.com").strip().lower()
+    mode = str(service_mode or "purchase").strip().lower()
+
+    # 最大允许重试次数
+    max_retries = 3
+    try:
+        max_retries = int(get_setting("remail_max_recycle_retries", "3") or 3)
+    except Exception:
+        max_retries = 3
+
+    with _lock:
+        con = _conn()
+        # 1. 自动清理已超时的未用邮箱（剩余不足 8 分钟或失败超限的标记废弃）
+        con.execute(
+            "UPDATE remail_recycle_pool SET is_used=2 WHERE is_used=0 AND (expires_at < ? OR fail_count >= ?)",
+            (min_expire, max_retries),
+        )
+
+        # 2. 查出 1 条剩余时效充足且失败次数小于上限的可用邮箱
+        cur = con.execute(
+            """
+            SELECT id, email, service_token, order_no, project_id, email_suffix, service_mode, receive_until, expires_at, fail_count
+            FROM remail_recycle_pool
+            WHERE is_used = 0 AND project_id = ? AND email_suffix = ? AND service_mode = ? AND expires_at >= ? AND fail_count < ?
+            ORDER BY expires_at DESC LIMIT 1
+            """,
+            (pid, suf, mode, min_expire, max_retries),
+        )
+        row = cur.fetchone()
+        if not row:
+            con.commit()
+            return None
+
+        # 3. 临时标记为处理锁定中（is_used=3 防止并发多 worker 领走同一个）
+        con.execute("UPDATE remail_recycle_pool SET is_used=3 WHERE id = ?", (row["id"],))
+        con.commit()
+
+        remaining_min = round((row["expires_at"] - now) / 60, 1)
+        f_cnt = int(row.get("fail_count") or 0)
+        logging.getLogger("db").info(
+            f"[remail_pool] ♻️ 命中复用池暂存邮箱: email={row['email']} (项目={pid}, 历史重试={f_cnt}/{max_retries}次, 剩余有效时长={remaining_min}分钟, 免花积分！)"
+        )
+        return dict(row)
+
+
+def mark_remail_consumed(email: str) -> None:
+    """注册成功后，彻底标记该邮箱已被 OpenAI 消费完毕。"""
+    email_clean = (email or "").strip().lower()
+    if not email_clean:
+        return
+    with _lock:
+        con = _conn()
+        con.execute("UPDATE remail_recycle_pool SET is_used=1 WHERE email = ?", (email_clean,))
+        con.commit()
+
+
+def release_remail_recycled(email: str) -> None:
+    """领取后若因某种原因无法初始化，归还复用池。"""
+    email_clean = (email or "").strip().lower()
+    if not email_clean:
+        return
+    with _lock:
+        con = _conn()
+        con.execute(
+            "UPDATE remail_recycle_pool SET is_used=0 WHERE email = ? AND is_used=3",
+            (email_clean,),
+        )
+        con.commit()
+
+
+def count_remail_recycled(project_id: int = 0) -> int:
+    """统计当前复用池中有效未用的邮箱总数。"""
+    now = time.time()
+    min_expire = now + 480
+    max_retries = 3
+    try:
+        max_retries = int(get_setting("remail_max_recycle_retries", "3") or 3)
+    except Exception:
+        max_retries = 3
+
+    con = _conn()
+    if project_id > 0:
+        cur = con.execute(
+            "SELECT COUNT(*) AS cnt FROM remail_recycle_pool WHERE is_used IN (0, 3) AND project_id = ? AND expires_at >= ? AND fail_count < ?",
+            (int(project_id), min_expire, max_retries),
+        )
+    else:
+        cur = con.execute(
+            "SELECT COUNT(*) AS cnt FROM remail_recycle_pool WHERE is_used IN (0, 3) AND expires_at >= ? AND fail_count < ?",
+            (min_expire, max_retries),
+        )
+    row = cur.fetchone()
+    return int(row["cnt"]) if row else 0
+
+
+def list_remail_recycled(limit: int = 50) -> list[dict]:
+    """查看当前复用池中有效未用的邮箱明细列表。"""
+    now = time.time()
+    min_expire = now + 480
+    con = _conn()
+    cur = con.execute(
+        """
+        SELECT id, email, order_no, project_id, email_suffix, service_mode, receive_until, expires_at, created_at, is_used, fail_count
+        FROM remail_recycle_pool
+        WHERE is_used IN (0, 3) AND expires_at >= ?
+        ORDER BY expires_at DESC LIMIT ?
+        """,
+        (min_expire, limit),
+    )
+    rows = cur.fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["remaining_minutes"] = max(0, round((d["expires_at"] - now) / 60, 1))
+        out.append(d)
+    return out
 
 
 def get_sms_internal_config() -> dict:
