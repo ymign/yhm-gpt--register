@@ -2529,10 +2529,28 @@ const credRows = computed(() => {
   if (ext && ext.link_url) {
     items.unshift({ key: 'extract_link', val: ext.link_url })
   }
+  // Remail 专属取件地址与凭证
+  const mo = credData.value.extra?.mail_oauth || credData.value.mail_oauth
+  if (mo && typeof mo === 'object') {
+    if (mo.pickup_url) {
+      items.unshift({ key: 'pickup_url', val: mo.pickup_url })
+    }
+    if (mo.service_token) {
+      items.push({ key: 'service_token', val: mo.service_token })
+    }
+    if (mo.order_no) {
+      items.push({ key: 'order_no', val: mo.order_no })
+    }
+  } else if (credData.value.relay_url) {
+    items.unshift({ key: 'pickup_url', val: credData.value.relay_url })
+  }
   return items
 })
 
 const CRED_META_DICT = {
+  pickup_url:     { badge: '取件链接', bg: 'rgba(16, 185, 129, 0.25)', color: '#10b981' },
+  service_token:  { badge: 'RemailToken', bg: 'rgba(59, 130, 246, 0.2)', color: '#38bdf8' },
+  order_no:       { badge: 'Remail订单', bg: 'rgba(168, 85, 247, 0.2)', color: '#c084fc' },
   session_data:   { badge: 'SessionJSON', bg: 'rgba(59, 130, 246, 0.25)', color: '#38bdf8' },
   extract_link:   { badge: 'Extract', bg: 'rgba(16, 185, 129, 0.2)', color: '#34d399' },
   totp_secret:    { badge: '2FA', bg: 'rgba(16, 185, 129, 0.2)', color: '#34d399' },

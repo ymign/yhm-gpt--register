@@ -47,6 +47,22 @@ def _s(row: dict, key: str) -> str:
     return str(v).strip()
 
 
+def _get_relay_or_pickup_url(r: dict) -> str:
+    """提取邮箱取件 URL：优先取 Remail / 中转的 pickup_url，其次取号池表 relay_url。"""
+    extra = r.get("extra") if isinstance(r.get("extra"), dict) else {}
+    if not extra and r.get("extra_json"):
+        try:
+            import json as _j
+            extra = _j.loads(r["extra_json"])
+        except Exception:
+            extra = {}
+    if isinstance(extra, dict):
+        mo = extra.get("mail_oauth") or {}
+        if isinstance(mo, dict) and mo.get("pickup_url"):
+            return str(mo["pickup_url"]).strip()
+    return _s(r, "relay_url")
+
+
 def get_or_build_cpa_token_data(r: dict) -> dict:
     """提取或生成标准的 CPA (CLI Proxy API) 单文件认证格式（非数组，单个 JSON 对象）。"""
     import json
@@ -407,7 +423,7 @@ FORMATS: list[ExportFormat] = [
         filename="账号密码2FA取件url.txt",
         render=lambda r: (
             f'{_s(r, "email")}----{_s(r, "password")}----'
-            f'{_s(r, "totp_secret")}----{_s(r, "relay_url")}'
+            f'{_s(r, "totp_secret")}----{_get_relay_or_pickup_url(r)}'
         ),
         note="取件链接含 token，等同收件权限，妥善保管",
     ),
