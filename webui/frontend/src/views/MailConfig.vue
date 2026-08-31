@@ -27,8 +27,32 @@ import FooterToolbar from '@/components/FooterToolbar.vue'
 
 // 默认内置的 4 大邮箱渠道（防止初次渲染空白）
 const DEFAULT_PROVIDERS = [
-  { kind: 'remail', display_name: '🍎 Remail 自动购号 (iCloud / 微软临时邮箱)', pooled: false, ephemeral: true, config_fields: [] },
-  { kind: 'cf_temp', display_name: '⚡ CF Worker 域名临时邮箱', pooled: false, ephemeral: true, config_fields: [] },
+  {
+    kind: 'remail',
+    display_name: '🍎 Remail 自动购号 (iCloud / 微软临时邮箱)',
+    pooled: false,
+    ephemeral: true,
+    config_fields: [
+      { key: 'remail_api_key', label: 'API Key' },
+      { key: 'remail_project_id', label: '项目 ID' },
+      { key: 'remail_email_suffix', label: '邮箱后缀' },
+      { key: 'remail_service_mode', label: '服务模式' },
+      { key: 'remail_base_url', label: '平台 API 地址' },
+      { key: 'remail_max_recycle_retries', label: '最大重试复用次数' },
+    ],
+  },
+  {
+    kind: 'cf_temp',
+    display_name: '⚡ CF Worker 域名临时邮箱',
+    pooled: false,
+    ephemeral: true,
+    config_fields: [
+      { key: 'cf_api_url', label: 'Worker API 地址' },
+      { key: 'cf_domain', label: '域名' },
+      { key: 'cf_admin_token', label: 'Admin Token' },
+      { key: 'cf_site_password', label: '网站密码' },
+    ],
+  },
   { kind: 'outlook', display_name: '📦 微软 Outlook 接码池', pooled: true, ephemeral: false, line_segments: 4, config_fields: [] },
   { kind: 'icloud_relay', display_name: '✉️ iCloud 隐藏邮箱 (中转)', pooled: true, ephemeral: false, line_segments: 2, config_fields: [] },
 ]
@@ -324,16 +348,23 @@ async function handleSourceChange(val) {
 }
 
 async function save(notify = true) {
-  const payload = { mail_source: source.value }
-  for (const f of fields.value) {
-    const v = (form.value[f.key] ?? '').trim()
-    payload[f.key] = v
+  const payload = {
+    mail_source: source.value,
+    ...form.value,
   }
 
   if (source.value === 'remail') {
-    if (!payload.remail_project_id) payload.remail_project_id = '2'
-    if (!payload.remail_email_suffix) payload.remail_email_suffix = 'icloud.com'
-    if (!payload.remail_service_mode) payload.remail_service_mode = 'purchase'
+    payload.remail_project_id = String(form.value.remail_project_id || '2').trim()
+    payload.remail_email_suffix = (form.value.remail_email_suffix || 'icloud.com').trim().toLowerCase()
+    payload.remail_service_mode = (form.value.remail_service_mode || 'purchase').trim()
+    payload.remail_base_url = (form.value.remail_base_url || 'https://remail.aishop6.com').trim()
+    payload.remail_api_key = (form.value.remail_api_key || '').trim()
+    payload.remail_max_recycle_retries = form.value.remail_max_recycle_retries || 3
+  } else if (source.value === 'cf_temp') {
+    payload.cf_api_url = (form.value.cf_api_url || '').trim()
+    payload.cf_admin_token = (form.value.cf_admin_token || '').trim()
+    payload.cf_domain = (form.value.cf_domain || '').trim()
+    payload.cf_site_password = (form.value.cf_site_password || '').trim()
   }
 
   saving.value = true

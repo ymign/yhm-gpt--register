@@ -256,10 +256,16 @@ class RemailICloudProvider(MailProvider):
     def _create_order_req(self, project_id: int, email_suffix: str, service_mode: str) -> dict:
         """执行单个下单请求。"""
         url = f"{self.base_url}/v1/open/orders?serviceMode={service_mode}&supply=private_first"
+        suf_clean = (email_suffix or "icloud.com").strip().lower()
         body_dict = {
-            "projectId": project_id,
-            "emailSuffix": email_suffix or "icloud.com",
+            "projectId": int(project_id),
+            "emailSuffix": suf_clean,
         }
+        if "icloud" in suf_clean:
+            body_dict["mailType"] = "icloud"
+        elif any(k in suf_clean for k in ("outlook", "hotmail", "live", "msn", "microsoft")):
+            body_dict["mailType"] = "microsoft"
+
         req_bytes = json.dumps(body_dict, ensure_ascii=False).encode("utf-8")
         headers = {
             "X-API-KEY": self.api_key,
