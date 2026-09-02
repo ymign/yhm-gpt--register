@@ -187,6 +187,31 @@ export const getSecurityTaskLog = (taskId, email) =>
   http.get(`/api/registered/security_task/${encodeURIComponent(taskId)}/log`, { params: { email } })
 
 
+// ──────────────── 账号保温与保鲜 (Account Warming Daemon) ────────────────
+export const startWarmingTask = (payload) =>
+  http.post('/api/registered/warm/start', payload) // { emails, proxies, proxy, proxy_country, workers }
+
+export const stopWarmingTask = (taskId) =>
+  http.post(`/api/registered/warm/${encodeURIComponent(taskId)}/stop`)
+
+export const warmingStreamUrl = (taskId) =>
+  `/api/registered/warm/${encodeURIComponent(taskId)}/stream`
+
+export const getWarmingLog = (taskId, email) =>
+  http.get(`/api/registered/warm/${encodeURIComponent(taskId)}/log`, { params: { email } })
+
+
+// ──────────────── PoW Sentinel 预计算池 & 代理健康评级 ────────────────
+export const getSentinelPoolStats = () =>
+  http.get('/api/sentinel_pool/stats')
+
+export const configSentinelPool = (payload) =>
+  http.post('/api/sentinel_pool/config', payload)
+
+export const getProxyHealthSummary = () =>
+  http.get('/api/proxy_health/summary')
+
+
 // ──────────────── 自动跑号 auto-loop ────────────────
 export const autoStart = (payload) => http.post('/api/auto/start', payload)
 export const autoPause = () => http.post('/api/auto/pause')

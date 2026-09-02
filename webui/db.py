@@ -39,7 +39,11 @@ _lock = threading.Lock()  # SQLite 写入串行化
 def _conn() -> sqlite3.Connection:
     con = sqlite3.connect(str(DB_PATH), check_same_thread=False, timeout=30)
     con.row_factory = sqlite3.Row
-    con.execute("PRAGMA journal_mode=WAL")
+    con.execute("PRAGMA journal_mode = WAL")
+    con.execute("PRAGMA synchronous = NORMAL")
+    con.execute("PRAGMA cache_size = -64000")  # 64MB 内存查询缓存
+    con.execute("PRAGMA busy_timeout = 15000")  # 15秒写锁自动重试，消除高并发冲突
+    con.execute("PRAGMA temp_store = MEMORY")
     return con
 
 
@@ -181,6 +185,24 @@ def init_db():
     if "export_note" not in reg_cols:
         con.execute("ALTER TABLE registered ADD COLUMN export_note TEXT DEFAULT ''")
         con.commit()
+    # 账号保温保鲜字段：记录最后一次保温时间、保温累计次数与状态
+    if "last_warmed_at" not in reg_cols:
+        con.execute("ALTER TABLE registered ADD COLUMN last_warmed_at REAL")
+        con.commit()
+    if "warm_count" not in reg_cols:
+        con.execute("ALTER TABLE registered ADD COLUMN warm_count INTEGER DEFAULT 0")
+        con.commit()
+    if "warm_status" not in reg_cols:
+        con.execute("ALTER TABLE registered ADD COLUMN warm_status TEXT DEFAULT ''")
+        con.commit()
+
+    # 高频覆盖索引（保证十万级数据秒开）
+    con.execute("CREATE INDEX IF NOT EXISTS idx_reg_created ON registered(created_at DESC)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_reg_country_created ON registered(reg_country, created_at DESC)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_reg_export_created ON registered(exported_at, created_at DESC)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_reg_oauth_status ON registered(oauth_status)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_pool_status_kind ON outlook_accounts(status, kind)")
+    con.commit()
 
     # 自动清理历史中没有任何凭证（AT/ST/RT 全为空）的未完成半成品脏数据
     con.execute("""
@@ -367,14 +389,177 @@ def parse_lines(text: str, kind: str = "") -> list[dict]:
     return parse_import_text(text or "", kind)
 
 
-def import_accounts(text: str, kind: str = "") -> dict:
-    """批量入库（万级数据毫秒级极速写入）。已存在的 email 仅在凭证变化时更新。
+def analyze_import_data(text: str, kind: str = "") -> dict:
+    """导入前多维数据透视与去重分析引擎。
 
-    1. 内存极速比对：一次性加载 registered 和 outlook_accounts 映射，耗时从 O(N*M) 降至 O(N) 单次遍历；
-    2. 事务级 executemany 批量写入：万级邮箱仅需 0.2~0.5 秒写入完成；
-    3. 若邮箱已在 registered（已注册结果库）中存在，自动将其 4 段授权凭证同步写入
-       registered.extra_json.mail_oauth（终身绑定接码凭证），并自动标记号池状态为 done，
-       防止老号被重新跑注册报错。
+    1. 逐行智能清理与容错解析（支持任意分隔符、乱序、首尾字符清理）；
+    2. 批次内部重复检测与去重统计；
+    3. 极速内存对比号池（outlook_accounts）与已注册库（registered）；
+    4. 计算全新号、号池重复、已注册老号的分布与综合重复率；
+    5. 返回抽样数据及非法错误列表供前端可视化 HUD 渲染。
+    """
+    from mail_providers.base import split_import_records
+    from mail_providers.smart_parser import parse_smart_account_line
+
+    numbered = split_import_records(text or "")
+    total_lines = len(numbered)
+    if total_lines == 0:
+        return {
+            "ok": True,
+            "total_lines": 0,
+            "valid_count": 0,
+            "invalid_count": 0,
+            "invalid_errors": [],
+            "unique_count": 0,
+            "internal_dup_count": 0,
+            "internal_dup_emails": [],
+            "brand_new_count": 0,
+            "pool_dup_count": 0,
+            "pool_breakdown": {},
+            "registered_dup_count": 0,
+            "dup_rate": 0.0,
+            "preview_rows": [],
+        }
+
+    parsed_rows = []
+    invalid_errors = []
+    email_occurrence: dict[str, list[int]] = {}
+
+    for line_no, raw_line in numbered:
+        res = parse_smart_account_line(raw_line, default_kind=kind or "outlook")
+        if res.get("ok"):
+            em = res["email"].lower()
+            if em not in email_occurrence:
+                email_occurrence[em] = []
+            email_occurrence[em].append(line_no)
+            res["_line_no"] = line_no
+            parsed_rows.append(res)
+        else:
+            invalid_errors.append({
+                "line": line_no,
+                "raw": raw_line[:80],
+                "error": res.get("error") or "无法识别有效邮箱凭据",
+            })
+
+    valid_count = len(parsed_rows)
+    invalid_count = len(invalid_errors)
+    unique_count = len(email_occurrence)
+    internal_dup_count = sum(len(lines) - 1 for lines in email_occurrence.values() if len(lines) > 1)
+    internal_dup_emails = [em for em, lines in email_occurrence.items() if len(lines) > 1]
+
+    # 一次性批量读取数据库中的号池和已注册库内存映射
+    with _lock:
+        con = _conn()
+        cur_reg = con.execute("SELECT lower(email) FROM registered")
+        reg_set = {row[0] for row in cur_reg.fetchall()}
+
+        cur_pool = con.execute("SELECT lower(email), status FROM outlook_accounts")
+        pool_map = {row[0]: row[1] or "available" for row in cur_pool.fetchall()}
+
+    brand_new_count = 0
+    pool_dup_count = 0
+    pool_breakdown: dict[str, int] = {
+        "available": 0,
+        "in_use": 0,
+        "done": 0,
+        "failed": 0,
+        "archived": 0,
+    }
+    registered_dup_count = 0
+
+    seen_unique_email = set()
+    for row in parsed_rows:
+        em = row["email"]
+        if em in seen_unique_email:
+            continue
+        seen_unique_email.add(em)
+
+        if em in reg_set:
+            registered_dup_count += 1
+        elif em in pool_map:
+            pool_dup_count += 1
+            st = pool_map[em]
+            pool_breakdown[st] = pool_breakdown.get(st, 0) + 1
+        else:
+            brand_new_count += 1
+
+    # 综合重复率：(内部重复 + 库内已存在) / 总有效行数
+    dup_lines_total = internal_dup_count + pool_dup_count + registered_dup_count
+    dup_rate = round((dup_lines_total / total_lines) * 100, 1) if total_lines > 0 else 0.0
+
+    # 生成抽样预览列表 (前 30 条)
+    preview_rows = []
+    seen_in_preview = set()
+    for row in parsed_rows[:30]:
+        em = row["email"]
+        is_internal_dup = em in seen_in_preview
+        seen_in_preview.add(em)
+
+        db_status = "brand_new"
+        db_label = "全新未入库"
+        if is_internal_dup:
+            db_status = "internal_dup"
+            db_label = "批次内重复"
+        elif em in reg_set:
+            db_status = "registered_gpt"
+            db_label = "GPT老号 (已注册)"
+        elif em in pool_map:
+            st = pool_map[em]
+            st_map = {
+                "available": ("pool_available", "号池可用"),
+                "in_use": ("pool_in_use", "号池运行中"),
+                "done": ("pool_done", "号池已完成"),
+                "failed": ("pool_failed", "号池已失败"),
+                "archived": ("pool_archived", "号池已归档"),
+            }
+            db_status, db_label = st_map.get(st, ("pool_existing", "号池已存在"))
+
+        pwd = row.get("password") or ""
+        masked_pwd = (pwd[:2] + "****" + pwd[-2:]) if len(pwd) >= 5 else ("***" if pwd else "")
+
+        preview_rows.append({
+            "line": row["_line_no"],
+            "email": em,
+            "password_masked": masked_pwd,
+            "has_password": bool(pwd),
+            "client_id": row.get("client_id") or "",
+            "rt_len": len(row.get("refresh_token") or ""),
+            "relay_url": row.get("relay_url") or "",
+            "kind": row.get("kind") or kind or "outlook",
+            "detected_format": row.get("detected_format") or "标准格式",
+            "db_status": db_status,
+            "db_label": db_label,
+            "is_valid": True,
+        })
+
+    return {
+        "ok": True,
+        "total_lines": total_lines,
+        "valid_count": valid_count,
+        "invalid_count": invalid_count,
+        "invalid_errors": invalid_errors[:50],
+        "unique_count": unique_count,
+        "internal_dup_count": internal_dup_count,
+        "internal_dup_emails": internal_dup_emails[:50],
+        "brand_new_count": brand_new_count,
+        "pool_dup_count": pool_dup_count,
+        "pool_breakdown": pool_breakdown,
+        "registered_dup_count": registered_dup_count,
+        "dup_rate": dup_rate,
+        "preview_rows": preview_rows,
+    }
+
+
+def import_accounts(text: str, kind: str = "", strategy: str = "smart_merge") -> dict:
+    """批量入库（万级数据毫秒级极速写入与智能去重策略）。
+
+    参数：
+        text: 导入文本
+        kind: 邮箱协议来源
+        strategy: 导入策略
+            - 'smart_merge' (默认推荐): 全新号入库；老号 (registered) 自动绑定 OAuth 凭据并标记已用；号池已有账号若提供新凭据则自动更新。
+            - 'skip_duplicates': 只要在号池或已注册库已存在，直接跳过，仅写入全新号。
+            - 'overwrite': 强制重置号池已有账号为 available 状态并覆盖更新凭据。
     """
     t0 = time.time()
     rows = parse_lines(text, kind)
@@ -396,8 +581,8 @@ def import_accounts(text: str, kind: str = "") -> dict:
         reg_map = {row[0]: row[1] for row in cur_reg.fetchall()}
 
         # 2. 一次性批量读取 outlook_accounts 当前号池的内存映射
-        cur_pool = con.execute("SELECT lower(email), refresh_token, relay_url, kind FROM outlook_accounts")
-        pool_map = {row[0]: (row[1] or "", row[2] or "", row[3] or "") for row in cur_pool.fetchall()}
+        cur_pool = con.execute("SELECT lower(email), refresh_token, relay_url, kind, status FROM outlook_accounts")
+        pool_map = {row[0]: (row[1] or "", row[2] or "", row[3] or "", row[4] or "available") for row in cur_pool.fetchall()}
 
         update_registered_extra = []
         update_pool_registered_done = []
@@ -410,6 +595,16 @@ def import_accounts(text: str, kind: str = "") -> dict:
             client_id = r.get("client_id", "") or ""
             refresh = r.get("refresh_token", "") or ""
             relay = r.get("relay_url", "") or ""
+
+            # 策略：跳过所有库内重复账号
+            if strategy == "skip_duplicates":
+                if em in reg_map or em in pool_map:
+                    skipped += 1
+                    continue
+                insert_pool_records.append((em, password, client_id, refresh, relay, row_kind, now))
+                pool_map[em] = (refresh, relay, row_kind, "available")
+                inserted += 1
+                continue
 
             # 分支 A: 已注册老号
             if em in reg_map:
@@ -434,13 +629,14 @@ def import_accounts(text: str, kind: str = "") -> dict:
             # 分支 B: 未在 registered 库中的新号
             if em not in pool_map:
                 insert_pool_records.append((em, password, client_id, refresh, relay, row_kind, now))
-                pool_map[em] = (refresh, relay, row_kind)
+                pool_map[em] = (refresh, relay, row_kind, "available")
                 inserted += 1
             else:
-                old_refresh, old_relay, old_kind = pool_map[em]
-                if old_refresh != refresh or old_relay != relay or old_kind != row_kind:
+                old_refresh, old_relay, old_kind, old_status = pool_map[em]
+                # 策略：overwrite 覆盖模式 或 凭证变更模式
+                if strategy == "overwrite" or old_refresh != refresh or old_relay != relay or old_kind != row_kind:
                     update_pool_records.append((refresh, password, client_id, relay, row_kind, now, em))
-                    pool_map[em] = (refresh, relay, row_kind)
+                    pool_map[em] = (refresh, relay, row_kind, "available")
                     updated += 1
                 else:
                     skipped += 1
@@ -882,6 +1078,96 @@ def stats() -> dict:
         out[r["status"]] = r["n"]
         out["total"] += r["n"]
     return out
+
+
+def get_dashboard_summary() -> dict:
+    """获取仪表盘全能概览数据（号池统计、注册资产矩阵、国家分布 Top 榜、安全加固率）。"""
+    con = _conn()
+    p_stats = stats()
+
+    # 注册资产核心指标
+    cur_reg = con.execute("""
+        SELECT
+            COUNT(*) AS total_reg,
+            SUM(CASE WHEN totp_secret IS NOT NULL AND trim(totp_secret) != '' THEN 1 ELSE 0 END) AS with_2fa,
+            SUM(CASE WHEN password IS NOT NULL AND trim(password) != '' THEN 1 ELSE 0 END) AS with_pwd,
+            SUM(CASE WHEN oauth_status IN ('success', 'success_phone', 'success_direct') THEN 1 ELSE 0 END) AS with_oauth,
+            SUM(CASE WHEN (exported_at IS NOT NULL AND exported_at > 0) OR (at_exported_at IS NOT NULL AND at_exported_at > 0) THEN 1 ELSE 0 END) AS exported_cnt,
+            SUM(CASE WHEN (exported_at IS NULL OR exported_at = 0) AND (at_exported_at IS NULL OR at_exported_at = 0) THEN 1 ELSE 0 END) AS unexported_cnt
+        FROM registered
+    """).fetchone()
+
+    total_reg = cur_reg["total_reg"] or 0
+    with_2fa = cur_reg["with_2fa"] or 0
+    with_pwd = cur_reg["with_pwd"] or 0
+    with_oauth = cur_reg["with_oauth"] or 0
+    exported_cnt = cur_reg["exported_cnt"] or 0
+    unexported_cnt = cur_reg["unexported_cnt"] or 0
+
+    # 出口国家分布 TOP 8
+    cur_geo = con.execute("""
+        SELECT upper(trim(reg_country)) AS country, COUNT(*) AS n
+        FROM registered
+        WHERE reg_country IS NOT NULL AND trim(reg_country) != ''
+        GROUP BY upper(trim(reg_country))
+        ORDER BY n DESC LIMIT 8
+    """)
+    top_countries = [{"country": r["country"], "count": r["n"]} for r in cur_geo.fetchall()]
+
+    # Remail 暂存复用池统计
+    remail_cnt = 0
+    try:
+        cur_rem = con.execute("SELECT COUNT(*) FROM remail_recycle_pool WHERE is_used=0 AND expires_at >= ?", (time.time(),)).fetchone()
+        remail_cnt = cur_rem[0] if cur_rem else 0
+    except Exception:
+        pass
+
+    # 最近入库的 5 个账号（脱敏）
+    cur_recent = con.execute("""
+        SELECT email, reg_country, totp_secret, password, oauth_status, created_at
+        FROM registered
+        ORDER BY created_at DESC LIMIT 5
+    """)
+    recent_items = []
+    for r in cur_recent.fetchall():
+        em = r["email"]
+        masked = em
+        if "@" in em:
+            u, d = em.split("@", 1)
+            masked = (u[:3] + "***@" + d) if len(u) > 3 else (u[0] + "***@" + d)
+        recent_items.append({
+            "email": em,
+            "masked_email": masked,
+            "country": r["reg_country"] or "",
+            "has_2fa": bool(r["totp_secret"]),
+            "has_pwd": bool(r["password"]),
+            "oauth_status": r["oauth_status"] or "",
+            "created_at": r["created_at"] or 0,
+        })
+
+    # 计算注册安全加固率与成功率
+    sec_rate = round((with_2fa / total_reg * 100), 1) if total_reg > 0 else 0
+    pwd_rate = round((with_pwd / total_reg * 100), 1) if total_reg > 0 else 0
+    total_processed = (p_stats.get("done", 0) + p_stats.get("failed", 0))
+    success_rate = round((p_stats.get("done", 0) / total_processed * 100), 1) if total_processed > 0 else 0
+
+    return {
+        "pool": p_stats,
+        "registered": {
+            "total": total_reg,
+            "with_2fa": with_2fa,
+            "with_pwd": with_pwd,
+            "with_oauth": with_oauth,
+            "exported": exported_cnt,
+            "unexported": unexported_cnt,
+            "sec_rate": sec_rate,
+            "pwd_rate": pwd_rate,
+            "success_rate": success_rate,
+        },
+        "countries": top_countries,
+        "recent": recent_items,
+        "remail_active_cached": remail_cnt,
+    }
 
 
 # ──────────────────────── 注册结果存储 ────────────────────────

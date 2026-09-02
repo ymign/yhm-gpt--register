@@ -259,10 +259,9 @@ class AutoLoopController:
         self._broadcast("state", self._snapshot())
 
     def _proxy_for_worker(self, worker_id: int) -> str:
-        """按 worker_id 从代理池里挑一个代理。空池时回退到 options.proxy。
+        """按 worker_id 从代理池里挑一个可用代理（自动跳过处于 15 分钟风控冷冻期或黑名单的代理）。
 
-        整模板已被拉黑的代理条目（proxy_health 按模板×国家聚合，死亡率
-        超阈值 / 手动整模板拉黑）跳过；全池被拉黑时回退全量并告警 ——
+        整模板已被拉黑或连续失败冷冻的代理条目跳过；全池被拉黑时回退全量并告警 ——
         宁可用脏代理也不能让 worker 没代理可用。
         """
         pool = self._proxy_pool
@@ -270,20 +269,28 @@ class AutoLoopController:
             try:
                 from . import db
                 from .proxy_util import normalize_proxy_key
+                from .proxy_health import get_proxy_health_manager
                 bad_templates = db.get_blacklist()["templates"]
             except Exception:
                 bad_templates = set()
-            if bad_templates:
-                usable = [
-                    p for p in pool
-                    if normalize_proxy_key(p) not in bad_templates
-                ]
-                if usable:
-                    return usable[worker_id % len(usable)]
-                logger.warning(
-                    f"[auto-loop] 代理池 {len(pool)} 个代理模板已全部被拉黑，回退使用全量池"
-                    "（建议尽快更换代理）"
-                )
+
+            usable = [p for p in pool if normalize_proxy_key(p) not in bad_templates] if bad_templates else list(pool)
+
+            # 过滤掉处于 15 分钟失败冷冻期的代理
+            try:
+                from .proxy_health import get_proxy_health_manager
+                active_proxies = get_proxy_health_manager().filter_available_proxies(usable)
+                if active_proxies:
+                    usable = active_proxies
+            except Exception:
+                pass
+
+            if usable:
+                return usable[worker_id % len(usable)]
+
+            logger.warning(
+                f"[auto-loop] 代理池 {len(pool)} 个代理模板已被拉黑或处于冷冻期，回退使用全量池"
+            )
             return pool[worker_id % len(pool)]
         return self._options.get("proxy", "") or ""
 

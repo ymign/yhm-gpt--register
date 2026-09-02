@@ -1795,6 +1795,11 @@ class AuthFlow:
                     f"chatgpt.com warmup 完成（第 {attempt + 1} 次，oai-did 已种，"
                     f"共 {len(cookies)} 个 cookie）"
                 )
+                try:
+                    from webui.proxy_health import get_proxy_health_manager
+                    get_proxy_health_manager().record_success(self.config.proxy)
+                except Exception:
+                    pass
                 return True
 
             logger.warning(
@@ -1804,6 +1809,11 @@ class AuthFlow:
             )
 
         logger.error("warmup 5 次均未种到 oai-did cookie —— 此时继续走注册链必然 409 invalid_state")
+        try:
+            from webui.proxy_health import get_proxy_health_manager
+            get_proxy_health_manager().record_failure(self.config.proxy, reason="warmup 5次未种到 oai-did (出口IP可能被CF拦截)")
+        except Exception:
+            pass
         return False
 
     # ── Step 1: 检查代理连通性 ──
@@ -2249,6 +2259,21 @@ class AuthFlow:
 
     def get_sentinel_token(self, device_id: str) -> str:
         logger.info("[4/10] 获取 Sentinel Token (PoW)...")
+        # 1. 优先尝试从后台预计算池中 0ms 秒级获取
+        try:
+            from webui.sentinel_pool import get_sentinel_pool
+            pool = get_sentinel_pool()
+            precomputed = pool.pop_token(flow="authorize_continue")
+            if precomputed:
+                token, so_token, _ = precomputed
+                self._last_sentinel_token = token or ""
+                self._last_sentinel_so_token = so_token or ""
+                logger.info("[4/10] ⚡ 成功命中 PoW 预计算池，0ms 秒获 Sentinel Token！")
+                return token
+        except Exception as e:
+            logger.debug(f"[Sentinel] 预计算池提取跳过: {e}")
+
+        # 2. 池空或不可用时优雅回落实时计算
         from sentinel import get_sentinel_token
         result = get_sentinel_token(
             self.session,
@@ -2259,7 +2284,7 @@ class AuthFlow:
         token, so_token = result
         self._last_sentinel_token = token or ""
         self._last_sentinel_so_token = so_token or ""
-        logger.debug("Sentinel Token 获取成功")
+        logger.debug("Sentinel Token 实时计算成功")
         return token
 
     # ── Step 6: 提交注册邮箱 ──
@@ -2774,6 +2799,12 @@ class AuthFlow:
         if resp.status_code != 200:
             body = (resp.text or "")
             logger.warning(f"verify_otp FULL body ({resp.status_code}): {body[:2000]}")
+            if resp.status_code == 409 or "invalid_state" in body:
+                try:
+                    from webui.proxy_health import get_proxy_health_manager
+                    get_proxy_health_manager().record_failure(self.config.proxy, reason="409 invalid_state (代理会话失效)")
+                except Exception:
+                    pass
             if "account_deactivated" in body or "deleted or deactivated" in body or resp.status_code == 403:
                 raise RuntimeError(f"账号已被官方封禁/注销 (account_deactivated): {resp.status_code} - {body[:260]}")
             raise RuntimeError(f"OTP 验证失败: {resp.status_code} - {body[:260]}")

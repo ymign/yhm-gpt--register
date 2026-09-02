@@ -425,6 +425,29 @@ _HARDWARE_PROFILES = {
 }
 
 
+_WEBGL_PROFILES = {
+    "mac_safari": [
+        ("Apple", "Apple M1"),
+        ("Apple", "Apple M2"),
+        ("Apple", "Apple M3 Pro"),
+        ("Apple", "Apple M3 Max"),
+    ],
+    "ios_safari": [
+        ("Apple Inc.", "Apple GPU"),
+    ],
+    "chrome": [
+        ("Google Inc. (NVIDIA)", "ANGLE (NVIDIA, NVIDIA GeForce RTX 4070 Laptop GPU Direct3D11 vs_5_0 ps_5_0, D3D11)"),
+        ("Google Inc. (NVIDIA)", "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)"),
+        ("Google Inc. (Intel)", "ANGLE (Intel, Intel(R) Iris(R) Xe Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)"),
+        ("Google Inc. (AMD)", "ANGLE (AMD, AMD Radeon(TM) Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)"),
+    ],
+    "firefox": [
+        ("Google Inc. (NVIDIA)", "ANGLE (NVIDIA, NVIDIA GeForce RTX 3070 Direct3D11 vs_5_0 ps_5_0, D3D11)"),
+        ("Google Inc. (Intel)", "ANGLE (Intel, Intel(R) UHD Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)"),
+    ],
+}
+
+
 def _apply_hardware(fp: dict, r: random.Random) -> None:
     """按 browser_type 从画像池抽一套一致的硬件参数写进指纹 dict。"""
     prof = _HARDWARE_PROFILES.get(fp["browser_type"], _HARDWARE_PROFILES["chrome"])
@@ -434,6 +457,13 @@ def _apply_hardware(fp: dict, r: random.Random) -> None:
     fp["device_memory"] = r.choice(prof["device_memory"])
     fp["max_touch_points"] = r.choice(prof["max_touch_points"])
     fp["device_pixel_ratio"] = r.choice(prof["device_pixel_ratio"])
+
+    # WebGL / Audio 硬件指纹一致性绑定
+    w_vendor, w_renderer = r.choice(_WEBGL_PROFILES.get(fp["browser_type"], _WEBGL_PROFILES["chrome"]))
+    fp["webgl_vendor"] = w_vendor
+    fp["webgl_renderer"] = w_renderer
+    fp["audio_sample_rate"] = r.choice([44100, 48000])
+    fp["color_depth"] = 24
 
 
 # ---------------------------------------------------------------------------

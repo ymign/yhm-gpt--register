@@ -30,6 +30,10 @@ import {
   Money,
   CircleCheckFilled,
   Operation,
+  Sunny,
+  MagicStick,
+  Cpu,
+  Sunrise,
 } from '@element-plus/icons-vue'
 import {
   listRegistered,
@@ -84,6 +88,12 @@ import {
   retrySecurityTask,
   securityTaskStreamUrl,
   getSecurityTaskLog,
+  startWarmingTask,
+  stopWarmingTask,
+  warmingStreamUrl,
+  getWarmingLog,
+  getSentinelPoolStats,
+  getProxyHealthSummary,
 } from '@/api/register'
 import { saveSmsConfig, getSmsPriceTiers, getSmsAllCountries } from '@/api/settings'
 import { copyText, fmtTime, createSSE } from '@/api/request'
@@ -1746,16 +1756,91 @@ const oauthActiveTab = ref('network')
 const oauthNowTime = ref(Date.now())
 let oauthLiveTimer = null
 
+// ──────────── 表格自定义列显示配置 (持久化到 localStorage) ────────────
+const DEFAULT_COLUMN_VISIBILITY = {
+  country: true,
+  security: true,
+  plus: true,
+  oa: true,
+  oauth: true,
+  extract: true,
+  warm: true,
+  time: true,
+}
+
+const columnVisibility = reactive({ ...DEFAULT_COLUMN_VISIBILITY })
+
+try {
+  const savedCols = localStorage.getItem('reg_col_visibility')
+  if (savedCols) {
+    Object.assign(columnVisibility, JSON.parse(savedCols))
+  }
+} catch (_) {}
+
+watch(
+  () => ({ ...columnVisibility }),
+  (val) => {
+    try {
+      localStorage.setItem('reg_col_visibility', JSON.stringify(val))
+    } catch (_) {}
+  },
+  { deep: true }
+)
+
+function resetColumnVisibility() {
+  Object.assign(columnVisibility, DEFAULT_COLUMN_VISIBILITY)
+  ElMessage.success('已恢复默认列配置')
+}
+
+// ──────────── 表格密度切换 (Compact / Default / Relaxed) ────────────
+const tableDensity = ref(localStorage.getItem('reg_table_density') || 'default')
+
+function setTableDensity(val) {
+  tableDensity.value = val
+  try {
+    localStorage.setItem('reg_table_density', val)
+  } catch (_) {}
+}
+
+// ──────────── 表格引用与全局快捷键 ────────────
+const tableRef = ref(null)
+const searchInputRef = ref(null)
+
+function clearSelected() {
+  selected.value = []
+  if (tableRef.value) {
+    tableRef.value.clearSelection()
+  }
+}
+
+function handleGlobalKeydown(e) {
+  // ESC: 取消勾选
+  if (e.key === 'Escape') {
+    if (selected.value.length > 0) {
+      clearSelected()
+    }
+  }
+  // Cmd/Ctrl + K: 聚焦搜索
+  if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) {
+    e.preventDefault()
+    if (searchInputRef.value) {
+      searchInputRef.value.focus()
+    }
+  }
+}
+
 onMounted(() => {
   loadDomains()
   loadSmsCountries()
   oauthLiveTimer = setInterval(() => {
     oauthNowTime.value = Date.now()
   }, 1000)
+  window.addEventListener('keydown', handleGlobalKeydown)
 })
 
 onUnmounted(() => {
   if (oauthLiveTimer) clearInterval(oauthLiveTimer)
+  window.removeEventListener('keydown', handleGlobalKeydown)
 })
 
 function getOAuthRowElapsed(row) {
@@ -3756,6 +3841,308 @@ function handleSecurityCommand(cmd) {
   }
 }
 
+// ════════════════════════ 账号批量保温与保鲜控制台 (Account Warming Daemon) ════════════════════════
+const warmingVisible = ref(false)
+const warmingRunning = ref(false)
+const warmingTaskId = ref('')
+const warmingEs = ref(null)
+const warmingConfigCollapsed = ref(true)
+const warmingTargetEmails = ref([])
+const warmingItems = ref({})
+const warmingLogs = ref([])
+const warmingForm = reactive({
+  proxy: '__POOL__',
+  proxyCountry: 'RANDOM_HOT',
+  workers: 5,
+})
+
+// 弹窗内单账号日志终端
+const warmingLogModalVisible = ref(false)
+const currentWarmingLogItem = ref(null)
+const warmingLogLines = ref([])
+const warmingLogLoading = ref(false)
+const warmingModalLogBoxRef = ref(null)
+
+// 实时耗时秒表
+const warmingElapsed = ref(0)
+const warmingNowTime = ref(Date.now())
+let warmingLiveTimer = null
+
+function getWarmingRowElapsed(row) {
+  if (!row) return '—'
+  if (row.status === 'running') {
+    const st = row.started_at || (Date.now() / 1000)
+    const now = warmingNowTime.value / 1000
+    const sec = Math.max(0, Math.floor(now - st))
+    return `${sec}s`
+  }
+  if (row.elapsed !== undefined && row.elapsed !== null && row.elapsed > 0) {
+    return `${row.elapsed}s`
+  }
+  return '—'
+}
+
+// 分页、筛选
+const warmingPage = ref(1)
+const warmingPageSize = ref(50)
+const warmingFilter = ref('all') // 'all' | 'running' | 'failed' | 'success' | 'pending'
+const warmingSearch = ref('')
+
+const warmingFilteredRows = computed(() => {
+  const list = Object.values(warmingItems.value)
+  const kw = warmingSearch.value.trim().toLowerCase()
+  const f = warmingFilter.value
+  return list.filter((item) => {
+    if (kw && !item.email.toLowerCase().includes(kw)) return false
+    if (f === 'all') return true
+    if (f === 'running') return item.status === 'running'
+    if (f === 'pending') return item.status === 'pending'
+    if (f === 'failed') return item.status === 'failed'
+    if (f === 'success') return item.status === 'success' || item.status === 'done'
+    return true
+  })
+})
+
+const warmingDisplayRows = computed(() => {
+  const rows = warmingFilteredRows.value
+  const start = (warmingPage.value - 1) * warmingPageSize.value
+  return rows.slice(start, start + warmingPageSize.value)
+})
+
+let warmingUpdateTimer = null
+let warmingPendingUpdates = {}
+let warmingPendingLogs = []
+
+function flushWarmingUpdates() {
+  if (warmingUpdateTimer) {
+    cancelAnimationFrame(warmingUpdateTimer)
+    warmingUpdateTimer = null
+  }
+  if (Object.keys(warmingPendingUpdates).length > 0) {
+    const copy = { ...warmingItems.value }
+    for (const [em, up] of Object.entries(warmingPendingUpdates)) {
+      if (!copy[em]) {
+        copy[em] = { email: em, status: 'pending', step: '排队中...', elapsed: 0 }
+      }
+      Object.assign(copy[em], up)
+    }
+    warmingItems.value = copy
+    warmingPendingUpdates = {}
+  }
+  if (warmingPendingLogs.length > 0) {
+    warmingLogs.value.push(...warmingPendingLogs)
+    if (warmingLogs.value.length > 200) {
+      warmingLogs.value = warmingLogs.value.slice(-200)
+    }
+    warmingPendingLogs = []
+  }
+}
+
+function scheduleWarmingUpdate() {
+  if (warmingUpdateTimer) return
+  warmingUpdateTimer = requestAnimationFrame(() => {
+    warmingUpdateTimer = null
+    flushWarmingUpdates()
+  })
+}
+
+const warmingStats = computed(() => {
+  const items = Object.values(warmingItems.value)
+  const tot = items.length || warmingTargetEmails.value.length || 0
+  const success = items.filter((i) => i.status === 'success' || i.status === 'done').length
+  const fail = items.filter((i) => i.status === 'failed').length
+  const running = items.filter((i) => i.status === 'running').length
+  const pending = items.filter((i) => i.status === 'pending').length
+  const done = success + fail
+  const pct = tot ? Math.min(100, Math.round((done / tot) * 100)) : 0
+  return { total: tot, success, fail, running, pending, done, pct }
+})
+
+function openWarmingModal(emailsOrScope = 'selected') {
+  let targetList = []
+  if (Array.isArray(emailsOrScope)) {
+    targetList = emailsOrScope
+  } else if (emailsOrScope === 'selected') {
+    targetList = selected.value.map((r) => r.email)
+  } else if (emailsOrScope === 'cold') {
+    targetList = rows.value.filter((r) => !r.last_warmed_at).map((r) => r.email)
+    if (!targetList.length) {
+      targetList = rows.value.map((r) => r.email)
+    }
+  } else if (emailsOrScope === 'all') {
+    targetList = rows.value.map((r) => r.email)
+  }
+
+  if (!targetList.length) {
+    ElMessage.warning('没有可供保温的账号')
+    return
+  }
+
+  warmingTargetEmails.value = targetList
+  const initMap = {}
+  for (const em of targetList) {
+    initMap[em] = {
+      email: em,
+      status: 'pending',
+      step: '等待就绪...',
+      models_count: 0,
+      user_name: '',
+      elapsed: 0,
+    }
+  }
+  warmingItems.value = initMap
+  warmingLogs.value = []
+  warmingVisible.value = true
+  warmingRunning.value = false
+  warmingTaskId.value = ''
+  warmingElapsed.value = 0
+}
+
+function buildWarmingProxyPayload() {
+  const p = warmingForm.proxy
+  let proxiesStr = ''
+  let singleProxy = ''
+  if (p === '__NONE__') {
+    singleProxy = ''
+  } else if (p === '__POOL__') {
+    proxiesStr = proxyText(proxyList.value)
+  } else if (p) {
+    singleProxy = p
+  }
+  return {
+    proxies: proxiesStr,
+    proxy: singleProxy,
+    proxy_country: warmingForm.proxyCountry === 'RANDOM_HOT' ? '' : warmingForm.proxyCountry,
+  }
+}
+
+async function startWarmingTaskRun() {
+  if (warmingRunning.value) return
+  if (!warmingTargetEmails.value.length) {
+    ElMessage.warning('没有指定目标账号')
+    return
+  }
+
+  warmingRunning.value = true
+  warmingLogs.value = []
+  warmingElapsed.value = 0
+  warmingNowTime.value = Date.now()
+
+  if (warmingLiveTimer) clearInterval(warmingLiveTimer)
+  warmingLiveTimer = setInterval(() => {
+    warmingElapsed.value += 1
+    warmingNowTime.value = Date.now()
+  }, 1000)
+
+  try {
+    const proxyConfig = buildWarmingProxyPayload()
+    const res = await startWarmingTask({
+      emails: warmingTargetEmails.value,
+      proxies: proxyConfig.proxies,
+      proxy: proxyConfig.proxy,
+      proxy_country: proxyConfig.proxy_country,
+      workers: warmingForm.workers,
+    })
+
+    warmingTaskId.value = res.task_id
+
+    if (warmingEs.value) {
+      warmingEs.value.close()
+      warmingEs.value = null
+    }
+
+    warmingEs.value = createSSE(warmingStreamUrl(res.task_id), {
+      onInit: (data) => {
+        if (data.items) {
+          warmingPendingUpdates = { ...data.items }
+          scheduleWarmingUpdate()
+        }
+      },
+      onProgress: (data) => {
+        if (data.email) {
+          warmingPendingUpdates[data.email] = {
+            ...data,
+            step: data.step || data.message || '',
+          }
+          scheduleWarmingUpdate()
+        }
+      },
+      onLog: (data) => {
+        if (data.line) {
+          warmingPendingLogs.push(data.line)
+          scheduleWarmingUpdate()
+        }
+      },
+      onDone: (data) => {
+        flushWarmingUpdates()
+        warmingRunning.value = false
+        if (warmingLiveTimer) {
+          clearInterval(warmingLiveTimer)
+          warmingLiveTimer = null
+        }
+        ElMessage.success('🎉 账号批量保温与保鲜完成！')
+        load(false)
+      },
+      onError: (err) => {
+        flushWarmingUpdates()
+        warmingRunning.value = false
+        if (warmingLiveTimer) {
+          clearInterval(warmingLiveTimer)
+          warmingLiveTimer = null
+        }
+      },
+    })
+  } catch (e) {
+    warmingRunning.value = false
+    if (warmingLiveTimer) {
+      clearInterval(warmingLiveTimer)
+      warmingLiveTimer = null
+    }
+    ElMessage.error('启动保温任务失败: ' + (e.response?.data?.detail || e.message))
+  }
+}
+
+async function stopWarmingTaskRun() {
+  if (!warmingTaskId.value) return
+  try {
+    await stopWarmingTask(warmingTaskId.value)
+    warmingRunning.value = false
+    ElMessage.info('已请求停止保温任务')
+  } catch (e) {
+    ElMessage.error('停止失败: ' + (e.response?.data?.detail || e.message))
+  }
+}
+
+async function openWarmingItemLog(row) {
+  currentWarmingLogItem.value = row
+  warmingLogLines.value = []
+  warmingLogModalVisible.value = true
+  warmingLogLoading.value = true
+  try {
+    const res = await getWarmingLog(warmingTaskId.value, row.email)
+    warmingLogLines.value = res.lines || []
+    nextTick(() => {
+      if (warmingModalLogBoxRef.value) {
+        warmingModalLogBoxRef.value.scrollTop = warmingModalLogBoxRef.value.scrollHeight
+      }
+    })
+  } catch (e) {
+    warmingLogLines.value = ['暂无日志']
+  } finally {
+    warmingLogLoading.value = false
+  }
+}
+
+function handleWarmingCommand(cmd) {
+  if (cmd === 'warm_selected') {
+    openWarmingModal('selected')
+  } else if (cmd === 'warm_cold') {
+    openWarmingModal('cold')
+  } else if (cmd === 'warm_all') {
+    openWarmingModal('all')
+  }
+}
+
 // 账号列表完全自主受控：进入页面或切换 tab 时加载，避免后台并发跑号每次完成都强制全表刷新打扰用户
 onActivated(() => load())
 
@@ -3780,6 +4167,14 @@ onUnmounted(() => {
     clearInterval(securityLiveTimer)
     securityLiveTimer = null
   }
+  if (warmingEs.value) {
+    warmingEs.value.close()
+    warmingEs.value = null
+  }
+  if (warmingLiveTimer) {
+    clearInterval(warmingLiveTimer)
+    warmingLiveTimer = null
+  }
 })
 </script>
 
@@ -3796,8 +4191,9 @@ onUnmounted(() => {
           </div>
           <div class="acct-head-tools">
             <el-input
+              ref="searchInputRef"
               v-model="searchKeyword"
-              placeholder="搜索账号邮箱..."
+              placeholder="搜索账号邮箱 / 备注 (⌘K)..."
               clearable
               size="small"
               class="acct-search"
@@ -3805,7 +4201,54 @@ onUnmounted(() => {
               @input="onSearchInput"
               @clear="load(true)"
               @keyup.enter="load(true)"
-            />
+            >
+              <template #suffix>
+                <span class="search-key-badge" title="快捷键：按 Cmd+K 或 Ctrl+K 快速聚焦">⌘K</span>
+              </template>
+            </el-input>
+
+            <!-- 表格行高密度切换 -->
+            <el-dropdown trigger="click" @command="setTableDensity">
+              <el-button size="small" class="acct-tool-btn" title="切换表格行高密度">
+                <el-icon><Histogram /></el-icon>
+                <span>{{ tableDensity === 'compact' ? '紧凑' : (tableDensity === 'relaxed' ? '宽松' : '标准') }}</span>
+              </el-button>
+              <template #dropdown>
+                <el-dropdown-menu class="extract-dropdown-menu">
+                  <div class="dropdown-group-title">表格行高密度</div>
+                  <el-dropdown-item command="compact" :class="{ 'is-active': tableDensity === 'compact' }">⚡ 紧凑模式 (高屏效)</el-dropdown-item>
+                  <el-dropdown-item command="default" :class="{ 'is-active': tableDensity === 'default' }">✨ 标准模式 (默认)</el-dropdown-item>
+                  <el-dropdown-item command="relaxed" :class="{ 'is-active': tableDensity === 'relaxed' }">🌊 宽松模式 (大间距)</el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
+
+            <!-- 自定义列显示/隐藏管理 Popover -->
+            <el-popover placement="bottom-end" :width="200" trigger="click" popper-class="col-setting-popover">
+              <template #reference>
+                <el-button size="small" class="acct-tool-btn" title="自定义显示/隐藏表格列">
+                  <el-icon><Operation /></el-icon>
+                  <span>列显示</span>
+                </el-button>
+              </template>
+              <div class="col-settings-panel">
+                <div class="col-settings-header">
+                  <span>自定义表格列</span>
+                  <el-button size="small" text type="primary" @click="resetColumnVisibility">重置</el-button>
+                </div>
+                <div class="col-checkbox-list">
+                  <el-checkbox v-model="columnVisibility.country">出口国家</el-checkbox>
+                  <el-checkbox v-model="columnVisibility.security">密码 / 2FA</el-checkbox>
+                  <el-checkbox v-model="columnVisibility.plus">Plus 状态</el-checkbox>
+                  <el-checkbox v-model="columnVisibility.oa">OA 资格</el-checkbox>
+                  <el-checkbox v-model="columnVisibility.oauth">OAuth 授权</el-checkbox>
+                  <el-checkbox v-model="columnVisibility.extract">提链结果</el-checkbox>
+                  <el-checkbox v-model="columnVisibility.warm">保温保鲜</el-checkbox>
+                  <el-checkbox v-model="columnVisibility.time">注册时间</el-checkbox>
+                </div>
+              </div>
+            </el-popover>
+
             <el-button size="small" class="acct-refresh-btn" @click="load(false)">
               <el-icon><Refresh /></el-icon>刷新
             </el-button>
@@ -4153,6 +4596,21 @@ onUnmounted(() => {
                 </el-dropdown-menu>
               </template>
             </el-dropdown>
+
+            <el-dropdown trigger="click" @command="handleWarmingCommand">
+              <el-button size="small" class="cluster-btn btn-amber">
+                <el-icon><Sunny /></el-icon> 账号保温{{ selected.length ? ` (${selected.length})` : '' }}
+                <el-icon class="el-icon--right"><ArrowDown /></el-icon>
+              </el-button>
+              <template #dropdown>
+                <el-dropdown-menu class="extract-dropdown-menu">
+                  <div class="dropdown-group-title">自动保鲜与活跃维护</div>
+                  <el-dropdown-item command="warm_selected" :disabled="!selected.length">保温选中账号 ({{ selected.length }})</el-dropdown-item>
+                  <el-dropdown-item command="warm_cold">保温未保鲜 / 冷号</el-dropdown-item>
+                  <el-dropdown-item command="warm_all" divided>全库轮询保温</el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
           </div>
 
           <!-- 集群 3: 导出与数据清理 -->
@@ -4197,12 +4655,13 @@ onUnmounted(() => {
         <el-skeleton v-if="loading && !rows.length" :rows="8" animated style="padding: 16px" />
         <el-table
           v-else
+          ref="tableRef"
           v-loading="loading"
           :data="rows"
           height="100%"
           size="small"
           stripe
-          class="macos-table"
+          :class="['macos-table', `density-${tableDensity}`]"
           @selection-change="(v) => (selected = v)"
         >
           <el-table-column type="selection" width="40" align="center" />
@@ -4252,7 +4711,7 @@ onUnmounted(() => {
           </el-table-column>
 
           <!-- 出口国家 (展示国旗 + 中文 + 代码) -->
-          <el-table-column label="出口国家" width="135" align="center" show-overflow-tooltip>
+          <el-table-column v-if="columnVisibility.country" label="出口国家" width="135" align="center" show-overflow-tooltip>
             <template #default="{ row }">
               <span
                 v-if="row.reg_country"
@@ -4266,7 +4725,7 @@ onUnmounted(() => {
           </el-table-column>
 
           <!-- 密码 / 2FA (贴合 Image #92 呈现) -->
-          <el-table-column label="密码/2FA" width="105" align="center">
+          <el-table-column v-if="columnVisibility.security" label="密码/2FA" width="105" align="center">
             <template #default="{ row }">
               <div class="sec-col-wrapper">
                 <span
@@ -4306,7 +4765,7 @@ onUnmounted(() => {
             </template>
           </el-table-column>
 
-          <el-table-column label="Plus状态" width="130" align="center">
+          <el-table-column v-if="columnVisibility.plus" label="Plus状态" width="130" align="center">
             <template #default="{ row }">
               <el-tag
                 v-if="plusOf(row)"
@@ -4322,7 +4781,7 @@ onUnmounted(() => {
             </template>
           </el-table-column>
 
-          <el-table-column label="OA资格" width="120" align="center">
+          <el-table-column v-if="columnVisibility.oa" label="OA资格" width="120" align="center">
             <template #default="{ row }">
               <el-tag
                 v-if="oaMeta(row)"
@@ -4337,7 +4796,7 @@ onUnmounted(() => {
             </template>
           </el-table-column>
 
-          <el-table-column label="OAuth授权" width="125" align="center">
+          <el-table-column v-if="columnVisibility.oauth" label="OAuth授权" width="125" align="center">
             <template #default="{ row }">
               <el-tag
                 v-if="oauthMeta(row)"
@@ -4353,7 +4812,7 @@ onUnmounted(() => {
           </el-table-column>
 
           <!-- 提链结果 -->
-          <el-table-column label="提链结果" min-width="160" show-overflow-tooltip>
+          <el-table-column v-if="columnVisibility.extract" label="提链结果" min-width="160" show-overflow-tooltip>
             <template #default="{ row }">
               <div v-if="row.extract_link?.link_url" class="extract-link-cell">
                 <el-tag
@@ -4393,7 +4852,27 @@ onUnmounted(() => {
             </template>
           </el-table-column>
 
-          <el-table-column label="注册时间" width="135" align="center">
+          <!-- 保温保鲜 -->
+          <el-table-column v-if="columnVisibility.warm" label="保温保鲜" width="130" align="center">
+            <template #default="{ row }">
+              <div v-if="row.last_warmed_at" class="warm-col-cell">
+                <el-tag
+                  size="small"
+                  :type="row.warm_status === 'success' ? 'success' : (row.warm_status === 'failed' ? 'danger' : 'warning')"
+                  effect="light"
+                  class="macos-tag"
+                >
+                  <span class="warm-dot" :class="row.warm_status"></span>
+                  {{ row.warm_status === 'success' ? '已保温' : (row.warm_status === 'failed' ? '失败' : '进行中') }}
+                  <span v-if="row.warm_count" class="warm-cnt-badge">x{{ row.warm_count }}</span>
+                </el-tag>
+                <div class="mono-date warm-date-sub">{{ fmtTime(row.last_warmed_at) }}</div>
+              </div>
+              <span v-else class="hint">—</span>
+            </template>
+          </el-table-column>
+
+          <el-table-column v-if="columnVisibility.time" label="注册时间" width="135" align="center">
             <template #default="{ row }">
               <span class="mono-date">{{ fmtTime(row.created_at) }}</span>
             </template>
@@ -4465,6 +4944,103 @@ onUnmounted(() => {
         </div>
       </div>
     </div>
+
+    <!-- ──────────────── 底部毛玻璃悬浮批量操作栏 (Floating Action Bar) ──────────────── -->
+    <transition name="floating-bar-slide">
+      <div v-if="selected.length" class="floating-action-bar">
+        <div class="floating-bar-pill">
+          <!-- 选中计数 -->
+          <div class="floating-counter-chip">
+            <span class="pulse-counter-dot"></span>
+            <span class="counter-text">已勾选 <strong>{{ selected.length }}</strong> 项</span>
+          </div>
+
+          <div class="floating-divider"></div>
+
+          <!-- 快捷操作按钮组 -->
+          <div class="floating-actions-group">
+            <el-button
+              size="small"
+              type="primary"
+              class="floating-btn btn-export"
+              @click="openExportModal(null)"
+            >
+              <el-icon><Download /></el-icon> 批量导出
+            </el-button>
+
+            <el-button
+              size="small"
+              class="floating-btn btn-2fa"
+              @click="handleSecurityCommand('batch_2fa_selected')"
+            >
+              <el-icon><Lock /></el-icon> 补绑 2FA
+            </el-button>
+
+            <el-button
+              size="small"
+              class="floating-btn btn-pwd"
+              @click="handleSecurityCommand('batch_pwd_selected')"
+            >
+              <el-icon><Key /></el-icon> 批量改密
+            </el-button>
+
+            <el-button
+              size="small"
+              class="floating-btn btn-health"
+              @click="handleHealthCheckCommand('token_selected')"
+            >
+              <el-icon><Timer /></el-icon> 验活
+            </el-button>
+
+            <el-button
+              size="small"
+              class="floating-btn btn-warm"
+              @click="openWarmingModal('selected')"
+            >
+              <el-icon><Sunny /></el-icon> 保温
+            </el-button>
+
+            <el-button
+              size="small"
+              class="floating-btn btn-oauth"
+              @click="handleOAuthCommand('oauth_selected')"
+            >
+              <el-icon><Phone /></el-icon> OAuth接码
+            </el-button>
+
+            <el-button
+              size="small"
+              class="floating-btn btn-copy"
+              @click="handleCopyAtCommand('copy_at_selected')"
+            >
+              <el-icon><CopyDocument /></el-icon> 复制AT
+            </el-button>
+
+            <el-button
+              size="small"
+              type="danger"
+              plain
+              class="floating-btn btn-delete"
+              @click="deleteSelected"
+            >
+              <el-icon><Delete /></el-icon> 删除
+            </el-button>
+          </div>
+
+          <div class="floating-divider"></div>
+
+          <!-- 取消勾选 -->
+          <button
+            type="button"
+            class="floating-close-btn"
+            title="取消全部勾选 (Esc)"
+            @click="clearSelected"
+          >
+            <el-icon><Close /></el-icon>
+          </button>
+        </div>
+      </div>
+    </transition>
 
     <!-- ──────────────── Plus 状态并发检测控制台弹窗 (macOS 架构) ──────────────── -->
     <el-dialog
@@ -6574,6 +7150,313 @@ onUnmounted(() => {
               <el-icon><CopyDocument /></el-icon>复制全部日志
             </el-button>
             <el-button size="small" type="primary" @click="securityLogModalVisible = false">
+              关闭
+            </el-button>
+          </div>
+        </div>
+      </template>
+    </el-dialog>
+
+    <!-- ──────────────── 账号批量保温与保鲜控制台 (Account Warming Daemon) ──────────────── -->
+    <el-dialog
+      v-model="warmingVisible"
+      width="920px"
+      top="5vh"
+      class="oa-custom-dialog plus-dialog warm-dialog"
+      :close-on-click-modal="false"
+      @closed="stopWarmingTaskRun"
+    >
+      <template #header>
+        <div class="oa-header">
+          <div class="oa-header-title">
+            <span class="oa-title-badge warm-badge">WARMING</span>
+            <span class="oa-title-text">账号生命周期保温与保鲜台</span>
+            <el-tag size="small" type="warning" round effect="dark">
+              ⚡ 官方接口活跃交互 · 刷新 Token · 免沉睡防封
+            </el-tag>
+            <el-tag size="small" type="info" round effect="plain">{{ warmingTargetEmails.length }} 个目标账号</el-tag>
+          </div>
+          <div class="oa-header-extra">
+            <el-button size="small" text @click="warmingConfigCollapsed = !warmingConfigCollapsed">
+              <el-icon><Setting /></el-icon>{{ warmingConfigCollapsed ? '展开参数配置' : '收起参数配置' }}
+            </el-button>
+          </div>
+        </div>
+      </template>
+
+      <div class="oa-dialog-container">
+        <!-- 参数配置卡片 -->
+        <el-collapse-transition>
+          <div v-show="!warmingConfigCollapsed" class="oa-config-card">
+            <el-form label-position="top" :disabled="warmingRunning" size="small">
+              <el-row :gutter="12">
+                <el-col :xs="24" :sm="12" :md="10">
+                  <el-form-item label="网络代理 (支持全局代理池/直连)">
+                    <el-select
+                      v-model="warmingForm.proxy"
+                      filterable
+                      clearable
+                      allow-create
+                      default-first-option
+                      placeholder="选择或输入代理"
+                      style="width: 100%"
+                    >
+                      <el-option
+                        v-if="proxyList.length"
+                        label="🌐 全局代理池轮询 (自动多Worker分配)"
+                        value="__POOL__"
+                      />
+                      <el-option v-for="p in proxyList" :key="p" :label="p" :value="p" />
+                    </el-select>
+                  </el-form-item>
+                </el-col>
+                <el-col :xs="24" :sm="12" :md="8">
+                  <el-form-item label="代理目标国家 (自动重写时区与Session)">
+                    <el-select
+                      v-model="warmingForm.proxyCountry"
+                      filterable
+                      allow-create
+                      placeholder="选择目标国家"
+                      style="width: 100%"
+                    >
+                      <el-option
+                        v-for="c in COUNTRY_OPTIONS"
+                        :key="c.value"
+                        :label="c.label"
+                        :value="c.value"
+                      />
+                    </el-select>
+                  </el-form-item>
+                </el-col>
+                <el-col :xs="12" :sm="6" :md="6">
+                  <el-form-item label="并发 Worker">
+                    <el-input-number v-model="warmingForm.workers" :min="1" :max="20" style="width: 100%" />
+                  </el-form-item>
+                </el-col>
+              </el-row>
+              <div style="font-size: 11.5px; color: var(--el-text-color-secondary); line-height: 1.5; margin-top: 2px">
+                💡 <b>保温原理</b>：利用 Refresh Token 换取全新 Access Token，并向官方发送轻量模型与用户信息健康探测，模拟真实用户交互，使账号脱离长期静默休眠期，有效预防官方批量收回与沉睡封号。
+              </div>
+            </el-form>
+          </div>
+        </el-collapse-transition>
+
+        <!-- KPI 统计看板 -->
+        <div class="plus-kpi-grid">
+          <div class="plus-kpi-card">
+            <span class="kpi-label">已处理 / 总数</span>
+            <span class="kpi-num">{{ warmingStats.done }} / {{ warmingStats.total }}</span>
+          </div>
+          <div class="plus-kpi-card hit-active">
+            <span class="kpi-label">✅ 保温成功</span>
+            <span class="kpi-num text-primary">{{ warmingStats.success }}</span>
+          </div>
+          <div class="plus-kpi-card hit-fail">
+            <span class="kpi-label">❌ 失败 / 异常</span>
+            <span class="kpi-num" :class="warmingStats.fail > 0 ? 'text-danger' : ''">{{ warmingStats.fail }}</span>
+          </div>
+          <div class="plus-kpi-card">
+            <span class="kpi-label">⚡ 任务耗时</span>
+            <span class="kpi-num mono">{{ warmingElapsed }}s</span>
+          </div>
+        </div>
+
+        <!-- 进度条 -->
+        <div class="plus-progress-row">
+          <el-progress
+            :percentage="warmingStats.pct"
+            :stroke-width="6"
+            :status="warmingStats.pct === 100 ? (warmingStats.fail > 0 ? 'warning' : 'success') : ''"
+          />
+        </div>
+
+        <!-- 操作工具栏 & 筛选 -->
+        <div class="plus-actions-toolbar">
+          <div class="toolbar-left">
+            <el-radio-group v-model="warmingFilter" size="small" class="macos-radio-group">
+              <el-radio-button value="all">全部 ({{ warmingStats.total }})</el-radio-button>
+              <el-radio-button value="running">进行中 ({{ warmingStats.running }})</el-radio-button>
+              <el-radio-button value="success">成功 ({{ warmingStats.success }})</el-radio-button>
+              <el-radio-button value="failed">失败 ({{ warmingStats.fail }})</el-radio-button>
+              <el-radio-button value="pending">排队中 ({{ warmingStats.pending }})</el-radio-button>
+            </el-radio-group>
+          </div>
+
+          <div class="toolbar-right">
+            <el-input
+              v-model="warmingSearch"
+              placeholder="搜索当前列表邮箱..."
+              prefix-icon="Search"
+              size="small"
+              clearable
+              style="width: 190px"
+            />
+          </div>
+        </div>
+
+        <!-- 账号处理表格 -->
+        <div class="oa-table-box">
+          <el-table
+            :data="warmingDisplayRows"
+            size="small"
+            style="width: 100%"
+            height="320"
+            class="macos-table"
+            empty-text="暂无账号数据"
+          >
+            <el-table-column label="账号邮箱" min-width="190" show-overflow-tooltip>
+              <template #default="{ row }">
+                <button
+                  type="button"
+                  class="macos-tag-btn copy-btn"
+                  title="点击复制邮箱"
+                  @click="copyText(row.email)"
+                >
+                  <span class="mono">{{ row.email }}</span>
+                  <el-icon class="copy-ico"><CopyDocument /></el-icon>
+                </button>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="状态" width="100" align="center">
+              <template #default="{ row }">
+                <el-tag v-if="row.status === 'running'" size="small" type="primary" effect="dark">
+                  <el-icon class="is-loading"><Loading /></el-icon> 保温中
+                </el-tag>
+                <el-tag v-else-if="row.status === 'success' || row.status === 'done'" size="small" type="success" effect="dark">
+                  ✅ 成功
+                </el-tag>
+                <el-tag v-else-if="row.status === 'failed'" size="small" type="danger" effect="dark">
+                  ❌ 失败
+                </el-tag>
+                <el-tag v-else size="small" type="info" effect="plain">
+                  排队中
+                </el-tag>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="保鲜探测与活跃信息" min-width="240" show-overflow-tooltip>
+              <template #default="{ row }">
+                <div v-if="row.models_count || row.user_name" class="mono text-success" style="font-size: 12px">
+                  <span>🟢 模型数: {{ row.models_count || 0 }}</span>
+                  <span v-if="row.user_name" style="margin-left: 8px">👤 {{ row.user_name }}</span>
+                </div>
+                <div v-else-if="row.error" class="text-danger" style="font-size: 11.5px">
+                  {{ row.error }}
+                </div>
+                <div v-else style="font-size: 11.5px; color: var(--el-text-color-secondary)">
+                  {{ row.step || '—' }}
+                </div>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="耗时" width="85" align="right">
+              <template #default="{ row }">
+                <span class="mono hint" :style="{ color: row.status === 'running' ? 'var(--el-color-primary)' : '' }">
+                  {{ getWarmingRowElapsed(row) }}
+                </span>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="操作" width="100" align="center" fixed="right">
+              <template #default="{ row }">
+                <div class="row-actions">
+                  <el-button size="small" text type="primary" @click="openWarmingItemLog(row)">
+                    📜 日志
+                  </el-button>
+                </div>
+              </template>
+            </el-table-column>
+          </el-table>
+        </div>
+      </div>
+
+      <template #footer>
+        <div class="oa-dialog-footer">
+          <div class="footer-left">
+            <el-pagination
+              v-model:current-page="warmingPage"
+              v-model:page-size="warmingPageSize"
+              :page-sizes="[20, 50, 100, 200]"
+              :total="warmingFilteredRows.length"
+              layout="total, sizes, prev, pager, next"
+              size="small"
+            />
+          </div>
+          <div class="footer-right">
+            <el-button size="small" @click="warmingVisible = false">关闭窗口</el-button>
+            <el-button
+              v-if="warmingRunning"
+              size="small"
+              type="danger"
+              plain
+              @click="stopWarmingTaskRun"
+            >
+              <el-icon><SwitchButton /></el-icon>停止任务
+            </el-button>
+            <el-button
+              v-else
+              type="primary"
+              class="start-gradient-btn"
+              :loading="warmingRunning"
+              :disabled="!warmingTargetEmails.length"
+              @click="startWarmingTaskRun"
+            >
+              <el-icon><VideoPlay /></el-icon>{{ warmingTaskId ? '重新执行' : '🚀 启动批量保温保鲜' }}
+            </el-button>
+          </div>
+        </div>
+      </template>
+    </el-dialog>
+
+    <!-- ──────────────── 单账号保温详细日志终端弹窗 ──────────────── -->
+    <el-dialog
+      v-model="warmingLogModalVisible"
+      width="780px"
+      top="8vh"
+      class="macos-terminal-dialog"
+      :close-on-click-modal="false"
+    >
+      <template #header>
+        <div class="modal-header">
+          <div class="window-dots">
+            <span class="dot red"></span>
+            <span class="dot yellow"></span>
+            <span class="dot green"></span>
+          </div>
+          <div class="modal-title-info">
+            <span class="modal-email">{{ currentWarmingLogItem?.email }}</span>
+            <el-tag size="small" type="warning" effect="plain" class="modal-run-tag">
+              ☀️ 账号保鲜活跃日志
+            </el-tag>
+          </div>
+        </div>
+      </template>
+
+      <div class="modal-terminal-wrap">
+        <div ref="warmingModalLogBoxRef" class="modal-terminal-body">
+          <div
+            v-for="(line, idx) in warmingLogLines"
+            :key="idx"
+            class="terminal-line"
+            :class="getLogClass(line)"
+          >
+            {{ line }}
+          </div>
+          <div v-if="!warmingLogLines.length" class="terminal-empty">
+            {{ warmingLogLoading ? '正在加载日志...' : '暂无详细日志' }}
+          </div>
+        </div>
+      </div>
+
+      <template #footer>
+        <div class="modal-footer">
+          <span class="log-count-tip">共 {{ warmingLogLines.length }} 行日志</span>
+          <div class="modal-footer-btns">
+            <el-button size="small" @click="copyText(warmingLogLines.join('\n'))">
+              <el-icon><CopyDocument /></el-icon>复制全部日志
+            </el-button>
+            <el-button size="small" type="primary" @click="warmingLogModalVisible = false">
               关闭
             </el-button>
           </div>
@@ -10044,6 +10927,283 @@ onUnmounted(() => {
   font-weight: 600;
   color: #f1f5f9;
   word-break: break-all;
+}
+
+/* ──────────── 顶栏工具：快捷键徽章与按钮 ──────────── */
+.search-key-badge {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--el-text-color-secondary);
+  background: var(--el-fill-color);
+  border: 1px solid var(--el-border-color-lighter);
+  padding: 0 4px;
+  border-radius: 4px;
+  line-height: 1.4;
+  user-select: none;
+}
+.acct-tool-btn {
+  font-size: 11.5px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: 6px;
+}
+
+/* 自定义列显示 Popover */
+.col-settings-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 2px;
+}
+.col-settings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--app-title);
+  border-bottom: 1px solid var(--el-border-color-lighter);
+  padding-bottom: 6px;
+}
+.col-checkbox-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.col-checkbox-list :deep(.el-checkbox) {
+  margin-right: 0;
+  height: 26px;
+  font-size: 12px;
+}
+
+/* ──────────── 表格密度多档位 ──────────── */
+.macos-table.density-compact :deep(.el-table__cell) {
+  padding: 3px 0 !important;
+}
+.macos-table.density-compact :deep(.email-cell) {
+  gap: 4px;
+}
+.macos-table.density-compact :deep(.macos-tag-btn) {
+  padding: 1px 4px;
+  font-size: 11px;
+}
+.macos-table.density-compact :deep(.sec-badge) {
+  font-size: 9.5px;
+  padding: 0 4px;
+}
+.macos-table.density-relaxed :deep(.el-table__cell) {
+  padding: 11px 0 !important;
+}
+
+/* ──────────── 底部毛玻璃极客悬浮批量操作栏 (Floating Action Bar) ──────────── */
+.floating-action-bar {
+  position: fixed;
+  bottom: 28px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 2500;
+  pointer-events: none;
+}
+
+.floating-bar-pill {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  border-radius: 999px;
+  background: rgba(18, 18, 24, 0.88);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(0, 122, 255, 0.25);
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.floating-bar-pill:hover {
+  box-shadow: 0 20px 48px rgba(0, 0, 0, 0.6), 0 0 0 1.5px rgba(0, 122, 255, 0.4);
+}
+
+.floating-counter-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #f1f5f9;
+  user-select: none;
+}
+.pulse-counter-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #007aff;
+  box-shadow: 0 0 8px #007aff;
+  animation: pulse-counter 1.5s infinite;
+}
+@keyframes pulse-counter {
+  0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(0, 122, 255, 0.7); }
+  70% { transform: scale(1); box-shadow: 0 0 0 6px rgba(0, 122, 255, 0); }
+  100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(0, 122, 255, 0); }
+}
+.counter-text strong {
+  color: #38bdf8;
+  font-family: var(--el-font-family-monospace, monospace);
+  font-size: 13.5px;
+}
+
+.floating-divider {
+  width: 1px;
+  height: 18px;
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.floating-actions-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.floating-btn {
+  font-size: 11.5px;
+  font-weight: 600;
+  border-radius: 999px;
+  padding: 5px 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  transition: all 0.15s ease;
+}
+.floating-btn:hover {
+  transform: translateY(-1px);
+}
+.floating-btn.btn-export {
+  background: linear-gradient(135deg, #007aff, #0056b3);
+  border: none;
+  font-weight: 700;
+}
+.floating-btn.btn-2fa {
+  background: rgba(16, 185, 129, 0.15);
+  color: #34d399;
+  border: 1px solid rgba(16, 185, 129, 0.35);
+}
+.floating-btn.btn-2fa:hover {
+  background: rgba(16, 185, 129, 0.28);
+  border-color: #34d399;
+}
+.floating-btn.btn-pwd {
+  background: rgba(245, 158, 11, 0.15);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.35);
+}
+.floating-btn.btn-pwd:hover {
+  background: rgba(245, 158, 11, 0.28);
+  border-color: #fbbf24;
+}
+.floating-btn.btn-health {
+  background: rgba(59, 130, 246, 0.15);
+  color: #60a5fa;
+  border: 1px solid rgba(59, 130, 246, 0.35);
+}
+.floating-btn.btn-warm {
+  background: rgba(245, 158, 11, 0.15);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.35);
+}
+.floating-btn.btn-warm:hover {
+  background: rgba(245, 158, 11, 0.28);
+  border-color: #fbbf24;
+}
+.floating-btn.btn-oauth {
+  background: rgba(139, 92, 246, 0.15);
+  color: #a78bfa;
+  border: 1px solid rgba(139, 92, 246, 0.35);
+}
+
+.btn-warm-cluster {
+  background: rgba(245, 158, 11, 0.12) !important;
+  color: #f59e0b !important;
+  border-color: rgba(245, 158, 11, 0.3) !important;
+}
+.btn-warm-cluster:hover {
+  background: rgba(245, 158, 11, 0.22) !important;
+  border-color: #f59e0b !important;
+}
+
+.warm-badge {
+  background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+  color: #ffffff;
+}
+
+.warm-col-cell {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+.warm-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  margin-right: 4px;
+  background: #10b981;
+}
+.warm-dot.failed {
+  background: #ef4444;
+}
+.warm-dot.running, .warm-dot.pending {
+  background: #f59e0b;
+}
+.warm-cnt-badge {
+  font-size: 10px;
+  font-weight: 700;
+  margin-left: 2px;
+  opacity: 0.85;
+}
+.warm-date-sub {
+  font-size: 10px;
+  color: var(--el-text-color-secondary);
+}
+.floating-btn.btn-copy {
+  background: rgba(255, 255, 255, 0.08);
+  color: #e2e8f0;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+}
+.floating-btn.btn-delete {
+  font-weight: 700;
+}
+
+.floating-close-btn {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.08);
+  color: #94a3b8;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  font-size: 13px;
+}
+.floating-close-btn:hover {
+  background: rgba(239, 68, 68, 0.2);
+  border-color: rgba(239, 68, 68, 0.5);
+  color: #f87171;
+  transform: scale(1.1);
+}
+
+/* 浮动栏进出动画 */
+.floating-bar-slide-enter-active,
+.floating-bar-slide-leave-active {
+  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.floating-bar-slide-enter-from,
+.floating-bar-slide-leave-to {
+  opacity: 0;
+  transform: translate(-50%, 20px) scale(0.95);
 }
 </style>
 

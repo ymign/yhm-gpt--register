@@ -1,13 +1,17 @@
 import http from './request'
 
-// ──────────────── 统计 ────────────────
+// ──────────────── 统计与全景概览 ────────────────
 export const getStats = () => http.get('/api/stats')
+export const getDashboardSummary = () => http.get('/api/dashboard/summary')
 
 // ──────────────── 号池 accounts ────────────────
-// kind = 邮箱来源（outlook / ...）。留空后端会按段数猜，
-// 但 Outlook 和 Gmail 都是 4 段猜不出来，所以页面上必选。
-export const importAccounts = (text, kind = '') =>
-  http.post('/api/import', { text, kind }, { timeout: 300000 })
+// kind = 邮箱来源（outlook / ...）。留空后端会按段数猜或全智能嗅探，
+// strategy = 导入策略（smart_merge / skip_duplicates / overwrite）
+export const importAccounts = (text, kind = '', strategy = 'smart_merge') =>
+  http.post('/api/import', { text, kind, strategy }, { timeout: 300000 })
+
+export const analyzeImportAccounts = (text, kind = '') =>
+  http.post('/api/accounts/analyze_import', { text, kind }, { timeout: 60000 })
 
 export const listAccounts = (params) =>
   http.get('/api/accounts', { params }) // { status, limit, offset, kind }

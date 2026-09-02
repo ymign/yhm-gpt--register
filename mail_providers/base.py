@@ -480,22 +480,28 @@ def split_import_records(text: str) -> list[tuple[int, str]]:
 def parse_import_line(line: str, kind: str = "") -> dict:
     """解析一行导入文本，非法抛 ValueError（带原因）。
 
-        kind 指定 → 只用该 provider 解析（推荐，唯一可靠的方式）
-        kind 为空 → 按 line_segments 猜（仅当段数唯一时可判定）
-
-    ⚠️ 自动识别有天然局限：Outlook 和 Gmail 都是 4 段格式，
-       段数一样，猜不出来。所以 WebUI 必须让用户显式选来源，
-       自动识别只当兜底。
-
-    替代 db.parse_lines 里写死的 `if len(parts) != 4: continue`
-    —— 那行会把任何非 4 段格式静默丢掉，「导入成功但列表为空」就是它。
+        kind 指定 → 优先使用该 provider 解析，若失败则自动触发智能多分隔符与乱序容错解析
+        kind 为空 → 智能多分隔符与语义嗅探解析
     """
     line = (line or "").strip()
     if not line:
         raise ValueError("空行")
 
+    from .smart_parser import parse_smart_account_line
+
     if kind:
-        return get_provider_class(kind).parse_line(line)
+        try:
+            return get_provider_class(kind).parse_line(line)
+        except Exception:
+            # 智能多分隔符（逗号、制表符、竖线、空格）与乱序自适应容错
+            smart = parse_smart_account_line(line, default_kind=kind)
+            if smart.get("ok"):
+                return smart
+
+    # 未指定 kind 或指定 provider 解析失败，统一调用智能全格式引擎
+    smart = parse_smart_account_line(line, default_kind=kind or "outlook")
+    if smart.get("ok"):
+        return smart
 
     seg_count = len(line.split("----"))
     candidates = [
@@ -507,7 +513,7 @@ def parse_import_line(line: str, kind: str = "") -> dict:
             c.line_segments for c in _PROVIDERS.values() if c.line_segments > 0
         })
         raise ValueError(
-            f"{seg_count} 段格式无法识别（已知的号池格式是 {known} 段）"
+            smart.get("error") or f"{seg_count} 段格式无法识别（已知的号池格式是 {known} 段）"
         )
     if len(candidates) > 1:
         names = "/".join(c.display_name for c in candidates)
@@ -561,17 +567,13 @@ def parse_import_text(text: str, kind: str = "") -> list[dict]:
 
     errors: list[dict] = []
     rows: list[dict] = []
-    seen: set[str] = set()
     for n, line in numbered:
         try:
             row = parse_import_line(line, kind)
-            em = (row.get("email") or "").lower()
-            if em in seen:
-                raise ValueError(f"邮箱重复: {em}")
-            seen.add(em)
+            row["_line_no"] = n
             rows.append(row)
         except (ValueError, MailProviderError) as e:
-            errors.append({"line": n, "error": str(e)})
+            errors.append({"line": n, "error": str(e), "raw": line[:100]})
 
     if errors:
         raise ImportValidationError(errors)

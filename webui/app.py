@@ -72,12 +72,20 @@ app = FastAPI(title="GPT Outlook Register WebUI", docs_url=None, redoc_url=None)
 
 
 class ImportReq(BaseModel):
-    text: str = Field(..., description="每行一个号，格式由 kind 决定")
+    text: str = Field(..., description="每行一个号，格式由 kind 决定或智能自动识别")
     kind: str = Field(
         "",
-        description="邮箱来源（outlook / ...）。留空则按段数猜，"
-                    "但 Outlook 和 Gmail 都是 4 段，猜不出来，建议前端必填",
+        description="邮箱来源（outlook / ...）。留空则按段数猜或智能嗅探",
     )
+    strategy: str = Field(
+        "smart_merge",
+        description="导入策略: smart_merge(智能合并/更新凭证) / skip_duplicates(仅导入全新号) / overwrite(覆盖并重置可用)",
+    )
+
+
+class AnalyzeImportReq(BaseModel):
+    text: str = Field(..., description="待分析的文本内容")
+    kind: str = Field("", description="指定或默认邮箱来源协议")
 
 
 class RegisterReq(BaseModel):
@@ -102,16 +110,37 @@ def health():
     return {"ok": True, "stats": db.stats()}
 
 
-@app.post("/api/import")
-def api_import(req: ImportReq):
-    """批量导入号池。**有一行不合法就整批拒绝**，一个都不写库。
+@app.get("/api/dashboard/summary")
+def api_dashboard_summary():
+    """获取仪表盘全景指标矩阵（号池存量、注册资产大盘、国家分布 Top 榜、安全加固率）。"""
+    return {"ok": True, **db.get_dashboard_summary()}
 
-    非法时返回 422，body 里带每一行的行号和原因，前端直接展示即可：
 
-        {"ok": false, "message": "...", "errors": [{"line": 3, "error": "..."}]}
+@app.post("/api/accounts/analyze_import")
+def api_analyze_import(req: AnalyzeImportReq):
+    """导入前多维数据透视与去重分析。
+
+    自动识别任意分隔符、乱序格式与脏字符，比对号池与已注册库，
+    返回重复率、全新号数、库内状态分布与解析错误明细。
     """
     try:
-        result = db.import_accounts(req.text, kind=req.kind)
+        res = db.analyze_import_data(req.text, kind=req.kind)
+        return res
+    except Exception as e:
+        raise HTTPException(400, f"分析失败: {e}")
+
+
+@app.post("/api/import")
+def api_import(req: ImportReq):
+    """批量导入号池（支持任意乱序自适应与多分隔符容错）。
+
+    strategy 可选：
+        - smart_merge: 全新号入库；已注册老号自动绑定 OAuth 凭据；号池已有账号若提供新凭据则自动更新。
+        - skip_duplicates: 遇到库内已存在直接跳过，仅写入全新号。
+        - overwrite: 强制重置号池已有账号为 available 状态并覆盖更新凭据。
+    """
+    try:
+        result = db.import_accounts(req.text, kind=req.kind, strategy=req.strategy)
     except ImportValidationError as e:
         return JSONResponse(
             status_code=422,
@@ -3355,6 +3384,141 @@ def api_security_task_log(task_id: str, email: str = ""):
     if not item:
         return {"ok": True, "email": email, "lines": ["未找到该账号的执行日志"]}
     return {"ok": True, "email": email, "lines": item.get("logs", []), "status": item.get("status")}
+
+
+# ──────────────────────── 账号活跃保温与保鲜 (Account Warming Daemon) ────────────────────────
+
+
+class StartWarmingReq(BaseModel):
+    emails: list[str] = Field(..., description="要保温的账号邮箱列表")
+    proxies: str = Field("", description="代理池（每行一个）")
+    proxy: str = Field("", description="单个代理")
+    proxy_country: str = Field("", description="目标代理国家")
+    workers: int = Field(5, ge=1, le=20, description="并发 worker 数")
+
+
+@app.post("/api/registered/warm/start")
+def api_warm_start(req: StartWarmingReq):
+    """启动 GPT 账号批量保温与保鲜任务。"""
+    from . import account_warmer
+    try:
+        task_id = account_warmer.start_warming_task(
+            emails=req.emails,
+            config={
+                "proxies": req.proxies,
+                "proxy": req.proxy,
+                "proxy_country": req.proxy_country,
+                "workers": req.workers,
+            },
+        )
+        return {"ok": True, "task_id": task_id, "total": len(req.emails)}
+    except Exception as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/registered/warm/{task_id}/stop")
+def api_warm_stop(task_id: str):
+    """停止指定的保温任务。"""
+    from . import account_warmer
+    ok = account_warmer.stop_warming_task(task_id)
+    return {"ok": ok, "task_id": task_id}
+
+
+@app.get("/api/registered/warm/{task_id}/stream")
+async def api_warm_stream(task_id: str, request: Request):
+    """SSE 实时推送账号保温进度与日志。"""
+    from . import account_warmer
+    task = account_warmer.get_warming_task(task_id)
+    if not task:
+        raise HTTPException(404, "任务未找到")
+
+    async def event_gen():
+        loop = asyncio.get_event_loop()
+        init_data = {
+            "task_id": task_id,
+            "total": len(task.items),
+            "items": task.items,
+            "stats": task.stats,
+        }
+        yield f"event: init\ndata: {json.dumps(init_data, ensure_ascii=False)}\n\n"
+        while True:
+            if await request.is_disconnected():
+                break
+            try:
+                msg = await loop.run_in_executor(None, _safe_get_sec_task, task.log_queue, 2.0)
+            except Exception:
+                msg = None
+            if msg is None:
+                break
+            if msg == "__TIMEOUT__":
+                yield ": keep-alive\n\n"
+                continue
+            m_type = msg.get("type") or "progress"
+            data_str = json.dumps(msg, ensure_ascii=False)
+            if m_type == "end":
+                yield f"event: done\ndata: {data_str}\n\n"
+                break
+            elif m_type == "log":
+                yield f"event: log\ndata: {data_str}\n\n"
+            else:
+                yield f"event: progress\ndata: {data_str}\n\n"
+
+    return StreamingResponse(
+        event_gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
+@app.get("/api/registered/warm/{task_id}/log")
+def api_warm_log(task_id: str, email: str = ""):
+    """获取保温任务中单个账号的完整日志。"""
+    from . import account_warmer
+    task = account_warmer.get_warming_task(task_id)
+    if not task:
+        raise HTTPException(404, "任务未找到")
+    email = email.strip().lower()
+    item = task.items.get(email)
+    logs = task.email_logs.get(email, [])
+    return {"ok": True, "email": email, "lines": logs, "status": item.get("status") if item else "unknown"}
+
+
+# ──────────────────────── PoW 预计算池与代理健康监控 API ────────────────────────
+
+
+@app.get("/api/sentinel_pool/stats")
+def api_sentinel_pool_stats():
+    """获取 PoW Sentinel Token 预计算池状态。"""
+    from .sentinel_pool import get_sentinel_pool
+    return {"ok": True, **get_sentinel_pool().get_stats()}
+
+
+class SentinelPoolConfigReq(BaseModel):
+    enabled: Optional[bool] = None
+    target_size: Optional[int] = None
+
+
+@app.post("/api/sentinel_pool/config")
+def api_sentinel_pool_config(req: SentinelPoolConfigReq):
+    """动态调整 Sentinel 预计算池配置。"""
+    from .sentinel_pool import get_sentinel_pool
+    pool = get_sentinel_pool()
+    if req.enabled is not None:
+        pool.set_enabled(req.enabled)
+    if req.target_size is not None:
+        pool.set_target_size(req.target_size)
+    return {"ok": True, **pool.get_stats()}
+
+
+@app.get("/api/proxy_health/summary")
+def api_proxy_health_summary():
+    """获取代理出口 IP 智能评级、失败记忆与冷冻期全景报告。"""
+    from .proxy_health import get_proxy_health_manager
+    return {"ok": True, **get_proxy_health_manager().get_summary()}
 
 
 # ──────────────────────── auto-loop ────────────────────────
