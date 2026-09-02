@@ -44,6 +44,7 @@ import {
   bulkDeleteAccounts,
   listExportFormats,
   exportRegistered,
+  updateExportNote,
   convertSessionToSub2,
   convertSessionToCpa,
   updateCredentials,
@@ -2372,7 +2373,7 @@ async function deleteAll() {
   catch (e) { ElMessage.error(e.message) }
 }
 
-// ──────────── 批量导出 ────────────
+// ──────────── 批量导出与全格式留痕归档 ────────────
 const exportFormats = ref([])
 const exportChunkSize = ref(0) // 每卷条数，0 = 不分卷（单文件）
 const exporting = ref(false)
@@ -2384,8 +2385,80 @@ const exportLabel = ref('')
 const exportedEmails = ref([])
 const deletingExported = ref(false)
 
+// 全新导出配置与留痕确认弹窗
+const exportConfigModalVisible = ref(false)
+const exportTargetFmt = ref(null)
+const exportScope = ref('selected') // 'selected' | 'all'
+const exportCustomChunk = ref(false)
+const exportCustomChunkSize = ref(100)
+const exportNoteInput = ref('')
+const exportPresetNotes = [
+  '客户交付',
+  'Sub2API导入',
+  'CPA批量归档',
+  '自用备用',
+  '验活合格',
+  '2026-09-02批次',
+]
+
+// 导出分割线 / 分隔符自定义设置 (Delimiter)
+const exportDelimiterMode = ref('----') // '----' | '---' | '--' | '|' | ',' | ':' | '\t' | 'custom'
+const exportCustomDelimiter = ref('----')
+const exportDelimiterPresets = [
+  { label: '---- (默认4横杠)', value: '----' },
+  { label: '--- (3横杠)', value: '---' },
+  { label: '-- (双横杠)', value: '--' },
+  { label: '| (竖线)', value: '|' },
+  { label: ', (逗号/CSV)', value: ',' },
+  { label: ': (冒号)', value: ':' },
+  { label: '\\t (Tab制表符)', value: '\t' },
+  { label: '自定义', value: 'custom' },
+]
+
+const isTextDelimiterFormat = computed(() => {
+  const f = exportTargetFmt.value?.id || ''
+  return ['email_at', 'email_pw', 'email_pw_2fa', 'email_pw_2fa_relay'].includes(f)
+})
+
+const effectiveExportDelimiter = computed(() => {
+  if (!isTextDelimiterFormat.value) return '----'
+  if (exportDelimiterMode.value === 'custom') {
+    return exportCustomDelimiter.value ?? '----'
+  }
+  return exportDelimiterMode.value || '----'
+})
+
+const sampleDelimiterPreview = computed(() => {
+  const f = exportTargetFmt.value?.id || 'email_pw_2fa'
+  const d = effectiveExportDelimiter.value
+  const displayD = d === '\t' ? ' ⇥ ' : d
+  if (f === 'email_at') return `user@outlook.com${displayD}eyJhbGciOi...`
+  if (f === 'email_pw') return `user@outlook.com${displayD}Password123`
+  if (f === 'email_pw_2fa') return `user@outlook.com${displayD}Password123${displayD}JBSWY3DPEHPK3PXP`
+  if (f === 'email_pw_2fa_relay') return `user@outlook.com${displayD}Password123${displayD}JBSWY3DPEHPK3PXP${displayD}https://remail.aishop6.com/pickup?...`
+  return `user@outlook.com${displayD}data`
+})
+
+const exportTargetCount = computed(() =>
+  exportScope.value === 'selected' ? selected.value.length : total.value
+)
+
+const effectiveExportChunk = computed(() => {
+  if (exportCustomChunk.value) {
+    return Math.max(0, parseInt(exportCustomChunkSize.value || 0, 10))
+  }
+  return parseInt(exportChunkSize.value || 0, 10)
+})
+
+const estimatedChunksCount = computed(() => {
+  const cnt = exportTargetCount.value || 0
+  const chk = effectiveExportChunk.value || 0
+  if (!chk || chk <= 0) return 1
+  return Math.ceil(cnt / chk)
+})
+
 const exportBtnText = computed(() =>
-  selected.value.length ? `导出选中 (${selected.value.length})` : '导出全部',
+  selected.value.length ? `导出选中 (${selected.value.length})` : '导出全部'
 )
 
 async function loadExportFormats() {
@@ -2393,59 +2466,131 @@ async function loadExportFormats() {
   try {
     const { formats } = await listExportFormats()
     exportFormats.value = formats || []
-  } catch (e) { ElMessage.error('加载导出格式失败: ' + e.message) }
-}
-
-function atExportTip(row) {
-  const t = row.at_exported_at ? new Date(row.at_exported_at * 1000).toLocaleString('zh-CN') : ''
-  const note = row.at_export_note ? `\n备注：${row.at_export_note}` : ''
-  return `AT 已于 ${t} 导出${note}`
-}
-
-async function doExport(fmt) {
-  const emails = selected.value.map((r) => r.email)
-  const chunk = exportChunkSize.value || 0
-  // AT 导出留痕：可填一句备注（留空也打标），顶栏「AT导出」筛选器可查
-  let note = ''
-  if (fmt.id === 'at') {
-    try {
-      const { value } = await ElMessageBox.prompt(
-        emails.length
-          ? `将导出 ${emails.length} 个选中账号的 access_token。\n可填一句备注方便日后回忆这批号的去向（留空也可以）。`
-          : '将导出全部账号的 access_token。\n可填一句备注方便日后回忆这批号的去向（留空也可以）。',
-        'AT 导出备注',
-        {
-          confirmButtonText: '导出', cancelButtonText: '取消',
-          inputPlaceholder: '如：交付给XX · 2026-08-28',
-          inputValidator: () => true,
-          customClass: 'confirm-multiline',
-        },
-      )
-      note = (value || '').trim()
-    } catch (_) { return } // 用户取消导出
+    if (!exportTargetFmt.value && exportFormats.value.length) {
+      exportTargetFmt.value = exportFormats.value[0]
+    }
+  } catch (e) {
+    ElMessage.error('加载导出格式失败: ' + e.message)
   }
-  const payload = emails.length
-    ? { format: fmt.id, emails, chunk_size: chunk, note }
-    : { format: fmt.id, all: true, chunk_size: chunk, note }
+}
+
+function openExportModal(fmt = null) {
+  loadExportFormats()
+  if (fmt && fmt.id) {
+    exportTargetFmt.value = fmt
+  } else if (!exportTargetFmt.value && exportFormats.value.length) {
+    exportTargetFmt.value = exportFormats.value[0]
+  }
+  exportScope.value = selected.value.length ? 'selected' : 'all'
+  exportNoteInput.value = ''
+  exportConfigModalVisible.value = true
+}
+
+function appendPresetNote(note) {
+  if (!exportNoteInput.value) {
+    exportNoteInput.value = note
+  } else if (!exportNoteInput.value.includes(note)) {
+    exportNoteInput.value = `${exportNoteInput.value} · ${note}`
+  }
+}
+
+async function submitExport() {
+  const fmt = exportTargetFmt.value
+  if (!fmt) {
+    ElMessage.warning('请选择导出格式')
+    return
+  }
+
+  const isSelectedScope = exportScope.value === 'selected' && selected.value.length > 0
+  const emails = isSelectedScope ? selected.value.map((r) => r.email) : []
+  const chunk = effectiveExportChunk.value || 0
+  const note = (exportNoteInput.value || '').trim()
+  const delim = isTextDelimiterFormat.value ? effectiveExportDelimiter.value : '----'
+
+  const payload = isSelectedScope
+    ? { format: fmt.id, emails, chunk_size: chunk, note, delimiter: delim }
+    : { format: fmt.id, all: true, chunk_size: chunk, note, delimiter: delim }
+
+  exportConfigModalVisible.value = false
   exporting.value = true
+
   try {
     const r = await exportRegistered(payload)
     exportedEmails.value = (r.emails || []).filter(Boolean)
     if (r.mode === 'download') {
       saveBlob(b64ToBytes(r.b64), r.filename, r.mime)
-      const parts = r.parts ? ` · ${r.parts} 个文件` : ''
-      const mark = fmt.id === 'at' ? ' · 已记录导出状态' : ''
-      ElMessage.success(`已下载 ${r.filename}（${r.count} 个号${parts}）${mark}`)
+      const parts = r.parts ? ` · 分卷打包 ${r.parts} 个文件` : ''
+      const mark = ' · 已记录导出状态及备注'
+      ElMessage.success(`🎉 已下载 ${r.filename}（${r.count} 个账号${parts}）${mark}`)
+      load(false)
       return
     }
     exportText.value = r.text || ''
     exportCount.value = r.count || 0
     exportFilename.value = r.filename || 'export.txt'
     exportLabel.value = r.label || fmt.label
-    if (fmt.id === 'at') ElMessage.success(`已记录 ${r.count} 个号的 AT 导出状态`)
+    ElMessage.success(`🎉 已成功生成 ${r.count} 个账号数据并记录导出留痕`)
     exportVisible.value = true
-  } catch (e) { ElMessage.error('导出失败: ' + e.message) }
-  finally { exporting.value = false }
+    load(false)
+  } catch (e) {
+    ElMessage.error('导出失败: ' + e.message)
+  } finally {
+    exporting.value = false
+  }
+}
+
+// 格式化时间戳
+function formatExportDate(ts) {
+  if (!ts) return ''
+  try {
+    const d = new Date(ts * 1000)
+    return d.toLocaleString('zh-CN', { hour12: false })
+  } catch {
+    return ''
+  }
+}
+
+// 获取导出徽章文案与样式
+function getExportBadgeLabel(row) {
+  const f = (row.export_fmt || '').toLowerCase()
+  if (f.includes('sub2api') || f.includes('sub2')) return 'Sub2✓'
+  if (f.includes('cpa')) return 'CPA✓'
+  if (f.includes('session')) return 'Session✓'
+  if (f.includes('2fa') || f.includes('pwd')) return '2FA✓'
+  if (f === 'at' || f === 'email_at' || row.at_exported_at) return 'AT✓'
+  return '已导出✓'
+}
+
+function getExportBadgeClass(row) {
+  const f = (row.export_fmt || '').toLowerCase()
+  if (f.includes('sub2api') || f.includes('sub2')) return 'badge-sub2'
+  if (f.includes('cpa')) return 'badge-cpa'
+  if (f.includes('session')) return 'badge-session'
+  if (f.includes('2fa') || f.includes('pwd')) return 'badge-pwd2fa'
+  return 'badge-at'
+}
+
+// 快速修改账号导出备注
+async function quickEditExportNote(row) {
+  try {
+    const currentNote = row.export_note || row.at_export_note || ''
+    const { value } = await ElMessageBox.prompt(
+      `修改账号 ${row.email} 的导出备注：`,
+      '修改导出备注',
+      {
+        confirmButtonText: '保存',
+        cancelButtonText: '取消',
+        inputValue: currentNote,
+        inputPlaceholder: '例如：交付客户老王 · 2026-09-02',
+        customClass: 'confirm-multiline',
+      }
+    )
+    const newNote = (value || '').trim()
+    await updateExportNote({ email: row.email, note: newNote })
+    row.export_note = newNote
+    row.at_export_note = newNote
+    ElMessage.success('导出备注已更新')
+  } catch (_) {}
 }
 
 function b64ToBytes(b64) {
@@ -3842,11 +3987,16 @@ onUnmounted(() => {
             </div>
 
             <div class="filter-item-wrap">
-              <span class="filter-label">AT导出:</span>
+              <span class="filter-label">导出状态:</span>
               <el-select v-model="filterAtExport" placeholder="全部" size="small" class="acct-select acct-select-atexport" @change="load(true)">
-                <el-option label="全部" value="all" />
-                <el-option label="✅ 已导出 AT" value="exported" />
-                <el-option label="⭕ 未导出 AT" value="unexported" />
+                <el-option label="全部状态" value="all" />
+                <el-option label="✅ 已导出 (全部已导)" value="exported" />
+                <el-option label="⭕ 未导出 (纯新号)" value="unexported" />
+                <el-option label="🔑 已导出 AT" value="at" />
+                <el-option label="🔐 已导出 账密/2FA" value="email_pw" />
+                <el-option label="📦 已导出 Sub2API" value="sub2api" />
+                <el-option label="📦 已导出 CPA" value="cpa" />
+                <el-option label="🌐 已导出 Session" value="session" />
               </el-select>
             </div>
 
@@ -4007,15 +4157,15 @@ onUnmounted(() => {
 
           <!-- 集群 3: 导出与数据清理 -->
           <div class="acct-action-cluster acct-cluster-right">
-            <el-select v-model="exportChunkSize" size="small" class="export-chunk-select">
+            <el-select v-model="exportChunkSize" size="small" class="export-chunk-select" title="分卷条数设置（单文件或每多少条分卷）">
               <el-option label="不分卷" :value="0" />
               <el-option label="50条/文件" :value="50" />
               <el-option label="100条/文件" :value="100" />
               <el-option label="200条/文件" :value="200" />
               <el-option label="500条/文件" :value="500" />
             </el-select>
-            <el-dropdown trigger="click" @command="doExport" @visible-change="(v) => v && loadExportFormats()">
-              <el-button size="small" class="cluster-btn btn-neutral" :loading="exporting">
+            <el-dropdown trigger="click" @command="openExportModal" @visible-change="(v) => v && loadExportFormats()">
+              <el-button size="small" class="cluster-btn btn-neutral" :loading="exporting" @click.stop="openExportModal(null)">
                 <el-icon><Download /></el-icon> {{ exportBtnText }}
                 <el-icon class="el-icon--right"><ArrowDown /></el-icon>
               </el-button>
@@ -4068,8 +4218,34 @@ onUnmounted(() => {
                   <span class="mono">{{ row.email }}</span>
                   <el-icon class="copy-ico"><CopyDocument /></el-icon>
                 </button>
-                <el-tooltip v-if="row.at_exported_at" :content="atExportTip(row)" placement="top">
-                  <span class="at-export-badge">AT✓</span>
+                <el-tooltip v-if="row.exported_at || row.at_exported_at" placement="top" :show-after="200">
+                  <template #content>
+                    <div class="export-tooltip-box">
+                      <div class="export-tooltip-title">
+                        <span>🏷️ 导出留痕记录</span>
+                      </div>
+                      <div class="export-tooltip-item">
+                        <span class="lbl">格式:</span>
+                        <span class="val">{{ row.export_fmt_label || row.export_fmt || 'access_token' }}</span>
+                      </div>
+                      <div class="export-tooltip-item">
+                        <span class="lbl">时间:</span>
+                        <span class="val mono">{{ formatExportDate(row.exported_at || row.at_exported_at) }}</span>
+                      </div>
+                      <div class="export-tooltip-item">
+                        <span class="lbl">备注:</span>
+                        <span class="val">{{ row.export_note || row.at_export_note || '(无备注)' }}</span>
+                      </div>
+                      <div class="export-tooltip-tip">💡 点击徽章可快捷修改备注</div>
+                    </div>
+                  </template>
+                  <span
+                    class="export-mark-badge"
+                    :class="getExportBadgeClass(row)"
+                    @click.stop="quickEditExportNote(row)"
+                  >
+                    {{ getExportBadgeLabel(row) }}
+                  </span>
                 </el-tooltip>
               </div>
             </template>
@@ -6405,7 +6581,255 @@ onUnmounted(() => {
       </template>
     </el-dialog>
 
-    <!-- 批量导出弹窗 -->
+    <!-- ──────────────── 全新批量导出配置与状态留痕弹窗 ──────────────── -->
+    <el-dialog
+      v-model="exportConfigModalVisible"
+      width="640px"
+      top="8vh"
+      class="macos-custom-dialog export-config-dialog"
+      :close-on-click-modal="false"
+    >
+      <template #header>
+        <div class="export-modal-header">
+          <div class="window-dots">
+            <span class="dot red"></span>
+            <span class="dot yellow"></span>
+            <span class="dot green"></span>
+          </div>
+          <div class="export-modal-title">
+            <span class="main-title">📦 批量导出数据与留痕归档</span>
+            <span class="sub-title">Export Studio · 状态记录与分卷打包</span>
+          </div>
+        </div>
+      </template>
+
+      <div class="export-modal-body">
+        <!-- 1. 导出目标格式选择 -->
+        <div class="export-field-group">
+          <div class="field-title-row">
+            <span class="field-label">1. 目标导出格式 (Format)</span>
+            <span v-if="exportTargetFmt" class="field-extra-pill">
+              {{ exportTargetFmt.mode === 'download' ? '📦 文件直下' : '📄 文本预览/下载' }}
+            </span>
+          </div>
+          <el-select
+            v-model="exportTargetFmt"
+            value-key="id"
+            class="export-select-block"
+            placeholder="请选择导出格式"
+          >
+            <el-option
+              v-for="fmt in exportFormats"
+              :key="fmt.id"
+              :label="fmt.label"
+              :value="fmt"
+            >
+              <div class="fmt-option-row">
+                <span class="fmt-opt-label">{{ fmt.label }}</span>
+                <span v-if="fmt.note" class="fmt-opt-note">{{ fmt.note }}</span>
+              </div>
+            </el-option>
+          </el-select>
+          <div v-if="exportTargetFmt?.note" class="field-desc-tip">
+            💡 格式说明：{{ exportTargetFmt.note }}
+          </div>
+        </div>
+
+        <!-- 2. 导出范围选择 -->
+        <div class="export-field-group">
+          <div class="field-title-row">
+            <span class="field-label">2. 导出账号范围 (Scope)</span>
+            <span class="field-count-badge">共 {{ exportTargetCount }} 个目标账号</span>
+          </div>
+          <div class="scope-radio-cards">
+            <div
+              class="scope-card"
+              :class="{ 'is-active': exportScope === 'selected', 'is-disabled': !selected.length }"
+              @click="selected.length && (exportScope = 'selected')"
+            >
+              <div class="scope-card-left">
+                <div class="scope-title">导出当前勾选账号</div>
+                <div class="scope-desc">仅导出表格中已勾选的 {{ selected.length }} 个账号</div>
+              </div>
+              <div class="scope-badge">{{ selected.length }} 条</div>
+            </div>
+
+            <div
+              class="scope-card"
+              :class="{ 'is-active': exportScope === 'all' }"
+              @click="exportScope = 'all'"
+            >
+              <div class="scope-card-left">
+                <div class="scope-title">导出全库账号 (跨页全量)</div>
+                <div class="scope-desc">导出数据库中全部符合当前条件的 {{ total }} 个账号</div>
+              </div>
+              <div class="scope-badge badge-all">{{ total }} 条</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 3. 分卷设置 -->
+        <div class="export-field-group">
+          <div class="field-title-row">
+            <span class="field-label">3. 分卷文件设置 (Chunking)</span>
+            <span class="field-chunk-hint mono">
+              {{ effectiveExportChunk > 0 ? `每 ${effectiveExportChunk} 条一卷 (预计打包 ${estimatedChunksCount} 个文件)` : '单文件不分卷' }}
+            </span>
+          </div>
+          <div class="chunk-buttons-wrap">
+            <button
+              type="button"
+              class="chunk-btn"
+              :class="{ 'is-active': !exportCustomChunk && exportChunkSize === 0 }"
+              @click="exportCustomChunk = false; exportChunkSize = 0"
+            >
+              不分卷 (单文件)
+            </button>
+            <button
+              type="button"
+              class="chunk-btn"
+              :class="{ 'is-active': !exportCustomChunk && exportChunkSize === 50 }"
+              @click="exportCustomChunk = false; exportChunkSize = 50"
+            >
+              50条 / 卷
+            </button>
+            <button
+              type="button"
+              class="chunk-btn"
+              :class="{ 'is-active': !exportCustomChunk && exportChunkSize === 100 }"
+              @click="exportCustomChunk = false; exportChunkSize = 100"
+            >
+              100条 / 卷
+            </button>
+            <button
+              type="button"
+              class="chunk-btn"
+              :class="{ 'is-active': !exportCustomChunk && exportChunkSize === 200 }"
+              @click="exportCustomChunk = false; exportChunkSize = 200"
+            >
+              200条 / 卷
+            </button>
+            <button
+              type="button"
+              class="chunk-btn"
+              :class="{ 'is-active': !exportCustomChunk && exportChunkSize === 500 }"
+              @click="exportCustomChunk = false; exportChunkSize = 500"
+            >
+              500条 / 卷
+            </button>
+            <button
+              type="button"
+              class="chunk-btn"
+              :class="{ 'is-active': exportCustomChunk }"
+              @click="exportCustomChunk = true"
+            >
+              自定义条数
+            </button>
+          </div>
+
+          <div v-if="exportCustomChunk" class="custom-chunk-input-row">
+            <span class="custom-chunk-lbl">自定义每卷条数：</span>
+            <el-input-number
+              v-model="exportCustomChunkSize"
+              :min="10"
+              :max="5000"
+              :step="50"
+              size="small"
+              class="custom-chunk-num"
+            />
+            <span class="custom-chunk-unit">条/文件 (.zip 压缩包打包下载)</span>
+          </div>
+        </div>
+
+        <!-- 4. 自定义分割线 / 分隔符设置 (仅对文本格式生效) -->
+        <div v-if="isTextDelimiterFormat" class="export-field-group">
+          <div class="field-title-row">
+            <span class="field-label">4. 字段分隔符设置 (Delimiter)</span>
+            <span class="field-delim-hint mono">当前: {{ effectiveExportDelimiter === '\t' ? '\\t (制表符)' : `"${effectiveExportDelimiter}"` }}</span>
+          </div>
+          <div class="chunk-buttons-wrap delim-buttons-wrap">
+            <button
+              v-for="pDelim in exportDelimiterPresets"
+              :key="pDelim.value"
+              type="button"
+              class="chunk-btn"
+              :class="{ 'is-active': exportDelimiterMode === pDelim.value }"
+              @click="exportDelimiterMode = pDelim.value"
+            >
+              {{ pDelim.label }}
+            </button>
+          </div>
+
+          <div v-if="exportDelimiterMode === 'custom'" class="custom-chunk-input-row">
+            <span class="custom-chunk-lbl">输入自定义分隔符：</span>
+            <el-input
+              v-model="exportCustomDelimiter"
+              placeholder="如 ---- 或 | 或 , 或 :::"
+              size="small"
+              class="custom-delim-input mono"
+              style="width: 180px"
+            />
+            <span class="custom-chunk-unit">可填任意特殊符号</span>
+          </div>
+
+          <div class="delim-preview-banner">
+            <span class="preview-tag">实时格式预览：</span>
+            <span class="preview-text mono">{{ sampleDelimiterPreview }}</span>
+          </div>
+        </div>
+
+        <!-- 5. 导出留痕备注 -->
+        <div class="export-field-group">
+          <div class="field-title-row">
+            <span class="field-label">{{ isTextDelimiterFormat ? '5' : '4' }}. 导出备注与留痕记录 (Export Note)</span>
+            <span class="field-tag-hint">记录去向 · 顶栏可随时筛选</span>
+          </div>
+          <el-input
+            v-model="exportNoteInput"
+            placeholder="可填一句备注方便日后回忆这批号的去向 (如：交付客户老王 · 2026-09-02)"
+            clearable
+            class="export-note-input mono"
+          />
+          <div class="preset-notes-bar">
+            <span class="preset-note-title">快捷便签：</span>
+            <span
+              v-for="pNote in exportPresetNotes"
+              :key="pNote"
+              class="preset-note-chip"
+              @click="appendPresetNote(pNote)"
+            >
+              + {{ pNote }}
+            </span>
+          </div>
+          <div class="field-desc-tip">
+            💡 导出后系统将自动为这批账号记录导出时间、格式与备注，可在顶栏「导出状态」中精准筛选或通过搜索框随时查找。
+          </div>
+        </div>
+      </div>
+
+      <template #footer>
+        <div class="export-modal-footer">
+          <div class="export-summary-text">
+            <span>即将导出 <strong>{{ exportTargetCount }}</strong> 个账号</span>
+            <span v-if="effectiveExportChunk > 0" class="sub-summary">（分卷打包为 {{ estimatedChunksCount }} 个文件）</span>
+          </div>
+          <div class="footer-btn-group">
+            <el-button @click="exportConfigModalVisible = false">取消</el-button>
+            <el-button
+              type="primary"
+              class="export-submit-btn"
+              :loading="exporting"
+              :disabled="!exportTargetCount"
+              @click="submitExport"
+            >
+              <el-icon><Download /></el-icon> 立即导出并记录留痕
+            </el-button>
+          </div>
+        </div>
+      </template>
+    </el-dialog>
+
+    <!-- 批量导出文本预览弹窗 -->
     <el-dialog v-model="exportVisible" width="720px" top="8vh" class="macos-custom-dialog">
       <template #header>
         <div style="display: flex; align-items: center; gap: 12px">
@@ -9242,6 +9666,385 @@ onUnmounted(() => {
 .feat-mail { font-weight: 600; }
 .feat-cell, .feat-err, .feat-time { color: var(--el-text-color-secondary); }
 .feat-time { text-align: right; font-variant-numeric: tabular-nums; }
+
+/* ──────────── 全格式导出留痕徽章与 Tooltip 样式 ──────────── */
+.export-mark-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+  user-select: none;
+  transition: all 0.15s ease;
+  font-family: var(--el-font-family-monospace, monospace);
+  line-height: 1.2;
+}
+.export-mark-badge:hover {
+  transform: scale(1.08);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+}
+.export-mark-badge.badge-at {
+  color: #10b981;
+  background: rgba(16, 185, 129, 0.12);
+  border: 1px solid rgba(16, 185, 129, 0.35);
+}
+.export-mark-badge.badge-sub2 {
+  color: #06b6d4;
+  background: rgba(6, 182, 212, 0.12);
+  border: 1px solid rgba(6, 182, 212, 0.35);
+}
+.export-mark-badge.badge-cpa {
+  color: #f59e0b;
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+}
+.export-mark-badge.badge-session {
+  color: #8b5cf6;
+  background: rgba(139, 92, 246, 0.12);
+  border: 1px solid rgba(139, 92, 246, 0.35);
+}
+.export-mark-badge.badge-pwd2fa {
+  color: #3b82f6;
+  background: rgba(59, 130, 246, 0.12);
+  border: 1px solid rgba(59, 130, 246, 0.35);
+}
+
+.export-tooltip-box {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px 2px;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: #e2e8f0;
+}
+.export-tooltip-title {
+  font-weight: 700;
+  color: #38bdf8;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+  padding-bottom: 3px;
+  margin-bottom: 2px;
+}
+.export-tooltip-item {
+  display: flex;
+  gap: 6px;
+}
+.export-tooltip-item .lbl {
+  color: #94a3b8;
+  flex-shrink: 0;
+}
+.export-tooltip-item .val {
+  color: #f8fafc;
+  word-break: break-all;
+}
+.export-tooltip-tip {
+  font-size: 10.5px;
+  color: #fbbf24;
+  margin-top: 4px;
+  border-top: 1px dashed rgba(255, 255, 255, 0.1);
+  padding-top: 3px;
+}
+
+/* ──────────── 全新导出配置弹窗 (Export Studio) ──────────── */
+.export-modal-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.export-modal-title {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.export-modal-title .main-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--app-title);
+}
+.export-modal-title .sub-title {
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+}
+
+.export-modal-body {
+  padding: 4px 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.export-field-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.field-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.field-label {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--app-title);
+}
+.field-extra-pill {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--el-color-primary);
+  background: rgba(0, 122, 255, 0.09);
+  padding: 1px 8px;
+  border-radius: 10px;
+}
+.field-count-badge {
+  font-size: 11px;
+  font-weight: 600;
+  color: #10b981;
+  background: rgba(16, 185, 129, 0.1);
+  padding: 1px 8px;
+  border-radius: 10px;
+}
+.field-chunk-hint {
+  font-size: 11.5px;
+  color: var(--el-color-warning);
+  font-weight: 600;
+}
+.field-tag-hint {
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+}
+.field-desc-tip {
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+  line-height: 1.4;
+}
+
+.export-select-block {
+  width: 100%;
+}
+.fmt-option-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  gap: 10px;
+}
+.fmt-opt-label {
+  font-weight: 600;
+  font-size: 12.5px;
+}
+.fmt-opt-note {
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+}
+
+/* 范围单选卡片 */
+.scope-radio-cards {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.scope-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--el-border-color-lighter);
+  background: var(--el-fill-color-light);
+  cursor: pointer;
+  transition: all 0.18s ease;
+  user-select: none;
+}
+.scope-card:hover:not(.is-disabled) {
+  border-color: var(--el-color-primary);
+  background: rgba(0, 122, 255, 0.04);
+}
+.scope-card.is-active {
+  border-color: var(--el-color-primary);
+  background: rgba(0, 122, 255, 0.08);
+  box-shadow: 0 0 0 1px var(--el-color-primary) inset;
+}
+.scope-card.is-disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.scope-card-left {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.scope-card .scope-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--app-title);
+}
+.scope-card .scope-desc {
+  font-size: 10.5px;
+  color: var(--el-text-color-secondary);
+}
+.scope-badge {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--el-color-primary);
+  background: rgba(0, 122, 255, 0.12);
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-family: var(--el-font-family-monospace, monospace);
+}
+.scope-badge.badge-all {
+  color: #8b5cf6;
+  background: rgba(139, 92, 246, 0.12);
+}
+
+/* 分卷按钮组 */
+.chunk-buttons-wrap {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.chunk-btn {
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  font-weight: 500;
+  background: var(--el-fill-color-light);
+  border: 1px solid var(--el-border-color-lighter);
+  color: var(--el-text-color-primary);
+  cursor: pointer;
+  user-select: none;
+  transition: all 0.15s ease;
+}
+.chunk-btn:hover {
+  border-color: var(--el-color-primary);
+  color: var(--el-color-primary);
+}
+.chunk-btn.is-active {
+  background: #007aff;
+  color: #fff;
+  border-color: #007aff;
+  font-weight: 700;
+  box-shadow: 0 2px 8px rgba(0, 122, 255, 0.25);
+}
+
+.custom-chunk-input-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+  padding: 8px 12px;
+  background: rgba(0, 122, 255, 0.04);
+  border: 1px dashed rgba(0, 122, 255, 0.3);
+  border-radius: 6px;
+}
+.custom-chunk-lbl {
+  font-size: 11.5px;
+  color: var(--el-text-color-primary);
+}
+.custom-chunk-num {
+  width: 130px;
+}
+.custom-chunk-unit {
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+}
+
+/* 导出备注与快捷标签 */
+.export-note-input {
+  font-size: 12px;
+}
+.preset-notes-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 2px;
+}
+.preset-note-title {
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+}
+.preset-note-chip {
+  font-size: 11px;
+  color: var(--el-color-primary);
+  background: rgba(0, 122, 255, 0.07);
+  border: 1px solid rgba(0, 122, 255, 0.2);
+  padding: 1px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.12s ease;
+  user-select: none;
+}
+.preset-note-chip:hover {
+  background: rgba(0, 122, 255, 0.16);
+  border-color: var(--el-color-primary);
+  transform: translateY(-1px);
+}
+
+.export-modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+}
+.export-summary-text {
+  font-size: 12px;
+  color: var(--el-text-color-primary);
+}
+.export-summary-text strong {
+  color: var(--el-color-primary);
+  font-size: 14px;
+  font-family: var(--el-font-family-monospace, monospace);
+}
+.export-summary-text .sub-summary {
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+  margin-left: 4px;
+}
+.export-submit-btn {
+  font-weight: 700;
+  padding: 8px 16px;
+}
+
+/* 字段分隔符设置与实时预览横幅 */
+.field-delim-hint {
+  font-size: 11.5px;
+  color: #38bdf8;
+  font-weight: 600;
+}
+.delim-buttons-wrap {
+  margin-bottom: 4px;
+}
+.custom-delim-input :deep(.el-input__wrapper) {
+  font-weight: 700;
+  color: #38bdf8;
+}
+.delim-preview-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: rgba(14, 165, 233, 0.08);
+  border: 1px solid rgba(14, 165, 233, 0.28);
+  margin-top: 4px;
+}
+.delim-preview-banner .preview-tag {
+  font-size: 11px;
+  font-weight: 700;
+  color: #38bdf8;
+  flex-shrink: 0;
+}
+.delim-preview-banner .preview-text {
+  font-size: 12px;
+  font-weight: 600;
+  color: #f1f5f9;
+  word-break: break-all;
+}
 </style>
 
 <style>

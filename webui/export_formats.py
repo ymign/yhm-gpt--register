@@ -386,19 +386,19 @@ FORMATS: list[ExportFormat] = [
         id="at",
         label="access_token",
         filename="AT.txt",
-        render=lambda r: _s(r, "access_token"),
+        render=lambda r, d="----": _s(r, "access_token"),
     ),
     ExportFormat(
         id="email_at",
         label="邮箱----AT",
         filename="邮箱AT.txt",
-        render=lambda r: f'{_s(r, "email")}----{_s(r, "access_token")}',
+        render=lambda r, d="----": f'{_s(r, "email")}{d}{_s(r, "access_token")}',
     ),
     ExportFormat(
         id="email_pw",
         label="邮箱----密码",
         filename="账号密码.txt",
-        render=lambda r: f'{_s(r, "email")}----{_s(r, "password")}',
+        render=lambda r, d="----": f'{_s(r, "email")}{d}{_s(r, "password")}',
     ),
     # 2FA secret 只在绑定那一刻下发一次、服务端取不回，丢了这个号就永久锁死，
     # 所以必须有能把它带出去的导出格式。没绑 2FA 的号照约定留空、分隔符保留。
@@ -406,8 +406,8 @@ FORMATS: list[ExportFormat] = [
         id="email_pw_2fa",
         label="邮箱----密码----2FA",
         filename="账号密码2FA.txt",
-        render=lambda r: (
-            f'{_s(r, "email")}----{_s(r, "password")}----{_s(r, "totp_secret")}'
+        render=lambda r, d="----": (
+            f'{_s(r, "email")}{d}{_s(r, "password")}{d}{_s(r, "totp_secret")}'
         ),
         note="secret 仅下发一次，取不回，务必留存",
     ),
@@ -421,9 +421,9 @@ FORMATS: list[ExportFormat] = [
         id="email_pw_2fa_relay",
         label="邮箱----密码----2FA----取件url",
         filename="账号密码2FA取件url.txt",
-        render=lambda r: (
-            f'{_s(r, "email")}----{_s(r, "password")}----'
-            f'{_s(r, "totp_secret")}----{_get_relay_or_pickup_url(r)}'
+        render=lambda r, d="----": (
+            f'{_s(r, "email")}{d}{_s(r, "password")}{d}'
+            f'{_s(r, "totp_secret")}{d}{_get_relay_or_pickup_url(r)}'
         ),
         note="取件链接含 token，等同收件权限，妥善保管",
     ),
@@ -442,7 +442,7 @@ FORMATS: list[ExportFormat] = [
         label="📦 CPA JSONL (一行一条 JSON 文本 · 脚本专用)",
         filename="cpa_accounts.jsonl",
         mime="application/json; charset=utf-8",
-        render=_render_cpa_json_single_line,
+        render=lambda r, d="----": _render_cpa_json_single_line(r),
         note="每行一个独立 JSON 字符串，供程序脚本解析（请勿直接将多行文件上传到 CPAMC 网页）",
     ),
     ExportFormat(
@@ -469,7 +469,7 @@ FORMATS: list[ExportFormat] = [
         label="🌐 ChatGPT Session JSON (.json 文件 · 一行一条)",
         filename="chatgpt_sessions.json",
         mime="application/json; charset=utf-8",
-        render=_render_session_json_single_line,
+        render=lambda r, d="----": _render_session_json_single_line(r),
         note="每行一个压缩完整的 Session JSON",
     ),
 ]
@@ -496,8 +496,8 @@ def get_format(fmt_id: str) -> Optional[ExportFormat]:
     return _BY_ID.get((fmt_id or "").strip())
 
 
-def render_text(rows: list, fmt: "ExportFormat | str") -> str:
-    """mode=text：一行一条记录。
+def render_text(rows: list, fmt: "ExportFormat | str", delimiter: str = "----") -> str:
+    """mode=text：一行一条记录，支持自定义分割线/分隔符。
 
     单条渲染炸了不整体失败 —— 那一行留空，其余照常导出。
     """
@@ -507,10 +507,16 @@ def render_text(rows: list, fmt: "ExportFormat | str") -> str:
     if not f.render:
         raise RuntimeError(f"格式 {f.id} 不是文本格式")
 
+    delim = delimiter if delimiter is not None else "----"
     lines = []
     for r in rows or []:
         try:
-            lines.append(f.render(r))
+            lines.append(f.render(r, delim))
+        except TypeError:
+            try:
+                lines.append(f.render(r))
+            except Exception:
+                lines.append("")
         except Exception:
             lines.append("")
     return "\n".join(lines)
@@ -527,11 +533,11 @@ def render_bytes(rows: list, fmt: "ExportFormat | str") -> bytes:
 
 
 # 兼容旧调用名
-def render(rows: list, fmt: "ExportFormat | str") -> str:
-    return render_text(rows, fmt)
+def render(rows: list, fmt: "ExportFormat | str", delimiter: str = "----") -> str:
+    return render_text(rows, fmt, delimiter=delimiter)
 
 
-def render_chunked(rows: list, fmt: "ExportFormat | str", chunk_size: int) -> bytes:
+def render_chunked(rows: list, fmt: "ExportFormat | str", chunk_size: int, delimiter: str = "----") -> bytes:
     """分卷导出：每 chunk_size 条一个文件，全部打进一个 zip 返回。
 
     - text 格式按行分组（行序不变、不跳行），download 格式按行分组后整组
@@ -560,7 +566,7 @@ def render_chunked(rows: list, fmt: "ExportFormat | str", chunk_size: int) -> by
             if f.mode == "download":
                 data = render_bytes(grp, f)
             else:
-                data = render_text(grp, f).encode("utf-8")
+                data = render_text(grp, f, delimiter=delimiter).encode("utf-8")
             zf.writestr(f"{stem}_{part:03d}{dot}{ext}", data)
             part += 1
     return buf.getvalue()

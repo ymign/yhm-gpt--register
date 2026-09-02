@@ -542,9 +542,11 @@ def api_registered(
     filter_domain: str = "",
     filter_country: str = "",
     filter_at_export: str = "",
+    filter_export: str = "",
     filter_health: str = "",
 ):
     query_str = (q or search).strip()
+    effective_export_filter = filter_export or filter_at_export
     items = db.list_registered(
         limit=limit,
         offset=offset,
@@ -556,7 +558,7 @@ def api_registered(
         filter_oauth=filter_oauth,
         filter_domain=filter_domain,
         filter_country=filter_country,
-        filter_at_export=filter_at_export,
+        filter_at_export=effective_export_filter,
         filter_health=filter_health,
     )
     total = db.count_registered(
@@ -568,7 +570,7 @@ def api_registered(
         filter_oauth=filter_oauth,
         filter_domain=filter_domain,
         filter_country=filter_country,
-        filter_at_export=filter_at_export,
+        filter_at_export=effective_export_filter,
         filter_health=filter_health,
     )
     return {"ok": True, "items": items, "total": total}
@@ -586,10 +588,11 @@ def api_registered_emails(
     filter_domain: str = "",
     filter_country: str = "",
     filter_at_export: str = "",
+    filter_export: str = "",
     filter_health: str = "",
 ):
-    """返回当前过滤条件下的所有账号邮箱列表（用于批量检测未检/全检）。"""
     query_str = (q or search).strip()
+    effective_export_filter = filter_export or filter_at_export
     emails = db.list_registered_emails(
         filter_rt=filter,
         search=query_str,
@@ -599,10 +602,10 @@ def api_registered_emails(
         filter_oauth=filter_oauth,
         filter_domain=filter_domain,
         filter_country=filter_country,
-        filter_at_export=filter_at_export,
+        filter_at_export=effective_export_filter,
         filter_health=filter_health,
     )
-    return {"ok": True, "emails": emails, "total": len(emails)}
+    return {"ok": True, "emails": emails, "count": len(emails), "total": len(emails)}
 
 
 @app.get("/api/registered/domains")
@@ -689,7 +692,8 @@ class ExportRegisteredReq(BaseModel):
     emails: Optional[list[str]] = Field(None, description="要导出的 email 列表")
     all: bool = Field(False, description="true = 导出全部（跨页），忽略 emails")
     chunk_size: int = Field(0, ge=0, description="每卷条数，0 = 不分卷（单文件）")
-    note: str = Field("", description="导出备注（仅 AT 导出留痕时记录）")
+    note: str = Field("", description="导出备注（留痕归档用）")
+    delimiter: Optional[str] = Field("----", description="文本格式自定义分隔符，默认 ----")
 
 
 @app.post("/api/registered/export")
@@ -717,34 +721,33 @@ def api_export_registered(req: ExportRegisteredReq):
     elif req.format == "session_json" and len(rows) == 1 and rows[0].get("email"):
         filename = f"{rows[0]['email']}_session.json"
 
-    # 不跳行：勾了几个号就几行 / 几个文件，字段为空也照样出。
-    # 手动导出**不做 refresh_token 刷新、不因为缺 rt 拦截**，这是和自动推送的区别。
-    # AT 导出留痕：手动导出「access_token」格式时给这批号打上已导出标记（时间+备注），
-    # 顶栏「AT导出」筛选器据此区分已导出/未导出。留痕失败不影响导出本身。
-    if fmt.id == "at":
-        try:
-            db.mark_at_exported([(r.get("email") or "") for r in rows], req.note)
-        except Exception as e:
-            logger.warning(f"AT 导出留痕失败（导出不受影响）: {e}")
+    # 全格式导出留痕：无论导出何种格式（AT、账密2FA、CPA、Sub2API、Session等），均记录导出时间、格式与用户备注
+    # 顶栏「导出状态」筛选器及表格徽章据此展示。留痕失败不影响导出本身。
+    try:
+        db.mark_exported([(r.get("email") or "") for r in rows], fmt_id=fmt.id, fmt_label=fmt.label, note=req.note)
+    except Exception as e:
+        logger.warning(f"导出留痕记录异常（导出不受影响）: {e}")
+
+    delim = req.delimiter if req.delimiter is not None else "----"
 
     base = {
         "ok": True,
         "count": len(rows),
         "filename": filename,
         "label": fmt.label,
+        "format": fmt.id,
+        "note": req.note,
+        "delimiter": delim,
         "mode": fmt.mode,
         "mime": mime,
         # 这一批导出的 email 原样带回去 —— 前端「下载并删除」照着它删，删得准。
-        # ⚠️ 必须由后端给：`all=true` 时前端手里只有当前页那 20 行，
-        #    自己凑列表会漏删；而用 all/status 那种"全清"接口去删号池，
-        #    会把**还没跑过的号**一起清掉。所以这里回传精确列表。
         "emails": [(r.get("email") or "") for r in rows],
     }
 
     if req.chunk_size > 0:
         # 分卷导出：每 chunk_size 条一个文件，全部打进一个 zip 一次下载。
         # 覆盖 mode/filename/mime —— 前端照普通 download 分支存盘即可。
-        blob = export_formats.render_chunked(rows, fmt, req.chunk_size)
+        blob = export_formats.render_chunked(rows, fmt, req.chunk_size, delimiter=delim)
         stem = filename.rsplit(".", 1)[0]
         return {
             **base,
@@ -761,7 +764,27 @@ def api_export_registered(req: ExportRegisteredReq):
         blob = export_formats.render_bytes(rows, fmt)
         return {**base, "b64": base64.b64encode(blob).decode("ascii"), "size": len(blob)}
 
-    return {**base, "text": export_formats.render_text(rows, fmt)}
+    return {**base, "text": export_formats.render_text(rows, fmt, delimiter=delim)}
+
+
+class UpdateExportNoteReq(BaseModel):
+    emails: Optional[list[str]] = Field(None, description="目标邮箱列表")
+    email: Optional[str] = Field(None, description="单个目标邮箱")
+    note: str = Field("", description="新的导出备注内容")
+
+
+@app.post("/api/registered/export_note")
+def api_update_export_note(req: UpdateExportNoteReq):
+    """更新指定账号的导出备注，方便随时标记或修改批次归属。"""
+    targets = []
+    if req.emails:
+        targets.extend(req.emails)
+    if req.email and req.email not in targets:
+        targets.append(req.email)
+    if not targets:
+        raise HTTPException(400, "请提供至少一个邮箱")
+    updated = db.update_export_note(targets, req.note)
+    return {"ok": True, "updated": updated, "note": req.note}
 
 
 class ConvertSessionReq(BaseModel):

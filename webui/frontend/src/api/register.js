@@ -37,6 +37,7 @@ export { bulkDeleteAccounts } from './accounts'
 // 批量导出：格式清单由后端 export_formats.py 提供，加格式前端不用改
 export const listExportFormats = () => http.get('/api/registered/export/formats')
 export const exportRegistered = (payload) => http.post('/api/registered/export', payload)
+export const updateExportNote = (payload) => http.post('/api/registered/export_note', payload) // { email, emails, note }
 
 // Session 实时转换 (参考 GPTSession2CPAandSub2API)
 export const convertSessionToSub2 = (payload) => http.post('/api/convert/session_to_sub2', payload)

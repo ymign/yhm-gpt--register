@@ -162,13 +162,24 @@ def init_db():
     if "oauth_updated_at" not in reg_cols:
         con.execute("ALTER TABLE registered ADD COLUMN oauth_updated_at REAL")
         con.commit()
-    # AT 导出留痕：哪些号的 access_token 已经手动导出过、导出时填的备注。
-    # 只在手动导出「access_token」格式时打标（见 app.py /api/registered/export）。
+    # 全格式导出留痕：记录最后一次导出的时间、导出格式及用户备注
     if "at_exported_at" not in reg_cols:
         con.execute("ALTER TABLE registered ADD COLUMN at_exported_at REAL")
         con.commit()
     if "at_export_note" not in reg_cols:
         con.execute("ALTER TABLE registered ADD COLUMN at_export_note TEXT DEFAULT ''")
+        con.commit()
+    if "exported_at" not in reg_cols:
+        con.execute("ALTER TABLE registered ADD COLUMN exported_at REAL")
+        con.commit()
+    if "export_fmt" not in reg_cols:
+        con.execute("ALTER TABLE registered ADD COLUMN export_fmt TEXT DEFAULT ''")
+        con.commit()
+    if "export_fmt_label" not in reg_cols:
+        con.execute("ALTER TABLE registered ADD COLUMN export_fmt_label TEXT DEFAULT ''")
+        con.commit()
+    if "export_note" not in reg_cols:
+        con.execute("ALTER TABLE registered ADD COLUMN export_note TEXT DEFAULT ''")
         con.commit()
 
     # 自动清理历史中没有任何凭证（AT/ST/RT 全为空）的未完成半成品脏数据
@@ -2104,16 +2115,51 @@ def _registered_where(
             conditions.append("upper(trim(reg_country)) = ?")
             args.append(c_country)
 
-    # AT 导出留痕筛选：exported = 导出过；unexported = 还没导出过
-    if filter_at_export == "exported":
-        conditions.append("at_exported_at IS NOT NULL AND at_exported_at > 0")
-    elif filter_at_export == "unexported":
-        conditions.append("(at_exported_at IS NULL OR at_exported_at = 0)")
+    # 导出留痕筛选：
+    # - "all": 全部
+    # - "exported": 导出过任意格式
+    # - "unexported": 从未导出过
+    # - "at": 仅导出过 AT (access_token / 邮箱----AT)
+    # - "email_pw": 仅导出过账密 / 2FA 系列
+    # - "sub2api": 仅导出过 Sub2API JSON
+    # - "cpa": 仅导出过 CPA 系列
+    # - "session": 仅导出过 Session JSON
+    exp_filter = (filter_at_export or "").strip().lower()
+    if exp_filter in ("exported", "yes", "true", "1"):
+        conditions.append(
+            "((exported_at IS NOT NULL AND exported_at > 0) OR (at_exported_at IS NOT NULL AND at_exported_at > 0))"
+        )
+    elif exp_filter in ("unexported", "no", "false", "0"):
+        conditions.append(
+            "((exported_at IS NULL OR exported_at = 0) AND (at_exported_at IS NULL OR at_exported_at = 0))"
+        )
+    elif exp_filter == "at":
+        conditions.append(
+            "(export_fmt IN ('at', 'email_at') OR (at_exported_at IS NOT NULL AND at_exported_at > 0))"
+        )
+    elif exp_filter in ("email_pw", "pwd", "2fa"):
+        conditions.append(
+            "export_fmt IN ('email_pw', 'email_pw_2fa', 'email_pw_2fa_relay')"
+        )
+    elif exp_filter in ("sub2api", "sub2"):
+        conditions.append(
+            "(export_fmt LIKE '%sub2api%' OR export_fmt_label LIKE '%Sub2API%')"
+        )
+    elif exp_filter == "cpa":
+        conditions.append(
+            "(export_fmt LIKE '%cpa%' OR export_fmt_label LIKE '%CPA%')"
+        )
+    elif exp_filter in ("session", "session_json"):
+        conditions.append(
+            "(export_fmt LIKE '%session%' OR export_fmt_label LIKE '%Session%')"
+        )
 
     search_cleaned = (search or "").strip().lower()
     if search_cleaned:
-        conditions.append("lower(email) LIKE ?")
-        args.append(f"%{search_cleaned}%")
+        conditions.append(
+            "(lower(email) LIKE ? OR lower(coalesce(export_note, '')) LIKE ? OR lower(coalesce(at_export_note, '')) LIKE ? OR lower(coalesce(export_fmt_label, '')) LIKE ?)"
+        )
+        args.extend([f"%{search_cleaned}%", f"%{search_cleaned}%", f"%{search_cleaned}%", f"%{search_cleaned}%"])
 
     if conditions:
         return "WHERE " + " AND ".join(conditions), args
@@ -2205,6 +2251,7 @@ def list_registered(
         f"SELECT email, password, totp_secret, reg_country, reg_city, reg_ip, "
         f"length(access_token) AS at_len, length(session_token) AS st_len, "
         f"length(refresh_token) AS rt_len, oauth_status, oauth_updated_at, "
+        f"exported_at, export_fmt, export_fmt_label, export_note, "
         f"at_exported_at, at_export_note, "
         f"extra_json, oa_check, created_at "
         f"FROM registered {where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
@@ -2309,16 +2356,54 @@ def list_registered_by_emails(emails: list[str]) -> list[dict]:
     return out
 
 
-def mark_at_exported(emails: list[str], note: str = "") -> int:
-    """给这批 email 打上 AT 已导出标记（时间 + 备注）。
+def mark_exported(emails: list[str], fmt_id: str, fmt_label: str = "", note: str = "") -> int:
+    """给这批 email 打上导出留痕标记（导出时间 + 格式 + 格式标签 + 用户备注）。
 
-    只在手动导出「access_token」格式时调用。查不到的 email 静默跳过，
-    返回实际打标的行数。重复导出会覆盖时间与备注（以最后一次为准）。
+    支持所有导出格式（AT、账密2FA、CPA、Sub2API、Session 等）。
+    查不到的 email 静默跳过，返回实际打标的行数。重复导出会更新为最后一次导出的状态。
+    若导出格式属于 AT，同时兼容更新原有的 at_exported_at / at_export_note。
     """
     cleaned = [e.strip().lower() for e in (emails or []) if e and e.strip()]
     if not cleaned:
         return 0
     now = time.time()
+    fmt_id = (fmt_id or "").strip()
+    fmt_label = (fmt_label or "").strip()
+    note = (note or "").strip()
+    with _lock:
+        con = _conn()
+        n = 0
+        CHUNK = 500
+        for i in range(0, len(cleaned), CHUNK):
+            part = cleaned[i:i + CHUNK]
+            placeholders = ",".join("?" * len(part))
+            if fmt_id in ("at", "email_at"):
+                cur = con.execute(
+                    f"UPDATE registered SET exported_at=?, export_fmt=?, export_fmt_label=?, export_note=?, at_exported_at=?, at_export_note=? "
+                    f"WHERE email IN ({placeholders})",
+                    [now, fmt_id, fmt_label, note, now, note] + part,
+                )
+            else:
+                cur = con.execute(
+                    f"UPDATE registered SET exported_at=?, export_fmt=?, export_fmt_label=?, export_note=? "
+                    f"WHERE email IN ({placeholders})",
+                    [now, fmt_id, fmt_label, note] + part,
+                )
+            n += cur.rowcount if cur.rowcount > 0 else 0
+        con.commit()
+    return n
+
+
+def mark_at_exported(emails: list[str], note: str = "") -> int:
+    """兼容旧接口：给这批 email 打上 AT 已导出标记。"""
+    return mark_exported(emails, fmt_id="at", fmt_label="access_token", note=note)
+
+
+def update_export_note(emails: list[str], note: str = "") -> int:
+    """批量更新或修改账号的导出备注。"""
+    cleaned = [e.strip().lower() for e in (emails or []) if e and e.strip()]
+    if not cleaned:
+        return 0
     note = (note or "").strip()
     with _lock:
         con = _conn()
@@ -2328,9 +2413,9 @@ def mark_at_exported(emails: list[str], note: str = "") -> int:
             part = cleaned[i:i + CHUNK]
             placeholders = ",".join("?" * len(part))
             cur = con.execute(
-                f"UPDATE registered SET at_exported_at=?, at_export_note=? "
+                f"UPDATE registered SET export_note=?, at_export_note=? "
                 f"WHERE email IN ({placeholders})",
-                [now, note] + part,
+                [note, note] + part,
             )
             n += cur.rowcount if cur.rowcount > 0 else 0
         con.commit()
