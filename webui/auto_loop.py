@@ -65,11 +65,19 @@ class AutoLoopController:
         self._registered_fail = 0
         # 当前每个 worker 在跑啥（worker_id → email）
         self._worker_status: dict[int, dict] = {}
+        self._worker_cycles: dict[int, int] = {}
         self._last_message = ""
-        # 熔断状态
+        # 熔断与风控状态
         self._consecutive_network_fails = 0
+        self._consecutive_409_count = 0
         self._circuit_break_threshold = 3
         self._last_break_reason = ""
+        self._risk_backoff_until = 0.0
+        # 速度与出号率波形监控 (CPM Velocity)
+        self._ok_timestamps: list[float] = []
+        self._velocity_history: list[dict] = []
+        self._last_velocity_sample_time: float = 0.0
+        self._used_proxies_set: set[str] = set()
         # SSE 订阅
         self._subscribers: list[queue.Queue] = []
         # 代理池 / 并发数
@@ -97,7 +105,14 @@ class AutoLoopController:
             self._registered_ok = 0
             self._registered_fail = 0
             self._worker_status.clear()
+            self._worker_cycles.clear()
+            self._ok_timestamps.clear()
+            self._velocity_history.clear()
+            self._used_proxies_set.clear()
+            self._last_velocity_sample_time = 0.0
             self._consecutive_network_fails = 0
+            self._consecutive_409_count = 0
+            self._risk_backoff_until = 0.0
             self._last_message = "auto-loop 启动"
             # 解析并发参数（上限 50：纯协议注册本机余量充足，真正上限在代理池与风控）
             self._concurrency = max(1, min(50, int(self._options.get("concurrency") or 1)))
@@ -182,16 +197,125 @@ class AutoLoopController:
         with self._lock:
             stats = db.stats()
             now = time.time()
-            workers_info = [
-                {
-                    "id": wid,
-                    "email": info.get("email", ""),
-                    "run_id": info.get("run_id", ""),
-                    "proxy": info.get("proxy", ""),
-                    "started_at": info.get("started_at", 0),
-                }
-                for wid, info in sorted(self._worker_status.items())
-            ]
+
+            elapsed = 0.0
+            if self._started_at:
+                if self._state in (AutoLoopState.RUNNING, AutoLoopState.PAUSED):
+                    elapsed = now - self._started_at
+                elif self._finished_at:
+                    elapsed = self._finished_at - self._started_at
+
+            # 1. 速度与出号率 CPM 计算 (过去 60 秒与过去 300 秒)
+            recent_1m = [ts for ts in self._ok_timestamps if now - ts <= 60]
+            recent_5m = [ts for ts in self._ok_timestamps if now - ts <= 300]
+            cpm = float(len(recent_1m))
+            if self._state == AutoLoopState.RUNNING and 0 < elapsed < 60 and self._registered_ok > 0:
+                cpm = round((self._registered_ok / elapsed) * 60, 1)
+
+            cpm_5m = round((len(recent_5m) / min(300.0, max(1.0, elapsed))) * 60, 1) if elapsed > 0 else 0.0
+            projected_hourly = int(round(cpm * 60)) if cpm > 0 else int(round(cpm_5m * 60))
+            tot_finished = self._registered_ok + self._registered_fail
+            success_rate = round((self._registered_ok / tot_finished) * 100, 1) if tot_finished > 0 else 0.0
+
+            # 2. 定时记录速率曲线采样点（每 2 秒记录一次，最多存 30 个点）
+            if now - self._last_velocity_sample_time >= 2.0:
+                self._last_velocity_sample_time = now
+                self._velocity_history.append({
+                    "t": round(now, 1),
+                    "cpm": round(cpm, 1),
+                })
+                if len(self._velocity_history) > 30:
+                    self._velocity_history.pop(0)
+
+            # 3. 智能风控状态监控与冷冻统计
+            cooling_down_count = 0
+            try:
+                from .proxy_health import get_proxy_health_manager
+                cooling_down_count = get_proxy_health_manager().get_summary().get("cooling_down_count", 0)
+            except Exception:
+                pass
+
+            risk_active = bool(
+                self._consecutive_409_count >= 3
+                or (self._state == AutoLoopState.PAUSED and ("连续" in self._last_break_reason or "409" in self._last_break_reason))
+                or (cooling_down_count >= 3 and self._consecutive_409_count > 0)
+            )
+            backoff_left = max(0, int(self._risk_backoff_until - now)) if self._risk_backoff_until > now else 0
+            risk_warning = {
+                "active": risk_active,
+                "consecutive_409": self._consecutive_409_count,
+                "frozen_proxies": cooling_down_count,
+                "backoff_seconds_left": backoff_left,
+                "reason": (
+                    f"⚠️ 触发风控频控保护：检测到连续 {self._consecutive_409_count} 次 409 IP 频控或出口风控拦截，已自动冷冻 {cooling_down_count} 个异常代理并启动保护"
+                    if risk_active else ""
+                ),
+            }
+
+            # 4. 多 Worker 多核动态舰队大屏数据 (Fleet HUD)
+            fleet_info = []
+            target_country = self._options.get("proxy_country", "")
+            for wid in range(self._concurrency):
+                if wid in self._worker_status:
+                    info = self._worker_status[wid]
+                    rid = info.get("run_id", "")
+                    p_info = registrar.get_run_phase(rid) if rid else {}
+                    phase = p_info.get("phase", "running")
+                    phase_text = p_info.get("phase_text", "正在注册...")
+                    pct = p_info.get("percent", 15)
+
+                    # 步骤微动画阶段链 (1~5)
+                    step_idx = 1
+                    if phase in ("sentinel", "pow"):
+                        step_idx = 1
+                    elif phase in ("otp_sent", "otp_verify"):
+                        step_idx = 2
+                    elif phase in ("register_pw", "password", "official_password"):
+                        step_idx = 3
+                    elif phase in ("binding_2fa", "2fa_done"):
+                        step_idx = 4
+                    elif phase in ("creating", "done"):
+                        step_idx = 5
+
+                    st_ts = info.get("started_at", now)
+                    elapsed_w = round(now - st_ts, 1)
+                    w_proxy = info.get("proxy", "")
+                    country = registrar.extract_proxy_country(w_proxy, target_country)
+
+                    fleet_info.append({
+                        "id": wid,
+                        "status": "running",
+                        "email": info.get("email", ""),
+                        "run_id": rid,
+                        "proxy": w_proxy,
+                        "country": country,
+                        "started_at": st_ts,
+                        "elapsed": elapsed_w,
+                        "phase": phase,
+                        "phase_text": phase_text,
+                        "percent": pct,
+                        "step_index": step_idx,
+                        "cycles": self._worker_cycles.get(wid, 0),
+                        "last_error": "",
+                    })
+                else:
+                    fleet_info.append({
+                        "id": wid,
+                        "status": "cooling" if self._state == AutoLoopState.RUNNING else self._state,
+                        "email": "",
+                        "run_id": "",
+                        "proxy": self._proxy_for_worker(wid) if self._state == AutoLoopState.RUNNING else "",
+                        "country": target_country,
+                        "started_at": 0,
+                        "elapsed": 0,
+                        "phase": "idle",
+                        "phase_text": "准备就绪 / 领取下一个号..." if self._state == AutoLoopState.RUNNING else "空闲待命",
+                        "percent": 0,
+                        "step_index": 0,
+                        "cycles": self._worker_cycles.get(wid, 0),
+                        "last_error": "",
+                    })
+
             # 计算 tasks 的动态耗时与实时步骤
             tasks_copy = []
             for t in self._tasks:
@@ -216,13 +340,6 @@ class AutoLoopController:
                         item["percent"] = p_info.get("percent", 15)
                 tasks_copy.append(item)
 
-            elapsed = 0.0
-            if self._started_at:
-                if self._state in (AutoLoopState.RUNNING, AutoLoopState.PAUSED):
-                    elapsed = now - self._started_at
-                elif self._finished_at:
-                    elapsed = self._finished_at - self._started_at
-
             return {
                 "state": self._state,
                 "started_at": self._started_at,
@@ -238,7 +355,17 @@ class AutoLoopController:
                 "concurrency": self._concurrency,
                 "circuit_break_threshold": self._circuit_break_threshold,
                 "proxy_pool_size": len(self._proxy_pool),
-                "workers": workers_info,
+                "workers": fleet_info,
+                "fleet": fleet_info,
+                "velocity": {
+                    "cpm": cpm,
+                    "cpm_5m": cpm_5m,
+                    "projected_hourly": projected_hourly,
+                    "success_rate": success_rate,
+                    "proxies_used": len(self._used_proxies_set),
+                    "history": self._velocity_history,
+                },
+                "risk_warning": risk_warning,
                 "tasks": tasks_copy,
                 "last_message": self._last_message,
                 "pool_stats": stats,
@@ -294,18 +421,32 @@ class AutoLoopController:
             return pool[worker_id % len(pool)]
         return self._options.get("proxy", "") or ""
 
-    def _record_finish(self, ok: bool, category: str):
-        """worker 结束一个 run 后调，更新计数 + 熔断。"""
+    def _record_finish(self, ok: bool, category: str, error_msg: str = "", worker_id: int = 0):
+        """worker 结束一个 run 后调，更新计数 + 熔断 + 速度与风控记录。"""
         with self._lock:
+            now_ts = time.time()
             if ok:
                 self._registered_ok += 1
                 self._consecutive_network_fails = 0
+                self._consecutive_409_count = 0
+                self._ok_timestamps.append(now_ts)
+                cutoff = now_ts - 7200
+                self._ok_timestamps = [ts for ts in self._ok_timestamps if ts >= cutoff]
             else:
                 self._registered_fail += 1
                 if category == "network":
                     self._consecutive_network_fails += 1
                 else:
                     self._consecutive_network_fails = 0
+
+                err_str = f"{category} {error_msg}".lower()
+                if "409" in err_str or "conflict" in err_str or "cf_challenge" in err_str:
+                    self._consecutive_409_count += 1
+                    self._risk_backoff_until = now_ts + 60.0
+                else:
+                    self._consecutive_409_count = 0
+
+            self._worker_cycles[worker_id] = self._worker_cycles.get(worker_id, 0) + (1 if ok else 0)
             self._last_message = (
                 f"累计 ok={self._registered_ok} fail={self._registered_fail}"
             )
@@ -463,6 +604,11 @@ class AutoLoopController:
             if proxy:
                 run_options["proxy"] = proxy
 
+            # 记录使用过的代理
+            if proxy:
+                with self._lock:
+                    self._used_proxies_set.add(proxy)
+
             # 启一个 run
             try:
                 run_id = registrar.start_registration(account, run_options)
@@ -558,7 +704,8 @@ class AutoLoopController:
                         t["error"] = err_msg or category or "注册失败"
                         t["phase_text"] = f"失败: {t['error'][:40]}"
 
-            self._record_finish(ok, category)
+            error_detail = t.get("error", "") if "t" in locals() and isinstance(t, dict) else ""
+            self._record_finish(ok, category, error_msg=error_detail, worker_id=worker_id)
             self._broadcast("state", self._snapshot())
             self._broadcast("run_finished", {
                 "worker_id": worker_id,
