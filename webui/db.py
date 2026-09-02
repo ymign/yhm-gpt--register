@@ -1170,6 +1170,54 @@ def get_dashboard_summary() -> dict:
     }
 
 
+def get_registered_summary() -> dict:
+    """获取注册资产专项概览与透视统计（总数、双全安全率、出库留痕比、OAuth授权率、Top国家）。"""
+    con = _conn()
+    row = con.execute("""
+        SELECT
+            COUNT(*) AS total,
+            SUM(CASE WHEN password IS NOT NULL AND trim(password) != '' AND totp_secret IS NOT NULL AND trim(totp_secret) != '' THEN 1 ELSE 0 END) AS both_sec,
+            SUM(CASE WHEN password IS NOT NULL AND trim(password) != '' THEN 1 ELSE 0 END) AS with_pwd,
+            SUM(CASE WHEN totp_secret IS NOT NULL AND trim(totp_secret) != '' THEN 1 ELSE 0 END) AS with_2fa,
+            SUM(CASE WHEN (exported_at IS NOT NULL AND exported_at > 0) OR (at_exported_at IS NOT NULL AND at_exported_at > 0) THEN 1 ELSE 0 END) AS exported_cnt,
+            SUM(CASE WHEN (exported_at IS NULL OR exported_at = 0) AND (at_exported_at IS NULL OR at_exported_at = 0) THEN 1 ELSE 0 END) AS unexported_cnt,
+            SUM(CASE WHEN oauth_status IN ('success', 'success_phone', 'success_direct') THEN 1 ELSE 0 END) AS with_oauth
+        FROM registered
+    """).fetchone()
+
+    total = row["total"] or 0
+    both_sec = row["both_sec"] or 0
+    with_pwd = row["with_pwd"] or 0
+    with_2fa = row["with_2fa"] or 0
+    exported_cnt = row["exported_cnt"] or 0
+    unexported_cnt = row["unexported_cnt"] or 0
+    with_oauth = row["with_oauth"] or 0
+
+    cur_geo = con.execute("""
+        SELECT upper(trim(reg_country)) AS country, COUNT(*) AS n
+        FROM registered
+        WHERE reg_country IS NOT NULL AND trim(reg_country) != ''
+        GROUP BY upper(trim(reg_country))
+        ORDER BY n DESC LIMIT 4
+    """)
+    top_countries = [{"country": r["country"], "count": r["n"]} for r in cur_geo.fetchall()]
+
+    return {
+        "ok": True,
+        "total": total,
+        "both_sec": both_sec,
+        "with_pwd": with_pwd,
+        "with_2fa": with_2fa,
+        "exported_cnt": exported_cnt,
+        "unexported_cnt": unexported_cnt,
+        "with_oauth": with_oauth,
+        "sec_rate": round((both_sec / total * 100), 1) if total > 0 else 0,
+        "pwd_rate": round((with_pwd / total * 100), 1) if total > 0 else 0,
+        "twofa_rate": round((with_2fa / total * 100), 1) if total > 0 else 0,
+        "top_countries": top_countries,
+    }
+
+
 # ──────────────────────── 注册结果存储 ────────────────────────
 
 
@@ -2550,6 +2598,11 @@ def list_registered(
         oauth_meta = None
         extract_link = None
         session_data = None
+        reg_proxy = None
+        mail_oauth = None
+        last_warmed_at = None
+        warm_status = None
+        warm_count = 0
         if d.get("extra_json"):
             try:
                 extra = json.loads(d["extra_json"])
@@ -2557,12 +2610,22 @@ def list_registered(
                 oauth_meta = extra.get("oauth_export")
                 extract_link = extra.get("extract_link")
                 session_data = extra.get("session_data")
+                reg_proxy = extra.get("reg_proxy")
+                mail_oauth = extra.get("mail_oauth")
+                last_warmed_at = extra.get("last_warmed_at")
+                warm_status = extra.get("warm_status")
+                warm_count = extra.get("warm_count", 0)
             except Exception:
                 pass
         d["plus_check"] = plus
         d["oauth_export"] = oauth_meta
         d["extract_link"] = extract_link
         d["session_data"] = session_data
+        d["reg_proxy"] = reg_proxy
+        d["mail_oauth"] = mail_oauth
+        d["last_warmed_at"] = last_warmed_at
+        d["warm_status"] = warm_status
+        d["warm_count"] = warm_count
         d.pop("extra_json", None)
         oa = None
         if d.get("oa_check"):

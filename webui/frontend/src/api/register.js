@@ -8,6 +8,8 @@ export const listRuns = (limit = 50) => http.get('/api/runs', { params: { limit 
 export const getRunLog = (runId) => http.get(`/api/runs/${encodeURIComponent(runId)}/log`)
 
 // ──────────────── 注册结果 registered ────────────────
+export const getRegisteredSummary = () => http.get('/api/registered/summary')
+
 export const listRegistered = (params) =>
   http.get('/api/registered', { params }) // { limit, offset, filter }
 

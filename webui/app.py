@@ -557,6 +557,12 @@ def api_run_log(run_id: str):
         raise HTTPException(500, f"读取日志异常: {e}")
 
 
+@app.get("/api/registered/summary")
+def api_registered_summary():
+    """获取已注册账号资产专项概览看板数据。"""
+    return db.get_registered_summary()
+
+
 @app.get("/api/registered")
 def api_registered(
     limit: int = 20,

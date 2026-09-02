@@ -14,15 +14,11 @@ import {
   Check,
   Close,
   Warning,
-  Odometer,
-  TrendCharts,
   Lightning,
-  Opportunity,
-  Connection,
-  Timer,
-  Histogram,
-  Cpu,
+  Setting,
   Refresh,
+  ArrowUp,
+  ArrowDown,
 } from '@element-plus/icons-vue'
 import {
   autoStart,
@@ -80,7 +76,7 @@ const riskWarning = computed(() => {
   }
 })
 
-// ──────────── 2. 实时出号速率 (CPM) 与波形看板 ────────────
+// ──────────── 2. 实时出号速率 (CPM) ────────────
 const velocity = computed(() => {
   return autoStatus.value.velocity || {
     cpm: 0,
@@ -88,85 +84,84 @@ const velocity = computed(() => {
     projected_hourly: 0,
     success_rate: 0,
     proxies_used: 0,
-    history: [],
   }
 })
 
-// SVG 平滑贝塞尔曲线路径生成
-const svgPath = computed(() => {
-  const history = velocity.value.history || []
-  if (!history.length) return { line: '', area: '', points: [] }
-  const data = history.map((item) => (typeof item.cpm === 'number' ? item.cpm : 0))
-  const w = 360
-  const h = 80
-  const pad = 10
-  const maxVal = Math.max(...data, 10)
-  const minVal = 0
+// ──────────── 3. 参数配置收起与展开（记忆到 localStorage） ────────────
+const configCollapsed = ref(localStorage.getItem('autoloop_cfg_collapsed') === 'true')
 
-  const pts = data.map((val, idx) => {
-    const x = pad + (idx / Math.max(1, data.length - 1)) * (w - 2 * pad)
-    const y = h - pad - ((val - minVal) / Math.max(1, maxVal - minVal)) * (h - 2 * pad)
-    return { x: Math.round(x * 10) / 10, y: Math.round(y * 10) / 10, val }
-  })
+function toggleConfigCollapsed() {
+  configCollapsed.value = !configCollapsed.value
+  try {
+    localStorage.setItem('autoloop_cfg_collapsed', String(configCollapsed.value))
+  } catch (_) {}
+}
 
-  if (pts.length === 1) {
-    return {
-      line: `M ${pts[0].x} ${pts[0].y} L ${w - pad} ${pts[0].y}`,
-      area: `M ${pts[0].x} ${pts[0].y} L ${w - pad} ${pts[0].y} L ${w - pad} ${h} L ${pad} ${h} Z`,
-      points: pts,
-    }
+const configSummary = computed(() => {
+  const srcMap = {
+    remail: '🍎 Remail 自动购号',
+    cf_temp: '⚡ CF 临时邮箱',
+    outlook: '📦 微软 Outlook',
+    icloud_relay: '✉️ iCloud 邮箱',
   }
-
-  let lineD = `M ${pts[0].x} ${pts[0].y}`
-  for (let i = 1; i < pts.length; i++) {
-    const prev = pts[i - 1]
-    const curr = pts[i]
-    const cp1x = prev.x + (curr.x - prev.x) / 2
-    const cp1y = prev.y
-    const cp2x = prev.x + (curr.x - prev.x) / 2
-    const cp2y = curr.y
-    lineD += ` C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${curr.x} ${curr.y}`
-  }
-
-  const areaD = `${lineD} L ${pts[pts.length - 1].x} ${h} L ${pts[0].x} ${h} Z`
-  return { line: lineD, area: areaD, points: pts }
+  const src = srcMap[form.value.autoMailSource] || '🍎 Remail'
+  const conc = form.value.autoConcurrency || 1
+  const ctry = form.value.autoProxyCountry ? formatCountry(form.value.autoProxyCountry) : '🌐 随机出口'
+  const sec = []
+  if (form.value.autoWantPassword) sec.push('🔑自动设密')
+  if (form.value.autoWant2fa) sec.push('🛡️自动2FA')
+  const secStr = sec.join(' + ') || '免密'
+  return `${src} · ⚡ ${conc} Workers · 🧮 ${powSlots.value} 算力槽位 · ${ctry} · ${secStr}`
 })
 
-// ──────────── 3. 多 Worker 多核并发动态舰队监控 (Fleet HUD) ────────────
+// ──────────── 4. 现代化全链路流水线五阶段定义 ────────────
 const PIPELINE_STEPS = [
-  { index: 1, key: 'sentinel', label: 'PoW预算', fullLabel: '⚡ PoW 0ms预算', icon: '⚡' },
-  { index: 2, key: 'otp', label: '取OTP', fullLabel: '📨 微软取OTP', icon: '📨' },
+  { index: 1, key: 'sentinel', label: 'PoW', fullLabel: '⚡ PoW 0ms预算', icon: '⚡' },
+  { index: 2, key: 'otp', label: '取码', fullLabel: '📨 微软取OTP', icon: '📨' },
   { index: 3, key: 'password', label: '设密', fullLabel: '🔐 官方设密', icon: '🔐' },
   { index: 4, key: '2fa', label: '2FA', fullLabel: '🛡️ 2FA激活', icon: '🛡️' },
   { index: 5, key: 'database', label: '入库', fullLabel: '💾 资产入库', icon: '💾' },
 ]
 
-const fleetList = computed(() => {
-  if (Array.isArray(autoStatus.value.fleet) && autoStatus.value.fleet.length) {
-    return autoStatus.value.fleet
+function getTaskStepIndex(row) {
+  if (!row) return 1
+  if (row.status === 'done') return 5
+  const phase = row.phase || ''
+  if (phase === 'sentinel' || phase === 'pow' || phase === 'auth_url' || phase === 'oauth_init' || phase === 'network' || phase === 'starting') return 1
+  if (phase === 'otp_sent' || phase === 'otp_verify') return 2
+  if (phase === 'register_pw' || phase === 'password' || phase === 'official_password') return 3
+  if (phase === 'binding_2fa' || phase === '2fa_done') return 4
+  if (phase === 'creating' || phase === 'done') return 5
+  if (row.percent) {
+    return Math.min(5, Math.max(1, Math.ceil(row.percent / 20)))
   }
-  if (Array.isArray(autoStatus.value.workers) && autoStatus.value.workers.length) {
-    return autoStatus.value.workers
-  }
-  const conc = autoStatus.value.concurrency || form.value.autoConcurrency || 1
-  return Array.from({ length: conc }, (_, i) => ({
-    id: i,
-    status: st.value === 'running' ? 'cooling' : st.value,
-    email: '',
-    proxy: '',
-    country: form.value.autoProxyCountry || '',
-    started_at: 0,
-    elapsed: 0,
-    phase: 'idle',
-    phase_text: st.value === 'running' ? '准备就绪 / 领取下一个号...' : '空闲待命',
-    percent: 0,
-    step_index: 0,
-    cycles: 0,
-    last_error: '',
-  }))
-})
+  return 1
+}
 
-// 账号任务流水列表（从 autoStatus 中取得）
+function getEmailIcon(email) {
+  if (!email) return '✉️'
+  if (email.includes('placeholder')) return '🍎'
+  const lower = email.toLowerCase()
+  if (lower.includes('outlook') || lower.includes('hotmail') || lower.includes('live')) return '📦'
+  if (lower.includes('icloud')) return '🍎'
+  if (lower.includes('gmail')) return '🇬'
+  return '⚡'
+}
+
+function isPlaceholder(email) {
+  return !email || email.includes('placeholder')
+}
+
+function getTaskCountry(row) {
+  if (row.reg_country) return row.reg_country
+  if (row.proxy) {
+    const m = row.proxy.match(/[-_]([A-Za-z]{2})[-_]/) || row.proxy.match(/([a-zA-Z]{2})\.cliproxy/i)
+    if (m && m[1] && m[1].length === 2) return m[1].toUpperCase()
+  }
+  return form.value.autoProxyCountry || ''
+}
+
+// 账号任务流水列表
 const taskList = computed(() => {
   return Array.isArray(autoStatus.value.tasks) ? autoStatus.value.tasks : []
 })
@@ -174,7 +169,7 @@ const taskList = computed(() => {
 // ──────────── 状态筛选与分页控制 ────────────
 const filterStatus = ref('all') // 'all' | 'running' | 'done' | 'failed'
 const currentPage = ref(1)
-const pageSize = ref(20)
+const pageSize = ref(30)
 
 const runningCount = computed(() => taskList.value.filter((t) => t.status === 'running').length)
 const doneCount = computed(() => taskList.value.filter((t) => t.status === 'done').length)
@@ -228,17 +223,16 @@ function formatDuration(sec) {
 }
 
 function maskProxy(p) {
-  if (!p) return '直连 (无代理)'
+  if (!p) return ''
   try {
     const s = String(p)
     if (s.includes('@')) {
       const parts = s.split('@')
-      const hostPort = parts[1] || ''
-      return `...${hostPort}`
+      return `...${parts[1] || ''}`
     }
-    return s.slice(0, 24)
+    return s.slice(0, 20)
   } catch (_) {
-    return '代理就绪'
+    return ''
   }
 }
 
@@ -505,280 +499,99 @@ onUnmounted(() => {
       </div>
     </el-collapse-transition>
 
-    <!-- ════════════ 2. 顶部 KPI 指标大屏与实时速度波形看板 ════════════ -->
-    <div class="autoloop-top-matrix">
-      <!-- 6 大核心 KPI 矩阵 -->
-      <div class="kpi-grid">
-        <!-- 运行状态卡片 -->
-        <div class="kpi-card" :class="stateBadgeClass">
-          <div class="kpi-icon-dot">
-            <span class="live-pulse"></span>
-          </div>
-          <div class="kpi-info">
-            <span class="kpi-title">运行状态</span>
-            <span class="kpi-num status-text">{{ stateLabel }}</span>
-          </div>
+    <!-- ════════════ 2. 顶部精炼 KPI 指标大屏 ════════════ -->
+    <div class="kpi-grid">
+      <!-- 运行状态卡片 -->
+      <div class="kpi-card" :class="stateBadgeClass">
+        <div class="kpi-icon-dot">
+          <span class="live-pulse"></span>
         </div>
-
-        <!-- 成功出号 -->
-        <div class="kpi-card hit-card">
-          <div class="kpi-info">
-            <span class="kpi-title">成功出号</span>
-            <div class="kpi-num-row">
-              <span class="kpi-num text-success">{{ autoStatus.registered_ok || 0 }}</span>
-              <span v-if="autoStatus.target_count" class="kpi-sub">/ 目标 {{ autoStatus.target_count }}</span>
-            </div>
-          </div>
+        <div class="kpi-info">
+          <span class="kpi-title">运行状态</span>
+          <span class="kpi-num status-text">{{ stateLabel }}</span>
         </div>
+      </div>
 
-        <!-- 注册失败 -->
-        <div class="kpi-card err-card">
-          <div class="kpi-info">
-            <span class="kpi-title">注册失败</span>
-            <span class="kpi-num text-danger">{{ autoStatus.registered_fail || 0 }}</span>
-          </div>
-        </div>
-
-        <!-- 成功率 -->
-        <div class="kpi-card">
-          <div class="kpi-info">
-            <span class="kpi-title">出号成功率</span>
-            <span class="kpi-num">{{ successRate }}</span>
-          </div>
-        </div>
-
-        <!-- 批次耗时 -->
-        <div class="kpi-card timing-card" :class="{ 'timing-card-running': st === 'running' }">
-          <div class="kpi-info">
-            <div class="timing-kpi-header">
-              <span class="kpi-title">批次耗时</span>
-              <span v-if="st === 'running'" class="pulse-dot-live"></span>
-            </div>
-            <div class="kpi-num-row">
-              <span class="kpi-num" :class="{ 'text-primary': st === 'running', 'text-success': st === 'stopped' && (autoStatus.registered_ok || 0) > 0 }">
-                {{ formatDuration(batchElapsedSec) }}
-              </span>
-            </div>
-            <div class="timing-sub-row">
-              <span class="timing-sub-time">🕒 {{ formatClock(batchStartedAt) }}</span>
-              <span class="timing-sub-arrow">→</span>
-              <span class="timing-sub-time">
-                <span v-if="st === 'running'" class="text-running-sub">🟢 运行中</span>
-                <span v-else>🏁 {{ formatClock(batchFinishedAt) }}</span>
-              </span>
-            </div>
-          </div>
-        </div>
-
-        <!-- 代理池 -->
-        <div class="kpi-card proxy-card" @click="router.push('/proxy')">
-          <div class="kpi-info">
-            <span class="kpi-title">代理池</span>
-            <div class="kpi-num-row">
-              <span class="kpi-num">{{ proxyCount }}</span>
-              <span class="kpi-sub">节点可用 ›</span>
-            </div>
+      <!-- 成功出号 -->
+      <div class="kpi-card hit-card">
+        <div class="kpi-info">
+          <span class="kpi-title">成功出号</span>
+          <div class="kpi-num-row">
+            <span class="kpi-num text-success">{{ autoStatus.registered_ok || 0 }}</span>
+            <span v-if="autoStatus.target_count" class="kpi-sub">/ 目标 {{ autoStatus.target_count }}</span>
           </div>
         </div>
       </div>
 
-      <!-- 实时速度与出号率波形大屏 (Velocity Sparkline HUD) -->
-      <div class="velocity-hud-card">
-        <div class="velocity-left">
-          <div class="velocity-metric-item">
-            <div class="metric-title-row">
-              <el-icon class="icon-velocity"><Lightning /></el-icon>
-              <span class="metric-title">实时出号速率 (CPM)</span>
-            </div>
-            <div class="metric-main-val">
-              <span class="mono text-emerald">{{ velocity.cpm }}</span>
-              <span class="unit-text">账号 / 分钟</span>
-            </div>
-          </div>
+      <!-- 注册失败 -->
+      <div class="kpi-card err-card">
+        <div class="kpi-info">
+          <span class="kpi-title">注册失败</span>
+          <span class="kpi-num text-danger">{{ autoStatus.registered_fail || 0 }}</span>
+        </div>
+      </div>
 
-          <div class="velocity-metric-sub">
-            <div class="sub-kpi">
-              <span class="sub-label">📈 预计时产能:</span>
-              <span class="sub-val mono text-primary">{{ velocity.projected_hourly }} 个/时</span>
-            </div>
-            <div class="sub-kpi">
-              <span class="sub-label">🌐 代理轮询消耗:</span>
-              <span class="sub-val mono text-amber">{{ velocity.proxies_used }} 节点</span>
-            </div>
+      <!-- 出号速率 CPM -->
+      <div class="kpi-card">
+        <div class="kpi-info">
+          <div class="kpi-title-row">
+            <span class="kpi-title">实时出号速率</span>
+            <el-icon class="cpm-icon"><Lightning /></el-icon>
+          </div>
+          <div class="kpi-num-row">
+            <span class="kpi-num text-emerald">{{ velocity.cpm }}</span>
+            <span class="kpi-sub">个/分 (时产 ~{{ velocity.projected_hourly }})</span>
           </div>
         </div>
+      </div>
 
-        <!-- 动态波形平滑曲线图 -->
-        <div class="velocity-chart-wrap">
-          <div class="chart-header">
-            <span class="chart-title">出号速率平滑波形 (Real-time Velocity)</span>
-            <span class="chart-tag">5m均速 {{ velocity.cpm_5m }} CPM</span>
+      <!-- 成功率 -->
+      <div class="kpi-card">
+        <div class="kpi-info">
+          <span class="kpi-title">出号成功率</span>
+          <span class="kpi-num">{{ successRate }}</span>
+        </div>
+      </div>
+
+      <!-- 批次耗时 -->
+      <div class="kpi-card timing-card" :class="{ 'timing-card-running': st === 'running' }">
+        <div class="kpi-info">
+          <div class="timing-kpi-header">
+            <span class="kpi-title">批次耗时</span>
+            <span v-if="st === 'running'" class="pulse-dot-live"></span>
           </div>
-          <div class="svg-sparkline-box">
-            <svg viewBox="0 0 360 80" class="sparkline-svg" preserveAspectRatio="none">
-              <defs>
-                <linearGradient id="velocityGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stop-color="#10b981" stop-opacity="0.35" />
-                  <stop offset="100%" stop-color="#10b981" stop-opacity="0.0" />
-                </linearGradient>
-              </defs>
-              <!-- 填充曲面 -->
-              <path v-if="svgPath.area" :d="svgPath.area" fill="url(#velocityGrad)" />
-              <!-- 曲线 -->
-              <path
-                v-if="svgPath.line"
-                :d="svgPath.line"
-                fill="none"
-                stroke="#10b981"
-                stroke-width="2.5"
-                stroke-linecap="round"
-              />
-              <!-- 最新点发光点 -->
-              <circle
-                v-if="svgPath.points?.length"
-                :cx="svgPath.points[svgPath.points.length - 1].x"
-                :cy="svgPath.points[svgPath.points.length - 1].y"
-                r="4"
-                fill="#10b981"
-                class="live-spark-dot"
-              />
-            </svg>
+          <div class="kpi-num-row">
+            <span class="kpi-num" :class="{ 'text-primary': st === 'running', 'text-success': st === 'stopped' && (autoStatus.registered_ok || 0) > 0 }">
+              {{ formatDuration(batchElapsedSec) }}
+            </span>
+          </div>
+          <div class="timing-sub-row">
+            <span class="timing-sub-time">🕒 {{ formatClock(batchStartedAt) }}</span>
+            <span class="timing-sub-arrow">→</span>
+            <span class="timing-sub-time">
+              <span v-if="st === 'running'" class="text-running-sub">🟢 运行中</span>
+              <span v-else>🏁 {{ formatClock(batchFinishedAt) }}</span>
+            </span>
           </div>
         </div>
       </div>
     </div>
 
-    <!-- ════════════ 3. 多 Worker 多核并发动态舰队监控大屏 (Fleet HUD) ════════════ -->
-    <div class="macos-panel fleet-panel">
-      <div class="fleet-panel-header">
-        <div class="header-left">
-          <span class="fleet-badge">FLEET HUD</span>
-          <span class="panel-title">多 Worker 多核并发动态舰队监控大屏</span>
-          <span class="fleet-count-tag">{{ fleetList.length }} 个并发 Worker 在线</span>
-        </div>
-        <div class="header-right">
-          <!-- 一体化控制操作按钮组 -->
-          <div class="control-actions">
-            <el-button
-              type="primary" class="start-btn" :disabled="!canStart"
-              @click="start"
-            >
-              <el-icon><VideoPlay /></el-icon>开始自动运行
-            </el-button>
-            <div class="action-btn-group">
-              <el-button size="small" :disabled="!canPause" @click="call(autoPause, '暂停')">
-                <el-icon><VideoPause /></el-icon>暂停
-              </el-button>
-              <el-button size="small" :disabled="!canResume" @click="call(autoResume, '恢复')">
-                <el-icon><RefreshRight /></el-icon>恢复
-              </el-button>
-              <el-button size="small" type="danger" plain :disabled="!canStop" @click="call(autoStop, '停止')">
-                <el-icon><SwitchButton /></el-icon>停止任务
-              </el-button>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- 动态舰队网格卡片矩阵 -->
-      <div class="fleet-grid">
-        <div
-          v-for="w in fleetList"
-          :key="w.id"
-          class="worker-hud-card"
-          :class="{
-            'is-running': w.status === 'running',
-            'is-cooling': w.status === 'cooling',
-            'is-stopped': w.status === 'stopped' || w.status === 'paused',
-            'is-error': Boolean(w.last_error),
-          }"
-        >
-          <!-- Worker 顶部状态条 -->
-          <div class="worker-card-header">
-            <div class="worker-id-wrap">
-              <span class="worker-dot" :class="w.status"></span>
-              <span class="worker-name">WORKER #{{ w.id + 1 }}</span>
-            </div>
-            <div class="worker-geo-wrap">
-              <span v-if="w.country" class="worker-country-tag">
-                {{ formatCountry(w.country) }}
-              </span>
-              <span class="worker-proxy-sub">{{ maskProxy(w.proxy) }}</span>
-            </div>
-          </div>
-
-          <!-- Worker 核心内容：当前账号与耗时 -->
-          <div class="worker-card-body">
-            <div class="worker-email-row">
-              <span v-if="w.email" class="worker-email mono" :title="w.email">
-                {{ w.email }}
-              </span>
-              <span v-else class="worker-email-empty">
-                {{ w.status === 'cooling' ? '⏳ 冷却间隙 / 准备领号' : '💤 待机空闲' }}
-              </span>
-              <button
-                v-if="w.email"
-                type="button"
-                class="copy-btn-mini"
-                title="复制邮箱"
-                @click="copyText(w.email)"
-              >
-                <el-icon><CopyDocument /></el-icon>
-              </button>
-            </div>
-
-            <!-- 耗时与产出 -->
-            <div class="worker-meta-row">
-              <div class="worker-timer-box">
-                <span class="timer-label">单号耗时:</span>
-                <span class="timer-val mono text-emerald">{{ w.elapsed > 0 ? `${w.elapsed}s` : '—' }}</span>
-              </div>
-              <div class="worker-cycles-box">
-                <span class="cycles-label">累计产出:</span>
-                <span class="cycles-val mono text-primary">{{ w.cycles || 0 }} 个</span>
-              </div>
-            </div>
-
-            <!-- 五阶段微动画流水线 (5-Stage Step Pipeline) -->
-            <div class="pipeline-track-box">
-              <div class="pipeline-steps">
-                <div
-                  v-for="step in PIPELINE_STEPS"
-                  :key="step.index"
-                  class="step-node"
-                  :class="{
-                    'step-done': w.step_index > step.index || w.status === 'done',
-                    'step-active': w.step_index === step.index && w.status === 'running',
-                    'step-pending': w.step_index < step.index,
-                  }"
-                  :title="step.fullLabel"
-                >
-                  <span class="step-icon">{{ step.icon }}</span>
-                  <span class="step-label">{{ step.label }}</span>
-                </div>
-              </div>
-
-              <!-- 当前详细进度说明 -->
-              <div class="step-current-desc">
-                <span v-if="w.status === 'running'" class="pulse-ring-dot"></span>
-                <span class="step-desc-text">{{ w.phase_text || '等待执行...' }}</span>
-                <span v-if="w.percent" class="step-pct-mono">{{ w.percent }}%</span>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- ════════════ 4. 参数控制调度卡片 (macOS 紧凑排布) ════════════ -->
+    <!-- ════════════ 3. 全自动批量参数调度卡片 (一键折叠/展开，极简优雅) ════════════ -->
     <div class="macos-panel config-panel">
-      <div class="panel-header">
-        <div class="panel-header-title">
-          <span class="macos-pill-tag">BATCH</span>
+      <div class="panel-header" @click="toggleConfigCollapsed">
+        <div class="panel-header-left">
+          <span class="macos-pill-tag">CONFIG</span>
           <span class="title">全自动批量参数调度</span>
 
-          <!-- 顶部批次实时耗时与均速摘要胶囊 -->
-          <div v-if="batchStartedAt" class="header-timing-pill" :class="{ 'header-timing-running': st === 'running' }">
+          <!-- 折叠时的精简摘要胶囊 -->
+          <div v-if="configCollapsed" class="config-summary-chip">
+            <span class="summary-dot"></span>
+            <span class="summary-text">{{ configSummary }}</span>
+          </div>
+
+          <!-- 展开时的时序胶囊 -->
+          <div v-else-if="batchStartedAt" class="header-timing-pill" :class="{ 'header-timing-running': st === 'running' }">
             <span class="pill-dot" :class="{ 'pulse': st === 'running' }"></span>
             <span>🕒 开始: {{ formatClock(batchStartedAt) }}</span>
             <span class="pill-sep">|</span>
@@ -788,121 +601,147 @@ onUnmounted(() => {
             <span v-if="batchAvgSpeed !== '—'">⚡ 均速: {{ batchAvgSpeed }}</span>
           </div>
         </div>
+
+        <div class="control-actions" @click.stop>
+          <el-button
+            type="primary" class="start-btn" :disabled="!canStart"
+            @click="start"
+          >
+            <el-icon><VideoPlay /></el-icon>开始自动运行
+          </el-button>
+          <div class="action-btn-group">
+            <el-button size="small" :disabled="!canPause" @click="call(autoPause, '暂停')">
+              <el-icon><VideoPause /></el-icon>暂停
+            </el-button>
+            <el-button size="small" :disabled="!canResume" @click="call(autoResume, '恢复')">
+              <el-icon><RefreshRight /></el-icon>恢复
+            </el-button>
+            <el-button size="small" type="danger" plain :disabled="!canStop" @click="call(autoStop, '停止')">
+              <el-icon><SwitchButton /></el-icon>停止任务
+            </el-button>
+          </div>
+
+          <button
+            type="button"
+            class="config-toggle-btn"
+            :title="configCollapsed ? '点击展开参数配置' : '点击收起参数配置'"
+            @click="toggleConfigCollapsed"
+          >
+            <el-icon :class="{ 'is-rotated': !configCollapsed }"><ArrowDown /></el-icon>
+            <span>{{ configCollapsed ? '展开参数配置' : '收起配置' }}</span>
+          </button>
+        </div>
       </div>
 
-      <div class="panel-body">
-        <el-form size="small" label-position="top">
-          <!-- 邮箱渠道选择 -->
-          <el-row :gutter="12" class="config-row-source">
-            <el-col :span="24">
-              <el-form-item label="接码邮箱渠道 (选择并发注册使用的邮箱来源)">
-                <div class="mail-source-selector-row">
-                  <el-radio-group v-model="form.autoMailSource" class="macos-radio-group">
-                    <el-radio-button value="remail">🍎 Remail 自动购号</el-radio-button>
-                    <el-radio-button value="cf_temp">⚡ CF 临时邮箱 (动态造号)</el-radio-button>
-                    <el-radio-button value="outlook">📦 微软 Outlook (号池)</el-radio-button>
-                    <el-radio-button value="icloud_relay">✉️ iCloud 邮箱 (中转)</el-radio-button>
-                  </el-radio-group>
-                  <span class="mail-source-badge-tip">
-                    <span v-if="form.autoMailSource === 'remail'" class="text-remail" style="color: #10b981">🍎 Remail 自动购号：每次并发注册按需购买全新邮箱，支持微软/iCloud等多后缀</span>
-                    <span v-else-if="form.autoMailSource === 'cf_temp'" class="text-cf">⚡ 无需号池：Worker 动态无限生成地址并发注册，推荐</span>
-                    <span v-else-if="form.autoMailSource === 'outlook'" class="text-outlook">📦 微软号池并发：自动从号池领取可用账号，池空自动等待</span>
-                    <span v-else-if="form.autoMailSource === 'icloud_relay'" class="text-ic">✉️ iCloud 号池并发：自动从号池领取带中转链接的账号</span>
-                  </span>
-                </div>
-              </el-form-item>
-            </el-col>
-          </el-row>
+      <el-collapse-transition>
+        <div v-show="!configCollapsed" class="panel-body">
+          <el-form size="small" label-position="top">
+            <!-- 邮箱渠道选择 -->
+            <el-row :gutter="12" class="config-row-source">
+              <el-col :span="24">
+                <el-form-item label="接码邮箱渠道 (选择并发注册使用的邮箱来源)">
+                  <div class="mail-source-selector-row">
+                    <el-radio-group v-model="form.autoMailSource" class="macos-radio-group">
+                      <el-radio-button value="remail">🍎 Remail 自动购号</el-radio-button>
+                      <el-radio-button value="cf_temp">⚡ CF 临时邮箱 (动态造号)</el-radio-button>
+                      <el-radio-button value="outlook">📦 微软 Outlook (号池)</el-radio-button>
+                      <el-radio-button value="icloud_relay">✉️ iCloud 邮箱 (中转)</el-radio-button>
+                    </el-radio-group>
+                    <span class="mail-source-badge-tip">
+                      <span v-if="form.autoMailSource === 'remail'" class="text-remail" style="color: #10b981">🍎 Remail 自动购号：每次并发注册按需购买全新邮箱，支持微软/iCloud等多后缀</span>
+                      <span v-else-if="form.autoMailSource === 'cf_temp'" class="text-cf">⚡ 无需号池：Worker 动态无限生成地址并发注册，推荐</span>
+                      <span v-else-if="form.autoMailSource === 'outlook'" class="text-outlook">📦 微软号池并发：自动从号池领取可用账号，池空自动等待</span>
+                      <span v-else-if="form.autoMailSource === 'icloud_relay'" class="text-ic">✉️ iCloud 号池并发：自动从号池领取带中转链接的账号</span>
+                    </span>
+                  </div>
+                </el-form-item>
+              </el-col>
+            </el-row>
 
-          <el-row :gutter="12" class="config-row">
-            <el-col :xs="12" :sm="6" :md="3">
-              <el-form-item label="并发数 (Workers)">
-                <el-input-number v-model="form.autoConcurrency" :min="1" :max="50" class="macos-num-input" />
-              </el-form-item>
-            </el-col>
-            <el-col :xs="12" :sm="6" :md="3">
-              <el-form-item>
-                <template #label>
-                  <span>PoW 算力槽位</span>
-                  <el-tooltip content="同时解算 sentinel PoW 的 node 进程数上限。网络并发再高，PoW 碰撞也会在这里排队，保护 CPU 不被打满降频。i5-13500H 建议 4~6；改完立即生效并持久保存，重启不丢。" placement="top">
-                    <el-icon class="info-ico" style="margin-left: 3px;"><QuestionFilled /></el-icon>
-                  </el-tooltip>
-                </template>
-                <el-input-number
-                  v-model="powSlots"
-                  :min="1"
-                  :max="16"
-                  class="macos-num-input"
-                  :loading="powSlotsLoading"
-                  @change="onPowSlotsChange"
-                />
-              </el-form-item>
-            </el-col>
-            <el-col :xs="12" :sm="6" :md="2">
-              <el-form-item label="冷却 (秒)">
-                <el-input-number v-model="form.autoCoolDown" :min="0" :max="120" class="macos-num-input" />
-              </el-form-item>
-            </el-col>
-            <el-col :xs="24" :sm="12" :md="5">
-              <el-form-item label="代理目标国家 (自动重写时区)">
-                <el-select
-                  v-model="form.autoProxyCountry" filterable allow-create
-                  placeholder="选择或输入国家代码" class="macos-country-select"
-                >
-                  <el-option
-                    v-for="c in COUNTRY_OPTIONS" :key="c.value"
-                    :label="c.label" :value="c.value"
+            <el-row :gutter="12" class="config-row">
+              <el-col :xs="12" :sm="6" :md="3">
+                <el-form-item label="并发数 (Workers)">
+                  <el-input-number v-model="form.autoConcurrency" :min="1" :max="50" class="macos-num-input" />
+                </el-form-item>
+              </el-col>
+              <el-col :xs="12" :sm="6" :md="3">
+                <el-form-item>
+                  <template #label>
+                    <span>PoW 算力槽位</span>
+                    <el-tooltip content="同时解算 sentinel PoW 的 node 进程数上限。网络并发再高，PoW 碰撞也会在这里排队，保护 CPU 不被打满降频。" placement="top">
+                      <el-icon class="info-ico" style="margin-left: 3px;"><QuestionFilled /></el-icon>
+                    </el-tooltip>
+                  </template>
+                  <el-input-number
+                    v-model="powSlots"
+                    :min="1"
+                    :max="16"
+                    class="macos-num-input"
+                    :loading="powSlotsLoading"
+                    @change="onPowSlotsChange"
                   />
-                </el-select>
-              </el-form-item>
-            </el-col>
-            <el-col :xs="12" :sm="6" :md="3">
-              <el-form-item label="目标数量 (0=不限)">
-                <el-input-number v-model="form.autoTargetCount" :min="0" :max="100000" class="macos-num-input" />
-              </el-form-item>
-            </el-col>
-            <el-col :xs="12" :sm="6" :md="3">
-              <el-form-item>
-                <template #label>
-                  <span>失败暂停 (次)</span>
-                  <el-tooltip content="连续网络/环境错误达到该次数时自动暂停保护（填 0 代表关闭自动暂停，抗网络波动持续重试）" placement="top">
-                    <el-icon class="info-ico" style="margin-left: 3px;"><QuestionFilled /></el-icon>
-                  </el-tooltip>
-                </template>
-                <el-input-number v-model="form.autoCircuitBreak" :min="0" :max="100" class="macos-num-input" placeholder="0=关闭" />
-              </el-form-item>
-            </el-col>
-            <el-col :xs="12" :sm="6" :md="2">
-              <el-form-item label="OTP 超时">
-                <el-input-number v-model="form.otpTimeout" :min="10" :max="600" class="macos-num-input" />
-              </el-form-item>
-            </el-col>
-            <el-col :xs="24" :sm="12" :md="6">
-              <el-form-item label="自动化附加功能">
-                <div class="feature-switches" :class="{ 'remail-active-features': form.autoMailSource === 'remail' }">
-                  <div class="switch-item">
-                    <el-switch v-model="form.autoWantPassword" size="small" />
-                    <span class="switch-label">自动设密</span>
-                    <el-tooltip content="开启后新注册账号自动设置16位强随机登录密码并落盘保存到数据库" placement="top">
-                      <el-icon class="info-ico"><QuestionFilled /></el-icon>
+                </el-form-item>
+              </el-col>
+              <el-col :xs="12" :sm="6" :md="2">
+                <el-form-item label="冷却 (秒)">
+                  <el-input-number v-model="form.autoCoolDown" :min="0" :max="120" class="macos-num-input" />
+                </el-form-item>
+              </el-col>
+              <el-col :xs="24" :sm="12" :md="5">
+                <el-form-item label="代理目标国家 (自动重写时区)">
+                  <el-select
+                    v-model="form.autoProxyCountry" filterable allow-create
+                    placeholder="选择或输入国家代码" class="macos-country-select"
+                  >
+                    <el-option
+                      v-for="c in COUNTRY_OPTIONS" :key="c.value"
+                      :label="c.label" :value="c.value"
+                    />
+                  </el-select>
+                </el-form-item>
+              </el-col>
+              <el-col :xs="12" :sm="6" :md="3">
+                <el-form-item label="目标数量 (0=不限)">
+                  <el-input-number v-model="form.autoTargetCount" :min="0" :max="100000" class="macos-num-input" />
+                </el-form-item>
+              </el-col>
+              <el-col :xs="12" :sm="6" :md="3">
+                <el-form-item>
+                  <template #label>
+                    <span>失败暂停 (次)</span>
+                    <el-tooltip content="连续网络/环境错误达到该次数时自动暂停保护（填 0 代表关闭自动暂停，抗网络波动持续重试）" placement="top">
+                      <el-icon class="info-ico" style="margin-left: 3px;"><QuestionFilled /></el-icon>
                     </el-tooltip>
+                  </template>
+                  <el-input-number v-model="form.autoCircuitBreak" :min="0" :max="100" class="macos-num-input" placeholder="0=关闭" />
+                </el-form-item>
+              </el-col>
+              <el-col :xs="12" :sm="6" :md="2">
+                <el-form-item label="OTP 超时">
+                  <el-input-number v-model="form.otpTimeout" :min="10" :max="600" class="macos-num-input" />
+                </el-form-item>
+              </el-col>
+              <el-col :xs="24" :sm="12" :md="6">
+                <el-form-item label="自动化附加功能">
+                  <div class="feature-switches" :class="{ 'remail-active-features': form.autoMailSource === 'remail' }">
+                    <div class="switch-item">
+                      <el-switch v-model="form.autoWantPassword" size="small" />
+                      <span class="switch-label">自动设密</span>
+                    </div>
+                    <div class="switch-item">
+                      <el-switch v-model="form.autoWant2fa" size="small" />
+                      <span class="switch-label">自动绑2FA</span>
+                    </div>
                   </div>
-                  <div class="switch-item">
-                    <el-switch v-model="form.autoWant2fa" size="small" />
-                    <span class="switch-label">自动绑2FA</span>
-                    <el-tooltip content="每个账号注册成功后自动绑定 2FA 并将 secret 备份至数据库" placement="top">
-                      <el-icon class="info-ico"><QuestionFilled /></el-icon>
-                    </el-tooltip>
-                  </div>
-                </div>
-              </el-form-item>
-            </el-col>
-          </el-row>
-        </el-form>
-      </div>
+                </el-form-item>
+              </el-col>
+            </el-row>
+          </el-form>
+        </div>
+      </el-collapse-transition>
     </div>
 
-    <!-- ════════════ 5. 核心主区域：每个账号一行的实时注册表格列表 ════════════ -->
+    <!-- ════════════ 4. 核心主区域：现代化极客流水监控表格列表 ════════════ -->
     <div class="macos-panel table-panel">
       <div class="table-panel-header">
         <div class="header-left">
@@ -960,105 +799,152 @@ onUnmounted(() => {
           height="100%"
           size="small"
           stripe
-          class="macos-table"
+          class="modern-stepper-table"
           :highlight-current-row="false"
         >
           <!-- 账号邮箱 -->
-          <el-table-column prop="email" label="账号邮箱" min-width="210" show-overflow-tooltip>
+          <el-table-column prop="email" label="账号邮箱" min-width="230" show-overflow-tooltip>
             <template #default="{ row }">
-              <button
-                class="macos-tag-btn copy-btn"
-                title="点击复制邮箱"
-                @click="copyText(row.email)"
-              >
-                <span class="mono">{{ row.email }}</span>
-                <el-icon class="copy-ico"><CopyDocument /></el-icon>
-              </button>
+              <div class="email-modern-cell">
+                <span class="email-brand-icon">{{ getEmailIcon(row.email) }}</span>
+                <span
+                  v-if="isPlaceholder(row.email)"
+                  class="placeholder-shimmer-tag"
+                >
+                  <span class="shimmer-pulse"></span>
+                  <span>Remail 自动购号中...</span>
+                </span>
+                <span v-else class="email-text-mono" :title="row.email">
+                  {{ row.email }}
+                </span>
+                <button
+                  v-if="!isPlaceholder(row.email)"
+                  type="button"
+                  class="modern-copy-btn"
+                  title="点击复制邮箱"
+                  @click.stop="copyText(row.email, '邮箱已复制')"
+                >
+                  <el-icon><CopyDocument /></el-icon>
+                </button>
+              </div>
             </template>
           </el-table-column>
 
-          <!-- Worker 归属 -->
-          <el-table-column label="执行 Worker" width="120" align="center">
+          <!-- 执行 Worker & 出口国家 -->
+          <el-table-column label="执行 Worker / 出口" width="160" align="center" show-overflow-tooltip>
             <template #default="{ row }">
-              <span class="worker-badge">
-                <span class="worker-dot" :class="{ 'pulse-active': row.status === 'running' }"></span>
-                Worker #{{ row.worker_id !== undefined ? row.worker_id + 1 : 1 }}
-              </span>
+              <div class="worker-meta-cell">
+                <span class="worker-pill-badge" :class="{ 'is-active': row.status === 'running' }">
+                  <span class="worker-pulse-dot" :class="{ 'live': row.status === 'running' }"></span>
+                  <span>Worker #{{ row.worker_id !== undefined ? row.worker_id + 1 : 1 }}</span>
+                </span>
+                <el-tooltip v-if="getTaskCountry(row)" :content="`出口节点: ${row.proxy || '默认代理'}`" placement="top">
+                  <span
+                    class="geo-flag-pill"
+                    :class="{ 'geo-hot': ['JP', 'BR', 'VN', 'DE', 'GB', 'PL', 'ES', 'AR', 'TH'].includes(getTaskCountry(row)?.toUpperCase()) }"
+                  >
+                    {{ formatCountry(getTaskCountry(row)) }}
+                  </span>
+                </el-tooltip>
+                <span v-else class="geo-flag-pill geo-default">🌐 跟随代理</span>
+              </div>
             </template>
           </el-table-column>
 
-          <!-- 注册进度与步骤 -->
-          <el-table-column label="注册进度 / 步骤" min-width="200">
+          <!-- 注册全链路五阶段微流水线 (Connected Stepper Pipeline) -->
+          <el-table-column label="注册阶段与全链路流水线" min-width="360">
             <template #default="{ row }">
-              <div v-if="row.status === 'running'" class="running-step-cell">
-                <div class="step-label-row">
-                  <span class="pulse-dot"></span>
-                  <span class="step-text">{{ row.phase_text || '正在注册...' }}</span>
+              <div class="stepper-pipeline-container">
+                <!-- 五阶段连线 Stepper 节点条 -->
+                <div class="stepper-track-row">
+                  <template v-for="(stItem, sIdx) in PIPELINE_STEPS" :key="stItem.index">
+                    <!-- 步骤节点 -->
+                    <div
+                      class="stepper-node"
+                      :class="{
+                        'is-done': row.status === 'done' || getTaskStepIndex(row) > stItem.index,
+                        'is-active': row.status === 'running' && getTaskStepIndex(row) === stItem.index,
+                        'is-failed': row.status === 'failed' && getTaskStepIndex(row) === stItem.index,
+                        'is-pending': row.status !== 'done' && getTaskStepIndex(row) < stItem.index,
+                      }"
+                      :title="stItem.fullLabel"
+                    >
+                      <span class="stepper-node-dot">
+                        <span v-if="row.status === 'done' || getTaskStepIndex(row) > stItem.index" class="node-check">✓</span>
+                        <span v-else-if="row.status === 'running' && getTaskStepIndex(row) === stItem.index" class="node-pulse"></span>
+                        <span v-else-if="row.status === 'failed' && getTaskStepIndex(row) === stItem.index" class="node-err">✕</span>
+                        <span v-else class="node-num">{{ stItem.index }}</span>
+                      </span>
+                      <span class="stepper-node-label">{{ stItem.label }}</span>
+                    </div>
+
+                    <!-- 连接线 -->
+                    <div
+                      v-if="sIdx < PIPELINE_STEPS.length - 1"
+                      class="stepper-connector"
+                      :class="{
+                        'is-done': row.status === 'done' || getTaskStepIndex(row) > stItem.index + 1,
+                        'is-active': row.status === 'running' && getTaskStepIndex(row) > stItem.index,
+                      }"
+                    ></div>
+                  </template>
                 </div>
-                <div class="step-bar-wrap">
-                  <div
-                    class="step-bar-fill"
-                    :style="{ width: (row.percent || 20) + '%' }"
-                  ></div>
+
+                <!-- 步骤描述与微进度条 -->
+                <div class="stepper-meta-row">
+                  <div v-if="row.status === 'running'" class="running-status-box">
+                    <span class="pulse-beacon"></span>
+                    <span class="status-msg-running">{{ row.phase_text || '正在处理中...' }}</span>
+                    <span v-if="row.percent" class="status-pct mono">{{ row.percent }}%</span>
+                  </div>
+                  <div v-else-if="row.status === 'done'" class="done-status-box">
+                    <span class="done-tag">🎉 注册完成并成功入库 (100%)</span>
+                  </div>
+                  <div v-else-if="row.status === 'failed'" class="failed-status-box" :title="row.error">
+                    <span class="fail-tag">❌ {{ row.error || row.phase_text || '注册失败' }}</span>
+                  </div>
+                  <div v-else class="pending-status-box">
+                    <span class="pending-tag">⏳ 等待 Worker 领取</span>
+                  </div>
                 </div>
               </div>
-              <el-tag v-else-if="row.status === 'done'" type="success" size="small" effect="light" class="macos-tag">
-                <el-icon class="status-ico"><Check /></el-icon>注册完成
-              </el-tag>
-              <el-tooltip v-else-if="row.status === 'failed'" :content="row.error || '未知错误'" placement="top">
-                <el-tag type="danger" size="small" effect="light" class="macos-tag cursor-help">
-                  <el-icon class="status-ico"><Close /></el-icon>{{ row.phase_text || '注册失败' }}
-                </el-tag>
-              </el-tooltip>
-              <el-tag v-else type="info" size="small" effect="plain" class="macos-tag">
-                排队中
-              </el-tag>
             </template>
           </el-table-column>
 
-          <!-- 出口国家 -->
-          <el-table-column label="出口国家" width="125" align="center" show-overflow-tooltip>
+          <!-- 单号耗时 -->
+          <el-table-column label="单号耗时" width="95" align="right">
             <template #default="{ row }">
               <span
-                v-if="row.reg_country"
-                class="geo-badge"
-                :class="{ 'geo-hot': ['JP', 'BR', 'VN', 'DE', 'GB', 'PL', 'ES', 'AR', 'TH'].includes(row.reg_country?.toUpperCase()) }"
+                class="mono duration-cell"
+                :class="{
+                  'duration-running': row.status === 'running',
+                  'duration-done': row.status === 'done',
+                  'duration-fail': row.status === 'failed',
+                }"
               >
-                <span class="geo-country">{{ formatCountry(row.reg_country) }}</span>
-              </span>
-              <span v-else class="hint">—</span>
-            </template>
-          </el-table-column>
-
-          <!-- 耗时 -->
-          <el-table-column label="耗时" width="85" align="right">
-            <template #default="{ row }">
-              <span class="mono hint" :style="{ color: row.status === 'running' ? 'var(--el-color-primary)' : '' }">
                 {{ formatElapsed(row) }}
               </span>
             </template>
           </el-table-column>
 
           <!-- 启动时间 -->
-          <el-table-column label="启动时间" width="135" align="center">
+          <el-table-column label="启动时间" width="105" align="center">
             <template #default="{ row }">
-              <span class="mono hint">{{ fmtTime(row.started_at) }}</span>
+              <span class="mono time-cell">{{ formatClock(row.started_at) }}</span>
             </template>
           </el-table-column>
 
           <!-- 操作 -->
-          <el-table-column label="操作" width="85" fixed="right" align="center">
+          <el-table-column label="操作" width="75" fixed="right" align="center">
             <template #default="{ row }">
-              <el-button
-                size="small"
-                text
-                type="primary"
-                plain
-                class="macos-log-btn"
+              <button
+                type="button"
+                class="modern-log-btn"
+                title="查看该账号注册终端日志"
                 @click="openTaskLog(row)"
               >
                 <el-icon><Document /></el-icon>日志
-              </el-button>
+              </button>
             </template>
           </el-table-column>
 
@@ -1076,7 +962,7 @@ onUnmounted(() => {
         <el-pagination
           v-model:current-page="currentPage"
           v-model:page-size="pageSize"
-          :page-sizes="[20, 50, 100]"
+          :page-sizes="[20, 30, 50, 100]"
           :total="filteredTasks.length"
           layout="sizes, prev, pager, next"
           size="small"
@@ -1153,48 +1039,48 @@ onUnmounted(() => {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  overflow-y: auto;
-  padding-bottom: 16px;
+  gap: 8px;
+  overflow: hidden;
 }
 
 /* ──────────── 1. 智能风控预警与自动熔断退避横幅 ──────────── */
 .risk-defense-banner {
   background: linear-gradient(135deg, rgba(239, 68, 68, 0.12) 0%, rgba(245, 158, 11, 0.12) 100%);
   border: 1px solid rgba(239, 68, 68, 0.35);
-  border-radius: 12px;
-  padding: 12px 16px;
+  border-radius: 10px;
+  padding: 8px 14px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   flex-wrap: wrap;
-  gap: 12px;
+  gap: 10px;
   box-shadow: 0 4px 16px rgba(239, 68, 68, 0.08);
+  flex-shrink: 0;
 }
 
 .risk-banner-left {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
 }
 
 .risk-icon-pulse {
-  width: 32px;
-  height: 32px;
+  width: 26px;
+  height: 26px;
   border-radius: 50%;
   background: rgba(239, 68, 68, 0.2);
   color: #ef4444;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 18px;
+  font-size: 15px;
   animation: pulse-ring 1.8s infinite ease-in-out;
 }
 
 .risk-info {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
 }
 
 .risk-title-row {
@@ -1204,15 +1090,15 @@ onUnmounted(() => {
 }
 
 .risk-title {
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 700;
   color: #ef4444;
 }
 
 .risk-desc {
-  font-size: 11.5px;
+  font-size: 11px;
   color: var(--el-text-color-secondary);
-  line-height: 1.4;
+  line-height: 1.3;
 }
 
 .risk-banner-right {
@@ -1225,48 +1111,43 @@ onUnmounted(() => {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
+  font-size: 11.5px;
   color: #f59e0b;
   background: rgba(245, 158, 11, 0.15);
   border: 1px solid rgba(245, 158, 11, 0.4);
-  padding: 3px 10px;
-  border-radius: 14px;
+  padding: 2px 8px;
+  border-radius: 12px;
 }
 
 .cooldown-dot {
-  width: 6px;
-  height: 6px;
+  width: 5px;
+  height: 5px;
   border-radius: 50%;
   background: #f59e0b;
 }
 
-/* ──────────── 2. 顶部大屏矩阵 (KPI Cards + Velocity HUD) ──────────── */
-.autoloop-top-matrix {
+/* ──────────── 2. 顶部 KPI 矩阵 ──────────── */
+.kpi-grid {
   display: grid;
-  grid-template-columns: 1.4fr 1.1fr;
-  gap: 12px;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 8px;
+  flex-shrink: 0;
 }
 
 @media (max-width: 1200px) {
-  .autoloop-top-matrix {
-    grid-template-columns: 1fr;
+  .kpi-grid {
+    grid-template-columns: repeat(3, 1fr);
   }
-}
-
-.kpi-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 8px;
 }
 
 .kpi-card {
   background: var(--app-window-bg);
   border: 1px solid var(--app-border);
   border-radius: 10px;
-  padding: 10px 14px;
+  padding: 8px 12px;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   box-shadow: var(--app-shadow-sm);
   transition: all 0.2s ease;
 }
@@ -1281,19 +1162,33 @@ onUnmounted(() => {
   flex-direction: column;
   gap: 2px;
   flex: 1;
+  min-width: 0;
+}
+
+.kpi-title-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.cpm-icon {
+  color: #10b981;
+  font-size: 12px;
 }
 
 .kpi-title {
-  font-size: 11px;
+  font-size: 10.5px;
   color: var(--app-text-secondary);
   font-weight: 500;
+  white-space: nowrap;
 }
 
 .kpi-num {
-  font-size: 17px;
+  font-size: 16px;
   font-weight: 700;
   color: var(--app-title);
   font-family: var(--font-mono, monospace);
+  line-height: 1.1;
 }
 
 .kpi-num-row {
@@ -1303,8 +1198,9 @@ onUnmounted(() => {
 }
 
 .kpi-sub {
-  font-size: 11px;
+  font-size: 10.5px;
   color: var(--app-text-secondary);
+  white-space: nowrap;
 }
 
 .kpi-icon-dot {
@@ -1365,8 +1261,8 @@ onUnmounted(() => {
 }
 
 .pulse-dot-live {
-  width: 6px;
-  height: 6px;
+  width: 5px;
+  height: 5px;
   border-radius: 50%;
   background: #007aff;
   box-shadow: 0 0 6px #007aff;
@@ -1376,7 +1272,7 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 4px;
-  font-size: 9.5px;
+  font-size: 9px;
   color: var(--app-text-secondary);
   margin-top: 1px;
 }
@@ -1394,474 +1290,77 @@ onUnmounted(() => {
   font-weight: 600;
 }
 
-.proxy-card {
-  cursor: pointer;
-}
-
-.proxy-card:hover {
-  border-color: var(--el-color-primary-light-5);
-}
-
-/* ──────────── 速度与出号率波形卡片 ──────────── */
-.velocity-hud-card {
-  background: var(--app-window-bg);
-  border: 1px solid var(--app-border);
-  border-radius: 10px;
-  padding: 10px 14px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
-  box-shadow: var(--app-shadow-sm);
-}
-
-.velocity-left {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  flex-shrink: 0;
-}
-
-.metric-title-row {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-}
-
-.icon-velocity {
-  color: #10b981;
-  font-size: 14px;
-}
-
-.metric-title {
-  font-size: 11px;
-  color: var(--app-text-secondary);
-  font-weight: 600;
-}
-
-.metric-main-val {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-  font-size: 22px;
-  font-weight: 800;
-  line-height: 1.1;
-}
-
-.unit-text {
-  font-size: 11px;
-  font-weight: 400;
-  color: var(--el-text-color-secondary);
-}
-
-.velocity-metric-sub {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  font-size: 11px;
-}
-
-.sub-kpi {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.sub-label {
-  color: var(--el-text-color-secondary);
-}
-
-.sub-val {
-  font-weight: 700;
-}
-
-.velocity-chart-wrap {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.chart-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.chart-title {
-  font-size: 10.5px;
-  color: var(--el-text-color-secondary);
-  font-weight: 600;
-}
-
-.chart-tag {
-  font-size: 10px;
-  color: #10b981;
-  font-family: var(--font-mono, monospace);
-  font-weight: 700;
-}
-
-.svg-sparkline-box {
-  width: 100%;
-  height: 52px;
-  background: var(--el-fill-color-light);
-  border: 1px solid var(--el-border-color-lighter);
-  border-radius: 6px;
-  overflow: hidden;
-}
-
-.sparkline-svg {
-  width: 100%;
-  height: 100%;
-  display: block;
-}
-
-.live-spark-dot {
-  animation: pulse-ring 1.5s infinite;
-}
-
-/* ──────────── 3. 多 Worker 动态舰队监控大屏 (Fleet HUD) ──────────── */
-.fleet-panel {
-  background: var(--app-window-bg);
-  border: 1px solid var(--app-border);
-  border-radius: 12px;
-  padding: 14px 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  box-shadow: var(--app-shadow-sm);
-}
-
-.fleet-panel-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  border-bottom: 1px solid var(--el-border-color-lighter);
-  padding-bottom: 10px;
-}
-
-.fleet-panel-header .header-left {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.fleet-badge {
-  font-size: 10px;
-  font-weight: 700;
-  color: #007aff;
-  background: rgba(0, 122, 255, 0.1);
-  border: 1px solid rgba(0, 122, 255, 0.3);
-  padding: 1px 6px;
-  border-radius: 4px;
-  letter-spacing: 0.5px;
-}
-
-.panel-title {
-  font-size: 13.5px;
-  font-weight: 700;
-  color: var(--app-title);
-}
-
-.fleet-count-tag {
-  font-size: 11px;
-  color: var(--el-text-color-secondary);
-}
-
-.fleet-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  gap: 10px;
-}
-
-.worker-hud-card {
-  background: var(--el-fill-color-light);
-  border: 1px solid var(--el-border-color-lighter);
-  border-radius: 10px;
-  padding: 10px 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  transition: all 0.2s ease;
-}
-
-.worker-hud-card.is-running {
-  border-color: rgba(16, 185, 129, 0.4);
-  box-shadow: 0 2px 10px rgba(16, 185, 129, 0.08);
-}
-
-.worker-hud-card.is-cooling {
-  border-color: rgba(245, 158, 11, 0.35);
-}
-
-.worker-hud-card.is-error {
-  border-color: rgba(239, 68, 68, 0.45);
-  animation: flash-border 2s infinite ease-in-out;
-}
-
-.worker-card-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.worker-id-wrap {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.worker-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: #94a3b8;
-}
-
-.worker-dot.running {
-  background: #10b981;
-  box-shadow: 0 0 6px #10b981;
-}
-
-.worker-dot.cooling {
-  background: #f59e0b;
-}
-
-.worker-dot.stopped {
-  background: #94a3b8;
-}
-
-.worker-name {
-  font-size: 11.5px;
-  font-weight: 700;
-  color: var(--app-title);
-  font-family: var(--font-mono, monospace);
-}
-
-.worker-geo-wrap {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.worker-country-tag {
-  font-size: 10.5px;
-  color: var(--el-color-primary);
-  font-weight: 600;
-}
-
-.worker-proxy-sub {
-  font-size: 10px;
-  color: var(--el-text-color-secondary);
-  font-family: var(--font-mono, monospace);
-}
-
-.worker-card-body {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.worker-email-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  background: var(--app-window-bg);
-  border: 1px solid var(--app-border);
-  border-radius: 6px;
-  padding: 4px 8px;
-}
-
-.worker-email {
-  font-size: 11.5px;
-  font-weight: 600;
-  color: var(--el-color-primary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.worker-email-empty {
-  font-size: 11px;
-  color: var(--el-text-color-secondary);
-}
-
-.copy-btn-mini {
-  background: none;
-  border: none;
-  cursor: pointer;
-  color: var(--el-text-color-secondary);
-  font-size: 12px;
-  padding: 0 2px;
-}
-
-.copy-btn-mini:hover {
-  color: var(--el-color-primary);
-}
-
-.worker-meta-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  font-size: 11px;
-}
-
-.worker-timer-box, .worker-cycles-box {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.timer-label, .cycles-label {
-  color: var(--el-text-color-secondary);
-}
-
-.timer-val {
-  font-weight: 700;
-}
-
-.cycles-val {
-  font-weight: 700;
-}
-
-/* 五阶段微动画流水线 */
-.pipeline-track-box {
-  background: var(--app-window-bg);
-  border: 1px solid var(--app-border);
-  border-radius: 6px;
-  padding: 6px 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.pipeline-steps {
-  display: grid;
-  grid-template-columns: repeat(5, 1fr);
-  gap: 4px;
-}
-
-.step-node {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 2px;
-  padding: 3px 2px;
-  border-radius: 4px;
-  font-size: 9.5px;
-  background: var(--el-fill-color-light);
-  border: 1px solid transparent;
-  transition: all 0.2s ease;
-}
-
-.step-node.step-done {
-  background: rgba(16, 185, 129, 0.12);
-  border-color: rgba(16, 185, 129, 0.3);
-  color: #10b981;
-}
-
-.step-node.step-active {
-  background: rgba(0, 122, 255, 0.16);
-  border-color: #007aff;
-  color: #007aff;
-  animation: pulse-step 1.2s infinite ease-in-out;
-}
-
-.step-node.step-pending {
-  opacity: 0.45;
-}
-
-.step-icon {
-  font-size: 11px;
-}
-
-.step-label {
-  font-size: 9px;
-  white-space: nowrap;
-  font-weight: 600;
-}
-
-.step-current-desc {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  font-size: 10.5px;
-  color: var(--el-text-color-secondary);
-  margin-top: 2px;
-}
-
-.pulse-ring-dot {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: #007aff;
-  margin-right: 4px;
-}
-
-.step-desc-text {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  flex: 1;
-}
-
-.step-pct-mono {
-  font-family: var(--font-mono, monospace);
-  font-weight: 700;
-  color: var(--el-color-primary);
-}
-
-/* ──────────── 4. 参数配置卡片 ──────────── */
+/* ──────────── 3. 参数配置卡片 (极简优雅可折叠) ──────────── */
 .macos-panel {
   background: var(--app-window-bg);
   border: 1px solid var(--app-border);
-  border-radius: 12px;
+  border-radius: 10px;
   box-shadow: var(--app-shadow-sm);
 }
 
 .config-panel {
-  padding: 12px 16px;
+  padding: 8px 12px;
+  flex-shrink: 0;
+  transition: all 0.25s ease;
 }
 
 .panel-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 8px;
+  user-select: none;
 }
 
-.panel-header-title {
+.panel-header-left {
   display: flex;
   align-items: center;
   gap: 8px;
 }
 
 .macos-pill-tag {
-  font-size: 10px;
+  font-size: 9.5px;
   font-weight: 700;
   color: #10b981;
   background: rgba(16, 185, 129, 0.1);
   border: 1px solid rgba(16, 185, 129, 0.3);
-  padding: 1px 6px;
+  padding: 1px 5px;
   border-radius: 4px;
 }
 
-.panel-header-title .title {
-  font-size: 13px;
+.panel-header-left .title {
+  font-size: 12.5px;
   font-weight: 700;
   color: var(--app-title);
+}
+
+.config-summary-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+  background: var(--el-fill-color-light);
+  border: 1px solid var(--el-border-color-lighter);
+  padding: 2px 10px;
+  border-radius: 12px;
+}
+
+.summary-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #10b981;
 }
 
 .header-timing-pill {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: 11px;
+  font-size: 10.5px;
   background: var(--el-fill-color-light);
   border: 1px solid var(--app-border);
-  padding: 2px 8px;
-  border-radius: 12px;
+  padding: 1px 7px;
+  border-radius: 10px;
   color: var(--el-text-color-secondary);
 }
 
@@ -1899,6 +1398,34 @@ onUnmounted(() => {
   gap: 4px;
 }
 
+.config-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--el-color-primary);
+  background: var(--el-fill-color-light);
+  border: 1px solid var(--el-color-primary-light-7);
+  padding: 3px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.config-toggle-btn:hover {
+  background: var(--el-color-primary-light-9);
+}
+
+.config-toggle-btn .is-rotated {
+  transform: rotate(180deg);
+}
+
+.config-panel .panel-body {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--el-border-color-lighter);
+}
+
 .mail-source-selector-row {
   display: flex;
   align-items: center;
@@ -1907,53 +1434,54 @@ onUnmounted(() => {
 }
 
 .mail-source-badge-tip {
-  font-size: 11.5px;
+  font-size: 11px;
   color: var(--el-text-color-secondary);
 }
 
 .feature-switches {
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 12px;
   background: var(--el-fill-color-light);
   border: 1px solid var(--app-border);
-  padding: 4px 10px;
+  padding: 3px 8px;
   border-radius: 6px;
 }
 
 .switch-item {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
 }
 
 .switch-label {
-  font-size: 11.5px;
+  font-size: 11px;
   color: var(--app-title);
 }
 
-/* ──────────── 5. 流水表格 ──────────── */
+/* ──────────── 4. 实时流水表格（现代化流线型设计） ──────────── */
 .table-panel {
   flex: 1;
-  min-height: 280px;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
 }
 
 .table-panel-header {
-  padding: 10px 14px;
+  padding: 8px 12px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   border-bottom: 1px solid var(--app-border);
   background: var(--el-fill-color-light);
+  flex-shrink: 0;
 }
 
 .table-panel-header .header-left {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
 }
 
 .dot-live {
@@ -1980,7 +1508,7 @@ onUnmounted(() => {
   color: var(--app-text-secondary);
   border-radius: 12px;
   padding: 2px 8px;
-  font-size: 11px;
+  font-size: 10.5px;
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -2019,12 +1547,13 @@ onUnmounted(() => {
 }
 
 .table-pagination-bar {
-  padding: 6px 14px;
+  padding: 6px 12px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   border-top: 1px solid var(--app-border);
   background: var(--el-fill-color-light);
+  flex-shrink: 0;
 }
 
 .page-tip {
@@ -2032,78 +1561,322 @@ onUnmounted(() => {
   color: var(--el-text-color-secondary);
 }
 
-/* 表格内部单元格 */
-.copy-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  cursor: pointer;
+/* ──────────── 现代化表格单元格与 Connected Stepper Pipeline ──────────── */
+.modern-stepper-table :deep(.el-table__row) {
+  transition: all 0.15s ease;
+}
+.modern-stepper-table :deep(.el-table__row:hover) {
+  background-color: var(--el-table-row-hover-bg-color) !important;
 }
 
-.worker-badge {
+.email-modern-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.email-brand-icon {
+  font-size: 13px;
+  flex-shrink: 0;
+}
+
+.email-text-mono {
+  font-family: var(--font-mono, monospace);
+  font-weight: 600;
+  color: var(--app-title);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.placeholder-shimmer-tag {
   display: inline-flex;
   align-items: center;
   gap: 5px;
   font-size: 11px;
-  color: var(--app-title);
-  background: var(--el-fill-color-light);
-  border: 1px solid var(--app-border);
+  color: #10b981;
+  background: rgba(16, 185, 129, 0.1);
+  border: 1px solid rgba(16, 185, 129, 0.25);
   padding: 1px 6px;
   border-radius: 4px;
 }
 
-.worker-dot.pulse-active {
+.shimmer-pulse {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
   background: #10b981;
-  animation: pulse-ring 1.5s infinite;
+  animation: pulse-ring 1.2s infinite;
 }
 
-.running-step-cell {
+.modern-copy-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  padding: 0 2px;
+  opacity: 0.5;
+  transition: all 0.15s ease;
+}
+
+.modern-copy-btn:hover {
+  opacity: 1;
+  color: var(--el-color-primary);
+  transform: scale(1.1);
+}
+
+.worker-meta-cell {
   display: flex;
   flex-direction: column;
+  align-items: center;
   gap: 3px;
 }
 
-.step-label-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11px;
-}
-
-.pulse-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: #007aff;
-}
-
-.step-bar-wrap {
-  height: 3px;
-  background: var(--el-fill-color);
-  border-radius: 99px;
-  overflow: hidden;
-}
-
-.step-bar-fill {
-  height: 100%;
-  background: #007aff;
-  transition: width 0.3s ease;
-}
-
-.geo-badge {
+.worker-pill-badge {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: 11px;
+  font-size: 10px;
+  font-weight: 700;
+  font-family: var(--font-mono, monospace);
+  color: var(--app-title);
   background: var(--el-fill-color-light);
   border: 1px solid var(--app-border);
-  padding: 1px 6px;
+  padding: 1px 5px;
   border-radius: 4px;
 }
 
-.geo-hot {
-  border-color: rgba(245, 158, 11, 0.4);
+.worker-pill-badge.is-active {
+  border-color: rgba(16, 185, 129, 0.4);
+  background: rgba(16, 185, 129, 0.08);
+}
+
+.worker-pulse-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #94a3b8;
+}
+
+.worker-pulse-dot.live {
+  background: #10b981;
+  box-shadow: 0 0 6px #10b981;
+  animation: pulse-ring 1.5s infinite;
+}
+
+.geo-flag-pill {
+  font-size: 10px;
+  color: var(--el-color-primary);
+  background: var(--el-fill-color-light);
+  border: 1px solid var(--app-border);
+  padding: 0 4px;
+  border-radius: 3px;
+  font-weight: 600;
+}
+
+.geo-flag-pill.geo-hot {
+  color: #f59e0b;
+  border-color: rgba(245, 158, 11, 0.3);
   background: rgba(245, 158, 11, 0.08);
+}
+
+.geo-default {
+  color: var(--el-text-color-secondary);
+}
+
+/* ──────────── Connected Stepper Pipeline ──────────── */
+.stepper-pipeline-container {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.stepper-track-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.stepper-node {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 9.5px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: var(--el-fill-color-light);
+  border: 1px solid transparent;
+  color: var(--el-text-color-secondary);
+  transition: all 0.2s ease;
+}
+
+.stepper-node-dot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  font-size: 8.5px;
+  font-weight: 700;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.stepper-node-label {
+  font-size: 9px;
+  font-weight: 600;
+}
+
+.stepper-node.is-done {
+  background: rgba(16, 185, 129, 0.12);
+  border-color: rgba(16, 185, 129, 0.35);
+  color: #10b981;
+}
+.stepper-node.is-done .stepper-node-dot {
+  background: #10b981;
+  color: #ffffff;
+}
+
+.stepper-node.is-active {
+  background: rgba(0, 122, 255, 0.16);
+  border-color: #007aff;
+  color: #007aff;
+  font-weight: 700;
+  box-shadow: 0 0 8px rgba(0, 122, 255, 0.3);
+}
+.stepper-node.is-active .stepper-node-dot {
+  background: #007aff;
+  color: #ffffff;
+}
+.node-pulse {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: #ffffff;
+  animation: pulse-ring 1s infinite;
+}
+
+.stepper-node.is-failed {
+  background: rgba(239, 68, 68, 0.12);
+  border-color: rgba(239, 68, 68, 0.35);
+  color: #ef4444;
+}
+.stepper-node.is-failed .stepper-node-dot {
+  background: #ef4444;
+  color: #ffffff;
+}
+
+.stepper-node.is-pending {
+  opacity: 0.38;
+}
+
+.stepper-connector {
+  flex: 1;
+  height: 2px;
+  background: var(--el-fill-color);
+  border-radius: 2px;
+  min-width: 6px;
+  max-width: 14px;
+}
+.stepper-connector.is-done {
+  background: #10b981;
+}
+.stepper-connector.is-active {
+  background: #007aff;
+}
+
+.stepper-meta-row {
+  display: flex;
+  align-items: center;
+  font-size: 10.5px;
+}
+
+.running-status-box {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--el-color-primary);
+}
+
+.pulse-beacon {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #007aff;
+  animation: pulse-ring 1.2s infinite;
+}
+
+.status-msg-running {
+  font-size: 10.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-pct {
+  font-size: 10px;
+  font-weight: 700;
+  color: #007aff;
+}
+
+.done-status-box {
+  color: #10b981;
+  font-size: 10.5px;
+  font-weight: 600;
+}
+
+.failed-status-box {
+  color: #ef4444;
+  font-size: 10.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pending-status-box {
+  color: var(--el-text-color-secondary);
+  font-size: 10px;
+}
+
+/* 耗时与时间列 */
+.duration-cell {
+  font-size: 11.5px;
+  font-weight: 700;
+}
+.duration-running {
+  color: #007aff;
+}
+.duration-done {
+  color: #10b981;
+}
+.duration-fail {
+  color: #ef4444;
+}
+
+.time-cell {
+  font-size: 10.5px;
+  color: var(--el-text-color-secondary);
+}
+
+.modern-log-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--el-color-primary);
+  background: var(--el-fill-color-light);
+  border: 1px solid var(--el-color-primary-light-7);
+  padding: 1px 5px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.modern-log-btn:hover {
+  background: var(--el-color-primary-light-9);
 }
 
 /* ──────────── 终端弹窗 ──────────── */
@@ -2189,17 +1962,5 @@ onUnmounted(() => {
   0% { transform: scale(0.85); opacity: 0.6; }
   50% { transform: scale(1.15); opacity: 1; }
   100% { transform: scale(0.85); opacity: 0.6; }
-}
-
-@keyframes pulse-step {
-  0% { box-shadow: 0 0 0 rgba(0, 122, 255, 0.4); }
-  50% { box-shadow: 0 0 8px rgba(0, 122, 255, 0.8); }
-  100% { box-shadow: 0 0 0 rgba(0, 122, 255, 0.4); }
-}
-
-@keyframes flash-border {
-  0% { border-color: rgba(239, 68, 68, 0.3); }
-  50% { border-color: rgba(239, 68, 68, 0.9); box-shadow: 0 0 10px rgba(239, 68, 68, 0.3); }
-  100% { border-color: rgba(239, 68, 68, 0.3); }
 }
 </style>
