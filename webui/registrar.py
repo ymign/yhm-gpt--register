@@ -40,10 +40,17 @@ from .proxy_util import (  # noqa: E402
 _run_queues: dict[str, queue.Queue] = {}
 _run_phases: dict[str, dict] = {}
 _lock = threading.Lock()
+MAX_PHASES_HISTORY = 300
 
 
 def set_run_phase(run_id: str, phase: str, text: str, percent: int = 0):
     with _lock:
+        if len(_run_phases) >= MAX_PHASES_HISTORY and run_id not in _run_phases:
+            try:
+                oldest_key = next(iter(_run_phases))
+                _run_phases.pop(oldest_key, None)
+            except Exception:
+                pass
         _run_phases[run_id] = {
             "phase": phase,
             "phase_text": text,

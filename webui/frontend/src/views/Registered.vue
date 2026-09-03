@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, onActivated, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
@@ -37,6 +37,11 @@ import {
   Sunrise,
   Histogram,
   Filter,
+  User,
+  ArrowRight,
+  View,
+  Hide,
+  EditPen,
 } from '@element-plus/icons-vue'
 import {
   getRegisteredSummary,
@@ -236,7 +241,71 @@ const advancedFilterCount = computed(() => {
   return count
 })
 
+const hasActiveAttributeFilter = computed(() => {
+  return (
+    filterSec.value !== 'all' ||
+    filterPlan.value !== 'all' ||
+    filterCountry.value !== 'all' ||
+    filterDomain.value !== 'all' ||
+    Boolean(form.value?.proxy)
+  )
+})
+
+const activeAttributeFilterCount = computed(() => {
+  let count = 0
+  if (filterSec.value !== 'all') count++
+  if (filterPlan.value !== 'all') count++
+  if (filterCountry.value !== 'all') count++
+  if (filterDomain.value !== 'all') count++
+  if (form.value?.proxy) count++
+  return count
+})
+
+function getSecFilterLabel(val) {
+  if (val === 'with_2fa') return '已绑 2FA'
+  if (val === 'missing_2fa') return '待补 2FA'
+  if (val === 'with_pwd') return '已设密'
+  if (val === 'missing_pwd') return '免密未设'
+  return val
+}
+
+function getPlanFilterLabel(val) {
+  if (val === 'plus') return 'Plus/试用'
+  if (val === 'pro') return 'Pro特权'
+  if (val === 'free') return 'Free正常号'
+  return val
+}
+
+function getDomainFilterLabel(val) {
+  if (val === 'microsoft') return '微软全系'
+  if (val === 'outlook') return 'Outlook'
+  if (val === 'hotmail') return 'Hotmail'
+  if (val === 'gmail') return 'Gmail'
+  return val
+}
+
+function removeFilter(key) {
+  if (key === 'sec') filterSec.value = 'all'
+  else if (key === 'plan') filterPlan.value = 'all'
+  else if (key === 'country') filterCountry.value = 'all'
+  else if (key === 'domain') filterDomain.value = 'all'
+  else if (key === 'proxy') { if (form.value) form.value.proxy = '' }
+  else if (key === 'health') filterHealth.value = 'all'
+  else if (key === 'search') searchKeyword.value = ''
+  load(true)
+}
+
+function applyFilter(key, val) {
+  if (key === 'sec') filterSec.value = val
+  else if (key === 'plan') filterPlan.value = val
+  else if (key === 'country') filterCountry.value = val
+  else if (key === 'domain') filterDomain.value = val
+  else if (key === 'proxy') { if (form.value) form.value.proxy = val }
+  load(true)
+}
+
 function resetAdvancedFilters() {
+  filterSec.value = 'all'
   filterPlan.value = 'all'
   filterDomain.value = 'all'
   filterCountry.value = 'all'
@@ -2023,13 +2092,23 @@ function resetColumnVisibility() {
 }
 
 // ──────────── 表格密度切换 (Compact / Default / Relaxed) ────────────
-const tableDensity = ref(localStorage.getItem('reg_table_density') || 'default')
+const savedDensity = localStorage.getItem('reg_table_density')
+const tableDensity = ref(['compact', 'default', 'relaxed'].includes(savedDensity) ? savedDensity : 'default')
 
 function setTableDensity(val) {
   tableDensity.value = val
   try {
     localStorage.setItem('reg_table_density', val)
   } catch (_) {}
+  nextTick(() => {
+    tableRef.value?.doLayout?.()
+  })
+  const labelMap = {
+    compact: '紧凑模式 (高屏效)',
+    default: '标准模式 (默认)',
+    relaxed: '宽松模式 (大间距)'
+  }
+  ElMessage.success(`表格行高已切换为：${labelMap[val] || val}`)
 }
 
 // ──────────── 表格引用与全局快捷键 ────────────
@@ -2060,6 +2139,7 @@ function handleGlobalKeydown(e) {
 }
 
 onMounted(() => {
+  load()
   loadDomains()
   loadCountries()
   loadSmsCountries()
@@ -2577,6 +2657,160 @@ function openOAuthExportForSingle(email) {
   loadSmsCountries()
 }
 
+// ════════════════ 选中账号全景档案 (Focused Account Profile) ════════════════
+const focusedRow = ref(null)
+const focusedTotpCode = ref('')
+const focusedTotpNextCode = ref('')
+const focusedTotpRemaining = ref(30)
+const focusedTotpLoading = ref(false)
+let focusedTotpTimer = null
+const detailsCollapsed = ref(false)
+const focusedPwdVisible = ref(false)
+const focusedSecretVisible = ref(false)
+
+const totpTimerUrgencyClass = computed(() => {
+  const r = focusedTotpRemaining.value
+  if (r <= 5) return 'urgency-critical'
+  if (r <= 10) return 'urgency-warning'
+  return 'urgency-normal'
+})
+
+function formatDossierCountry(countryCode) {
+  if (!countryCode) return '🌐 全球节点'
+  const c = String(countryCode).trim().toUpperCase()
+  const info = COUNTRY_NAME_MAP?.[c]
+  if (info) {
+    return `🌐 ${info.name} (${c})`
+  }
+  return `🌐 ${c}`
+}
+
+const focusedHealthReport = computed(() => {
+  if (!focusedRow.value) return { score: 0, grade: 'C', label: '待就绪', theme: 'info', checks: { pwd: false, totp: false, token: false }, tips: [] }
+  const r = focusedRow.value
+  const checks = {
+    pwd: Boolean(r.password),
+    totp: Boolean(r.totp_secret),
+    token: Boolean(r.at_len && r.at_len > 0)
+  }
+  let score = 0
+  if (checks.pwd) score += 35
+  if (checks.totp) score += 40
+  if (checks.token) score += 25
+
+  let grade = 'C'
+  let label = '低密模式'
+  let theme = 'warn'
+  if (score >= 95) {
+    grade = 'S'
+    label = '极致健全 · 最高防御'
+    theme = 'success'
+  } else if (score >= 65) {
+    grade = 'A'
+    label = '防护良好 · 建议加固'
+    theme = 'info'
+  } else {
+    grade = 'B'
+    label = '基础模式 · 亟需补全'
+    theme = 'warn'
+  }
+
+  const tips = []
+  if (!checks.totp) tips.push({ type: 'warning', text: '未绑定 2FA，抗风控与防封能力偏弱' })
+  if (!checks.pwd) tips.push({ type: 'info', text: '未设独立密码，目前处于免密模式' })
+  if (score === 100) tips.push({ type: 'success', text: '账号全景凭据完备，处于最高可用安全等级' })
+
+  return { score, grade, label, theme, checks, tips }
+})
+
+async function refreshFocusedAccount() {
+  if (!focusedRow.value) return
+  if (focusedRow.value.totp_secret) {
+    await fetchFocusedTotp()
+    ElMessage.success('2FA 动态口令已刷新')
+  } else {
+    ElMessage.info('当前账号未绑定 2FA 密钥')
+  }
+}
+
+async function setFocusedRow(row) {
+  focusedPwdVisible.value = false
+  focusedSecretVisible.value = false
+  if (!row) {
+    focusedRow.value = null
+    stopFocusedTotpTicker()
+    focusedTotpCode.value = ''
+    focusedTotpNextCode.value = ''
+    return
+  }
+  focusedRow.value = row
+  if (row.totp_secret) {
+    await fetchFocusedTotp()
+    startFocusedTotpTicker()
+  } else {
+    stopFocusedTotpTicker()
+    focusedTotpCode.value = ''
+    focusedTotpNextCode.value = ''
+  }
+}
+
+async function fetchFocusedTotp() {
+  if (!focusedRow.value || !focusedRow.value.email) return
+  focusedTotpLoading.value = true
+  try {
+    const res = await getAccountTotp(focusedRow.value.email)
+    focusedTotpCode.value = res.code || ''
+    focusedTotpNextCode.value = res.next_code || ''
+    focusedTotpRemaining.value = res.remaining_seconds || 30
+  } catch (e) {
+    focusedTotpCode.value = ''
+  } finally {
+    focusedTotpLoading.value = false
+  }
+}
+
+function startFocusedTotpTicker() {
+  stopFocusedTotpTicker()
+  focusedTotpTimer = setInterval(() => {
+    if (!focusedRow.value || !focusedRow.value.totp_secret) {
+      stopFocusedTotpTicker()
+      return
+    }
+    if (focusedTotpRemaining.value > 1) {
+      focusedTotpRemaining.value--
+    } else {
+      focusedTotpRemaining.value = 30
+      fetchFocusedTotp()
+    }
+  }, 1000)
+}
+
+function stopFocusedTotpTicker() {
+  if (focusedTotpTimer) {
+    clearInterval(focusedTotpTimer)
+    focusedTotpTimer = null
+  }
+}
+
+function getRowClassName({ row }) {
+  if (focusedRow.value && focusedRow.value.email === row.email) {
+    return 'is-focused-row'
+  }
+  return ''
+}
+
+// ════════════════ 左侧分类折叠组 ════════════════
+const categoryGroupsOpen = ref({
+  status: true,
+  security: true,
+  entitlement: false,
+  country: true,
+})
+
+function toggleCategoryGroup(k) {
+  categoryGroupsOpen.value[k] = !categoryGroupsOpen.value[k]
+}
+
 // ════════════════════════ 数据加载与分页 ════════════════════════
 async function load(resetPage = false) {
   if (resetPage) page.value = 1
@@ -2601,6 +2835,13 @@ async function load(resetPage = false) {
     })
     rows.value = items || []
     total.value = t || 0
+    if (rows.value.length) {
+      const cur = focusedRow.value
+      const found = cur ? rows.value.find((r) => r.email === cur.email) : null
+      setFocusedRow(found || rows.value[0])
+    } else {
+      setFocusedRow(null)
+    }
   } catch (e) {
     ElMessage.error(e.message)
   } finally {
@@ -4377,9 +4618,15 @@ function handleWarmingCommand(cmd) {
 }
 
 // 账号列表完全自主受控：进入页面或切换 tab 时加载，避免后台并发跑号每次完成都强制全表刷新打扰用户
-onActivated(() => load())
+onActivated(() => {
+  load()
+  if (focusedRow.value && focusedRow.value.totp_secret) {
+    fetchFocusedTotp()
+    startFocusedTotpTicker()
+  }
+})
 
-onUnmounted(() => {
+function cleanupResources() {
   if (plusEs.value) {
     plusEs.value.close()
     plusEs.value = null
@@ -4408,126 +4655,264 @@ onUnmounted(() => {
     clearInterval(warmingLiveTimer)
     warmingLiveTimer = null
   }
+  stopFocusedTotpTicker()
+}
+
+onDeactivated(() => {
+  cleanupResources()
+})
+
+onUnmounted(() => {
+  cleanupResources()
 })
 </script>
 
 <template>
   <div class="registered-page">
     <div class="macos-window-panel">
-      <!-- ──────────── 顶部极简双行控制中枢 (Linear / Vercel 极客风格) ──────────── -->
-            <!-- ──────────── 极光黑曜石指挥中枢 (Cyber-Obsidian Command Deck) ──────────── -->
-            <!-- ──────────── 现代化极简指挥条 (Linear / Stripe Minimalist Ribbon) ──────────── -->
-            <!-- ──────────── 张鱼烧脑 Octopus 风格考公级工作台控制中枢 ──────────── -->
-      <div class="octopus-workbench-deck">
-        <!-- Top Row: 工作台标题 + 胶囊导航轨 + 极简搜索与工具 -->
-        <div class="deck-top-row">
-          <div class="deck-left-group">
-            <div class="workbench-brand-tag">
-              <span class="brand-octopus-icon">🐙</span>
-              <div class="brand-text-wrap">
-                <span class="brand-title">账号资产工作台</span>
-                <span class="brand-counter mono">{{ regSummary.total || total }} 资产</span>
-              </div>
-            </div>
-
-            <!-- Segmented Pill Track (静海 / 翡翠胶囊轨) -->
-            <div class="octopus-tab-rail">
-              <button
-                class="rail-btn"
-                :class="{ 'is-active': activeQuickView === 'all' }"
-                @click="setQuickView('all')"
-              >
-                <span>全部</span>
-                <span class="rail-count">{{ regSummary.total || total }}</span>
-              </button>
-
-              <button
-                class="rail-btn"
-                :class="{ 'is-active': activeQuickView === 'unexported' }"
-                @click="setQuickView('unexported')"
-              >
-                <span class="pulse-indicator-dot dot-emerald"></span>
-                <span>纯新未导</span>
-                <span class="rail-count count-emerald">{{ regSummary.unexported_cnt }}</span>
-              </button>
-
-              <button
-                class="rail-btn"
-                :class="{ 'is-active': activeQuickView === 'exported' }"
-                @click="setQuickView('exported')"
-              >
-                <span>已导出</span>
-                <span class="rail-count">{{ regSummary.exported_cnt }}</span>
-              </button>
-
-              <button
-                class="rail-btn"
-                :class="{ 'is-active': activeQuickView === 'oauth' }"
-                @click="setQuickView('oauth')"
-              >
-                <span class="pulse-indicator-dot dot-cyan"></span>
-                <span>已授权</span>
-                <span class="rail-count count-cyan">{{ regSummary.with_oauth }}</span>
-              </button>
-
-              <button
-                class="rail-btn"
-                :class="{ 'is-active': activeQuickView === 'needs_sec' }"
-                @click="setQuickView('needs_sec')"
-              >
-                <span class="pulse-indicator-dot dot-amber"></span>
-                <span>待补安全</span>
-              </button>
-
-              <button
-                class="rail-btn"
-                :class="{ 'is-active': activeQuickView === 'dead' }"
-                @click="setQuickView('dead')"
-              >
-                <span class="pulse-indicator-dot dot-rose"></span>
-                <span>坏号隔离</span>
-              </button>
-            </div>
+      <!-- ──────────── 顶部多维控制中枢 (Linear Command Deck) ──────────── -->
+      <header class="linear-command-deck">
+        <!-- 第 1 行：核心状态视图切轨 + 全局搜索 + 视图控制 -->
+        <div class="command-deck-main">
+          <!-- 快速视图分段切轨 (Segmented Tabs) -->
+          <div class="linear-segmented-rail">
+            <button
+              class="segmented-tab"
+              :class="{ 'is-active': activeQuickView === 'all' }"
+              @click="setQuickView('all')"
+            >
+              <span>全部资产</span>
+              <span class="tab-count-badge">{{ regSummary.total || total }}</span>
+            </button>
+            <button
+              class="segmented-tab"
+              :class="{ 'is-active': activeQuickView === 'unexported' }"
+              @click="setQuickView('unexported')"
+            >
+              <span class="status-dot dot-cyan"></span>
+              <span>纯新未导</span>
+              <span class="tab-count-badge count-cyan">{{ regSummary.unexported_cnt }}</span>
+            </button>
+            <button
+              class="segmented-tab"
+              :class="{ 'is-active': activeQuickView === 'exported' }"
+              @click="setQuickView('exported')"
+            >
+              <span>已导出</span>
+              <span class="tab-count-badge">{{ regSummary.exported_cnt }}</span>
+            </button>
+            <button
+              class="segmented-tab"
+              :class="{ 'is-active': activeQuickView === 'oauth' }"
+              @click="setQuickView('oauth')"
+            >
+              <span class="status-dot dot-amber"></span>
+              <span>Codex 已授权</span>
+              <span class="tab-count-badge count-amber">{{ regSummary.with_oauth }}</span>
+            </button>
+            <button
+              class="segmented-tab"
+              :class="{ 'is-active': activeQuickView === 'needs_sec' }"
+              @click="setQuickView('needs_sec')"
+            >
+              <span class="status-dot dot-emerald"></span>
+              <span>待补安全</span>
+            </button>
+            <button
+              class="segmented-tab"
+              :class="{ 'is-active': activeQuickView === 'dead' }"
+              @click="setQuickView('dead')"
+            >
+              <span class="status-dot dot-rose"></span>
+              <span>坏号隔离</span>
+            </button>
           </div>
 
-          <!-- 右侧：圆形微搜索与全局工具 -->
-          <div class="deck-right-group">
+          <!-- 右侧：全局搜索 + 视图工具 + 抽屉开关 -->
+          <div class="command-deck-search">
             <el-input
               ref="searchInputRef"
               v-model="searchKeyword"
-              placeholder="搜索邮箱、备注、域名 (⌘K)..."
+              placeholder="搜索邮箱、备注、IP、域名 (⌘K)..."
               clearable
               size="small"
-              class="octopus-search-input"
+              class="linear-search-input"
               :prefix-icon="Search"
               @input="onSearchInput"
               @clear="load(true)"
               @keyup.enter="load(true)"
             >
               <template #suffix>
-                <span class="octopus-kbd">⌘K</span>
+                <span class="cmd-k-tag">⌘K</span>
               </template>
             </el-input>
 
-            <!-- 表格行高密度切换 -->
+            <!-- 🌟 属性精准筛选器 (Linear Style Filter Popover) 🌟 -->
+            <el-popover placement="bottom-end" :width="290" trigger="click" popper-class="linear-filter-builder-popover">
+              <template #reference>
+                <button
+                  class="filter-builder-trigger-btn"
+                  :class="{ 'is-active': hasActiveAttributeFilter }"
+                  title="多维度属性精准过滤"
+                >
+                  <el-icon><Filter /></el-icon>
+                  <span>筛选</span>
+                  <span v-if="activeAttributeFilterCount" class="filter-count-badge">
+                    {{ activeAttributeFilterCount }}
+                  </span>
+                  <el-icon class="caret-ico"><ArrowDown /></el-icon>
+                </button>
+              </template>
+
+              <div class="filter-builder-panel">
+                <div class="filter-panel-header">
+                  <div class="panel-header-title">
+                    <el-icon><Filter /></el-icon>
+                    <span>多维度数据筛选</span>
+                  </div>
+                  <el-button v-if="hasActiveAttributeFilter" size="small" text type="danger" @click="resetAdvancedFilters">
+                    重置
+                  </el-button>
+                </div>
+
+                <div class="filter-builder-items">
+                  <!-- 1. 安全加固 -->
+                  <div class="filter-item-group">
+                    <div class="filter-group-label">🛡️ 安全加固状态</div>
+                    <el-select
+                      v-model="filterSec"
+                      size="small"
+                      class="popover-select"
+                      @change="load(true)"
+                    >
+                      <el-option label="全部安全状态" value="all" />
+                      <el-option :label="`已绑 2FA TOTP (${regSummary.with_2fa})`" value="with_2fa" />
+                      <el-option :label="`⚠️ 待补绑 2FA (${Math.max(0, (regSummary.total || total) - regSummary.with_2fa)})`" value="missing_2fa" />
+                      <el-option :label="`官方已设密码 (${regSummary.with_pwd})`" value="with_pwd" />
+                      <el-option :label="`免密未设密码 (${Math.max(0, (regSummary.total || total) - regSummary.with_pwd)})`" value="missing_pwd" />
+                    </el-select>
+                  </div>
+
+                  <!-- 2. 套餐特权 -->
+                  <div class="filter-item-group">
+                    <div class="filter-group-label">💎 套餐与业务特权</div>
+                    <el-select
+                      v-model="filterPlan"
+                      size="small"
+                      class="popover-select"
+                      @change="load(true)"
+                    >
+                      <el-option label="全部套餐特权" value="all" />
+                      <el-option label="💎 Plus / 试用特权" value="plus" />
+                      <el-option label="👑 Pro 高级特权" value="pro" />
+                      <el-option label="⚪ Free 基础正常号" value="free" />
+                    </el-select>
+                  </div>
+
+                  <!-- 3. 出口国家 -->
+                  <div class="filter-item-group">
+                    <div class="filter-group-label">🌍 出口网络国家</div>
+                    <el-select
+                      v-model="filterCountry"
+                      size="small"
+                      filterable
+                      clearable
+                      class="popover-select"
+                      @change="load(true)"
+                      @clear="filterCountry = 'all'; load(true)"
+                    >
+                      <el-option label="全部出口国家" value="all" />
+                      <el-option-group v-if="countryOptions.length > 0" label="库内实际出口">
+                        <el-option
+                          v-for="c in countryOptions"
+                          :key="c.country"
+                          :label="getCountryOptionLabel(c.country, c.count)"
+                          :value="c.country"
+                        />
+                      </el-option-group>
+                      <el-option-group label="常用出口">
+                        <el-option
+                          v-for="c in POPULAR_FILTER_COUNTRIES"
+                          :key="c"
+                          :label="getCountryOptionLabel(c)"
+                          :value="c"
+                        />
+                      </el-option-group>
+                    </el-select>
+                  </div>
+
+                  <!-- 4. 邮箱域名 -->
+                  <div class="filter-item-group">
+                    <div class="filter-group-label">📧 邮箱域名</div>
+                    <el-select
+                      v-model="filterDomain"
+                      size="small"
+                      filterable
+                      clearable
+                      class="popover-select"
+                      @change="load(true)"
+                      @clear="filterDomain = 'all'; load(true)"
+                    >
+                      <el-option label="全部邮箱域名" value="all" />
+                      <el-option label="微软全系 (@outlook/@hotmail)" value="microsoft" />
+                      <el-option label="Outlook (@outlook.com)" value="outlook" />
+                      <el-option label="Hotmail (@hotmail.com)" value="hotmail" />
+                      <el-option label="Gmail (@gmail.com)" value="gmail" />
+                    </el-select>
+                  </div>
+
+                  <!-- 5. 检测代理 -->
+                  <div class="filter-item-group">
+                    <div class="filter-group-label">🌐 检测代理 (留空直连)</div>
+                    <el-select
+                      v-model="form.proxy"
+                      filterable
+                      clearable
+                      allow-create
+                      placeholder="选择代理或输入"
+                      size="small"
+                      class="popover-select"
+                      @change="load(true)"
+                    >
+                      <el-option v-for="p in proxyList" :key="p" :label="p" :value="p" />
+                    </el-select>
+                  </div>
+                </div>
+              </div>
+            </el-popover>
+
+            <!-- 密度切换 -->
             <el-dropdown trigger="click" @command="setTableDensity">
-              <button class="octopus-circle-btn" title="切换表格行高密度">
+              <button
+                class="ghost-tool-btn"
+                :class="{ 'is-active': tableDensity !== 'default' }"
+                :title="`调整表格行高密度 (当前: ${tableDensity === 'compact' ? '紧凑' : tableDensity === 'relaxed' ? '宽松' : '标准'})`"
+              >
                 <el-icon><Histogram /></el-icon>
               </button>
               <template #dropdown>
-                <el-dropdown-menu class="extract-dropdown-menu">
+                <el-dropdown-menu class="extract-dropdown-menu density-menu-popover">
                   <div class="dropdown-group-title">表格行高密度</div>
-                  <el-dropdown-item command="compact" :class="{ 'is-active': tableDensity === 'compact' }">⚡ 紧凑模式 (高屏效)</el-dropdown-item>
-                  <el-dropdown-item command="default" :class="{ 'is-active': tableDensity === 'default' }">✨ 标准模式 (默认)</el-dropdown-item>
-                  <el-dropdown-item command="relaxed" :class="{ 'is-active': tableDensity === 'relaxed' }">🌊 宽松模式 (大间距)</el-dropdown-item>
+                  <el-dropdown-item command="compact" :class="{ 'is-density-active': tableDensity === 'compact' }">
+                    <span class="density-item-content">⚡ 紧凑模式 (高屏效)</span>
+                    <span v-if="tableDensity === 'compact'" class="density-check-mark">✓</span>
+                  </el-dropdown-item>
+                  <el-dropdown-item command="default" :class="{ 'is-density-active': tableDensity === 'default' }">
+                    <span class="density-item-content">✨ 标准模式 (默认)</span>
+                    <span v-if="tableDensity === 'default'" class="density-check-mark">✓</span>
+                  </el-dropdown-item>
+                  <el-dropdown-item command="relaxed" :class="{ 'is-density-active': tableDensity === 'relaxed' }">
+                    <span class="density-item-content">🌊 宽松模式 (大间距)</span>
+                    <span v-if="tableDensity === 'relaxed'" class="density-check-mark">✓</span>
+                  </el-dropdown-item>
                 </el-dropdown-menu>
               </template>
             </el-dropdown>
 
-            <!-- 自定义显示列 Popover -->
+            <!-- 自定义列显示 -->
             <el-popover placement="bottom-end" :width="190" trigger="click" popper-class="col-setting-popover">
               <template #reference>
-                <button class="octopus-circle-btn" title="自定义显示列">
+                <button class="ghost-tool-btn" title="自定义显示列">
                   <el-icon><Operation /></el-icon>
                 </button>
               </template>
@@ -4546,442 +4931,805 @@ onUnmounted(() => {
               </div>
             </el-popover>
 
+            <!-- 全景档案 / 实时 2FA TOTP 面板显隐开关 -->
+            <button
+              class="ghost-tool-btn"
+              :class="{ 'is-active': !detailsCollapsed }"
+              :title="detailsCollapsed ? '展开右侧全景档案与 2FA 演算面板' : '收起右侧全景档案'"
+              @click="detailsCollapsed = !detailsCollapsed"
+            >
+              <el-icon><DataAnalysis /></el-icon>
+            </button>
+
             <!-- 刷新 -->
-            <button class="octopus-circle-btn" title="刷新数据" @click="load(false)">
-              <el-icon><Refresh /></el-icon>
+            <button class="ghost-tool-btn" :class="{ 'is-loading': loading }" title="刷新数据" @click="load(false)">
+              <el-icon :class="{ 'is-spinning': loading }"><Refresh /></el-icon>
             </button>
           </div>
         </div>
 
-        <!-- Bottom Row: 极简微磨砂操作带 & 翡翠导出主按键 -->
-        <div class="deck-bottom-row">
-          <!-- 左侧：功能操作胶囊群 -->
-          <div class="deck-actions-left">
-            <!-- 勾选指示器 -->
-            <div v-if="selected.length" class="selection-pill">
-              <span class="selection-dot"></span>
-              <span>已选 <b>{{ selected.length }}</b> 项</span>
-              <button class="clear-sel-link" @click="clearSelected" title="取消全部勾选">✕</button>
+        <!-- 🌟 仅在激活过滤条件时出现的轻量过滤令牌胶囊栏 (Filter Token Ribbon) 🌟 -->
+        <div v-if="hasActiveAttributeFilter || (searchKeyword && searchKeyword.trim())" class="filter-tokens-ribbon">
+          <div class="tokens-left-wrap">
+            <span class="tokens-hint-label">活跃筛选:</span>
+
+            <!-- 关键词标签 -->
+            <span v-if="searchKeyword && searchKeyword.trim()" class="filter-token-pill">
+              <span class="token-cat">搜索:</span>
+              <span class="token-val mono">{{ searchKeyword }}</span>
+              <button class="token-del-btn" @click="searchKeyword = ''; load(true)" title="移除搜索关键词">✕</button>
+            </span>
+
+            <!-- 安全状态标签 -->
+            <span v-if="filterSec !== 'all'" class="filter-token-pill pill-sec">
+              <span class="token-cat">安全:</span>
+              <span class="token-val">{{ getSecFilterLabel(filterSec) }}</span>
+              <button class="token-del-btn" @click="removeFilter('sec')" title="移除安全筛选">✕</button>
+            </span>
+
+            <!-- 套餐特权标签 -->
+            <span v-if="filterPlan !== 'all'" class="filter-token-pill pill-plan">
+              <span class="token-cat">特权:</span>
+              <span class="token-val">{{ getPlanFilterLabel(filterPlan) }}</span>
+              <button class="token-del-btn" @click="removeFilter('plan')" title="移除特权筛选">✕</button>
+            </span>
+
+            <!-- 出口国家标签 -->
+            <span v-if="filterCountry !== 'all'" class="filter-token-pill pill-country">
+              <span class="token-cat">出口:</span>
+              <span class="token-val">{{ getCountryOptionLabel(filterCountry) }}</span>
+              <button class="token-del-btn" @click="removeFilter('country')" title="移除国家筛选">✕</button>
+            </span>
+
+            <!-- 邮箱域名标签 -->
+            <span v-if="filterDomain !== 'all'" class="filter-token-pill pill-domain">
+              <span class="token-cat">域名:</span>
+              <span class="token-val">{{ getDomainFilterLabel(filterDomain) }}</span>
+              <button class="token-del-btn" @click="removeFilter('domain')" title="移除域名筛选">✕</button>
+            </span>
+
+            <!-- 代理标签 -->
+            <span v-if="form?.proxy" class="filter-token-pill pill-proxy">
+              <span class="token-cat">代理:</span>
+              <span class="token-val mono">{{ formatProxyHost(form.proxy) }}</span>
+              <button class="token-del-btn" @click="removeFilter('proxy')" title="移除代理筛选">✕</button>
+            </span>
+
+            <!-- 一键清空全部 -->
+            <button class="tokens-clear-all-btn" @click="resetAdvancedFilters" title="清空全部属性筛选">
+              <span>✕ 清空筛选</span>
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <!-- ──────────── 核心工作区：全宽高密度数据表格 + 右侧全景档案抽屉 ──────────── -->
+      <div class="registered-workspace-body" :class="{ 'with-details-panel': !detailsCollapsed }">
+
+        <!-- ───── 中间栏: 高信噪比暗黑数据网格 (Center Table Pane) ───── -->
+        <section class="center-table-pane panel">
+          <!-- Action Ribbon 工具栏 -->
+          <div class="command-deck-actions">
+            <!-- 左侧：操作菜单组 -->
+            <div class="actions-group-left">
+              <!-- 勾选指示器 -->
+              <div v-if="selected.length" class="selection-pill">
+                <span class="selection-dot"></span>
+                <span>已选 <b>{{ selected.length }}</b> 项</span>
+                <button class="clear-sel-link" @click="clearSelected" title="取消全部勾选">✕</button>
+              </div>
+
+              <!-- 1. 批量流水线 (Tasks ▾) -->
+              <el-dropdown trigger="click" @command="handleHealthCheckCommand">
+                <button class="action-menu-btn" :class="{ 'has-selected': selected.length }">
+                  <el-icon><Timer /></el-icon>
+                  <span>批量流水线{{ selected.length ? ` (${selected.length})` : '' }}</span>
+                  <el-icon class="arrow-down"><ArrowDown /></el-icon>
+                </button>
+                <template #dropdown>
+                  <el-dropdown-menu class="extract-dropdown-menu">
+                    <div class="dropdown-group-title">Token 验活与探测</div>
+                    <el-dropdown-item command="token_selected" :disabled="!selected.length">验活选中账号 ({{ selected.length }})</el-dropdown-item>
+                    <el-dropdown-item command="token_unchecked">验活未检账号</el-dropdown-item>
+                    <el-dropdown-item command="token_all">全量全库重验</el-dropdown-item>
+                    <div class="dropdown-group-title divider-title">OAuth 接码授权</div>
+                    <el-dropdown-item @click="handleOAuthCommand('oauth_selected')" :disabled="!selected.length">📱 Codex OAuth 接码 (选中)</el-dropdown-item>
+                    <el-dropdown-item @click="handleOAuthCommand('oauth_all')">📱 Codex OAuth 全量接码</el-dropdown-item>
+                    <div class="dropdown-group-title divider-title">提链 / 出码</div>
+                    <el-dropdown-item @click="openExtractChannel('paypal_pipeline')">🎁 PayPal 提链+代付 (一条龙)</el-dropdown-item>
+                    <el-dropdown-item @click="openExtractChannel('paypal')">🔗 PayPal 仅提链</el-dropdown-item>
+                    <el-dropdown-item @click="openExtractChannel('gcash')">🇵🇭 GCash 提链/出码</el-dropdown-item>
+                    <div class="dropdown-group-title divider-title">账号保温保鲜</div>
+                    <el-dropdown-item @click="handleWarmingCommand('warm_selected')" :disabled="!selected.length">☀️ 保温选中账号 ({{ selected.length }})</el-dropdown-item>
+                    <el-dropdown-item @click="handleWarmingCommand('warm_cold')">☀️ 保温未保鲜冷号</el-dropdown-item>
+                    <el-dropdown-item @click="handleWarmingCommand('warm_all')">☀️ 全库轮询保温</el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
+
+              <!-- 2. 复制凭证 (Copy ▾) -->
+              <el-dropdown trigger="click" @command="handleCopyAtCommand">
+                <button class="action-menu-btn">
+                  <el-icon><CopyDocument /></el-icon>
+                  <span>复制凭据</span>
+                  <el-icon class="arrow-down"><ArrowDown /></el-icon>
+                </button>
+                <template #dropdown>
+                  <el-dropdown-menu class="extract-dropdown-menu">
+                    <div class="dropdown-group-title">Access Token (AT)</div>
+                    <el-dropdown-item command="copy_at_selected" :disabled="!selected.length">复制选中 AT ({{ selected.length }})</el-dropdown-item>
+                    <el-dropdown-item command="copy_at_with_email" :disabled="!selected.length">复制「邮箱----AT」格式</el-dropdown-item>
+                    <el-dropdown-item command="copy_at_page">复制当前页 AT</el-dropdown-item>
+                    <el-dropdown-item command="copy_at_all" divided>全库复制 AT</el-dropdown-item>
+                    <div class="dropdown-group-title divider-title">Session 结构</div>
+                    <el-dropdown-item @click="handleCopySessionCommand('copy_session_selected')" :disabled="!selected.length">复制选中 Session (JSON 数组)</el-dropdown-item>
+                    <el-dropdown-item @click="handleCopySessionCommand('copy_session_lines_selected')" :disabled="!selected.length">复制选中 Session (单行)</el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
+
+              <!-- 3. 运维管理 (Ops ▾) -->
+              <el-dropdown trigger="click">
+                <button class="action-menu-btn">
+                  <el-icon><Setting /></el-icon>
+                  <span>运维管理</span>
+                  <el-icon class="arrow-down"><ArrowDown /></el-icon>
+                </button>
+                <template #dropdown>
+                  <el-dropdown-menu class="extract-dropdown-menu">
+                    <div class="dropdown-group-title">安全补密与 2FA</div>
+                    <el-dropdown-item @click="handleSecurityCommand('batch_pwd_selected')" :disabled="!selected.length">🔑 批量设密码 (选中无密)</el-dropdown-item>
+                    <el-dropdown-item @click="handleSecurityCommand('batch_pwd_all_missing')">🔑 全量补设密码</el-dropdown-item>
+                    <el-dropdown-item @click="handleSecurityCommand('batch_2fa_selected')" :disabled="!selected.length">🛡️ 批量补绑 2FA (选中)</el-dropdown-item>
+                    <el-dropdown-item @click="handleSecurityCommand('batch_2fa_all_missing')">🛡️ 全量补绑 2FA</el-dropdown-item>
+                    <div class="dropdown-group-title divider-title">Token 刷新与自愈</div>
+                    <el-dropdown-item @click="handleRefreshCommand('refresh_selected')" :disabled="!selected.length">🔄 刷新选中 Token</el-dropdown-item>
+                    <el-dropdown-item @click="handleRefreshCommand('refresh_all')">🔄 全量刷新 Token</el-dropdown-item>
+                    <el-dropdown-item @click="() => doRecoverOAuth()">⚡ 扫描并找回历史授权 (RT自愈)</el-dropdown-item>
+                    <el-dropdown-item @click="openFeatBoard">📊 特征工程大屏</el-dropdown-item>
+                    <div class="dropdown-group-title divider-title">数据清理与删除</div>
+                    <el-dropdown-item @click="cleanInvalid">🧹 清理库内空号</el-dropdown-item>
+                    <el-dropdown-item :disabled="!selected.length" @click="deleteSelected" style="color: var(--el-color-danger)">🗑️ 删除选中账号 ({{ selected.length }})</el-dropdown-item>
+                    <el-dropdown-item @click="deleteAll" style="color: var(--el-color-danger)">⚠️ 清空全部账号</el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
             </div>
 
-            <!-- 1. 批量流水线 (Tasks ▾) -->
-            <el-dropdown trigger="click" @command="handleHealthCheckCommand">
-              <button class="octopus-action-btn" :class="{ 'is-selected': selected.length }">
-                <el-icon class="btn-icon"><Timer /></el-icon>
-                <span>批量流水线{{ selected.length ? ` (${selected.length})` : '' }}</span>
-                <el-icon class="btn-arrow"><ArrowDown /></el-icon>
-              </button>
-              <template #dropdown>
-                <el-dropdown-menu class="extract-dropdown-menu">
-                  <div class="dropdown-group-title">Token 验活与探测</div>
-                  <el-dropdown-item command="token_selected" :disabled="!selected.length">验活选中账号 ({{ selected.length }})</el-dropdown-item>
-                  <el-dropdown-item command="token_unchecked">验活未检账号</el-dropdown-item>
-                  <el-dropdown-item command="token_all">全量全库重验</el-dropdown-item>
-                  <div class="dropdown-group-title divider-title">OAuth 接码授权</div>
-                  <el-dropdown-item @click="handleOAuthCommand('oauth_selected')" :disabled="!selected.length">📱 Codex OAuth 接码 (选中)</el-dropdown-item>
-                  <el-dropdown-item @click="handleOAuthCommand('oauth_all')">📱 Codex OAuth 全量接码</el-dropdown-item>
-                  <div class="dropdown-group-title divider-title">提链 / 出码</div>
-                  <el-dropdown-item @click="openExtractChannel('paypal_pipeline')">🎁 PayPal 提链+代付 (一条龙)</el-dropdown-item>
-                  <el-dropdown-item @click="openExtractChannel('paypal')">🔗 PayPal 仅提链</el-dropdown-item>
-                  <el-dropdown-item @click="openExtractChannel('gcash')">🇵🇭 GCash 提链/出码</el-dropdown-item>
-                  <div class="dropdown-group-title divider-title">账号保温保鲜</div>
-                  <el-dropdown-item @click="handleWarmingCommand('warm_selected')" :disabled="!selected.length">☀️ 保温选中账号 ({{ selected.length }})</el-dropdown-item>
-                  <el-dropdown-item @click="handleWarmingCommand('warm_cold')">☀️ 保温未保鲜冷号</el-dropdown-item>
-                  <el-dropdown-item @click="handleWarmingCommand('warm_all')">☀️ 全库轮询保温</el-dropdown-item>
-                </el-dropdown-menu>
-              </template>
-            </el-dropdown>
+            <!-- 右侧：分卷设置与一键导出 -->
+            <div class="actions-group-right">
+              <el-select v-model="exportChunkSize" size="small" class="linear-chunk-select" title="分卷文件账号条数设置">
+                <el-option label="不分卷" :value="0" />
+                <el-option label="50条/卷" :value="50" />
+                <el-option label="100条/卷" :value="100" />
+                <el-option label="200条/卷" :value="200" />
+                <el-option label="500条/卷" :value="500" />
+              </el-select>
 
-            <!-- 2. 复制凭证 (Copy ▾) -->
-            <el-dropdown trigger="click" @command="handleCopyAtCommand">
-              <button class="octopus-action-btn">
-                <el-icon class="btn-icon"><CopyDocument /></el-icon>
-                <span>复制凭据</span>
-                <el-icon class="btn-arrow"><ArrowDown /></el-icon>
-              </button>
-              <template #dropdown>
-                <el-dropdown-menu class="extract-dropdown-menu">
-                  <div class="dropdown-group-title">Access Token (AT)</div>
-                  <el-dropdown-item command="copy_at_selected" :disabled="!selected.length">复制选中 AT ({{ selected.length }})</el-dropdown-item>
-                  <el-dropdown-item command="copy_at_with_email" :disabled="!selected.length">复制「邮箱----AT」格式</el-dropdown-item>
-                  <el-dropdown-item command="copy_at_page">复制当前页 AT</el-dropdown-item>
-                  <el-dropdown-item command="copy_at_all" divided>全库复制 AT</el-dropdown-item>
-                  <div class="dropdown-group-title divider-title">Session 结构</div>
-                  <el-dropdown-item @click="handleCopySessionCommand('copy_session_selected')" :disabled="!selected.length">复制选中 Session (JSON 数组)</el-dropdown-item>
-                  <el-dropdown-item @click="handleCopySessionCommand('copy_session_lines_selected')" :disabled="!selected.length">复制选中 Session (单行)</el-dropdown-item>
-                </el-dropdown-menu>
-              </template>
-            </el-dropdown>
-
-            <!-- 3. 运维管理 (Ops ▾) -->
-            <el-dropdown trigger="click">
-              <button class="octopus-action-btn">
-                <el-icon class="btn-icon"><Setting /></el-icon>
-                <span>运维管理</span>
-                <el-icon class="btn-arrow"><ArrowDown /></el-icon>
-              </button>
-              <template #dropdown>
-                <el-dropdown-menu class="extract-dropdown-menu">
-                  <div class="dropdown-group-title">安全补密与 2FA</div>
-                  <el-dropdown-item @click="handleSecurityCommand('batch_pwd_selected')" :disabled="!selected.length">🔑 批量设密码 (选中无密)</el-dropdown-item>
-                  <el-dropdown-item @click="handleSecurityCommand('batch_pwd_all_missing')">🔑 全量补设密码</el-dropdown-item>
-                  <el-dropdown-item @click="handleSecurityCommand('batch_2fa_selected')" :disabled="!selected.length">🛡️ 批量补绑 2FA (选中)</el-dropdown-item>
-                  <el-dropdown-item @click="handleSecurityCommand('batch_2fa_all_missing')">🛡️ 全量补绑 2FA</el-dropdown-item>
-                  <div class="dropdown-group-title divider-title">Token 刷新与自愈</div>
-                  <el-dropdown-item @click="handleRefreshCommand('refresh_selected')" :disabled="!selected.length">🔄 刷新选中 Token</el-dropdown-item>
-                  <el-dropdown-item @click="handleRefreshCommand('refresh_all')">🔄 全量刷新 Token</el-dropdown-item>
-                  <el-dropdown-item @click="() => doRecoverOAuth()">⚡ 扫描并找回历史授权 (RT自愈)</el-dropdown-item>
-                  <el-dropdown-item @click="openFeatBoard">📊 特征工程大屏</el-dropdown-item>
-                  <div class="dropdown-group-title divider-title">数据清理与删除</div>
-                  <el-dropdown-item @click="cleanInvalid">🧹 清理库内空号</el-dropdown-item>
-                  <el-dropdown-item :disabled="!selected.length" @click="deleteSelected" style="color: var(--el-color-danger)">🗑️ 删除选中账号 ({{ selected.length }})</el-dropdown-item>
-                  <el-dropdown-item @click="deleteAll" style="color: var(--el-color-danger)">⚠️ 清空全部账号</el-dropdown-item>
-                </el-dropdown-menu>
-              </template>
-            </el-dropdown>
-
-            <!-- 4. 多维过滤 -->
-            <el-popover placement="bottom-start" :width="280" trigger="click" popper-class="advanced-filters-popover">
-              <template #reference>
-                <button class="octopus-action-btn" :class="{ 'is-filtered': advancedFilterCount > 0 }">
-                  <el-icon class="btn-icon"><Filter /></el-icon>
-                  <span>多维过滤</span>
-                  <span v-if="advancedFilterCount > 0" class="filter-count-chip">{{ advancedFilterCount }}</span>
+              <el-dropdown trigger="click" @command="openExportModal" @visible-change="(v) => v && loadExportFormats()">
+                <button class="primary-export-btn" :disabled="exporting" @click.stop="openExportModal(null)">
+                  <el-icon><Download /></el-icon>
+                  <span>{{ exportBtnText }}</span>
+                  <el-icon class="arrow-down"><ArrowDown /></el-icon>
                 </button>
-              </template>
-              <div class="advanced-filters-body">
-                <div class="adv-filter-head">
-                  <span>高级多维过滤</span>
-                  <el-button size="small" text type="primary" @click="resetAdvancedFilters">重置</el-button>
-                </div>
-                <div class="adv-filter-grid">
-                  <div class="adv-filter-field">
-                    <span class="adv-label">出口国家</span>
-                    <el-select v-model="filterCountry" placeholder="全部出口国家" size="small" filterable clearable @change="load(true)" @clear="filterCountry = 'all'; load(true)">
-                      <el-option label="全部出口国家" value="all" />
-                      <el-option-group v-if="countryOptions.length > 0" label="库内实际出口">
-                        <el-option v-for="c in countryOptions" :key="c.country" :label="getCountryOptionLabel(c.country, c.count)" :value="c.country" />
-                      </el-option-group>
-                      <el-option-group label="常用国别">
-                        <el-option v-for="c in POPULAR_FILTER_COUNTRIES" :key="c" :label="getCountryOptionLabel(c)" :value="c" />
-                      </el-option-group>
-                    </el-select>
-                  </div>
-                  <div class="adv-filter-field">
-                    <span class="adv-label">邮箱域名</span>
-                    <el-select v-model="filterDomain" placeholder="全部域名" size="small" filterable clearable @change="load(true)" @clear="filterDomain = 'all'; load(true)">
-                      <el-option label="全部邮箱域名" value="all" />
-                      <el-option label="微软全系" value="microsoft" />
-                      <el-option label="Outlook" value="outlook" />
-                      <el-option label="Hotmail" value="hotmail" />
-                      <el-option label="Gmail" value="gmail" />
-                    </el-select>
-                  </div>
-                  <div class="adv-filter-field">
-                    <span class="adv-label">套餐类型</span>
-                    <el-select v-model="filterPlan" placeholder="全部套餐" size="small" @change="load(true)">
-                      <el-option label="全部套餐" value="all" />
-                      <el-option label="Plus / 试用" value="plus" />
-                      <el-option label="Pro 订阅" value="pro" />
-                      <el-option label="Free 正常" value="free" />
-                    </el-select>
-                  </div>
-                  <div class="adv-filter-field">
-                    <span class="adv-label">检测代理</span>
-                    <el-select v-model="form.proxy" filterable clearable allow-create placeholder="留空直连" size="small">
-                      <el-option v-for="p in proxyList" :key="p" :label="p" :value="p" />
-                    </el-select>
-                  </div>
-                </div>
-              </div>
-            </el-popover>
-          </div>
-
-          <!-- 右侧：分卷设置与翡翠/静海导出主按键 -->
-          <div class="deck-actions-right">
-            <el-select v-model="exportChunkSize" size="small" class="octopus-chunk-select" title="分卷文件账号条数设置">
-              <el-option label="不分卷" :value="0" />
-              <el-option label="50条/卷" :value="50" />
-              <el-option label="100条/卷" :value="100" />
-              <el-option label="200条/卷" :value="200" />
-              <el-option label="500条/卷" :value="500" />
-            </el-select>
-
-            <el-dropdown trigger="click" @command="openExportModal" @visible-change="(v) => v && loadExportFormats()">
-              <button class="octopus-scan-export-btn" :disabled="exporting" @click.stop="openExportModal(null)">
-                <el-icon><Download /></el-icon>
-                <span>{{ exportBtnText }}</span>
-                <el-icon class="btn-arrow"><ArrowDown /></el-icon>
-              </button>
-              <template #dropdown>
-                <el-dropdown-menu class="macos-dropdown-menu">
-                  <el-dropdown-item v-for="f in exportFormats" :key="f.id" :command="f">
-                    {{ f.label }}
-                    <span v-if="f.note" class="hint" style="margin-left: 6px">{{ f.note }}</span>
-                  </el-dropdown-item>
-                </el-dropdown-menu>
-              </template>
-            </el-dropdown>
-
-            <!-- 清空筛选 -->
-            <button v-if="hasActiveFilter" class="octopus-reset-filter-btn" @click="clearAllFilters" title="清空全部筛选条件">
-              <span>重置</span>
-              <el-icon><Close /></el-icon>
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <!-- ──────────── 张鱼烧脑沉浸式暗黑数据表格 (Octopus Workbench Data Grid) ──────────── -->
-      <div class="octopus-table-container">
-        <el-skeleton v-if="loading && !rows.length" :rows="8" animated style="padding: 16px" />
-        <el-table
-          v-else
-          ref="tableRef"
-          v-loading="loading"
-          :data="rows"
-          height="100%"
-          size="small"
-          :class="['octopus-table-grid', `density-${tableDensity}`]"
-          @selection-change="(v) => (selected = v)"
-        >
-          <!-- 1. 勾选列 -->
-          <el-table-column type="selection" width="38" align="center" fixed="left" />
-
-          <!-- 2. 账号与网络出口 (左侧固定，高清晰度层次) -->
-          <el-table-column prop="email" label="账号与网络出口" min-width="260" fixed="left" show-overflow-tooltip>
-            <template #default="{ row }">
-              <div class="cell-account-block">
-                <div class="account-line-main">
-                  <span class="provider-tag" :style="{ background: getEmailProviderMeta(row.email).bg, color: getEmailProviderMeta(row.email).color }">
-                    {{ getEmailProviderMeta(row.email).icon }}
-                  </span>
-                  <span class="email-name-mono mono" @click="copyText(row.email)" title="点击复制邮箱">{{ row.email }}</span>
-                  <el-icon class="email-copy-icon" @click.stop="copyText(row.email)"><CopyDocument /></el-icon>
-                </div>
-                <div class="account-line-sub">
-                  <span v-if="row.reg_country" class="country-text">
-                    {{ formatCountry(row.reg_country) }}
-                  </span>
-                  <span v-if="row.reg_ip" class="ip-text mono" :title="`出口IP: ${row.reg_ip} (点击复制)`" @click.stop="copyText(row.reg_ip, 'IP已复制')">
-                    · {{ row.reg_ip }}
-                  </span>
-                  <span v-else-if="row.reg_proxy" class="ip-text mono" :title="row.reg_proxy">
-                    · {{ formatProxyHost(row.reg_proxy) }}
-                  </span>
-                  <span v-if="row.mail_oauth?.pickup_url" class="pickup-link" @click.stop="window.open(row.mail_oauth.pickup_url, '_blank')" title="点击在线取件">
-                    · 📬 在线取件
-                  </span>
-                </div>
-              </div>
-            </template>
-          </el-table-column>
-
-          <!-- 3. 安全凭据 (密码与2FA) -->
-          <el-table-column v-if="columnVisibility.security" label="安全凭据 (密码/2FA)" min-width="190">
-            <template #default="{ row }">
-              <div class="cell-security-block">
-                <!-- 登录密码 -->
-                <div class="sec-item-row">
-                  <div
-                    v-if="row.password"
-                    class="quiet-code-chip pwd-chip"
-                    :title="`密码: ${row.password} (点击直接复制完整密码)`"
-                    @click="copyText(row.password, '密码已复制')"
-                  >
-                    <span class="sec-sym">🔑</span>
-                    <span class="sec-text mono">{{ maskSecret(row.password, 3, 3) }}</span>
-                    <el-icon class="sec-copy-mini"><CopyDocument /></el-icon>
-                  </div>
-                  <span v-else class="action-link-warn" @click="openRepairPassword(row)">+补设密码</span>
-                </div>
-
-                <!-- 2FA 密钥 -->
-                <div class="sec-item-row">
-                  <div
-                    v-if="row.totp_secret"
-                    class="quiet-code-chip totp-chip"
-                    :title="`2FA Secret: ${row.totp_secret} (点击复制密钥)`"
-                    @click="copyText(row.totp_secret, '2FA密钥已复制')"
-                  >
-                    <span class="sec-sym">🛡️</span>
-                    <span class="sec-text mono">{{ maskSecret(row.totp_secret, 3, 3) }}</span>
-                    <el-icon class="sec-copy-mini"><CopyDocument /></el-icon>
-                  </div>
-                  <span v-if="row.totp_secret" class="totp-otp-link" @click.stop="openTotpModal(row)" title="生成当前 6 位 2FA 动态码">
-                    ⚡ 动态码
-                  </span>
-                  <span v-else class="action-link-warn" @click="openRepair2FA(row)">+补绑 2FA</span>
-                </div>
-              </div>
-            </template>
-          </el-table-column>
-
-          <!-- 4. Token 凭据健康度 -->
-          <el-table-column v-if="columnVisibility.tokens" label="Token 凭据健康" min-width="155">
-            <template #default="{ row }">
-              <div class="cell-token-block">
-                <div class="token-status-line">
-                  <span class="pulse-indicator-dot" :class="row.at_len ? 'dot-emerald' : 'dot-rose'"></span>
-                  <span class="token-main-text mono" :class="{ 'is-ok': row.at_len }">
-                    {{ row.at_len ? `AT 正常 (${(row.at_len / 1024).toFixed(1)}KB)` : 'AT 缺失失效' }}
-                  </span>
-                </div>
-                <div class="token-sub-line">
-                  <span v-if="row.rt_len && row.rt_len > 20" class="rt-active-text mono" title="具备 Refresh Token，支持无感自愈续签">
-                    ⚡ RT 永久在库
-                  </span>
-                  <span v-else class="rt-none-text">○ 仅AT凭证</span>
-                </div>
-              </div>
-            </template>
-          </el-table-column>
-
-          <!-- 5. 套餐与特权订阅 (克制高信噪比设计) -->
-          <el-table-column v-if="columnVisibility.status" label="套餐与业务特权" min-width="160">
-            <template #default="{ row }">
-              <div class="cell-entitlements-block">
-                <template v-if="getStatusBadges(row).length">
-                  <span
-                    v-for="(b, idx) in getStatusBadges(row)"
-                    :key="idx"
-                    class="entitlement-badge"
-                    :class="[b.type, b.effect]"
-                    :title="b.desc"
-                    @click="b.url && window.open(b.url, '_blank')"
-                  >
-                    {{ b.label }}
-                  </span>
+                <template #dropdown>
+                  <el-dropdown-menu class="macos-dropdown-menu">
+                    <el-dropdown-item v-for="f in exportFormats" :key="f.id" :command="f">
+                      {{ f.label }}
+                      <span v-if="f.note" class="hint" style="margin-left: 6px">{{ f.note }}</span>
+                    </el-dropdown-item>
+                  </el-dropdown-menu>
                 </template>
-                <span v-else class="free-plain-text">⚪ Free 正常号</span>
-              </div>
-            </template>
-          </el-table-column>
+              </el-dropdown>
+            </div>
+          </div>
 
-          <!-- 6. 导出留痕与批次备注 -->
-          <el-table-column v-if="columnVisibility.export" label="导出留痕与备注" min-width="150">
-            <template #default="{ row }">
-              <div class="cell-export-block">
-                <div v-if="row.exported_at || row.at_exported_at" class="export-status-line" @click.stop="quickEditExportNote(row)">
-                  <span class="pulse-indicator-dot dot-cyan"></span>
-                  <span class="export-tag-label">已导: {{ row.export_fmt_label || row.export_fmt || 'AT' }}</span>
-                  <span class="export-date-mono mono">({{ formatExportDateShort(row.exported_at || row.at_exported_at) }})</span>
+          <!-- 核心数据网格 (Table) -->
+          <div class="table-scroll-wrap">
+            <el-skeleton v-if="loading && !rows.length" :rows="8" animated style="padding: 16px" />
+            <el-table
+              v-else
+              ref="tableRef"
+              v-loading="loading"
+              :data="rows"
+              height="100%"
+              size="small"
+              :row-class-name="({ row }) => (focusedRow && focusedRow.email === row.email ? 'is-focused-row' : '')"
+              :class="['octopus-table-grid', `density-${tableDensity}`]"
+              @row-click="setFocusedRow"
+              @selection-change="(v) => (selected = v)"
+            >
+              <!-- 1. 勾选列 -->
+              <el-table-column type="selection" width="38" align="center" header-align="center" fixed="left" />
+
+              <!-- 2. 账号与网络出口 -->
+              <el-table-column prop="email" label="账号与网络出口" min-width="260" fixed="left" align="center" header-align="center" show-overflow-tooltip>
+                <template #default="{ row }">
+                  <div class="account-cell-container">
+                    <!-- 主行：品牌微标 + 邮箱等宽字 + 复制按键 -->
+                    <div class="account-main-line">
+                      <span class="provider-avatar-badge" :style="{ background: getEmailProviderMeta(row.email).bg, color: getEmailProviderMeta(row.email).color }">
+                        {{ getEmailProviderMeta(row.email).icon }}
+                      </span>
+                      <span class="email-text mono" @click.stop="copyText(row.email)" title="点击复制邮箱">{{ row.email }}</span>
+                      <el-icon class="email-copy-btn" @click.stop="copyText(row.email)"><CopyDocument /></el-icon>
+                    </div>
+
+                    <!-- 次行：规范化微型芯片胶囊群 -->
+                    <div class="account-meta-line">
+                      <span
+                        v-if="row.reg_country"
+                        class="meta-badge-pill country-pill"
+                        :title="`注册出口: ${formatCountry(row.reg_country)} [${row.reg_country}] (点击过滤该国家)`"
+                        @click.stop="applyFilter('country', row.reg_country)"
+                      >
+                        {{ formatCountry(row.reg_country) }}
+                      </span>
+                      <span
+                        v-if="row.reg_ip"
+                        class="meta-badge-pill ip-pill mono"
+                        :title="`出口IP: ${row.reg_ip} (点击复制)`"
+                        @click.stop="copyText(row.reg_ip, 'IP已复制')"
+                      >
+                        {{ row.reg_ip }}
+                      </span>
+                      <span
+                        v-else-if="row.reg_proxy"
+                        class="meta-badge-pill ip-pill mono"
+                        :title="`出口代理: ${row.reg_proxy}`"
+                      >
+                        {{ formatProxyHost(row.reg_proxy) }}
+                      </span>
+                      <span
+                        v-if="row.mail_oauth?.pickup_url"
+                        class="meta-badge-pill pickup-pill"
+                        @click.stop="window.open(row.mail_oauth.pickup_url, '_blank')"
+                        title="点击在线取件"
+                      >
+                        📬 取件
+                      </span>
+                    </div>
+                  </div>
+                </template>
+              </el-table-column>
+
+              <!-- 3. 安全凭据 (密码/2FA 经典紧凑胶囊徽章) -->
+              <el-table-column v-if="columnVisibility.security" label="密码/2FA" width="126" align="center" header-align="center">
+                <template #default="{ row }">
+                  <div class="sec-col-wrapper">
+                    <span
+                      v-if="row.password"
+                      class="sec-badge sec-pwd-ok"
+                      title="已设置登录密码 (点击复制密码)"
+                      @click.stop="copyText(row.password, '密码已复制')"
+                    >
+                      密码✓
+                    </span>
+                    <span
+                      v-else
+                      class="sec-badge sec-pwd-no"
+                      title="未设置密码 (点击快速补设独立密码)"
+                      @click.stop="openRepairPassword(row)"
+                    >
+                      密码×
+                    </span>
+
+                    <span
+                      v-if="row.totp_secret"
+                      class="sec-badge sec-2fa-ok"
+                      title="已绑定 2FA (点击查看实时动态码)"
+                      @click.stop="openTotpModal(row)"
+                    >
+                      2FA✓
+                    </span>
+                    <span
+                      v-else
+                      class="sec-badge sec-2fa-no"
+                      title="未绑定 2FA (点击快速补绑)"
+                      @click.stop="openRepair2FA(row)"
+                    >
+                      2FA×
+                    </span>
+                  </div>
+                </template>
+              </el-table-column>
+
+              <!-- 4. Token 凭据健康度 -->
+              <el-table-column v-if="columnVisibility.tokens" label="Token 凭据健康" min-width="155" align="center" header-align="center">
+                <template #default="{ row }">
+                  <div class="cell-token-block">
+                    <div class="token-status-line">
+                      <span class="pulse-indicator-dot" :class="row.at_len ? 'dot-emerald' : 'dot-rose'"></span>
+                      <span class="token-main-text mono" :class="{ 'is-ok': row.at_len }">
+                        {{ row.at_len ? `AT 正常 (${(row.at_len / 1024).toFixed(1)}KB)` : 'AT 缺失失效' }}
+                      </span>
+                    </div>
+                    <div class="token-sub-line">
+                      <span v-if="row.rt_len && row.rt_len > 20" class="rt-active-text mono" title="具备 Refresh Token，支持无感自愈续签">
+                        ⚡ RT 永久在库
+                      </span>
+                      <span v-else class="rt-none-text">○ 仅AT凭证</span>
+                    </div>
+                  </div>
+                </template>
+              </el-table-column>
+
+              <!-- 5. 套餐与特权订阅 (克制高信噪比设计) -->
+              <el-table-column v-if="columnVisibility.status" label="套餐与业务特权" min-width="160" align="center" header-align="center">
+                <template #default="{ row }">
+                  <div class="cell-entitlements-block">
+                    <template v-if="getStatusBadges(row).length">
+                      <span
+                        v-for="(b, idx) in getStatusBadges(row)"
+                        :key="idx"
+                        class="entitlement-badge"
+                        :class="[b.type, b.effect]"
+                        :title="b.desc"
+                        @click.stop="b.url && window.open(b.url, '_blank')"
+                      >
+                        {{ b.label }}
+                      </span>
+                    </template>
+                    <span v-else class="free-plain-text">⚪ Free 正常号</span>
+                  </div>
+                </template>
+              </el-table-column>
+
+              <!-- 6. 导出留痕与批次备注 -->
+              <el-table-column v-if="columnVisibility.export" label="导出留痕与备注" min-width="150" align="center" header-align="center">
+                <template #default="{ row }">
+                  <div class="cell-export-block">
+                    <div v-if="row.exported_at || row.at_exported_at" class="export-status-line" @click.stop="quickEditExportNote(row)">
+                      <span class="pulse-indicator-dot dot-cyan"></span>
+                      <span class="export-tag-label">已导: {{ row.export_fmt_label || row.export_fmt || 'AT' }}</span>
+                      <span class="export-date-mono mono">({{ formatExportDateShort(row.exported_at || row.at_exported_at) }})</span>
+                    </div>
+                    <div v-else class="export-status-line">
+                      <span class="pulse-indicator-dot dot-emerald"></span>
+                      <span class="export-fresh-text">纯新未导出</span>
+                    </div>
+                    <div class="export-note-text" @click.stop="quickEditExportNote(row)" :title="row.export_note || row.at_export_note || '点击添加备注'">
+                      <span>📝 {{ row.export_note || row.at_export_note || '添加备注' }}</span>
+                    </div>
+                  </div>
+                </template>
+              </el-table-column>
+
+              <!-- 7. 注册时间 -->
+              <el-table-column v-if="columnVisibility.time" label="注册时间" min-width="135" align="center" header-align="center">
+                <template #default="{ row }">
+                  <div class="cell-time-block">
+                    <div class="time-main-mono mono">{{ fmtTime(row.created_at) }}</div>
+                    <div class="time-relative-text">{{ timeAgo(row.created_at) }}</div>
+                  </div>
+                </template>
+              </el-table-column>
+
+              <!-- 8. 快捷操作列 (固定右侧，精致圆润按键) -->
+              <el-table-column label="快捷操作" width="180" fixed="right" align="center" header-align="center">
+                <template #default="{ row }">
+                  <div class="cell-actions-block">
+                    <button class="octopus-row-btn btn-cred" @click.stop="viewCred(row.email)" title="查看完整账号凭据">
+                      凭证
+                    </button>
+                    <button v-if="row.totp_secret" class="octopus-row-btn btn-2fa" @click.stop="openTotpModal(row)" title="生成当前 6 位 2FA 动态码">
+                      2FA
+                    </button>
+                    <button class="octopus-row-btn btn-mail" @click.stop="openMailOtpModal(row)" title="检索邮件验证码">
+                      查码
+                    </button>
+
+                    <el-dropdown trigger="click" @command="(cmd) => handleRowMoreCommand(cmd, row)">
+                      <button class="octopus-row-btn btn-more" title="更多高级操作" @click.stop>
+                        ···
+                      </button>
+                      <template #dropdown>
+                        <el-dropdown-menu class="extract-dropdown-menu">
+                          <div class="dropdown-group-title">数据与凭证管理</div>
+                          <el-dropdown-item command="edit">
+                            <el-icon><Setting /></el-icon> 编辑/补全凭证
+                          </el-dropdown-item>
+                          <el-dropdown-item command="recover_oauth">
+                            <el-icon><CircleCheckFilled /></el-icon> 找回历史授权凭据
+                          </el-dropdown-item>
+                          <el-dropdown-item command="copy_session">
+                            <el-icon><Document /></el-icon> 复制 Session JSON
+                          </el-dropdown-item>
+                          <el-dropdown-item command="download_sub2">
+                            <el-icon><Download /></el-icon> 导出 Sub2API JSON
+                          </el-dropdown-item>
+                          <el-dropdown-item command="download_cpa">
+                            <el-icon><Download /></el-icon> 导出 CPA JSON
+                          </el-dropdown-item>
+                          <div class="dropdown-group-title divider-title">操作与运维</div>
+                          <el-dropdown-item v-if="row.at_len" command="copy_at">
+                            <el-icon><Key /></el-icon> 复制 Access Token (AT)
+                          </el-dropdown-item>
+                          <el-dropdown-item v-if="row.rt_len" command="copy_rt">
+                            <el-icon><Refresh /></el-icon> 复制 Refresh Token (RT)
+                          </el-dropdown-item>
+                          <el-dropdown-item command="oauth_export">
+                            <el-icon><Phone /></el-icon> Codex OAuth 接码授权
+                          </el-dropdown-item>
+                          <el-dropdown-item command="fetch_mail">
+                            <el-icon><Message /></el-icon> 检索邮件验证码
+                          </el-dropdown-item>
+                          <el-dropdown-item v-if="!row.password" command="repair_pwd">
+                            <el-icon><Key /></el-icon> 补设密码
+                          </el-dropdown-item>
+                          <el-dropdown-item v-if="!row.totp_secret" command="repair_2fa">
+                            <el-icon><Lock /></el-icon> 补绑 2FA
+                          </el-dropdown-item>
+                          <el-dropdown-item v-if="row.password" command="copy_pwd">
+                            <el-icon><CopyDocument /></el-icon> 复制密码
+                          </el-dropdown-item>
+                          <el-dropdown-item v-if="row.totp_secret" command="copy_2fa">
+                            <el-icon><CopyDocument /></el-icon> 复制 2FA Secret
+                          </el-dropdown-item>
+                          <el-dropdown-item divided command="delete" style="color: var(--el-color-danger)">
+                            <el-icon><Delete /></el-icon> 删除账号
+                          </el-dropdown-item>
+                        </el-dropdown-menu>
+                      </template>
+                    </el-dropdown>
+                  </div>
+                </template>
+              </el-table-column>
+            </el-table>
+          </div>
+
+          <!-- 分页底栏 -->
+          <div class="table-footer-bar">
+            <div class="footer-left-info">
+              <span v-if="selected.length" class="selected-badge">已勾选 <b>{{ selected.length }}</b> 项</span>
+              <span v-else class="total-badge">当前页共 {{ rows.length }} 条记录</span>
+            </div>
+
+            <div class="footer-pagination-right">
+              <el-pagination
+                v-model:current-page="page"
+                v-model:page-size="pageSize"
+                :page-sizes="[10, 20, 30, 50, 100, 200, 500]"
+                :total="total"
+                layout="total, sizes, prev, pager, next, jumper"
+                size="small"
+                background
+                class="octopus-pagination"
+                @size-change="handleSizeChange"
+                @current-change="handleCurrentChange"
+              />
+            </div>
+          </div>
+        </section>
+
+        <!-- ───── 右侧栏: 选中账号全景档案 (Details Panel) ───── -->
+        <aside v-if="!detailsCollapsed" class="details-panel-drawer">
+          <!-- 头部：全景档案标题栏 -->
+          <div class="details-heading">
+            <div class="details-head-title">
+              <span class="dossier-pulse-beacon"></span>
+              <div class="head-text-meta">
+                <span class="title-main">账号全景档案</span>
+                <span class="title-sub mono">ACCOUNT DOSSIER</span>
+              </div>
+            </div>
+            <div class="details-head-actions">
+              <button
+                v-if="focusedRow"
+                class="dossier-tool-btn"
+                :class="{ 'is-loading': focusedTotpLoading }"
+                title="刷新当前账号 2FA 动态码"
+                @click="refreshFocusedAccount"
+              >
+                <el-icon :class="{ 'is-spinning': focusedTotpLoading }"><Refresh /></el-icon>
+              </button>
+              <button class="dossier-tool-btn close-btn" title="收起全景档案面板" @click="detailsCollapsed = true">
+                <el-icon><Close /></el-icon>
+              </button>
+            </div>
+          </div>
+
+          <div v-if="focusedRow" class="details-content">
+            <!-- 1. 账号核心身份卡片 (Profile Hero) -->
+            <div class="dossier-card profile-hero-card">
+              <div class="profile-hero-top">
+                <div
+                  class="provider-avatar-frame"
+                  :style="{ background: getEmailProviderMeta(focusedRow.email).bg, color: getEmailProviderMeta(focusedRow.email).color }"
+                >
+                  <span class="avatar-icon">{{ getEmailProviderMeta(focusedRow.email).icon }}</span>
                 </div>
-                <div v-else class="export-status-line">
-                  <span class="pulse-indicator-dot dot-emerald"></span>
-                  <span class="export-fresh-text">纯新未导出</span>
+                <div class="profile-meta-info">
+                  <div class="profile-email-row" @click="copyText(focusedRow.email, '邮箱已复制')" title="点击一键复制完整邮箱">
+                    <span class="profile-email mono">{{ focusedRow.email }}</span>
+                    <el-icon class="copy-hint-icon"><CopyDocument /></el-icon>
+                  </div>
+                  <div class="profile-tags-row">
+                    <span class="dossier-tag tag-country">
+                      {{ formatDossierCountry(focusedRow.reg_country) }}
+                    </span>
+                    <span class="dossier-tag tag-time">
+                      ⏱️ {{ timeAgo(focusedRow.created_at) }}
+                    </span>
+                  </div>
                 </div>
-                <div class="export-note-text" @click.stop="quickEditExportNote(row)" :title="row.export_note || row.at_export_note || '点击添加备注'">
-                  <span>📝 {{ row.export_note || row.at_export_note || '添加备注' }}</span>
+              </div>
+            </div>
+
+            <!-- 2. 实时 2FA 动态口令认证器 (Live TOTP Authenticator) -->
+            <div v-if="focusedRow.totp_secret" class="dossier-card totp-auth-card">
+              <div class="card-title-bar">
+                <div class="title-left">
+                  <span class="live-dot-radar"></span>
+                  <span class="title-text">2FA 实时动态口令</span>
+                </div>
+                <div class="totp-timer-chip" :class="totpTimerUrgencyClass">
+                  <span class="timer-num mono">{{ focusedTotpRemaining }}s</span>
                 </div>
               </div>
-            </template>
-          </el-table-column>
 
-          <!-- 7. 注册时间 -->
-          <el-table-column v-if="columnVisibility.time" label="注册时间" min-width="135" align="center">
-            <template #default="{ row }">
-              <div class="cell-time-block">
-                <div class="time-main-mono mono">{{ fmtTime(row.created_at) }}</div>
-                <div class="time-relative-text">{{ timeAgo(row.created_at) }}</div>
+              <!-- 动态码两段式高质感显示卡槽 -->
+              <div class="totp-display-screen" @click="copyText(focusedTotpCode, '2FA动态码已复制')" title="点击复制当前 6 位验证码">
+                <div class="totp-code-val mono">
+                  <span class="code-seg">{{ (focusedTotpCode || '------').slice(0, 3) }}</span>
+                  <span class="code-dot">·</span>
+                  <span class="code-seg">{{ (focusedTotpCode || '------').slice(3, 6) }}</span>
+                </div>
+                <div class="totp-action-hover">
+                  <el-icon><CopyDocument /></el-icon>
+                  <span>复制</span>
+                </div>
               </div>
-            </template>
-          </el-table-column>
 
-          <!-- 8. 快捷操作列 (固定右侧，精致圆润按键) -->
-          <el-table-column label="快捷操作" width="180" fixed="right" align="center">
-            <template #default="{ row }">
-              <div class="cell-actions-block">
-                <button class="octopus-row-btn btn-cred" @click="viewCred(row.email)" title="查看完整账号凭据">
-                  凭证
-                </button>
-                <button v-if="row.totp_secret" class="octopus-row-btn btn-2fa" @click="openTotpModal(row)" title="生成当前 6 位 2FA 动态码">
-                  2FA
-                </button>
-                <button class="octopus-row-btn btn-mail" @click="openMailOtpModal(row)" title="检索邮件验证码">
-                  查码
-                </button>
-
-                <el-dropdown trigger="click" @command="(cmd) => handleRowMoreCommand(cmd, row)">
-                  <button class="octopus-row-btn btn-more" title="更多高级操作">
-                    ···
-                  </button>
-                  <template #dropdown>
-                    <el-dropdown-menu class="extract-dropdown-menu">
-                      <div class="dropdown-group-title">数据与凭证管理</div>
-                      <el-dropdown-item command="edit">
-                        <el-icon><Setting /></el-icon> 编辑/补全凭证
-                      </el-dropdown-item>
-                      <el-dropdown-item command="recover_oauth">
-                        <el-icon><CircleCheckFilled /></el-icon> 找回历史授权凭据
-                      </el-dropdown-item>
-                      <el-dropdown-item command="copy_session">
-                        <el-icon><Document /></el-icon> 复制 Session JSON
-                      </el-dropdown-item>
-                      <el-dropdown-item command="download_sub2">
-                        <el-icon><Download /></el-icon> 导出 Sub2API JSON
-                      </el-dropdown-item>
-                      <el-dropdown-item command="download_cpa">
-                        <el-icon><Download /></el-icon> 导出 CPA JSON
-                      </el-dropdown-item>
-                      <div class="dropdown-group-title divider-title">操作与运维</div>
-                      <el-dropdown-item v-if="row.at_len" command="copy_at">
-                        <el-icon><Key /></el-icon> 复制 Access Token (AT)
-                      </el-dropdown-item>
-                      <el-dropdown-item v-if="row.rt_len" command="copy_rt">
-                        <el-icon><Refresh /></el-icon> 复制 Refresh Token (RT)
-                      </el-dropdown-item>
-                      <el-dropdown-item command="oauth_export">
-                        <el-icon><Phone /></el-icon> Codex OAuth 接码授权
-                      </el-dropdown-item>
-                      <el-dropdown-item command="fetch_mail">
-                        <el-icon><Message /></el-icon> 检索邮件验证码
-                      </el-dropdown-item>
-                      <el-dropdown-item v-if="!row.password" command="repair_pwd">
-                        <el-icon><Key /></el-icon> 补设密码
-                      </el-dropdown-item>
-                      <el-dropdown-item v-if="!row.totp_secret" command="repair_2fa">
-                        <el-icon><Lock /></el-icon> 补绑 2FA
-                      </el-dropdown-item>
-                      <el-dropdown-item v-if="row.password" command="copy_pwd">
-                        <el-icon><CopyDocument /></el-icon> 复制密码
-                      </el-dropdown-item>
-                      <el-dropdown-item v-if="row.totp_secret" command="copy_2fa">
-                        <el-icon><CopyDocument /></el-icon> 复制 2FA Secret
-                      </el-dropdown-item>
-                      <el-dropdown-item divided command="delete" style="color: var(--el-color-danger)">
-                        <el-icon><Delete /></el-icon> 删除账号
-                      </el-dropdown-item>
-                    </el-dropdown-menu>
-                  </template>
-                </el-dropdown>
+              <!-- 倒计时进度条与下期预告 -->
+              <div class="totp-progress-track">
+                <div
+                  class="totp-progress-bar"
+                  :class="totpTimerUrgencyClass"
+                  :style="{ width: `${(focusedTotpRemaining / 30) * 100}%` }"
+                ></div>
               </div>
-            </template>
-          </el-table-column>
-        </el-table>
-      </div>
+              <div v-if="focusedTotpNextCode" class="totp-next-hint">
+                <span class="next-label">下期预备:</span>
+                <span class="next-val mono">{{ focusedTotpNextCode }}</span>
+              </div>
+            </div>
 
-      <!-- 底部固定 macOS 风格状态与全能分页栏 (10, 20, 30, 50, 100, 200, 500) -->
-      <div class="macos-footer-bar">
-        <div class="footer-status-left">
-          <span v-if="selected.length" class="selected-badge">已勾选 <b>{{ selected.length }}</b> 项</span>
-          <span v-else class="total-badge">当前页共 {{ rows.length }} 条记录</span>
-        </div>
+            <!-- 未绑定 2FA 时优雅的高质感虚位引导卡 -->
+            <div v-else class="dossier-card totp-empty-card">
+              <div class="empty-card-inner">
+                <div class="empty-shield-icon">
+                  <el-icon><Lock /></el-icon>
+                </div>
+                <div class="empty-totp-info">
+                  <div class="empty-title">未启用 2FA 双因子认证</div>
+                  <div class="empty-desc">绑定 TOTP 密钥可显著提升账号抗风控与防封能力</div>
+                </div>
+                <button class="action-ghost-btn btn-repair" @click="openRepair2FA(focusedRow)">
+                  + 立即补绑
+                </button>
+              </div>
+            </div>
 
-        <div class="footer-pagination-right">
-          <el-pagination
-            v-model:current-page="page"
-            v-model:page-size="pageSize"
-            :page-sizes="[10, 20, 30, 50, 100, 200, 500]"
-            :total="total"
-            layout="total, sizes, prev, pager, next, jumper"
-            size="small"
-            background
-            class="macos-pagination"
-            @size-change="handleSizeChange"
-            @current-change="handleCurrentChange"
-          />
-        </div>
+            <!-- 3. 核心安全凭据 (Credentials Slot) -->
+            <div class="dossier-card">
+              <div class="card-title-bar">
+                <div class="title-left">
+                  <span class="section-icon cred-icon"><el-icon><Key /></el-icon></span>
+                  <span class="title-text">核心安全凭据</span>
+                  <span class="title-code mono">CREDENTIALS</span>
+                </div>
+              </div>
+              <div class="card-rows-wrap">
+                <!-- 登录密码 -->
+                <div class="dossier-row-slot">
+                  <div class="slot-label">
+                    <span>登录密码</span>
+                    <span v-if="focusedRow.password" class="slot-badge badge-success">已设密</span>
+                    <span v-else class="slot-badge badge-warn">免密未设</span>
+                  </div>
+                  <div class="slot-value-box">
+                    <template v-if="focusedRow.password">
+                      <span class="mono secret-text">
+                        {{ focusedPwdVisible ? focusedRow.password : maskSecret(focusedRow.password, 3, 3) }}
+                      </span>
+                      <button class="slot-icon-btn" :title="focusedPwdVisible ? '隐藏明文' : '查看明文'" @click.stop="focusedPwdVisible = !focusedPwdVisible">
+                        <el-icon><View v-if="!focusedPwdVisible" /><Hide v-else /></el-icon>
+                      </button>
+                      <button class="slot-icon-btn" title="复制密码" @click.stop="copyText(focusedRow.password, '密码已复制')">
+                        <el-icon><CopyDocument /></el-icon>
+                      </button>
+                    </template>
+                    <template v-else>
+                      <button class="slot-text-action-btn" @click="openRepairPassword(focusedRow)">+ 补设密码</button>
+                    </template>
+                  </div>
+                </div>
+
+                <!-- 2FA Secret -->
+                <div class="dossier-row-slot">
+                  <div class="slot-label">
+                    <span>2FA Secret</span>
+                    <span v-if="focusedRow.totp_secret" class="slot-badge badge-success">受保护</span>
+                    <span v-else class="slot-badge badge-danger">待补绑</span>
+                  </div>
+                  <div class="slot-value-box">
+                    <template v-if="focusedRow.totp_secret">
+                      <span class="mono secret-text">
+                        {{ focusedSecretVisible ? focusedRow.totp_secret : maskSecret(focusedRow.totp_secret, 4, 4) }}
+                      </span>
+                      <button class="slot-icon-btn" :title="focusedSecretVisible ? '隐藏明文' : '查看完整密钥'" @click.stop="focusedSecretVisible = !focusedSecretVisible">
+                        <el-icon><View v-if="!focusedSecretVisible" /><Hide v-else /></el-icon>
+                      </button>
+                      <button class="slot-icon-btn" title="复制2FA密钥" @click.stop="copyText(focusedRow.totp_secret, '2FA密钥已复制')">
+                        <el-icon><CopyDocument /></el-icon>
+                      </button>
+                    </template>
+                    <template v-else>
+                      <button class="slot-text-action-btn btn-rose" @click="openRepair2FA(focusedRow)">+ 补绑2FA</button>
+                    </template>
+                  </div>
+                </div>
+
+                <!-- Token 凭据 -->
+                <div class="dossier-row-slot">
+                  <div class="slot-label">
+                    <span>Token 凭据</span>
+                    <span v-if="focusedRow.at_len" class="slot-badge badge-success">AT正常</span>
+                    <span v-else class="slot-badge badge-danger">AT缺失</span>
+                  </div>
+                  <div class="slot-value-box">
+                    <span class="mono secret-text" :class="focusedRow.at_len ? 'text-emerald' : 'text-rose'">
+                      {{ focusedRow.at_len ? `AT (${(focusedRow.at_len / 1024).toFixed(1)} KB)` : 'AT 缺失' }}
+                    </span>
+                    <span v-if="focusedRow.rt_len" class="dossier-tag tag-cyan mono">RT 在库</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 4. 出口与交付留痕 (Network & Delivery) -->
+            <div class="dossier-card">
+              <div class="card-title-bar">
+                <div class="title-left">
+                  <span class="section-icon net-icon"><el-icon><Compass /></el-icon></span>
+                  <span class="title-text">出口与交付留痕</span>
+                  <span class="title-code mono">TRACE</span>
+                </div>
+              </div>
+              <div class="card-rows-wrap">
+                <!-- 注册出口代理 -->
+                <div class="dossier-row-slot">
+                  <div class="slot-label">
+                    <span>出口代理</span>
+                  </div>
+                  <div class="slot-value-box">
+                    <span class="mono secret-text truncate-text" :title="focusedRow.reg_proxy || '直连出口'">
+                      {{ formatProxyHost(focusedRow.reg_proxy) || '直连出口' }}
+                    </span>
+                    <button
+                      v-if="focusedRow.reg_proxy"
+                      class="slot-icon-btn"
+                      title="复制代理地址"
+                      @click.stop="copyText(focusedRow.reg_proxy, '代理地址已复制')"
+                    >
+                      <el-icon><CopyDocument /></el-icon>
+                    </button>
+                  </div>
+                </div>
+
+                <!-- 出口 IP -->
+                <div v-if="focusedRow.reg_ip" class="dossier-row-slot">
+                  <div class="slot-label">
+                    <span>出口 IP</span>
+                  </div>
+                  <div class="slot-value-box">
+                    <span class="mono secret-text">{{ focusedRow.reg_ip }}</span>
+                    <button class="slot-icon-btn" title="复制出口IP" @click.stop="copyText(focusedRow.reg_ip, '出口IP已复制')">
+                      <el-icon><CopyDocument /></el-icon>
+                    </button>
+                  </div>
+                </div>
+
+                <!-- 导出交付状态 -->
+                <div class="dossier-row-slot">
+                  <div class="slot-label">
+                    <span>交付归档</span>
+                  </div>
+                  <div class="slot-value-box">
+                    <span v-if="focusedRow.exported_at || focusedRow.at_exported_at" class="dossier-tag tag-cyan">
+                      已导出 ({{ formatExportDateShort(focusedRow.exported_at || focusedRow.at_exported_at) }})
+                    </span>
+                    <span v-else class="dossier-tag tag-emerald">
+                      纯新在库 · 随时可导
+                    </span>
+                  </div>
+                </div>
+
+                <!-- 批次备注 -->
+                <div class="dossier-row-slot">
+                  <div class="slot-label">
+                    <span>批次备注</span>
+                  </div>
+                  <div class="slot-value-box">
+                    <div class="note-edit-cell" @click="quickEditExportNote(focusedRow)" title="点击编辑批次备注">
+                      <el-icon class="note-pen-icon"><EditPen /></el-icon>
+                      <span class="note-content">{{ focusedRow.export_note || focusedRow.at_export_note || '添加备注...' }}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 5. 安全防御诊断与健康度 (Security Health) -->
+            <div class="dossier-card health-diagnostic-card">
+              <div class="card-title-bar">
+                <div class="title-left">
+                  <span class="section-icon shield-icon"><el-icon><CircleCheckFilled /></el-icon></span>
+                  <span class="title-text">安全态势诊断</span>
+                  <span class="title-code mono">HEALTH</span>
+                </div>
+                <div class="health-grade-chip" :class="`grade-${focusedHealthReport.theme}`">
+                  <span class="grade-letter mono">{{ focusedHealthReport.grade }} 级</span>
+                  <span class="grade-label">{{ focusedHealthReport.label }}</span>
+                </div>
+              </div>
+
+              <!-- 3 格安全度量刻度条 -->
+              <div class="health-tri-meter">
+                <div class="meter-bar" :class="{ 'is-active': focusedHealthReport.checks.pwd }" title="独立登录密码">
+                  <span class="meter-label">密保</span>
+                </div>
+                <div class="meter-bar" :class="{ 'is-active': focusedHealthReport.checks.totp }" title="2FA 双因子认证">
+                  <span class="meter-label">2FA</span>
+                </div>
+                <div class="meter-bar" :class="{ 'is-active': focusedHealthReport.checks.token }" title="Token 凭据健全">
+                  <span class="meter-label">Token</span>
+                </div>
+              </div>
+
+              <!-- 诊断建议条 -->
+              <div class="health-tips-list">
+                <div v-for="(tip, idx) in focusedHealthReport.tips" :key="idx" class="health-tip-item" :class="`tip-${tip.type}`">
+                  <span class="tip-dot"></span>
+                  <span class="tip-msg">{{ tip.text }}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 空状态：未选中账号时 -->
+          <div v-else class="details-empty-state">
+            <div class="empty-radar-wrap">
+              <div class="radar-circle circle-1"></div>
+              <div class="radar-circle circle-2"></div>
+              <div class="radar-circle circle-3"></div>
+              <el-icon class="empty-radar-icon"><DataAnalysis /></el-icon>
+            </div>
+            <div class="empty-title">等待激活账号档案</div>
+            <div class="empty-desc">在左侧数据网格点击任意行，即刻开启该账号的 2FA 动态口令、会话凭据与全景留痕</div>
+          </div>
+
+          <!-- 底部固定多维操作面板 -->
+          <footer v-if="focusedRow" class="dossier-footer-actions">
+            <!-- 主操作大按键：查看完整凭证 -->
+            <button class="footer-btn btn-primary" @click="viewCred(focusedRow.email)">
+              <el-icon><Check /></el-icon>
+              <span>查看完整凭证详情</span>
+            </button>
+            <!-- 次操作双按键并列 -->
+            <div class="footer-sub-grid">
+              <button class="footer-btn btn-secondary" @click="copySessionJson(focusedRow.email)" title="复制完整 Session JSON">
+                <el-icon><CopyDocument /></el-icon>
+                <span>复制 Session</span>
+              </button>
+              <button class="footer-btn btn-secondary btn-mail" @click="openMailOtpModal(focusedRow)" title="实时查收邮件验证码">
+                <el-icon><Message /></el-icon>
+                <span>查收邮件码</span>
+              </button>
+            </div>
+          </footer>
+        </aside>
       </div>
     </div>
 
@@ -8319,13 +9067,14 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-/* ──────────── 页面整体布局：100% 高度 + 绝无外层滚动条 ──────────── */
+/* ──────────── 页面整体布局：100% 高度 + 极简黑曜石工位 ──────────── */
 .registered-page {
   height: 100%;
   min-height: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  background: transparent;
 }
 
 .macos-window-panel {
@@ -8339,17 +9088,17 @@ onUnmounted(() => {
   overflow: hidden;
 }
 
-/* ════════════════ 顶部极简双行控制中枢 (Linear / Vercel 极客风格) ════════════════ */
-.linear-chrome {
+/* ════════════════ 顶部极简控制中枢 (Linear Command Deck) ════════════════ */
+.linear-command-deck {
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  background: var(--app-card-bg);
-  border-bottom: 1px solid var(--app-border);
+  background: #11131a;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
 
-/* Row 1: Segmented Tabs + Global Search + Quick Actions */
-.linear-header-row {
+/* Row 1: Segmented Tabs + Search + Tools */
+.command-deck-main {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -8358,85 +9107,92 @@ onUnmounted(() => {
   border-bottom: 1px solid rgba(255, 255, 255, 0.04);
 }
 
-.linear-nav-tabs {
-  display: flex;
+.linear-segmented-rail {
+  display: inline-flex;
   align-items: center;
-  gap: 2px;
-  background: rgba(0, 0, 0, 0.25);
+  gap: 3px;
   padding: 3px;
-  border-radius: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 9px;
+  background: #0a0d13;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.4);
 }
 
-.nav-tab-item {
+.segmented-tab {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   padding: 4px 10px;
   border-radius: 6px;
-  border: none;
+  border: 1px solid transparent;
   background: transparent;
-  color: var(--el-text-color-regular);
-  font-size: 12px;
+  color: #94a3b8;
+  font-size: 11.5px;
   font-weight: 500;
   cursor: pointer;
-  transition: all 0.16s ease;
+  transition: all 0.15s ease;
+  white-space: nowrap;
 }
-
-.nav-tab-item:hover {
-  color: var(--app-title);
+.segmented-tab:hover {
+  color: #f1f5f9;
   background: rgba(255, 255, 255, 0.05);
 }
-
-.nav-tab-item.is-active {
-  background: rgba(255, 255, 255, 0.1);
-  color: #fff;
+.segmented-tab.is-active {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.1) 0%, rgba(255, 255, 255, 0.04) 100%);
+  color: #ffffff;
   font-weight: 600;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+  border-color: rgba(255, 255, 255, 0.14);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
 }
 
-.tab-dot {
+.status-dot {
   width: 6px;
   height: 6px;
   border-radius: 50%;
+  flex-shrink: 0;
 }
-.tab-dot.emerald { background: #10b981; box-shadow: 0 0 6px rgba(16, 185, 129, 0.5); }
-.tab-dot.cyan { background: #06b6d4; box-shadow: 0 0 6px rgba(6, 182, 212, 0.5); }
-.tab-dot.amber { background: #f59e0b; box-shadow: 0 0 6px rgba(245, 158, 11, 0.5); }
+.dot-emerald { background: #10b981; box-shadow: 0 0 6px rgba(16, 185, 129, 0.5); }
+.dot-cyan { background: #06b6d4; box-shadow: 0 0 6px rgba(6, 182, 212, 0.5); }
+.dot-amber { background: #f59e0b; box-shadow: 0 0 6px rgba(245, 158, 11, 0.5); }
+.dot-rose { background: #ef4444; box-shadow: 0 0 6px rgba(239, 68, 68, 0.5); }
 
-.tab-count {
+.tab-count-badge {
   font-size: 10px;
   font-family: var(--el-font-family-monospace, monospace);
   padding: 0 5px;
   border-radius: 9999px;
   background: rgba(255, 255, 255, 0.08);
-  color: var(--el-text-color-secondary);
+  color: #94a3b8;
 }
-.tab-count.count-emerald { background: rgba(16, 185, 129, 0.15); color: #34d399; }
-.tab-count.count-cyan { background: rgba(6, 182, 212, 0.15); color: #22d3ee; }
-.tab-count.count-neutral { background: rgba(255, 255, 255, 0.08); color: var(--el-text-color-secondary); }
+.tab-count-badge.count-cyan {
+  background: rgba(14, 165, 233, 0.18);
+  color: #38bdf8;
+}
+.tab-count-badge.count-amber {
+  background: rgba(245, 158, 11, 0.18);
+  color: #fbbf24;
+}
 
-.linear-header-right {
+.command-deck-search {
   display: flex;
   align-items: center;
   gap: 8px;
 }
 
 .linear-search-input {
-  width: 220px;
+  width: 240px;
 }
 .linear-search-input :deep(.el-input__wrapper) {
   border-radius: 6px;
-  background: rgba(0, 0, 0, 0.2);
+  background: rgba(0, 0, 0, 0.25);
   border: 1px solid rgba(255, 255, 255, 0.08);
   box-shadow: none !important;
 }
 .linear-search-input :deep(.el-input__wrapper.is-focus) {
   border-color: var(--el-color-primary);
-  background: rgba(0, 0, 0, 0.35);
+  background: rgba(0, 0, 0, 0.4);
 }
-
-.linear-key-hint {
+.cmd-k-tag {
   font-size: 10px;
   padding: 1px 4px;
   border-radius: 4px;
@@ -8445,7 +9201,7 @@ onUnmounted(() => {
   font-family: var(--el-font-family-monospace, monospace);
 }
 
-.linear-icon-btn {
+.ghost-tool-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -8458,20 +9214,1195 @@ onUnmounted(() => {
   cursor: pointer;
   transition: all 0.15s ease;
 }
-.linear-icon-btn:hover {
+.ghost-tool-btn:hover {
   background: rgba(255, 255, 255, 0.08);
   border-color: rgba(255, 255, 255, 0.15);
   color: var(--app-title);
 }
+.ghost-tool-btn.is-active {
+  background: rgba(35, 226, 160, 0.15);
+  border-color: rgba(35, 226, 160, 0.4);
+  color: #23e2a0;
+}
+.is-spinning {
+  animation: spin 1s linear infinite;
+}
+@keyframes spin {
+  100% { transform: rotate(360deg); }
+}
 
-/* Row 2: Action Ribbon */
-.linear-action-ribbon {
+/* Linear 风格属性筛选器触发按钮 */
+.filter-builder-trigger-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 10px;
+  height: 28px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.04);
+  color: #cbd5e1;
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  user-select: none;
+}
+.filter-builder-trigger-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.18);
+  color: #fff;
+}
+.filter-builder-trigger-btn.is-active {
+  background: rgba(16, 185, 129, 0.12);
+  border-color: rgba(16, 185, 129, 0.4);
+  color: #10b981;
+}
+.filter-count-badge {
+  font-size: 10px;
+  font-weight: 700;
+  background: #10b981;
+  color: #042f24;
+  padding: 0 5px;
+  border-radius: 999px;
+  line-height: 14px;
+}
+.caret-ico {
+  font-size: 10px;
+  opacity: 0.6;
+}
+
+/* 过滤标签栏 (Linear Token Ribbon) */
+.filter-tokens-ribbon {
+  display: flex;
+  align-items: center;
+  padding: 5px 16px;
+  background: rgba(0, 0, 0, 0.28);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  overflow-x: auto;
+}
+.tokens-left-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: nowrap;
+}
+.tokens-hint-label {
+  font-size: 11px;
+  color: #64748b;
+  white-space: nowrap;
+  margin-right: 2px;
+}
+.filter-token-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-size: 11px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #e2e8f0;
+  white-space: nowrap;
+}
+.filter-token-pill .token-cat {
+  color: #94a3b8;
+}
+.filter-token-pill .token-val {
+  font-weight: 500;
+}
+.filter-token-pill.pill-sec {
+  background: rgba(16, 185, 129, 0.08);
+  border-color: rgba(16, 185, 129, 0.25);
+  color: #34d399;
+}
+.filter-token-pill.pill-plan {
+  background: rgba(14, 165, 233, 0.08);
+  border-color: rgba(14, 165, 233, 0.25);
+  color: #38bdf8;
+}
+.filter-token-pill.pill-country {
+  background: rgba(245, 158, 11, 0.08);
+  border-color: rgba(245, 158, 11, 0.25);
+  color: #fbbf24;
+}
+.filter-token-pill.pill-domain {
+  background: rgba(168, 85, 247, 0.08);
+  border-color: rgba(168, 85, 247, 0.25);
+  color: #c084fc;
+}
+.filter-token-pill.pill-proxy {
+  background: rgba(236, 72, 153, 0.08);
+  border-color: rgba(236, 72, 153, 0.25);
+  color: #f472b6;
+}
+.token-del-btn {
+  border: none;
+  background: transparent;
+  color: inherit;
+  opacity: 0.6;
+  cursor: pointer;
+  padding: 0 2px;
+  font-size: 10px;
+  display: flex;
+  align-items: center;
+}
+.token-del-btn:hover {
+  opacity: 1;
+}
+.tokens-clear-all-btn {
+  border: 1px solid rgba(239, 68, 68, 0.25);
+  background: rgba(239, 68, 68, 0.08);
+  color: #f87171;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+}
+.tokens-clear-all-btn:hover {
+  background: rgba(239, 68, 68, 0.18);
+}
+
+/* Row 3: Action Ribbon */
+.command-deck-actions {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
   padding: 6px 16px;
   background: rgba(0, 0, 0, 0.12);
+}
+.actions-group-left, .actions-group-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.action-menu-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  height: 28px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.04);
+  color: #e2e8f0;
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.action-menu-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.18);
+  color: #fff;
+}
+.action-menu-btn.has-selected {
+  border-color: rgba(14, 165, 233, 0.4);
+  color: #38bdf8;
+  background: rgba(14, 165, 233, 0.12);
+}
+.linear-chunk-select {
+  width: 105px;
+}
+.linear-chunk-select :deep(.el-input__wrapper) {
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  box-shadow: none !important;
+  height: 28px;
+  font-size: 11.5px;
+}
+.primary-export-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 12px;
+  height: 28px;
+  border-radius: 6px;
+  border: none;
+  background: #10b981;
+  color: #064e3b;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.primary-export-btn:hover:not(:disabled) {
+  background: #34d399;
+  box-shadow: 0 0 12px rgba(16, 185, 129, 0.35);
+}
+
+/* ════════════════ 核心工作区 (Workspace Body) ════════════════ */
+.registered-workspace-body {
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+  display: grid;
+  grid-template-columns: 1fr;
+  overflow: hidden;
+  transition: grid-template-columns 0.2s ease;
+}
+.registered-workspace-body.with-details-panel {
+  grid-template-columns: minmax(0, 1fr) 360px;
+}
+
+.center-table-pane {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+  background: #0d1017;
+}
+
+.table-scroll-wrap {
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+.table-scroll-wrap :deep(.el-table) {
+  height: 100% !important;
+  max-height: 100% !important;
+  flex: 1;
+}
+
+.table-scroll-wrap :deep(.el-table__inner-wrapper) {
+  height: 100% !important;
+  display: flex;
+  flex-direction: column;
+}
+
+.table-scroll-wrap :deep(.el-table__body-wrapper) {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto !important;
+  overflow-x: auto !important;
+}
+
+/* ════════════════ 右侧全景档案顶级 SaaS 暗黑重构 ════════════════ */
+.details-panel-drawer {
+  border-left: 1px solid rgba(255, 255, 255, 0.08);
+  background: #0a0d14;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  box-shadow: -10px 0 30px rgba(0, 0, 0, 0.45);
+  position: relative;
+  z-index: 10;
+}
+
+/* 顶部标题栏 */
+.details-heading {
+  height: 46px;
+  min-height: 46px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  background: rgba(255, 255, 255, 0.015);
+  backdrop-filter: blur(12px);
+  flex-shrink: 0;
+}
+.details-head-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.dossier-pulse-beacon {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: #10b981;
+  box-shadow: 0 0 10px #10b981;
+  animation: beaconPulse 2s ease-in-out infinite;
+}
+@keyframes beaconPulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.45; transform: scale(0.85); }
+}
+.head-text-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.head-text-meta .title-main {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: #f8fafc;
+  letter-spacing: 0.3px;
+  line-height: 1.2;
+}
+.head-text-meta .title-sub {
+  font-size: 8.5px;
+  font-weight: 600;
+  color: #64748b;
+  letter-spacing: 0.8px;
+  line-height: 1;
+}
+
+.details-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.dossier-tool-btn {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+  color: #94a3b8;
+  cursor: pointer;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  transition: all 0.15s ease;
+}
+.dossier-tool-btn:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.09);
+  border-color: rgba(255, 255, 255, 0.15);
+}
+.dossier-tool-btn.close-btn:hover {
+  color: #f87171;
+  background: rgba(239, 68, 68, 0.12);
+  border-color: rgba(239, 68, 68, 0.3);
+}
+
+/* 主内容滚动容器 */
+.details-content {
+  flex: 1;
+  min-height: 0;
+  padding: 12px 14px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.12) transparent;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.details-content::-webkit-scrollbar {
+  width: 4px;
+}
+.details-content::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 4px;
+}
+
+/* 统一档案卡片基类 */
+.dossier-card {
+  border-radius: 9px;
+  background: rgba(18, 23, 34, 0.7);
+  backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.065);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035), 0 2px 8px rgba(0, 0, 0, 0.25);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.dossier-card:hover {
+  border-color: rgba(255, 255, 255, 0.11);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+/* 1. 账号核心身份卡片 (Profile Hero) */
+.profile-hero-card {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.04) 0%, rgba(18, 23, 34, 0.8) 100%);
+  border-color: rgba(255, 255, 255, 0.08);
+}
+.profile-hero-top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.provider-avatar-frame {
+  width: 36px;
+  height: 36px;
+  border-radius: 9px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  flex-shrink: 0;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+.profile-meta-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.profile-email-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+.profile-email {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: #f8fafc;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  letter-spacing: -0.2px;
+  transition: color 0.15s ease;
+}
+.profile-email-row:hover .profile-email {
+  color: #34d399;
+}
+.copy-hint-icon {
+  font-size: 12px;
+  color: #64748b;
+  opacity: 0;
+  transition: all 0.15s ease;
+}
+.profile-email-row:hover .copy-hint-icon {
+  opacity: 1;
+  color: #34d399;
+}
+.profile-tags-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.dossier-tag {
+  font-size: 10.5px;
+  line-height: 1.2;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-weight: 500;
+}
+.tag-country {
+  background: rgba(14, 165, 233, 0.1);
+  color: #38bdf8;
+  border: 1px solid rgba(14, 165, 233, 0.25);
+}
+.tag-time {
+  background: rgba(255, 255, 255, 0.04);
+  color: #94a3b8;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+.tag-emerald {
+  background: rgba(16, 185, 129, 0.12);
+  color: #34d399;
+  border: 1px solid rgba(16, 185, 129, 0.28);
+}
+.tag-cyan {
+  background: rgba(6, 182, 212, 0.12);
+  color: #22d3ee;
+  border: 1px solid rgba(6, 182, 212, 0.28);
+}
+
+/* 卡片标题栏通用 */
+.card-title-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 2px;
+}
+.title-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.title-text {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #cbd5e1;
+}
+.title-code {
+  font-size: 9px;
+  font-weight: 600;
+  color: #475569;
+  letter-spacing: 0.6px;
+}
+.section-icon {
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+}
+.cred-icon {
+  background: rgba(245, 158, 11, 0.12);
+  color: #fbbf24;
+}
+.net-icon {
+  background: rgba(56, 189, 248, 0.12);
+  color: #38bdf8;
+}
+.shield-icon {
+  background: rgba(16, 185, 129, 0.12);
+  color: #34d399;
+}
+
+/* 2. 实时 2FA 动态口令认证器 (Live TOTP) */
+.totp-auth-card {
+  background: linear-gradient(180deg, rgba(16, 185, 129, 0.09) 0%, rgba(10, 14, 20, 0.8) 100%);
+  border-color: rgba(16, 185, 129, 0.28);
+  box-shadow: inset 0 1px 0 rgba(16, 185, 129, 0.2), 0 4px 14px rgba(0, 0, 0, 0.3);
+}
+.live-dot-radar {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: #10b981;
+  box-shadow: 0 0 8px #10b981;
+  animation: beaconPulse 1.5s ease-in-out infinite;
+}
+.totp-auth-card .title-text {
+  color: #34d399;
+}
+.totp-timer-chip {
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  transition: all 0.2s ease;
+}
+.totp-timer-chip.urgency-normal {
+  background: rgba(16, 185, 129, 0.15);
+  color: #34d399;
+  border: 1px solid rgba(16, 185, 129, 0.3);
+}
+.totp-timer-chip.urgency-warning {
+  background: rgba(245, 158, 11, 0.18);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.4);
+}
+.totp-timer-chip.urgency-critical {
+  background: rgba(244, 63, 94, 0.22);
+  color: #fb7185;
+  border: 1px solid rgba(244, 63, 94, 0.5);
+  animation: beaconPulse 0.8s ease-in-out infinite;
+}
+
+/* 动态码内嵌屏幕显示槽 */
+.totp-display-screen {
+  background: #05070a;
+  border: 1px solid rgba(16, 185, 129, 0.25);
+  box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.7);
+  border-radius: 7px;
+  padding: 8px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  user-select: none;
+}
+.totp-display-screen:hover {
+  border-color: rgba(16, 185, 129, 0.55);
+  background: #080b10;
+}
+.totp-code-val {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.code-seg {
+  font-size: 24px;
+  font-weight: 800;
+  letter-spacing: 2px;
+  color: #10b981;
+  text-shadow: 0 0 14px rgba(16, 185, 129, 0.45);
+  line-height: 1;
+}
+.code-dot {
+  font-size: 22px;
+  line-height: 1;
+  color: rgba(16, 185, 129, 0.5);
+  font-weight: 700;
+  user-select: none;
+  margin: 0 2px;
+}
+.totp-action-hover {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: #34d399;
+  background: rgba(16, 185, 129, 0.12);
+  border: 1px solid rgba(16, 185, 129, 0.25);
+  padding: 2px 8px;
+  border-radius: 4px;
+  opacity: 0.85;
+  transition: all 0.15s ease;
+}
+.totp-display-screen:hover .totp-action-hover {
+  opacity: 1;
+  background: rgba(16, 185, 129, 0.22);
+}
+
+.totp-progress-track {
+  height: 3px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+.totp-progress-bar {
+  height: 100%;
+  border-radius: 999px;
+  transition: width 1s linear;
+}
+.totp-progress-bar.urgency-normal {
+  background: linear-gradient(90deg, #10b981, #34d399);
+}
+.totp-progress-bar.urgency-warning {
+  background: linear-gradient(90deg, #f59e0b, #fbbf24);
+}
+.totp-progress-bar.urgency-critical {
+  background: linear-gradient(90deg, #f43f5e, #fb7185);
+}
+
+.totp-next-hint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  color: #64748b;
+  padding-top: 1px;
+}
+.totp-next-hint .next-val {
+  color: #34d399;
+  font-weight: 600;
+}
+
+/* 未绑定 2FA 引导卡片 */
+.totp-empty-card {
+  background: rgba(245, 158, 11, 0.04);
+  border-color: rgba(245, 158, 11, 0.2);
+}
+.empty-card-inner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.empty-shield-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  background: rgba(245, 158, 11, 0.12);
+  color: #fbbf24;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  flex-shrink: 0;
+}
+.empty-totp-info {
+  flex: 1;
+  min-width: 0;
+}
+.empty-totp-info .empty-title {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #f1f5f9;
+}
+.empty-totp-info .empty-desc {
+  font-size: 10px;
+  color: #94a3b8;
+  margin-top: 1px;
+}
+.btn-repair {
+  flex-shrink: 0;
+  font-size: 10.5px;
+  padding: 3px 8px;
+  border-radius: 5px;
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  background: rgba(245, 158, 11, 0.12);
+  color: #fbbf24;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  font-weight: 600;
+}
+.btn-repair:hover {
+  background: rgba(245, 158, 11, 0.22);
+  border-color: rgba(245, 158, 11, 0.5);
+  color: #fde68a;
+}
+
+/* 卡片行插槽通用 */
+.card-rows-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.dossier-row-slot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.02);
+  transition: background 0.15s ease;
+}
+.dossier-row-slot:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+.slot-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: #94a3b8;
+  flex-shrink: 0;
+}
+.slot-badge {
+  font-size: 9.5px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+.slot-badge.badge-success {
+  background: rgba(16, 185, 129, 0.12);
+  color: #34d399;
+  border: 1px solid rgba(16, 185, 129, 0.28);
+}
+.slot-badge.badge-warn {
+  background: rgba(245, 158, 11, 0.12);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.28);
+}
+.slot-badge.badge-danger {
+  background: rgba(244, 63, 94, 0.12);
+  color: #fb7185;
+  border: 1px solid rgba(244, 63, 94, 0.28);
+}
+
+.slot-value-box {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 65%;
+  justify-content: flex-end;
+}
+.secret-text {
+  font-size: 11.5px;
+  color: #f1f5f9;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.truncate-text {
+  max-width: 140px;
+}
+.slot-icon-btn {
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.04);
+  color: #94a3b8;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 11px;
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+}
+.slot-icon-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.18);
+}
+.slot-text-action-btn {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 4px;
+  border: 1px solid rgba(56, 189, 248, 0.3);
+  background: rgba(56, 189, 248, 0.1);
+  color: #38bdf8;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.slot-text-action-btn:hover {
+  background: rgba(56, 189, 248, 0.2);
+  border-color: rgba(56, 189, 248, 0.5);
+  color: #7dd3fc;
+}
+.slot-text-action-btn.btn-rose {
+  border-color: rgba(244, 63, 94, 0.3);
+  background: rgba(244, 63, 94, 0.1);
+  color: #fb7185;
+}
+.slot-text-action-btn.btn-rose:hover {
+  background: rgba(244, 63, 94, 0.2);
+  border-color: rgba(244, 63, 94, 0.5);
+}
+
+.note-edit-cell {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: #cbd5e1;
+  cursor: pointer;
+  padding: 1px 5px;
+  border-radius: 4px;
+  transition: all 0.15s ease;
+}
+.note-edit-cell:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #38bdf8;
+}
+.note-pen-icon {
+  font-size: 11px;
+  color: #64748b;
+}
+.note-edit-cell:hover .note-pen-icon {
+  color: #38bdf8;
+}
+.note-content {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 140px;
+}
+
+/* 5. 安全态势与健康评分卡片 (Health Diagnostic) */
+.health-diagnostic-card {
+  background: rgba(18, 23, 34, 0.55);
+}
+.health-grade-chip {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+}
+.health-grade-chip.grade-success {
+  background: rgba(16, 185, 129, 0.12);
+  color: #34d399;
+  border: 1px solid rgba(16, 185, 129, 0.3);
+}
+.health-grade-chip.grade-info {
+  background: rgba(14, 165, 233, 0.12);
+  color: #38bdf8;
+  border: 1px solid rgba(14, 165, 233, 0.3);
+}
+.health-grade-chip.grade-warn {
+  background: rgba(245, 158, 11, 0.12);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
+.health-tri-meter {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 5px;
+  padding: 2px 0;
+}
+.meter-bar {
+  height: 20px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+}
+.meter-bar .meter-label {
+  font-size: 9.5px;
+  font-weight: 600;
+  color: #475569;
+  letter-spacing: 0.5px;
+}
+.meter-bar.is-active {
+  background: rgba(16, 185, 129, 0.14);
+  border-color: rgba(16, 185, 129, 0.35);
+}
+.meter-bar.is-active .meter-label {
+  color: #34d399;
+}
+
+.health-tips-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.health-tip-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10.5px;
+  padding: 3px 6px;
+  border-radius: 4px;
+  line-height: 1.3;
+}
+.health-tip-item .tip-dot {
+  width: 4px;
+  height: 4px;
+  border-radius: 999px;
+  flex-shrink: 0;
+}
+.health-tip-item.tip-success {
+  background: rgba(16, 185, 129, 0.08);
+  color: #34d399;
+}
+.health-tip-item.tip-success .tip-dot {
+  background: #34d399;
+}
+.health-tip-item.tip-info {
+  background: rgba(14, 165, 233, 0.08);
+  color: #38bdf8;
+}
+.health-tip-item.tip-info .tip-dot {
+  background: #38bdf8;
+}
+.health-tip-item.tip-warning {
+  background: rgba(245, 158, 11, 0.08);
+  color: #fbbf24;
+}
+.health-tip-item.tip-warning .tip-dot {
+  background: #fbbf24;
+}
+
+/* 空状态 (Empty State) */
+.details-empty-state {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 30px 24px;
+  text-align: center;
+}
+.empty-radar-wrap {
+  position: relative;
+  width: 72px;
+  height: 72px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 14px;
+}
+.radar-circle {
+  position: absolute;
+  border-radius: 999px;
+  border: 1px solid rgba(16, 185, 129, 0.15);
+}
+.radar-circle.circle-1 { width: 32px; height: 32px; }
+.radar-circle.circle-2 { width: 52px; height: 52px; border-color: rgba(16, 185, 129, 0.1); }
+.radar-circle.circle-3 { width: 72px; height: 72px; border-color: rgba(16, 185, 129, 0.05); }
+.empty-radar-icon {
+  font-size: 24px;
+  color: #10b981;
+  opacity: 0.65;
+}
+.details-empty-state .empty-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #cbd5e1;
+  margin-bottom: 4px;
+}
+.details-empty-state .empty-desc {
+  font-size: 11px;
+  color: #64748b;
+  line-height: 1.5;
+}
+
+/* 底部多维操作底栏 (Footer Actions) */
+.dossier-footer-actions {
+  padding: 10px 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+  background: rgba(8, 11, 16, 0.85);
+  backdrop-filter: blur(16px);
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  flex-shrink: 0;
+}
+.footer-btn {
+  height: 30px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  user-select: none;
+}
+.footer-btn.btn-primary {
+  background: linear-gradient(180deg, #10b981 0%, #059669 100%);
+  color: #ffffff;
+  border: 1px solid #10b981;
+  box-shadow: 0 2px 8px rgba(16, 185, 129, 0.35);
+}
+.footer-btn.btn-primary:hover {
+  background: linear-gradient(180deg, #34d399 0%, #10b981 100%);
+  box-shadow: 0 4px 14px rgba(16, 185, 129, 0.5);
+  transform: translateY(-1px);
+}
+.footer-sub-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+.footer-btn.btn-secondary {
+  height: 27px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  background: rgba(255, 255, 255, 0.04);
+  color: #cbd5e1;
+  font-size: 11px;
+}
+.footer-btn.btn-secondary:hover {
+  background: rgba(255, 255, 255, 0.09);
+  border-color: rgba(255, 255, 255, 0.18);
+  color: #ffffff;
+}
+.footer-btn.btn-mail:hover {
+  color: #38bdf8;
+  border-color: rgba(56, 189, 248, 0.35);
+  background: rgba(56, 189, 248, 0.08);
+}
+
+/* ════════════════ 表格主体与单元格 ════════════════ */
+.linear-modern-table {
+  background: #0d0f17 !important;
+  font-size: 12px;
+}
+.linear-modern-table :deep(.el-table__header th.el-table__cell) {
+  background: #141724 !important;
+  color: #94a3b8 !important;
+  font-size: 11.5px !important;
+  font-weight: 600 !important;
+  padding: 7px 8px !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08) !important;
+  border-right: none !important;
+}
+.linear-modern-table :deep(.el-table__row td.el-table__cell) {
+  padding: 6px 8px !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04) !important;
+  border-right: none !important;
+  background: transparent !important;
+  color: #f1f5f9;
+}
+.linear-modern-table :deep(.el-table__row) {
+  background: #0f111a !important;
+}
+.linear-modern-table :deep(.el-table__row:hover > td.el-table__cell) {
+  background: #181c2c !important;
+}
+.linear-modern-table :deep(.is-focused-row > td.el-table__cell) {
+  background: rgba(35, 226, 160, 0.09) !important;
+}
+
+.table-footer-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 42px;
+  min-height: 42px;
+  padding: 0 16px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  background: #11141d;
+  flex-shrink: 0;
+  z-index: 10;
+}
+.footer-left-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  color: #94a3b8;
+}
+.selected-badge {
+  color: #38bdf8;
+  font-weight: 500;
+}
+.selected-badge b {
+  color: #38bdf8;
+  font-weight: 700;
+}
+.total-badge {
+  color: #8e9994;
+}
+.footer-pagination-right {
+  display: flex;
+  align-items: center;
+}
+
+/* 考公工作台黑曜石与祖母绿紧凑型分页 */
+.octopus-pagination :deep(.el-pagination__total) {
+  font-size: 11px;
+  color: #94a3b8;
+  margin-right: 8px;
+}
+.octopus-pagination :deep(.el-pagination__sizes) {
+  margin-right: 8px;
+}
+.octopus-pagination :deep(.el-select .el-input__wrapper) {
+  background: rgba(0, 0, 0, 0.3) !important;
+  border: 1px solid rgba(255, 255, 255, 0.08) !important;
+  box-shadow: none !important;
+  height: 24px;
+}
+.octopus-pagination :deep(.btn-prev),
+.octopus-pagination :deep(.btn-next),
+.octopus-pagination :deep(.el-pager li) {
+  background: rgba(255, 255, 255, 0.04) !important;
+  border: 1px solid rgba(255, 255, 255, 0.06) !important;
+  color: #94a3b8 !important;
+  min-width: 26px;
+  height: 24px;
+  line-height: 22px;
+  border-radius: 4px;
+  font-size: 11px;
+  margin: 0 2px;
+}
+.octopus-pagination :deep(.el-pager li.is-active) {
+  background: #10b981 !important;
+  border-color: #10b981 !important;
+  color: #042f24 !important;
+  font-weight: 700;
+}
+.octopus-pagination :deep(.el-pager li:hover) {
+  color: #ffffff !important;
+  background: rgba(255, 255, 255, 0.08) !important;
+}
+.octopus-pagination :deep(.el-pagination__jump) {
+  font-size: 11px;
+  color: #94a3b8;
+  margin-left: 8px;
+}
+.octopus-pagination :deep(.el-pagination__editor.el-input .el-input__wrapper) {
+  background: rgba(0, 0, 0, 0.3) !important;
+  border: 1px solid rgba(255, 255, 255, 0.08) !important;
+  box-shadow: none !important;
+  height: 24px;
 }
 
 .action-group-left {
@@ -11451,23 +13382,32 @@ onUnmounted(() => {
   font-size: 12px;
 }
 
-/* ──────────── 表格密度多档位 ──────────── */
-.macos-table.density-compact :deep(.el-table__cell) {
-  padding: 3px 0 !important;
+/* ──────────── 表格行高密度切换 Popover 样式 ──────────── */
+.density-menu-popover .el-dropdown-menu__item {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  min-width: 175px !important;
+  padding: 7px 12px !important;
+  font-size: 12px !important;
+  gap: 12px !important;
+  transition: all 0.15s ease !important;
 }
-.macos-table.density-compact :deep(.email-cell) {
-  gap: 4px;
+.density-menu-popover .el-dropdown-menu__item.is-density-active {
+  color: #34d399 !important;
+  background: rgba(16, 185, 129, 0.12) !important;
+  font-weight: 600 !important;
 }
-.macos-table.density-compact :deep(.macos-tag-btn) {
-  padding: 1px 4px;
-  font-size: 11px;
+.density-menu-popover .density-item-content {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
-.macos-table.density-compact :deep(.sec-badge) {
-  font-size: 9.5px;
-  padding: 0 4px;
-}
-.macos-table.density-relaxed :deep(.el-table__cell) {
-  padding: 11px 0 !important;
+.density-menu-popover .density-check-mark {
+  color: #10b981;
+  font-weight: 700;
+  font-size: 13px;
+  margin-left: auto;
 }
 
 /* ──────────── 底部毛玻璃极客悬浮批量操作栏 (Dynamic Island Dock) ──────────── */
@@ -11715,6 +13655,62 @@ onUnmounted(() => {
   overflow: hidden !important;
 }
 
+/* 属性筛选器浮层面板 (Linear Filter Popover) */
+.linear-filter-builder-popover {
+  background: #10151c !important;
+  border: 1px solid rgba(255, 255, 255, 0.12) !important;
+  border-radius: 10px !important;
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.6) !important;
+  padding: 12px 14px !important;
+}
+.filter-builder-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.filter-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+.panel-header-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #f1f5f9;
+}
+.filter-builder-items {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+.filter-item-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.filter-group-label {
+  font-size: 11px;
+  color: #94a3b8;
+  font-weight: 500;
+}
+.popover-select {
+  width: 100%;
+}
+.popover-select .el-input__wrapper,
+.popover-select .el-select__wrapper {
+  background: rgba(0, 0, 0, 0.35) !important;
+  border: 1px solid rgba(255, 255, 255, 0.08) !important;
+  border-radius: 6px !important;
+  box-shadow: none !important;
+  height: 28px !important;
+  font-size: 11.5px !important;
+}
+
 /* ════════════════ 张鱼烧脑 Octopus 考公级暗黑工作台视觉规范 ════════════════ */
 :root {
   --oct-bg: #050706;
@@ -11847,13 +13843,13 @@ onUnmounted(() => {
 .octopus-search-input {
   width: 230px;
 }
-.octopus-search-input :deep(.el-input__wrapper) {
+.octopus-search-input .el-input__wrapper {
   border-radius: 20px;
   background: rgba(15, 20, 18, 0.85);
   border: 1px solid var(--oct-line);
   box-shadow: inset 0 1px rgba(255, 255, 255, 0.03), 0 4px 15px rgba(0, 0, 0, 0.25) !important;
 }
-.octopus-search-input :deep(.el-input__wrapper.is-focus) {
+.octopus-search-input .el-input__wrapper.is-focus {
   border-color: var(--oct-green);
   box-shadow: 0 0 10px rgba(35, 226, 160, 0.25) !important;
 }
@@ -11973,7 +13969,7 @@ onUnmounted(() => {
 .octopus-chunk-select {
   width: 100px;
 }
-.octopus-chunk-select :deep(.el-select__wrapper) {
+.octopus-chunk-select .el-select__wrapper {
   border-radius: 15px;
   font-size: 11.5px;
   height: 30px;
@@ -12040,37 +14036,173 @@ onUnmounted(() => {
   font-size: 12px;
 }
 
-/* 考公工作台质感表头 */
-.octopus-table-grid :deep(.el-table__header th.el-table__cell) {
+/* 考公工作台质感表头与统一居中对齐 */
+.octopus-table-grid .el-table__header th.el-table__cell {
   background: #0e1613 !important;
   color: #8e9994 !important;
-  font-size: 11px !important;
+  font-size: 11.5px !important;
   font-weight: 600 !important;
-  letter-spacing: 0.4px;
+  letter-spacing: 0.3px;
   padding: 8px 8px !important;
   border-bottom: 1px solid var(--oct-line) !important;
   border-right: none !important;
 }
 
-/* 行设计与微弱交替 */
-.octopus-table-grid :deep(.el-table__row td.el-table__cell) {
+.octopus-table-grid .el-table__header th.el-table__cell .cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+
+/* 行设计与微弱交替 (基础通用样式) */
+.octopus-table-grid .el-table__row td.el-table__cell {
   padding: 6px 8px !important;
   border-bottom: 1px solid rgba(187, 210, 200, 0.06) !important;
   border-right: none !important;
 }
 
-.octopus-table-grid :deep(.el-table__row) {
+/* ──────────── 表格密度三档调优 (Compact / Default / Relaxed) ──────────── */
+/* 1. 紧凑模式 (Compact - 高屏效) */
+.octopus-table-grid.density-compact .el-table__header th.el-table__cell,
+.octopus-table-grid.density-compact .el-table__fixed th.el-table__cell,
+.octopus-table-grid.density-compact .el-table__fixed-right th.el-table__cell {
+  padding: 4px 6px !important;
+  font-size: 11px !important;
+}
+.octopus-table-grid.density-compact .el-table__row td.el-table__cell,
+.octopus-table-grid.density-compact .el-table__fixed td.el-table__cell,
+.octopus-table-grid.density-compact .el-table__fixed-right td.el-table__cell {
+  padding: 2.5px 6px !important;
+}
+.octopus-table-grid.density-compact .account-cell-container {
+  gap: 1px !important;
+}
+.octopus-table-grid.density-compact .account-main-line {
+  gap: 4px !important;
+  line-height: 1.1 !important;
+}
+.octopus-table-grid.density-compact .email-text {
+  font-size: 11.5px !important;
+}
+.octopus-table-grid.density-compact .provider-avatar-badge {
+  width: 15px !important;
+  height: 15px !important;
+  font-size: 9.5px !important;
+}
+.octopus-table-grid.density-compact .meta-badge-pill {
+  font-size: 9.5px !important;
+  padding: 0 4px !important;
+  line-height: 13px !important;
+}
+.octopus-table-grid.density-compact .sec-badge {
+  font-size: 9.5px !important;
+  padding: 1px 5px !important;
+}
+.octopus-table-grid.density-compact .octopus-row-btn {
+  height: 20px !important;
+  padding: 0 5px !important;
+  font-size: 10px !important;
+}
+.octopus-table-grid.density-compact .octopus-row-btn.btn-more {
+  width: 20px !important;
+  height: 20px !important;
+}
+
+/* 2. 标准模式 (Default - 默认平衡) */
+.octopus-table-grid.density-default .el-table__header th.el-table__cell,
+.octopus-table-grid.density-default .el-table__fixed th.el-table__cell,
+.octopus-table-grid.density-default .el-table__fixed-right th.el-table__cell {
+  padding: 8px 8px !important;
+}
+.octopus-table-grid.density-default .el-table__row td.el-table__cell,
+.octopus-table-grid.density-default .el-table__fixed td.el-table__cell,
+.octopus-table-grid.density-default .el-table__fixed-right td.el-table__cell {
+  padding: 6px 8px !important;
+}
+
+/* 3. 宽松模式 (Relaxed - 大间距舒适) */
+.octopus-table-grid.density-relaxed .el-table__header th.el-table__cell,
+.octopus-table-grid.density-relaxed .el-table__fixed th.el-table__cell,
+.octopus-table-grid.density-relaxed .el-table__fixed-right th.el-table__cell {
+  padding: 12px 10px !important;
+  font-size: 12px !important;
+}
+.octopus-table-grid.density-relaxed .el-table__row td.el-table__cell,
+.octopus-table-grid.density-relaxed .el-table__fixed td.el-table__cell,
+.octopus-table-grid.density-relaxed .el-table__fixed-right td.el-table__cell {
+  padding: 13px 10px !important;
+}
+.octopus-table-grid.density-relaxed .account-cell-container {
+  gap: 6px !important;
+}
+.octopus-table-grid.density-relaxed .account-main-line {
+  gap: 8px !important;
+}
+.octopus-table-grid.density-relaxed .email-text {
+  font-size: 13px !important;
+}
+.octopus-table-grid.density-relaxed .provider-avatar-badge {
+  width: 21px !important;
+  height: 21px !important;
+  font-size: 13px !important;
+}
+.octopus-table-grid.density-relaxed .meta-badge-pill {
+  font-size: 10.5px !important;
+  padding: 2px 6px !important;
+}
+.octopus-table-grid.density-relaxed .sec-badge {
+  font-size: 11px !important;
+  padding: 3px 8px !important;
+}
+.octopus-table-grid.density-relaxed .octopus-row-btn {
+  height: 25px !important;
+  padding: 0 8px !important;
+  font-size: 11.5px !important;
+}
+.octopus-table-grid.density-relaxed .octopus-row-btn.btn-more {
+  width: 25px !important;
+  height: 25px !important;
+}
+
+.octopus-table-grid .el-table__row {
   background: rgba(9, 14, 12, 0.85) !important;
 }
-.octopus-table-grid :deep(.el-table__row--striped) {
+.octopus-table-grid .el-table__row--striped {
   background: rgba(6, 9, 8, 0.85) !important;
 }
 
-.octopus-table-grid :deep(.el-table__row:hover > td.el-table__cell) {
+.octopus-table-grid .el-table__row:hover > td.el-table__cell {
   background: linear-gradient(90deg, rgba(35, 226, 160, 0.08) 0%, rgba(13, 19, 16, 0.95) 100%) !important;
 }
-.octopus-table-grid :deep(.el-table__row:hover > td.el-table__cell:first-child) {
+.octopus-table-grid .el-table__row:hover > td.el-table__cell:first-child {
   box-shadow: inset 3px 0 0 var(--oct-green) !important;
+}
+
+/* 固定列彻底暗黑适配，彻底消除 Element Plus 默认浅色/白底浮层 */
+.octopus-table-grid .el-table__fixed,
+.octopus-table-grid .el-table__fixed-right,
+.octopus-table-grid .el-table__fixed-right-patch,
+.octopus-table-grid .el-table__fixed-body-wrapper {
+  background: #090e0c !important;
+  box-shadow: -6px 0 16px rgba(0, 0, 0, 0.5) !important;
+}
+
+.octopus-table-grid .el-table__fixed-right th.el-table__cell,
+.octopus-table-grid .el-table__fixed th.el-table__cell,
+.octopus-table-grid .el-table__fixed-right-patch {
+  background: #0e1613 !important;
+  color: #8e9994 !important;
+}
+
+.octopus-table-grid .el-table__fixed-right td.el-table__cell,
+.octopus-table-grid .el-table__fixed td.el-table__cell {
+  background: #090e0c !important;
+}
+
+.octopus-table-grid .el-table__fixed-right tr:hover td.el-table__cell,
+.octopus-table-grid .el-table__fixed tr:hover td.el-table__cell {
+  background: #111a16 !important;
 }
 
 /* 脉冲圆点 */
@@ -12086,154 +14218,195 @@ onUnmounted(() => {
 .dot-amber { background: #e69d23; box-shadow: 0 0 6px #e69d23; }
 .dot-rose { background: #ff6c70; box-shadow: 0 0 6px #ff6c70; }
 
-/* ──────────── 1. 账号与网络出口 ──────────── */
-.cell-account-block {
+/* ──────────── 1. 账号与网络出口规范化 ──────────── */
+.account-cell-container {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  min-width: 0;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  width: 100%;
 }
-.account-line-main {
+.account-main-line {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
-  min-width: 0;
+  max-width: 100%;
 }
-.provider-tag {
+.provider-avatar-badge {
   width: 18px;
   height: 18px;
   border-radius: 4px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 10.5px;
+  font-size: 10px;
   flex-shrink: 0;
 }
-.email-name-mono {
-  font-size: 12.5px;
+.email-text {
+  font-size: 12px;
   font-weight: 600;
   color: #f5f7f6;
   cursor: pointer;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  max-width: 185px;
   transition: color 0.15s ease;
 }
-.email-name-mono:hover {
-  color: var(--oct-green);
+.email-text:hover {
+  color: #10b981;
   text-decoration: underline;
 }
-.email-copy-icon {
+.email-copy-btn {
   font-size: 11px;
   color: #6e7773;
   cursor: pointer;
   opacity: 0;
   transition: opacity 0.15s ease;
 }
-.account-line-main:hover .email-copy-icon {
+.account-main-line:hover .email-copy-btn {
   opacity: 1;
 }
 
-.account-line-sub {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  padding-left: 24px;
-  font-size: 11px;
-  color: var(--oct-muted);
-}
-.country-text {
-  color: #b0bcba;
-  font-weight: 500;
-}
-.ip-text {
-  color: var(--oct-muted);
-  cursor: pointer;
-}
-.ip-text:hover {
-  color: var(--oct-green);
-}
-.pickup-link {
-  color: var(--oct-ocean);
-  cursor: pointer;
-}
-
-/* ──────────── 2. 安全凭据 (密码 / 2FA) ──────────── */
-.cell-security-block {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-.sec-item-row {
+.account-meta-line {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-}
-.quiet-code-chip {
-  display: inline-flex;
-  align-items: center;
+  justify-content: center;
   gap: 4px;
-  padding: 1px 6px;
-  border-radius: 4px;
-  font-size: 11px;
-  cursor: pointer;
+  flex-wrap: wrap;
+  max-width: 100%;
+}
+.meta-badge-pill {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 3px;
+  font-size: 10.5px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+  color: #94a3b8;
+  white-space: nowrap;
   transition: all 0.15s ease;
 }
-.pwd-chip {
-  background: rgba(35, 226, 160, 0.08);
-  border: 1px solid rgba(35, 226, 160, 0.2);
-  color: #a7f3d0;
+.country-pill {
+  color: #cbd5e1;
+  background: rgba(255, 255, 255, 0.05);
+  cursor: pointer;
 }
-.pwd-chip:hover {
-  background: rgba(35, 226, 160, 0.18);
-  border-color: var(--oct-green);
+.country-pill:hover {
+  border-color: rgba(245, 158, 11, 0.4);
+  color: #fbbf24;
 }
-.totp-chip {
-  background: rgba(42, 169, 232, 0.08);
-  border: 1px solid rgba(42, 169, 232, 0.2);
-  color: #bae6fd;
+.ip-pill {
+  color: #8e9994;
+  cursor: pointer;
 }
-.totp-chip:hover {
-  background: rgba(42, 169, 232, 0.18);
-  border-color: var(--oct-ocean);
+.ip-pill:hover {
+  color: #10b981;
+  border-color: rgba(16, 185, 129, 0.3);
 }
-.sec-sym {
-  font-size: 9px;
-  opacity: 0.8;
+.pickup-pill {
+  color: #38bdf8;
+  border-color: rgba(14, 165, 233, 0.25);
+  background: rgba(14, 165, 233, 0.08);
+  cursor: pointer;
 }
-.sec-copy-mini {
-  font-size: 10px;
-  opacity: 0.5;
+.pickup-pill:hover {
+  background: rgba(14, 165, 233, 0.16);
 }
 
-.totp-otp-link {
+/* ──────────── 2. 密码 / 2FA 经典极简胶囊徽章 ──────────── */
+.sec-col-wrapper {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  width: 100%;
+}
+.sec-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 7px;
+  border-radius: 9999px;
   font-size: 10.5px;
-  color: #f2b956;
+  line-height: 1.1;
+  font-weight: 600;
+  letter-spacing: 0.2px;
   cursor: pointer;
-  padding: 0 4px;
+  user-select: none;
+  transition: all 0.15s ease;
+  white-space: nowrap;
 }
-.totp-otp-link:hover {
-  text-decoration: underline;
+.sec-badge:hover {
+  transform: translateY(-1px);
 }
 
-.action-link-warn {
-  font-size: 11px;
-  color: #f2b956;
-  cursor: pointer;
+/* 密码✓ */
+.sec-pwd-ok {
+  background: rgba(16, 185, 129, 0.12);
+  color: #34d399;
+  border: 1px solid rgba(16, 185, 129, 0.3);
 }
-.action-link-warn:hover {
-  text-decoration: underline;
+.sec-pwd-ok:hover {
+  background: rgba(16, 185, 129, 0.22);
+  border-color: rgba(16, 185, 129, 0.5);
+  box-shadow: 0 0 6px rgba(16, 185, 129, 0.25);
+}
+
+/* 密码× */
+.sec-pwd-no {
+  background: rgba(148, 163, 184, 0.08);
+  color: #64748b;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+}
+.sec-pwd-no:hover {
+  background: rgba(245, 158, 11, 0.12);
+  color: #fbbf24;
+  border-color: rgba(245, 158, 11, 0.35);
+}
+
+/* 2FA✓ */
+.sec-2fa-ok {
+  background: rgba(16, 185, 129, 0.15);
+  color: #10b981;
+  border: 1px solid rgba(16, 185, 129, 0.35);
+  font-weight: 700;
+}
+.sec-2fa-ok:hover {
+  background: rgba(16, 185, 129, 0.25);
+  border-color: rgba(16, 185, 129, 0.55);
+  box-shadow: 0 0 8px rgba(16, 185, 129, 0.3);
+}
+
+/* 2FA× */
+.sec-2fa-no {
+  background: rgba(148, 163, 184, 0.08);
+  color: #64748b;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+}
+.sec-2fa-no:hover {
+  background: rgba(245, 158, 11, 0.12);
+  color: #fbbf24;
+  border-color: rgba(245, 158, 11, 0.35);
 }
 
 /* ──────────── 3. Token 凭据健康 ──────────── */
 .cell-token-block {
   display: flex;
   flex-direction: column;
+  align-items: center;
+  justify-content: center;
   gap: 2px;
+  width: 100%;
 }
 .token-status-line {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
   font-size: 11.5px;
 }
@@ -12246,7 +14419,10 @@ onUnmounted(() => {
 
 .token-sub-line {
   font-size: 10.5px;
-  padding-left: 12px;
+  padding-left: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 .rt-active-text {
   color: #c4b5fd;
@@ -12259,8 +14435,10 @@ onUnmounted(() => {
 .cell-entitlements-block {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 4px;
   flex-wrap: wrap;
+  width: 100%;
 }
 .entitlement-badge {
   display: inline-flex;
@@ -12305,11 +14483,15 @@ onUnmounted(() => {
 .cell-export-block {
   display: flex;
   flex-direction: column;
+  align-items: center;
+  justify-content: center;
   gap: 2px;
+  width: 100%;
 }
 .export-status-line {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
   font-size: 11.5px;
   cursor: pointer;
@@ -12330,12 +14512,13 @@ onUnmounted(() => {
 .export-note-text {
   font-size: 10.5px;
   color: var(--oct-muted);
-  padding-left: 12px;
+  padding-left: 0;
   cursor: pointer;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 140px;
+  text-align: center;
 }
 .export-note-text:hover {
   color: var(--oct-green);
@@ -12347,7 +14530,10 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   align-items: center;
+  justify-content: center;
   gap: 1px;
+  width: 100%;
+  text-align: center;
 }
 .time-main-mono {
   font-size: 11.5px;
@@ -12364,6 +14550,7 @@ onUnmounted(() => {
   align-items: center;
   justify-content: center;
   gap: 4px;
+  width: 100%;
 }
 .octopus-row-btn {
   height: 24px;
@@ -12371,29 +14558,50 @@ onUnmounted(() => {
   border-radius: 6px;
   font-size: 11px;
   font-weight: 500;
-  border: 1px solid var(--oct-line);
-  background: linear-gradient(145deg, #141b18, #0b100e);
-  color: #c4ccc8;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.04);
+  color: #cbd5e1;
   cursor: pointer;
   transition: all 0.15s ease;
-  box-shadow: inset 0 1px rgba(255, 255, 255, 0.03);
+  user-select: none;
 }
 .octopus-row-btn:hover {
-  border-color: rgba(35, 226, 160, 0.35);
+  border-color: rgba(255, 255, 255, 0.2);
   color: #ffffff;
   transform: translateY(-1px);
 }
+.octopus-row-btn.btn-cred {
+  background: rgba(255, 255, 255, 0.05);
+  color: #e2e8f0;
+}
+.octopus-row-btn.btn-cred:hover {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.25);
+  color: #ffffff;
+}
 .octopus-row-btn.btn-2fa {
-  color: var(--oct-green);
+  background: rgba(16, 185, 129, 0.12);
+  border-color: rgba(16, 185, 129, 0.28);
+  color: #34d399;
+  font-weight: 600;
 }
 .octopus-row-btn.btn-2fa:hover {
-  background: rgba(35, 226, 160, 0.15);
+  background: rgba(16, 185, 129, 0.24);
+  border-color: #10b981;
+  color: #6ee7b7;
+  box-shadow: 0 0 8px rgba(16, 185, 129, 0.3);
 }
 .octopus-row-btn.btn-mail {
-  color: var(--oct-ocean);
+  background: rgba(14, 165, 233, 0.12);
+  border-color: rgba(14, 165, 233, 0.28);
+  color: #38bdf8;
+  font-weight: 600;
 }
 .octopus-row-btn.btn-mail:hover {
-  background: rgba(42, 169, 232, 0.15);
+  background: rgba(14, 165, 233, 0.24);
+  border-color: #0ea5e9;
+  color: #7dd3fc;
+  box-shadow: 0 0 8px rgba(14, 165, 233, 0.3);
 }
 .octopus-row-btn.btn-more {
   padding: 0 6px;

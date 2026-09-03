@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref, reactive, nextTick } from 'vue'
+import { computed, onMounted, onUnmounted, onActivated, onDeactivated, ref, reactive, nextTick } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
@@ -218,11 +218,9 @@ function toggleGroup(idx) {
 // ════════════════ 3D Carousel & Fan-View 场景数学与交互控制 ════════════════
 const viewMode = ref('orbit') // 'orbit' | 'fan'
 const selectedIndex = ref(0)
-const isPlaying = ref(true)
+const isPlaying = ref(false) // 默认静止，降低能耗与内存开销；用户可随时一键播放
 const speed = ref(2)
-let autoplayTimer = null
-let autoplayLastFrame = 0
-let carouselFrame = null
+let animFrame = null
 let visualPosition = 0
 let targetPosition = 0
 let lastFrameTime = 0
@@ -272,6 +270,58 @@ function getCardStyle(index) {
   }
 }
 
+function stopAnimation() {
+  if (animFrame !== null) {
+    cancelAnimationFrame(animFrame)
+    animFrame = null
+  }
+  lastFrameTime = 0
+}
+
+function runLoop(now) {
+  if (!lastFrameTime) lastFrameTime = now
+  const elapsed = Math.min(34, now - lastFrameTime)
+  lastFrameTime = now
+
+  let needContinue = false
+
+  // 1. 自动轮播推进（非拖拽状态下）
+  if (isPlaying.value && !isDragging.value) {
+    targetPosition -= elapsed * 0.00018 * speed.value
+    needContinue = true
+  }
+
+  // 2. 指数缓动平滑跟踪
+  const distance = targetPosition - visualPosition
+  if (Math.abs(distance) > 0.002) {
+    const smoothing = 1 - Math.exp(-elapsed / 170)
+    visualPosition += distance * smoothing
+    needContinue = true
+  } else if (!isPlaying.value) {
+    visualPosition = targetPosition
+  }
+
+  const visualIndex = modulo(Math.round(visualPosition))
+  if (visualIndex !== selectedIndex.value) {
+    selectedIndex.value = visualIndex
+  }
+
+  // 3. 按需递归，静止时自动休眠（零 CPU/GPU 开销）
+  if (needContinue) {
+    animFrame = requestAnimationFrame(runLoop)
+  } else {
+    animFrame = null
+    lastFrameTime = 0
+  }
+}
+
+function requestTick() {
+  if (animFrame === null) {
+    lastFrameTime = performance.now()
+    animFrame = requestAnimationFrame(runLoop)
+  }
+}
+
 function selectCard(idx, requestedDirection = 0) {
   const norm = modulo(idx)
   const delta = requestedDirection || relativePosition(norm, visualPosition)
@@ -282,65 +332,22 @@ function selectCard(idx, requestedDirection = 0) {
     return
   }
   targetPosition = visualPosition + delta
-  startCarouselAnimation()
+  requestTick()
 }
 
 function nextCard(dir = 1) {
   targetPosition = Math.round(targetPosition) + dir
   lastWheelDirection = dir
-  startCarouselAnimation()
-}
-
-function startCarouselAnimation() {
-  if (carouselFrame !== null) return
-  lastFrameTime = performance.now()
-
-  const tick = (now) => {
-    const elapsed = Math.min(32, now - lastFrameTime)
-    lastFrameTime = now
-    const distance = targetPosition - visualPosition
-    const smoothing = 1 - Math.exp(-elapsed / 170)
-    visualPosition += distance * smoothing
-    const visualIndex = modulo(Math.round(visualPosition))
-    if (visualIndex !== selectedIndex.value) {
-      selectedIndex.value = visualIndex
-    }
-
-    if (Math.abs(distance) < 0.006) {
-      visualPosition = targetPosition
-      carouselFrame = null
-      return
-    }
-    carouselFrame = requestAnimationFrame(tick)
-  }
-
-  carouselFrame = requestAnimationFrame(tick)
-}
-
-function restartAutoplay() {
-  if (autoplayTimer) cancelAnimationFrame(autoplayTimer)
-  autoplayTimer = null
-  if (!isPlaying.value) return
-  autoplayLastFrame = performance.now()
-  const advance = (now) => {
-    const elapsed = Math.min(34, now - autoplayLastFrame)
-    autoplayLastFrame = now
-    targetPosition -= elapsed * 0.00018 * speed.value
-    lastWheelDirection = -1
-    startCarouselAnimation()
-    autoplayTimer = requestAnimationFrame(advance)
-  }
-  autoplayTimer = requestAnimationFrame(advance)
+  requestTick()
 }
 
 function togglePlay() {
   isPlaying.value = !isPlaying.value
   if (isPlaying.value) {
-    restartAutoplay()
+    requestTick()
     showToast('已开启 3D 自动轮播')
   } else {
-    if (autoplayTimer) cancelAnimationFrame(autoplayTimer)
-    autoplayTimer = null
+    stopAnimation()
     showToast('已暂停轮播')
   }
 }
@@ -362,7 +369,7 @@ function handleSceneWheel(e) {
   if (delta !== 0) {
     targetPosition += delta * 0.8
     lastWheelDirection = delta
-    startCarouselAnimation()
+    requestTick()
   }
 }
 
@@ -378,14 +385,14 @@ function handlePointerMove(e) {
   const currentX = e.clientX || (e.touches && e.touches[0].clientX) || 0
   const diff = currentX - dragStartX
   targetPosition = dragOriginPos - diff * 0.005
-  startCarouselAnimation()
+  requestTick()
 }
 
 function handlePointerUp() {
   if (!isDragging.value) return
   isDragging.value = false
   targetPosition = Math.round(targetPosition)
-  startCarouselAnimation()
+  requestTick()
 }
 
 // ════════════════ 材质与强调色设置抽屉 (Material Overlay) ════════════════
@@ -504,16 +511,48 @@ async function loadDashboardSummary() {
   }
 }
 
+let isDashboardActive = true
+
 onMounted(() => {
   loadDashboardSummary()
-  timer = setInterval(loadDashboardSummary, 8000)
-  restartAutoplay()
+})
+
+onActivated(() => {
+  isDashboardActive = true
+  loadDashboardSummary()
+  if (timer) clearInterval(timer)
+  timer = setInterval(() => {
+    if (isDashboardActive) loadDashboardSummary()
+  }, 12000)
+  if (isPlaying.value) {
+    requestTick()
+  }
+})
+
+onDeactivated(() => {
+  isDashboardActive = false
+  if (timer) {
+    clearInterval(timer)
+    timer = null
+  }
+  stopAnimation()
+  if (toastTimer) {
+    clearTimeout(toastTimer)
+    toastTimer = null
+  }
 })
 
 onUnmounted(() => {
-  if (timer) clearInterval(timer)
-  if (autoplayTimer) cancelAnimationFrame(autoplayTimer)
-  if (carouselFrame) cancelAnimationFrame(carouselFrame)
+  isDashboardActive = false
+  if (timer) {
+    clearInterval(timer)
+    timer = null
+  }
+  stopAnimation()
+  if (toastTimer) {
+    clearTimeout(toastTimer)
+    toastTimer = null
+  }
 })
 </script>
 
@@ -1310,9 +1349,11 @@ onUnmounted(() => {
   position: absolute;
   inset: -27%;
   z-index: -2;
-  filter: blur(var(--material-blur, 24px));
+  filter: blur(var(--material-blur, 20px));
   opacity: var(--material-opacity, 0.95);
-  animation: metricFluidDrift var(--flow-duration, 4s) cubic-bezier(0.45, 0.05, 0.55, 0.95) infinite alternate;
+  animation: metricFluidDrift var(--flow-duration, 8s) cubic-bezier(0.45, 0.05, 0.55, 0.95) infinite alternate;
+  will-change: transform;
+  transform: translateZ(0);
 }
 
 .metric-card::after {
@@ -1701,7 +1742,9 @@ onUnmounted(() => {
   color: #19201d;
   cursor: pointer;
   backface-visibility: hidden;
-  transition: transform 0.68s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.42s ease, filter 0.42s ease;
+  transition: opacity 0.3s ease, filter 0.3s ease, border-color 0.25s ease, box-shadow 0.3s ease;
+  will-change: transform;
+  transform-style: preserve-3d;
 }
 .doc-card.selected {
   color: #f4fff9;

@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, onActivated, onDeactivated, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import { ElMessage } from 'element-plus'
@@ -441,7 +441,8 @@ watch(
   { immediate: true },
 )
 
-onMounted(() => {
+function startTimers() {
+  stopTimers()
   tickerTimer = setInterval(() => {
     nowTs.value = Math.floor(Date.now() / 1000)
   }, 1000)
@@ -450,16 +451,39 @@ onMounted(() => {
     if (st.value === 'running' || st.value === 'paused') {
       syncAutoStatus()
     }
-  }, 2000)
+  }, 2500)
+}
 
+function stopTimers() {
+  if (tickerTimer) {
+    clearInterval(tickerTimer)
+    tickerTimer = null
+  }
+  if (statusPollTimer) {
+    clearInterval(statusPollTimer)
+    statusPollTimer = null
+  }
+}
+
+onMounted(() => {
   syncAutoStatus()
   loadPowSlots()
 })
 
-onUnmounted(() => {
+onActivated(() => {
+  startTimers()
+  syncAutoStatus()
+  loadPowSlots()
+})
+
+onDeactivated(() => {
+  stopTimers()
   stopLogPolling()
-  if (tickerTimer) clearInterval(tickerTimer)
-  if (statusPollTimer) clearInterval(statusPollTimer)
+})
+
+onUnmounted(() => {
+  stopTimers()
+  stopLogPolling()
 })
 </script>
 
