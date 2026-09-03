@@ -11,16 +11,34 @@ import {
   Refresh,
   DocumentAdd,
 } from '@element-plus/icons-vue'
-import { useProxyStore, isValidProxy, proxyScheme } from '@/stores/proxy'
+import { useProxyStore, isValidProxy, proxyScheme, changeProxyProtocol } from '@/stores/proxy'
+import { useFormStore } from '@/stores/form'
 import { testProxies, getProxyHealth, getProxyHealthOverview, setProxyBlacklist } from '@/api/proxy'
 import { copyText } from '@/api/request'
 
 const proxyStore = useProxyStore()
-const { list, count } = storeToRefs(proxyStore)
+const formStore = useFormStore()
+const { list, count, protocol } = storeToRefs(proxyStore)
 
 const draft = ref('')
 const testResults = ref({})
 const testingAll = ref(false)
+
+function handleProtocolChange(val) {
+  proxyStore.setProtocol(val, true)
+  if (formStore.form.proxy) {
+    formStore.form.proxy = changeProxyProtocol(formStore.form.proxy, val)
+  }
+  ElMessage.success(`已切换为 ${val === 'http' ? 'HTTP' : 'SOCKS5H'} 协议模式，全局代理池已自动同步转换生效！`)
+}
+
+function convertCurrentPool() {
+  proxyStore.convertAll()
+  if (formStore.form.proxy) {
+    formStore.form.proxy = changeProxyProtocol(formStore.form.proxy, protocol.value)
+  }
+  ElMessage.success(`已将当前代理池内全部节点统一转换为 ${protocol.value === 'http' ? 'HTTP' : 'SOCKS5H'} 协议！`)
+}
 
 // ── 代理健康度（死号反哺）：号注册成功计 total，事后验死计 dead ──
 // 动态住宅代理一号一个 session，健康度按「归一化模板 × 国家」聚合（后端算），
@@ -355,22 +373,51 @@ function editInDraft() {
         <div class="form-pane">
           <div class="pane-inner">
             <div class="pane-section-title">
-              <el-icon><DocumentAdd /></el-icon>批量录入代理
+              <el-icon><DocumentAdd /></el-icon>批量录入与协议设置
+            </div>
+
+            <!-- 🌐 全局首选代理协议切换卡片（HTTP / SOCKS5H） -->
+            <div class="proto-switch-card">
+              <div class="proto-row-top">
+                <span class="proto-label">⚙️ 本机首选代理协议:</span>
+                <el-tag size="small" :type="protocol === 'http' ? 'success' : 'primary'" effect="dark" round>
+                  {{ protocol === 'http' ? '🌐 HTTP 模式' : '⚡ SOCKS5H 模式' }}
+                </el-tag>
+              </div>
+              <el-radio-group
+                v-model="protocol"
+                size="small"
+                class="proto-radio-group"
+                @change="handleProtocolChange"
+              >
+                <el-radio-button value="socks5h">⚡ SOCKS5H 协议 (远端DNS解析)</el-radio-button>
+                <el-radio-button value="http">🌐 HTTP 协议 (兼容家用/机房代理)</el-radio-button>
+              </el-radio-group>
+              <div class="proto-tip">
+                <span v-if="protocol === 'http'">
+                  💡 <b>已启用 HTTP 模式</b>：录入裸代理自动补全为 <code>http://</code>，当前全部代理节点均自动作为 HTTP 代理发送请求，完美适配家用代理工具。
+                </span>
+                <span v-else>
+                  💡 <b>已启用 SOCKS5H 模式</b>：DNS 解析由代理端完成，杜绝本地 DNS 污染与泄露。
+                </span>
+              </div>
             </div>
 
             <div class="hint-card">
               <p class="hint-text">
                 每行一条：<span class="mono">[协议://][user:pass@]host:port</span><br />
-                支持 SOCKS5 / HTTP / HTTPS 格式。系统自动完成去重与规范化校验。
+                支持输入裸地址，系统会自动按所选【{{ protocol === 'http' ? 'HTTP' : 'SOCKS5H' }}】协议前缀补全。
               </p>
             </div>
 
             <el-input
               v-model="draft"
               type="textarea"
-              :rows="12"
+              :rows="10"
               class="mono proxy-textarea"
-              placeholder="socks5://127.0.0.1:7890&#10;socks5://user:pass@1.2.3.4:1080&#10;http://5.6.7.8:8080"
+              :placeholder="protocol === 'http'
+                ? 'http://127.0.0.1:7890\nhttp://user:pass@1.2.3.4:8080\n5.6.7.8:8080 (将自动按http识别)'
+                : 'socks5h://127.0.0.1:7890\nsocks5h://user:pass@1.2.3.4:1080\nhttp://5.6.7.8:8080'"
             />
 
             <div class="editor-action-bar">
@@ -382,6 +429,9 @@ function editInDraft() {
               </el-button>
               <el-button class="macos-btn" @click="editInDraft">
                 载入当前池
+              </el-button>
+              <el-button class="macos-btn btn-convert" @click="convertCurrentPool" title="将当前列表所有代理强制转为当前选定协议">
+                一键转为 {{ protocol === 'http' ? 'HTTP' : 'SOCKS5H' }}
               </el-button>
             </div>
           </div>
@@ -808,6 +858,49 @@ function editInDraft() {
   font-size: 13px;
   font-weight: 700;
   color: var(--app-title);
+}
+
+.proto-switch-card {
+  background: rgba(14, 165, 233, 0.06);
+  border: 1px solid rgba(14, 165, 233, 0.25);
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.proto-row-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.proto-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--app-title);
+}
+.proto-radio-group {
+  width: 100%;
+}
+.proto-radio-group :deep(.el-radio-button) {
+  flex: 1;
+}
+.proto-radio-group :deep(.el-radio-button__inner) {
+  width: 100%;
+  font-size: 11.5px;
+  padding: 7px 10px;
+}
+.proto-tip {
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+  line-height: 1.45;
+}
+.proto-tip code {
+  font-family: monospace;
+  color: var(--el-color-primary);
+  background: rgba(14, 165, 233, 0.1);
+  padding: 1px 4px;
+  border-radius: 3px;
 }
 
 .hint-card {

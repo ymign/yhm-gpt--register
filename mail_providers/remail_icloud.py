@@ -256,7 +256,24 @@ class RemailICloudProvider(MailProvider):
     def _create_order_req(self, project_id: int, email_suffix: str, service_mode: str) -> dict:
         """执行单个下单请求（严格符合 Remail OpenAPI 规范：仅需 projectId 和 emailSuffix）。"""
         url = f"{self.base_url}/v1/open/orders?serviceMode={service_mode}&supply=private_first"
-        suf_clean = (email_suffix or "icloud.com").strip().lower()
+        suf_raw = (email_suffix or "icloud.com").strip().lower()
+        if suf_raw.startswith("@"):
+            suf_raw = suf_raw[1:].strip()
+
+        # 根据 Remail 官方 OpenAPI 规范做兼容别名映射
+        if suf_raw in ("gmail_variant", "gmail变种", "gmail-variant", "variant", "gmail+"):
+            suf_clean = "gmail_variant"
+        elif suf_raw in ("gmail", "gmail.com"):
+            suf_clean = "gmail.com"
+        elif suf_raw in ("icloud", "icloud.com", "apple"):
+            suf_clean = "icloud.com"
+        elif suf_raw in ("domain", "域名", "自定义域名"):
+            suf_clean = "domain"
+        elif suf_raw in ("outlook", "微软", "microsoft"):
+            suf_clean = "outlook"
+        else:
+            suf_clean = suf_raw
+
         body_dict = {
             "projectId": int(project_id),
             "emailSuffix": suf_clean,
@@ -518,18 +535,45 @@ def fetch_remail_projects_and_wallet(
     except Exception as e:
         logger.warning(f"[Remail] 查询钱包异常: {e}")
 
-    # 2. 项目列表查询
-    p_req = urllib.request.Request(f"{clean_base}/v1/open/projects", headers=headers, method="GET")
-    try:
-        with urllib.request.urlopen(p_req, timeout=15) as resp:
-            p_data = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        err_body = (e.read().decode("utf-8", errors="ignore") or "")[:200]
-        raise RuntimeError(f"HTTP {e.code}: {err_body or e.reason}")
-    except Exception as e:
-        raise RuntimeError(f"请求 Remail 项目列表失败: {e}")
+    # 2. 项目列表查询（全量分页拉取，防止默认 limit=20 截断导致后排项目如 ChatGPT 遗漏）
+    raw_items = []
+    offset = 0
+    limit = 100
+    while True:
+        p_url = f"{clean_base}/v1/open/projects?limit={limit}&offset={offset}"
+        p_req = urllib.request.Request(p_url, headers=headers, method="GET")
+        try:
+            with urllib.request.urlopen(p_req, timeout=15) as resp:
+                p_data = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            err_body = (e.read().decode("utf-8", errors="ignore") or "")[:200]
+            raise RuntimeError(f"HTTP {e.code}: {err_body or e.reason}")
+        except Exception as e:
+            raise RuntimeError(f"请求 Remail 项目列表失败: {e}")
 
-    raw_items = p_data.get("items") or []
+        cur_items = p_data.get("items") or []
+        raw_items.extend(cur_items)
+        total = p_data.get("total", len(raw_items))
+        if len(raw_items) >= total or not cur_items:
+            break
+        offset += len(cur_items)
+
+    # 兜底：若全量列表中依然没有 ChatGPT 专属（ID: 2），主动单独拉取 ID 2 详情
+    if not any(item.get("id") == 2 for item in raw_items):
+        try:
+            req_p2 = urllib.request.Request(f"{clean_base}/v1/open/projects/2", headers=headers, method="GET")
+            with urllib.request.urlopen(req_p2, timeout=8) as resp_p2:
+                p2_data = json.loads(resp_p2.read().decode("utf-8"))
+                if p2_data.get("project"):
+                    p2_proj = p2_data["project"]
+                    if p2_data.get("products"):
+                        p2_proj["products"] = p2_data["products"]
+                    raw_items.insert(0, p2_proj)
+                elif p2_data.get("id"):
+                    raw_items.insert(0, p2_data)
+        except Exception as e:
+            logger.warning(f"[Remail] 单独探测 Project 2 提示: {e}")
+
     projects = []
     for item in raw_items:
         pid = item.get("id")
@@ -540,12 +584,14 @@ def fetch_remail_projects_and_wallet(
         products = []
         all_suffixes = []
         for prod in item.get("products") or []:
-            ptype = prod.get("type") or ""
+            ptype = str(prod.get("type") or "").strip().lower()
             multiplier = float(prod.get("priceMultiplier") or 1.0)
             raw_p_price = float(prod.get("purchasePrice") or 0.0)
             raw_c_price = float(prod.get("codePrice") or 0.0)
             real_p_price = round(raw_p_price * multiplier, 2)
             real_c_price = round(raw_c_price * multiplier, 2)
+            prod_stock = int(prod.get("totalAvailable") or prod.get("purchaseAvailable") or 0)
+            prod_pub_stock = int(prod.get("publicAvailable") or prod.get("purchasePublicAvailable") or prod_stock)
 
             suffixes = []
             for s in prod.get("suffixes") or []:
@@ -559,10 +605,28 @@ def fetch_remail_projects_and_wallet(
                     if s_name not in all_suffixes:
                         all_suffixes.append(s_name)
 
-            if ptype == "icloud" and not suffixes:
-                suffixes.append({"suffix": "icloud.com", "totalAvailable": 9999, "publicAvailable": 9999})
-                if "icloud.com" not in all_suffixes:
-                    all_suffixes.insert(0, "icloud.com")
+            # 兼容 Remail OpenAPI 无显式 suffixes 数组的产品线 (按 OpenAPI 官方商品标准规范映射下单关键字)
+            if not suffixes:
+                if ptype in ("icloud", "apple"):
+                    s_name = "icloud.com"
+                elif ptype in ("gmail", "google"):
+                    s_name = "gmail.com"
+                elif ptype in ("gmail_variant", "gmailvariant"):
+                    s_name = "gmail_variant"
+                elif ptype in ("domain", "custom_domain"):
+                    s_name = "domain"
+                elif ptype in ("microsoft", "outlook"):
+                    s_name = "outlook.com"
+                else:
+                    s_name = ptype
+
+                suffixes.append({
+                    "suffix": s_name,
+                    "totalAvailable": prod_stock,
+                    "publicAvailable": prod_pub_stock,
+                })
+                if s_name not in all_suffixes:
+                    all_suffixes.append(s_name)
 
             products.append({
                 "type": ptype,
@@ -572,6 +636,8 @@ def fetch_remail_projects_and_wallet(
                 "priceMultiplier": multiplier,
                 "rawPurchasePrice": raw_p_price,
                 "rawCodePrice": raw_c_price,
+                "totalAvailable": prod_stock,
+                "publicAvailable": prod_pub_stock,
                 "suffixes": suffixes,
             })
 

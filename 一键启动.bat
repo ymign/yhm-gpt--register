@@ -1,8 +1,6 @@
 @echo off
-chcp 65001 >nul
 cd /d "%~dp0"
-title Outlook Register WebUI
-
+title Start WebUI Service
 python start_webui.py
 echo.
 pause

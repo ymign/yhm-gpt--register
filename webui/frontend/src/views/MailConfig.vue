@@ -57,6 +57,16 @@ const DEFAULT_PROVIDERS = [
   { kind: 'icloud_relay', display_name: '✉️ iCloud 隐藏邮箱 (中转)', pooled: true, ephemeral: false, line_segments: 2, config_fields: [] },
 ]
 
+function formatRemailStock(num) {
+  if (num === undefined || num === null) return ''
+  const n = Number(num)
+  if (n <= 0) return '0'
+  if (n >= 1e9) return `${(n / 1e9).toFixed(n % 1e9 === 0 ? 0 : 1)}B`
+  if (n >= 1e6) return `${(n / 1e6).toFixed(n % 1e6 === 0 ? 0 : 1)}M`
+  if (n >= 1e3) return `${(n / 1e3).toFixed(n % 1e3 === 0 ? 0 : 1)}K`
+  return String(n)
+}
+
 // 默认内置的 Remail 项目列表（开箱即用，无需等待远程请求）
 const DEFAULT_REMAIL_PROJECTS = [
   {
@@ -66,9 +76,17 @@ const DEFAULT_REMAIL_PROJECTS = [
     mailRuleCount: 5,
     is_chatgpt: true,
     products: [
-      { type: 'icloud', purchasePrice: 30.0, codePrice: 30.0, suffixes: [{ suffix: 'icloud.com', totalAvailable: 9999 }] },
-      { type: 'microsoft', purchasePrice: 15.0, codePrice: 10.0, suffixes: [{ suffix: 'outlook.com', totalAvailable: 9999 }, { suffix: 'hotmail.com', totalAvailable: 9999 }, { suffix: 'outlook.de', totalAvailable: 9999 }] },
-      { type: 'domain', purchasePrice: 0.02, codePrice: 0.01, suffixes: [] },
+      { type: 'icloud', purchasePrice: 60.0, codePrice: 60.0, totalAvailable: 3894, suffixes: [{ suffix: 'icloud.com', totalAvailable: 3894 }] },
+      { type: 'microsoft', purchasePrice: 15.0, codePrice: 10.0, totalAvailable: 380561, suffixes: [
+        { suffix: 'outlook.com', totalAvailable: 378959 },
+        { suffix: 'hotmail.com', totalAvailable: 213 },
+        { suffix: 'outlook.com.au', totalAvailable: 1112 },
+        { suffix: 'outlook.sa', totalAvailable: 325 },
+        { suffix: 'outlook.co.nz', totalAvailable: 12 },
+      ] },
+      { type: 'gmail', purchasePrice: 200.0, codePrice: 100.0, totalAvailable: 1075070, suffixes: [{ suffix: 'gmail.com', totalAvailable: 1075070 }] },
+      { type: 'gmail_variant', purchasePrice: 10.0, codePrice: 6.0, totalAvailable: 1000000000, suffixes: [{ suffix: 'gmail_variant', totalAvailable: 1000000000 }] },
+      { type: 'domain', purchasePrice: 0.02, codePrice: 0.01, totalAvailable: 0, suffixes: [{ suffix: 'domain', totalAvailable: 0 }] },
     ],
   },
   {
@@ -152,11 +170,11 @@ const domainPresets = computed(() => {
 
 // Remail 推荐项目预设
 const remailRecommendedProjects = [
-  { id: 2, name: 'ChatGPT 专属', desc: 'OpenAI 官方专属 · 5条收信规则 · 30积分/个', tag: '★★★★★ 推荐', type: 'success' },
-  { id: 110, name: 'Cloudflare', desc: 'CF 通用收信 · 10积分/个', tag: '备用', type: 'info' },
-  { id: 73, name: 'Sub2API', desc: 'Sub2API 认证专用 · 10积分/个', tag: '推荐', type: 'primary' },
+  { id: 2, name: 'ChatGPT 专属', desc: 'OpenAI 官方专属 · 5条收信规则 · 支持 Gmail/iCloud/Outlook', tag: '★★★★★ 推荐', type: 'success' },
+  { id: 110, name: 'Cloudflare', desc: 'CF 通用收信', tag: '备用', type: 'info' },
+  { id: 73, name: 'Sub2API', desc: 'Sub2API 认证专用', tag: '推荐', type: 'primary' },
   { id: 84, name: 'Apple 官方', desc: 'Apple ID / iCloud 验证', tag: '专用', type: 'warning' },
-  { id: 106, name: 'Windsurf', desc: 'Windsurf AI 专用 · 10积分/个', tag: '通用', type: 'info' },
+  { id: 106, name: 'Windsurf', desc: 'Windsurf AI 专用', tag: '通用', type: 'info' },
   { id: 90, name: 'Mistral AI', desc: 'Mistral 专属收信', tag: '通用', type: 'info' },
 ]
 
@@ -166,52 +184,101 @@ const currentRemailProject = computed(() => {
   return remailProjects.value.find((p) => p.id === pid) || DEFAULT_REMAIL_PROJECTS[0]
 })
 
+function formatSuffixLabel(sname, price, stock, ptype) {
+  const stockText = stock ? ` · 库${formatRemailStock(stock)}` : ''
+  if (sname === 'icloud.com') {
+    return `🍏 icloud.com (苹果隐藏邮箱 · ${price}积分${stockText} · 推荐 ★★★★★)`
+  } else if (sname === 'outlook.com') {
+    return `📧 outlook.com (微软常用 · ${price}积分${stockText} · 推荐)`
+  } else if (sname === 'gmail_variant') {
+    return `⚡ gmail_variant (Gmail加号变种 · ${price}积分${stockText} · 性价比高)`
+  } else if (sname === 'gmail.com') {
+    return `🇬 gmail.com (Gmail官方点号 · ${price}积分${stockText})`
+  } else if (sname === 'hotmail.com') {
+    return `📮 hotmail.com (微软备用 · ${price}积分${stockText})`
+  } else if (sname === 'domain') {
+    return `🌐 domain (自备/公开域名邮箱 · ${price}积分${stockText})`
+  } else if (sname.startsWith('outlook.')) {
+    return `📫 ${sname} (微软海外 · ${price}积分${stockText})`
+  }
+  return `${sname} (${price}积分${stockText} · ${ptype})`
+}
+
+// 推荐后缀排序权重
+const SUFFIX_ORDER_WEIGHT = {
+  'icloud.com': 100,
+  'outlook.com': 90,
+  'gmail_variant': 80,
+  'gmail.com': 70,
+  'hotmail.com': 60,
+  'domain': 50,
+  'outlook.com.au': 40,
+  'outlook.sa': 30,
+  'outlook.co.nz': 20,
+}
+
 // 当前选中的 Remail 项目支持的所有后缀及价格
 const currentProjectSuffixOptions = computed(() => {
   const proj = currentRemailProject.value
   const result = []
   if (!proj || !Array.isArray(proj.products) || proj.products.length === 0) {
     return [
-      { suffix: 'icloud.com', label: '🍏 icloud.com (苹果隐藏邮箱 · 30.00积分 · 推荐 ★★★★★)', price: '30.00', type: 'icloud' },
-      { suffix: 'outlook.com', label: '📧 outlook.com (微软常用 · 15.00积分 · 推荐)', price: '15.00', type: 'microsoft' },
-      { suffix: 'hotmail.com', label: '📮 hotmail.com (微软备用 · 15.00积分)', price: '15.00', type: 'microsoft' },
-      { suffix: 'outlook.de', label: '🇩🇪 outlook.de (德国微软 · 15.00积分)', price: '15.00', type: 'microsoft' },
+      { suffix: 'icloud.com', label: '🍏 icloud.com (苹果隐藏邮箱 · 60.00积分 · 推荐 ★★★★★)', price: '60.00', type: 'icloud', stock: 3894 },
+      { suffix: 'outlook.com', label: '📧 outlook.com (微软常用 · 15.00积分 · 推荐)', price: '15.00', type: 'microsoft', stock: 378959 },
+      { suffix: 'gmail_variant', label: '⚡ gmail_variant (Gmail加号变种 · 10.00积分 · 库1B · 性价比高)', price: '10.00', type: 'gmail_variant', stock: 1000000000 },
+      { suffix: 'gmail.com', label: '🇬 gmail.com (Gmail官方点号 · 200.00积分 · 库1.1M)', price: '200.00', type: 'gmail', stock: 1075070 },
+      { suffix: 'hotmail.com', label: '📮 hotmail.com (微软备用 · 15.00积分)', price: '15.00', type: 'microsoft', stock: 213 },
+      { suffix: 'domain', label: '🌐 domain (自备/公开域名 · 0.02积分)', price: '0.02', type: 'domain', stock: 0 },
     ]
   }
 
   for (const prod of proj.products || []) {
     const ptype = prod?.type || '邮箱'
-    let pPrice = '30.00'
+    let pPrice = '15.00'
     if (prod && prod.purchasePrice != null) {
       pPrice = typeof prod.purchasePrice === 'number' ? prod.purchasePrice.toFixed(2) : String(prod.purchasePrice)
     }
     for (const s of prod?.suffixes || []) {
       const sname = (s?.suffix || '').trim().toLowerCase()
       if (sname && !result.some((r) => r.suffix.toLowerCase() === sname)) {
-        let label = `${sname} (${pPrice}积分`
-        if (sname === 'icloud.com') label = `🍏 icloud.com (苹果隐藏邮箱 · ${pPrice}积分 · 推荐 ★★★★★)`
-        else if (sname === 'outlook.com') label = `📧 outlook.com (微软常用 · ${pPrice}积分 · 推荐)`
-        else if (sname === 'hotmail.com') label = `📮 hotmail.com (微软备用 · ${pPrice}积分)`
-        else label += ` · ${ptype})`
-        result.push({ suffix: sname, label, price: pPrice, type: ptype, stock: s?.totalAvailable || 0 })
+        const stock = s?.totalAvailable || prod?.totalAvailable || 0
+        const label = formatSuffixLabel(sname, pPrice, stock, ptype)
+        result.push({
+          suffix: sname,
+          label,
+          price: pPrice,
+          type: ptype,
+          stock,
+          weight: SUFFIX_ORDER_WEIGHT[sname] || 10,
+        })
       }
     }
   }
 
+  // 保证核心官方推荐后缀全部齐备
   if (!result.some((r) => r.suffix.toLowerCase() === 'icloud.com')) {
-    result.unshift({ suffix: 'icloud.com', label: '🍏 icloud.com (苹果隐藏邮箱 · 30.00积分 · 推荐 ★★★★★)', price: '30.00', type: 'icloud' })
+    result.push({ suffix: 'icloud.com', label: '🍏 icloud.com (苹果隐藏邮箱 · 60.00积分 · 推荐 ★★★★★)', price: '60.00', type: 'icloud', stock: 3894, weight: 100 })
   }
+  if (!result.some((r) => r.suffix.toLowerCase() === 'gmail_variant')) {
+    result.push({ suffix: 'gmail_variant', label: '⚡ gmail_variant (Gmail加号变种 · 10.00积分 · 库1B · 性价比高)', price: '10.00', type: 'gmail_variant', stock: 1000000000, weight: 80 })
+  }
+  if (!result.some((r) => r.suffix.toLowerCase() === 'gmail.com')) {
+    result.push({ suffix: 'gmail.com', label: '🇬 gmail.com (Gmail官方点号 · 200.00积分 · 库1.1M)', price: '200.00', type: 'gmail', stock: 1075070, weight: 70 })
+  }
+
+  // 按权重降序排序，使最推荐常用后缀排在最前
+  result.sort((a, b) => (b.weight || 0) - (a.weight || 0))
   return result
 })
 
 // 当前选定后缀的预估消耗价格说明
 const currentSelectedSuffixPriceHint = computed(() => {
-  const suffix = (form.value.remail_email_suffix || 'icloud.com').trim().toLowerCase()
+  const suffix = (form.value.remail_email_suffix || 'outlook.com').trim().toLowerCase()
   const matched = currentProjectSuffixOptions.value.find((s) => s.suffix.toLowerCase() === suffix)
   if (matched) {
     return `当前选择后缀: ${suffix} · 预计单价: ${matched.price} 积分 / 每次购买`
   }
-  return `当前选择后缀: ${suffix} · 预计单价: 约 15.00 ~ 30.00 积分`
+  return `当前选择后缀: ${suffix} · 预计单价: 约 10.00 ~ 60.00 积分`
 })
 
 function phFor(f) {
