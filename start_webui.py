@@ -31,9 +31,10 @@ ROOT = Path(__file__).resolve().parent
 
 
 def is_port_in_use(port: int, host: str = "127.0.0.1") -> bool:
-    """使用原生底层 socket 探测目标端口是否真正处于占用/不可绑定状态。"""
+    """使用带 SO_REUSEADDR 的原生底层 socket 探测目标端口是否真正处于不可绑定状态。"""
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         s.settimeout(0.3)
         s.bind((host, port))
         s.close()
@@ -42,15 +43,15 @@ def is_port_in_use(port: int, host: str = "127.0.0.1") -> bool:
         return True
 
 
-def get_pids_by_port(port: int) -> set[int]:
-    """通过原生 netstat 秒级精准获取占用指定本地端口的服务进程 PID（耗时<50ms，杜绝一切外部卡死）。"""
+def get_listening_pids(port: int) -> set[int]:
+    """通过原生 netstat 秒级精准获取真正正在监听该端口的服务端进程 PID（自动忽略已断开的 TIME_WAIT 连接）。"""
     pids = set()
     current_pid = os.getpid()
     target_token = f":{port}"
 
     try:
         res = subprocess.run(
-            ["netstat", "-ano"],
+            ["netstat", "-ano", "-p", "tcp"],
             capture_output=True,
             text=True,
             errors="ignore",
@@ -58,16 +59,17 @@ def get_pids_by_port(port: int) -> set[int]:
         )
         for line in res.stdout.splitlines():
             line_str = line.strip()
-            # 必须是 TCP 或 UDP 行
-            if not line_str.startswith("TCP") and not line_str.startswith("UDP"):
+            line_upper = line_str.upper()
+            if not line_str.startswith("TCP"):
                 continue
             if target_token not in line_str:
                 continue
+            # 必须处于真正监听状态，彻底杜绝把已经断开处于 TIME_WAIT/CLOSE_WAIT 的连接误判为服务进程
+            if "LISTENING" not in line_upper and "正在侦听" not in line_str:
+                continue
             parts = line_str.split()
-            # 协议 本地地址 远程地址 [状态] PID
             if len(parts) >= 4 and parts[-1].isdigit():
                 local_addr = parts[1]
-                # 只有作为服务端监听或绑定的本地地址才属于 WebUI 服务（排除作为客户端发起连接的浏览器等应用）
                 if local_addr.endswith(target_token):
                     p = int(parts[-1])
                     if p > 0 and p != current_pid:
@@ -79,26 +81,26 @@ def get_pids_by_port(port: int) -> set[int]:
 
 
 def kill_process_tree(pid: int) -> bool:
-    """结合底层系统 API (os.kill) 与 taskkill /F /T 双保险瞬时终结进程及其子进程。"""
+    """终结指定进程及其子进程树。"""
     if pid <= 0 or pid == os.getpid():
         return False
-    # 1. 优先调用系统底层 API 直接终止
-    try:
-        os.kill(pid, getattr(signal, "SIGTERM", 15))
-    except Exception:
-        pass
-    # 2. 调用 Windows taskkill 连带清理子孙进程
     if sys.platform.startswith("win"):
         try:
-            subprocess.run(
+            res = subprocess.run(
                 ["taskkill", "/F", "/T", "/PID", str(pid)],
                 capture_output=True,
                 text=True,
                 timeout=3,
             )
+            return res.returncode == 0 or "SUCCESS" in (res.stdout or "").upper()
         except Exception:
-            pass
-    return True
+            return False
+    else:
+        try:
+            os.kill(pid, getattr(signal, "SIGKILL", 9))
+            return True
+        except Exception:
+            return False
 
 
 def stop_webui(port: int = 8765) -> bool:
@@ -118,9 +120,9 @@ def stop_webui(port: int = 8765) -> bool:
         except Exception:
             pass
 
-    # 2. 毫秒级探测真正占用本地服务端口的进程 PID
-    detected_pids = get_pids_by_port(port)
-    pids_to_kill.update(detected_pids)
+    # 2. 毫秒级探测真正正在监听本地服务端口的进程 PID
+    listening_pids = get_listening_pids(port)
+    pids_to_kill.update(listening_pids)
 
     # 3. 统一强制终结
     for pid in pids_to_kill:
@@ -128,29 +130,28 @@ def stop_webui(port: int = 8765) -> bool:
             killed += 1
             print(f"  [-] 已终结服务进程 PID: {pid}")
 
-    # 4. 关键：等待 Windows 操作系统内核完全释放套接字 (彻底根除异步释放导致的 WinError 10048)
+    # 4. 等待 Windows 操作系统内核释放套接字
     if is_port_in_use(port):
-        for _ in range(10):  # 最多轮询等待 2 秒
-            time.sleep(0.2)
+        for _ in range(8):
+            time.sleep(0.15)
             if not is_port_in_use(port):
                 break
-        else:
-            # 兜底：如果端口依然被占，再次尝试通过 netstat 精准查杀一次
-            more_pids = get_pids_by_port(port)
-            for p in more_pids:
-                kill_process_tree(p)
-                killed += 1
-                print(f"  [-] 兜底终结残留进程 PID: {p}")
-            time.sleep(0.3)
 
-    if not is_port_in_use(port):
+    # 5. 校验结果：只要已无任何监听进程且端口可复用，即代表成功关闭
+    remaining_listeners = get_listening_pids(port)
+    if not remaining_listeners and not is_port_in_use(port):
         if killed > 0:
-            print(f"  [OK] WebUI 服务已成功关闭（已释放端口 {port}）！\n")
+            print(f"  [OK] WebUI 服务已成功关闭（端口 {port} 已释放）！\n")
         else:
-            print(f"  [OK] 端口 {port} 当前空闲可用。\n")
+            print(f"  [OK] WebUI 服务未运行，端口 {port} 空闲可用。\n")
         return True
     else:
-        print(f"  [!] 警告：端口 {port} 仍处于内核释放倒计时或被其他程序占用，请稍候再试。\n")
+        if remaining_listeners:
+            for p in remaining_listeners:
+                kill_process_tree(p)
+            print(f"  [OK] WebUI 服务已强制关闭（终结残留 PID: {list(remaining_listeners)}）！\n")
+            return True
+        print(f"  [!] 警告：端口 {port} 仍被其他程序占用，请检查系统。\n")
         return False
 
 
@@ -170,11 +171,11 @@ def main():
     # 启动前先清理一次可能残留的同端口旧服务并确保端口完全就绪
     stop_webui(args.port)
     if is_port_in_use(args.port, args.host):
-        print(f"[*] 检测到端口 {args.port} 仍有残留占用，正在进行最终查杀与释放...")
-        for p in get_pids_by_port(args.port):
+        print(f"[*] 检测到端口 {args.port} 仍有残留监听，正在进行最终查杀与释放...")
+        for p in get_listening_pids(args.port):
             kill_process_tree(p)
-        for _ in range(10):
-            time.sleep(0.2)
+        for _ in range(8):
+            time.sleep(0.15)
             if not is_port_in_use(args.port, args.host):
                 break
         else:
