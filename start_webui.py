@@ -31,6 +31,20 @@ def stop_webui(port: int = 8765) -> bool:
     """彻底查杀指定端口的服务进程。"""
     print(f"\n[*] 正在检查并关闭 WebUI 服务 (端口 {port})...")
     killed = 0
+    pids_to_kill = set()
+
+    # 1. 优先读取记录的 PID 文件
+    pid_file = ROOT / "webui.pid"
+    if pid_file.exists():
+        try:
+            pid = pid_file.read_text(encoding="utf-8").strip()
+            if pid.isdigit() and int(pid) > 0:
+                pids_to_kill.add(int(pid))
+            pid_file.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    # 2. 从 netstat 扫描端口占用（兼容量英文 LISTENING 与中文 正在侦听）
     try:
         out = subprocess.run(
             ["netstat", "-ano"],
@@ -40,31 +54,30 @@ def stop_webui(port: int = 8765) -> bool:
         ).stdout
         target_token = f":{port}"
         for line in out.splitlines():
-            if target_token in line and "LISTENING" in line:
+            line_upper = line.upper()
+            if target_token in line and ("LISTENING" in line_upper or "正在侦听" in line):
                 parts = line.strip().split()
                 if len(parts) >= 5:
-                    pid = parts[-1]
-                    if pid.isdigit() and int(pid) > 0:
-                        subprocess.run(
-                            ["taskkill", "/F", "/T", "/PID", pid],
-                            capture_output=True,
-                        )
-                        killed += 1
-                        print(f"  [-] 已终结监听进程 PID: {pid}")
+                    pid_str = parts[-1]
+                    if pid_str.isdigit() and int(pid_str) > 0:
+                        pids_to_kill.add(int(pid_str))
     except Exception as exc:
         print(f"  [!] netstat 检查异常: {exc}")
 
-    pid_file = ROOT / "webui.pid"
-    if pid_file.exists():
+    # 3. 统一强制树状查杀
+    current_pid = os.getpid()
+    for pid in pids_to_kill:
+        if pid == current_pid:
+            continue
         try:
-            pid = pid_file.read_text(encoding="utf-8").strip()
-            if pid.isdigit():
-                subprocess.run(
-                    ["taskkill", "/F", "/T", "/PID", pid],
-                    capture_output=True,
-                )
+            res = subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(pid)],
+                capture_output=True,
+                text=True,
+            )
+            if res.returncode == 0 or "SUCCESS" in (res.stdout or "").upper():
                 killed += 1
-            pid_file.unlink(missing_ok=True)
+                print(f"  [-] 已终结服务进程 PID: {pid}")
         except Exception:
             pass
 
@@ -120,13 +133,26 @@ def main():
         except Exception:
             pass
 
-    uvicorn.run(
-        "webui.app:app",
-        host=args.host,
-        port=args.port,
-        reload=args.reload,
-        log_level="info",
-    )
+    pid_file = ROOT / "webui.pid"
+    try:
+        pid_file.write_text(str(os.getpid()), encoding="utf-8")
+    except Exception:
+        pass
+
+    try:
+        uvicorn.run(
+            "webui.app:app",
+            host=args.host,
+            port=args.port,
+            reload=args.reload,
+            log_level="info",
+        )
+    finally:
+        try:
+            pid_file.unlink(missing_ok=True)
+        except Exception:
+            pass
+
     print(f"\n===================================================")
     print(f"  [!] WebUI 服务已停止运行。")
     print(f"===================================================\n")

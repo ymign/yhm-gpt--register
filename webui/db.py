@@ -1181,7 +1181,9 @@ def get_registered_summary() -> dict:
             SUM(CASE WHEN totp_secret IS NOT NULL AND trim(totp_secret) != '' THEN 1 ELSE 0 END) AS with_2fa,
             SUM(CASE WHEN (exported_at IS NOT NULL AND exported_at > 0) OR (at_exported_at IS NOT NULL AND at_exported_at > 0) THEN 1 ELSE 0 END) AS exported_cnt,
             SUM(CASE WHEN (exported_at IS NULL OR exported_at = 0) AND (at_exported_at IS NULL OR at_exported_at = 0) THEN 1 ELSE 0 END) AS unexported_cnt,
-            SUM(CASE WHEN oauth_status IN ('success', 'success_phone', 'success_direct') THEN 1 ELSE 0 END) AS with_oauth
+            SUM(CASE WHEN oauth_status IN ('success', 'success_phone', 'success_direct') THEN 1 ELSE 0 END) AS with_oauth,
+            SUM(CASE WHEN (password IS NULL OR trim(password) = '') OR (totp_secret IS NULL OR trim(totp_secret) = '') THEN 1 ELSE 0 END) AS missing_sec_cnt,
+            SUM(CASE WHEN extra_json LIKE '%"banned"%' OR extra_json LIKE '%"token_invalid"%' OR extra_json LIKE '%"account_deactivated"%' OR extra_json LIKE '%"token_expired"%' OR extra_json LIKE '%封号%' OR extra_json LIKE '%凭证失效%' THEN 1 ELSE 0 END) AS dead_cnt
         FROM registered
     """).fetchone()
 
@@ -1192,6 +1194,8 @@ def get_registered_summary() -> dict:
     exported_cnt = row["exported_cnt"] or 0
     unexported_cnt = row["unexported_cnt"] or 0
     with_oauth = row["with_oauth"] or 0
+    missing_sec_cnt = row["missing_sec_cnt"] or 0
+    dead_cnt = row["dead_cnt"] or 0
 
     cur_geo = con.execute("""
         SELECT upper(trim(reg_country)) AS country, COUNT(*) AS n
@@ -1211,6 +1215,8 @@ def get_registered_summary() -> dict:
         "exported_cnt": exported_cnt,
         "unexported_cnt": unexported_cnt,
         "with_oauth": with_oauth,
+        "missing_sec_cnt": missing_sec_cnt,
+        "dead_cnt": dead_cnt,
         "sec_rate": round((both_sec / total * 100), 1) if total > 0 else 0,
         "pwd_rate": round((with_pwd / total * 100), 1) if total > 0 else 0,
         "twofa_rate": round((with_2fa / total * 100), 1) if total > 0 else 0,

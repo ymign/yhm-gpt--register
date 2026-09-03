@@ -243,10 +243,14 @@ const advancedFilterCount = computed(() => {
 
 const hasActiveAttributeFilter = computed(() => {
   return (
+    filterAtExport.value !== 'all' ||
+    filterOAuth.value !== 'all' ||
+    filterHealth.value !== 'all' ||
     filterSec.value !== 'all' ||
     filterPlan.value !== 'all' ||
     filterCountry.value !== 'all' ||
     filterDomain.value !== 'all' ||
+    filterExtract.value !== 'all' ||
     Boolean(form.value?.proxy)
   )
 })
@@ -266,6 +270,7 @@ function getSecFilterLabel(val) {
   if (val === 'missing_2fa') return '待补 2FA'
   if (val === 'with_pwd') return '已设密'
   if (val === 'missing_pwd') return '免密未设'
+  if (val === 'missing_security') return '待补安全'
   return val
 }
 
@@ -291,6 +296,8 @@ function removeFilter(key) {
   else if (key === 'domain') filterDomain.value = 'all'
   else if (key === 'proxy') { if (form.value) form.value.proxy = '' }
   else if (key === 'health') filterHealth.value = 'all'
+  else if (key === 'oauth') filterOAuth.value = 'all'
+  else if (key === 'export' || key === 'at_export') filterAtExport.value = 'all'
   else if (key === 'search') searchKeyword.value = ''
   load(true)
 }
@@ -311,6 +318,8 @@ function resetAdvancedFilters() {
   filterCountry.value = 'all'
   filterOAuth.value = 'all'
   filterExtract.value = 'all'
+  filterAtExport.value = 'all'
+  filterHealth.value = 'all'
   if (form.value) form.value.proxy = ''
   load(true)
 }
@@ -326,7 +335,6 @@ function clearAllFilters() {
   filterCountry.value = 'all'
   filterAtExport.value = 'all'
   if (form.value) form.value.proxy = ''
-  activeQuickView.value = 'all'
   load(true)
 }
 
@@ -341,6 +349,8 @@ const regSummary = reactive({
   exported_cnt: 0,
   unexported_cnt: 0,
   with_oauth: 0,
+  missing_sec_cnt: 0,
+  dead_cnt: 0,
   sec_rate: 0,
   pwd_rate: 0,
   twofa_rate: 0,
@@ -363,46 +373,56 @@ async function loadRegSummary() {
   } catch (_) {}
 }
 
-// ════════════════════════ 胶囊分段快速视图 (Segmented Quick Views) ════════════════════════
-const activeQuickView = ref('all') // all | unexported | exported | alive | needs_sec | oauth | dead
+// ════════════════ 胶囊分段多选组合快速视图 (Multi-select Quick Filter Rail) ════════════════
+const isAllActive = computed(() => {
+  return (
+    filterAtExport.value === 'all' &&
+    filterOAuth.value === 'all' &&
+    filterSec.value === 'all' &&
+    filterHealth.value === 'all'
+  )
+})
+const isUnexportedActive = computed(() => filterAtExport.value === 'unexported')
+const isExportedActive = computed(() => filterAtExport.value === 'exported')
+const isOAuthActive = computed(() => filterOAuth.value === 'oauth_success')
+const isNeedsSecActive = computed(() => filterSec.value === 'missing_security')
+const isDeadActive = computed(() => filterHealth.value === 'dead')
 
-function setQuickView(viewKey) {
-  activeQuickView.value = viewKey
-  if (viewKey === 'all') {
-    filterHealth.value = 'all'
+const activeQuickFiltersCount = computed(() => {
+  let cnt = 0
+  if (isUnexportedActive.value || isExportedActive.value) cnt++
+  if (isOAuthActive.value) cnt++
+  if (isNeedsSecActive.value) cnt++
+  if (isDeadActive.value) cnt++
+  return cnt
+})
+
+function toggleQuickFilter(key) {
+  if (key === 'all') {
+    // 点击全部资产：清空所有快捷多选条件
     filterAtExport.value = 'all'
-    filterSec.value = 'all'
     filterOAuth.value = 'all'
-  } else if (viewKey === 'unexported') {
+    filterSec.value = 'all'
     filterHealth.value = 'all'
-    filterAtExport.value = 'unexported'
-    filterSec.value = 'all'
-    filterOAuth.value = 'all'
-  } else if (viewKey === 'exported') {
-    filterHealth.value = 'all'
-    filterAtExport.value = 'exported'
-    filterSec.value = 'all'
-    filterOAuth.value = 'all'
-  } else if (viewKey === 'alive') {
-    filterHealth.value = 'alive'
-    filterAtExport.value = 'all'
-    filterSec.value = 'all'
-    filterOAuth.value = 'all'
-  } else if (viewKey === 'needs_sec') {
-    filterHealth.value = 'all'
-    filterAtExport.value = 'all'
-    filterSec.value = 'missing_security'
-    filterOAuth.value = 'all'
-  } else if (viewKey === 'oauth') {
-    filterHealth.value = 'all'
-    filterAtExport.value = 'all'
-    filterSec.value = 'all'
-    filterOAuth.value = 'oauth_success'
-  } else if (viewKey === 'dead') {
-    filterHealth.value = 'dead'
-    filterAtExport.value = 'all'
-    filterSec.value = 'all'
-    filterOAuth.value = 'all'
+    load(true)
+    return
+  }
+
+  if (key === 'unexported') {
+    // 纯新未导：支持 toggle 取消与同维（已导出）互斥切换
+    filterAtExport.value = filterAtExport.value === 'unexported' ? 'all' : 'unexported'
+  } else if (key === 'exported') {
+    // 已导出：支持 toggle 取消与同维（纯新未导）互斥切换
+    filterAtExport.value = filterAtExport.value === 'exported' ? 'all' : 'exported'
+  } else if (key === 'oauth') {
+    // Codex 已授权：独立多选 toggle，不干扰导出状态与安全状态
+    filterOAuth.value = filterOAuth.value === 'oauth_success' ? 'all' : 'oauth_success'
+  } else if (key === 'needs_sec') {
+    // 待补安全：独立多选 toggle，可与纯新未导/已授权随意组合
+    filterSec.value = filterSec.value === 'missing_security' ? 'all' : 'missing_security'
+  } else if (key === 'dead') {
+    // 坏号隔离：独立多选 toggle
+    filterHealth.value = filterHealth.value === 'dead' ? 'all' : 'dead'
   }
   load(true)
 }
@@ -4674,58 +4694,89 @@ onUnmounted(() => {
       <header class="linear-command-deck">
         <!-- 第 1 行：核心状态视图切轨 + 全局搜索 + 视图控制 -->
         <div class="command-deck-main">
-          <!-- 快速视图分段切轨 (Segmented Tabs) -->
+          <!-- 快速视图分段切轨 (支持多维独立/多选复合筛选) -->
           <div class="linear-segmented-rail">
+            <!-- 1. 全部资产 (清空/全选) -->
             <button
-              class="segmented-tab"
-              :class="{ 'is-active': activeQuickView === 'all' }"
-              @click="setQuickView('all')"
+              class="segmented-tab tab-all"
+              :class="{ 'is-active': isAllActive }"
+              :title="isAllActive ? '当前展示全量资产' : '点击清空快捷组合，展示全部资产'"
+              @click="toggleQuickFilter('all')"
             >
               <span>全部资产</span>
               <span class="tab-count-badge">{{ regSummary.total || total }}</span>
             </button>
+
+            <!-- 2. 纯新未导 -->
             <button
-              class="segmented-tab"
-              :class="{ 'is-active': activeQuickView === 'unexported' }"
-              @click="setQuickView('unexported')"
+              class="segmented-tab tab-cyan"
+              :class="{ 'is-active': isUnexportedActive }"
+              :title="isUnexportedActive ? '点击取消【纯新未导】过滤' : '多选/过滤【纯新未导】'"
+              @click="toggleQuickFilter('unexported')"
             >
               <span class="status-dot dot-cyan"></span>
               <span>纯新未导</span>
               <span class="tab-count-badge count-cyan">{{ regSummary.unexported_cnt }}</span>
+              <span v-if="isUnexportedActive" class="tab-close-pill">✕</span>
             </button>
+
+            <!-- 3. 已导出 -->
             <button
-              class="segmented-tab"
-              :class="{ 'is-active': activeQuickView === 'exported' }"
-              @click="setQuickView('exported')"
+              class="segmented-tab tab-slate"
+              :class="{ 'is-active': isExportedActive }"
+              :title="isExportedActive ? '点击取消【已导出】过滤' : '多选/过滤【已导出】'"
+              @click="toggleQuickFilter('exported')"
             >
+              <span class="status-dot dot-slate"></span>
               <span>已导出</span>
               <span class="tab-count-badge">{{ regSummary.exported_cnt }}</span>
+              <span v-if="isExportedActive" class="tab-close-pill">✕</span>
             </button>
+
+            <!-- 4. Codex 已授权 -->
             <button
-              class="segmented-tab"
-              :class="{ 'is-active': activeQuickView === 'oauth' }"
-              @click="setQuickView('oauth')"
+              class="segmented-tab tab-amber"
+              :class="{ 'is-active': isOAuthActive }"
+              :title="isOAuthActive ? '点击取消【Codex 已授权】过滤' : '多选/过滤【Codex 已授权】'"
+              @click="toggleQuickFilter('oauth')"
             >
               <span class="status-dot dot-amber"></span>
               <span>Codex 已授权</span>
               <span class="tab-count-badge count-amber">{{ regSummary.with_oauth }}</span>
+              <span v-if="isOAuthActive" class="tab-close-pill">✕</span>
             </button>
+
+            <!-- 5. 待补安全 -->
             <button
-              class="segmented-tab"
-              :class="{ 'is-active': activeQuickView === 'needs_sec' }"
-              @click="setQuickView('needs_sec')"
+              class="segmented-tab tab-emerald"
+              :class="{ 'is-active': isNeedsSecActive }"
+              :title="isNeedsSecActive ? '点击取消【待补安全】过滤' : '多选/过滤【待补安全】(缺密码或2FA)'"
+              @click="toggleQuickFilter('needs_sec')"
             >
               <span class="status-dot dot-emerald"></span>
               <span>待补安全</span>
+              <span v-if="regSummary.missing_sec_cnt !== undefined" class="tab-count-badge count-emerald">{{ regSummary.missing_sec_cnt }}</span>
+              <span v-if="isNeedsSecActive" class="tab-close-pill">✕</span>
             </button>
+
+            <!-- 6. 坏号隔离 -->
             <button
-              class="segmented-tab"
-              :class="{ 'is-active': activeQuickView === 'dead' }"
-              @click="setQuickView('dead')"
+              class="segmented-tab tab-rose"
+              :class="{ 'is-active': isDeadActive }"
+              :title="isDeadActive ? '点击取消【坏号隔离】过滤' : '多选/过滤【坏号隔离】(封号/失效)'"
+              @click="toggleQuickFilter('dead')"
             >
               <span class="status-dot dot-rose"></span>
               <span>坏号隔离</span>
+              <span v-if="regSummary.dead_cnt !== undefined" class="tab-count-badge count-rose">{{ regSummary.dead_cnt }}</span>
+              <span v-if="isDeadActive" class="tab-close-pill">✕</span>
             </button>
+
+            <!-- 多选组合指示标签 (当激活多于1个条件时) -->
+            <div v-if="activeQuickFiltersCount >= 2" class="rail-combo-indicator" title="已激活多维复合筛选">
+              <span class="combo-text">组合: {{ activeQuickFiltersCount }} 维</span>
+              <button class="combo-clear-btn" title="清空全部快捷组合" @click.stop="toggleQuickFilter('all')">清空</button>
+            </div>
           </div>
 
           <!-- 右侧：全局搜索 + 视图工具 + 抽屉开关 -->
@@ -4746,140 +4797,6 @@ onUnmounted(() => {
                 <span class="cmd-k-tag">⌘K</span>
               </template>
             </el-input>
-
-            <!-- 🌟 属性精准筛选器 (Linear Style Filter Popover) 🌟 -->
-            <el-popover placement="bottom-end" :width="290" trigger="click" popper-class="linear-filter-builder-popover">
-              <template #reference>
-                <button
-                  class="filter-builder-trigger-btn"
-                  :class="{ 'is-active': hasActiveAttributeFilter }"
-                  title="多维度属性精准过滤"
-                >
-                  <el-icon><Filter /></el-icon>
-                  <span>筛选</span>
-                  <span v-if="activeAttributeFilterCount" class="filter-count-badge">
-                    {{ activeAttributeFilterCount }}
-                  </span>
-                  <el-icon class="caret-ico"><ArrowDown /></el-icon>
-                </button>
-              </template>
-
-              <div class="filter-builder-panel">
-                <div class="filter-panel-header">
-                  <div class="panel-header-title">
-                    <el-icon><Filter /></el-icon>
-                    <span>多维度数据筛选</span>
-                  </div>
-                  <el-button v-if="hasActiveAttributeFilter" size="small" text type="danger" @click="resetAdvancedFilters">
-                    重置
-                  </el-button>
-                </div>
-
-                <div class="filter-builder-items">
-                  <!-- 1. 安全加固 -->
-                  <div class="filter-item-group">
-                    <div class="filter-group-label">🛡️ 安全加固状态</div>
-                    <el-select
-                      v-model="filterSec"
-                      size="small"
-                      class="popover-select"
-                      @change="load(true)"
-                    >
-                      <el-option label="全部安全状态" value="all" />
-                      <el-option :label="`已绑 2FA TOTP (${regSummary.with_2fa})`" value="with_2fa" />
-                      <el-option :label="`⚠️ 待补绑 2FA (${Math.max(0, (regSummary.total || total) - regSummary.with_2fa)})`" value="missing_2fa" />
-                      <el-option :label="`官方已设密码 (${regSummary.with_pwd})`" value="with_pwd" />
-                      <el-option :label="`免密未设密码 (${Math.max(0, (regSummary.total || total) - regSummary.with_pwd)})`" value="missing_pwd" />
-                    </el-select>
-                  </div>
-
-                  <!-- 2. 套餐特权 -->
-                  <div class="filter-item-group">
-                    <div class="filter-group-label">💎 套餐与业务特权</div>
-                    <el-select
-                      v-model="filterPlan"
-                      size="small"
-                      class="popover-select"
-                      @change="load(true)"
-                    >
-                      <el-option label="全部套餐特权" value="all" />
-                      <el-option label="💎 Plus / 试用特权" value="plus" />
-                      <el-option label="👑 Pro 高级特权" value="pro" />
-                      <el-option label="⚪ Free 基础正常号" value="free" />
-                    </el-select>
-                  </div>
-
-                  <!-- 3. 出口国家 -->
-                  <div class="filter-item-group">
-                    <div class="filter-group-label">🌍 出口网络国家</div>
-                    <el-select
-                      v-model="filterCountry"
-                      size="small"
-                      filterable
-                      clearable
-                      class="popover-select"
-                      @change="load(true)"
-                      @clear="filterCountry = 'all'; load(true)"
-                    >
-                      <el-option label="全部出口国家" value="all" />
-                      <el-option-group v-if="countryOptions.length > 0" label="库内实际出口">
-                        <el-option
-                          v-for="c in countryOptions"
-                          :key="c.country"
-                          :label="getCountryOptionLabel(c.country, c.count)"
-                          :value="c.country"
-                        />
-                      </el-option-group>
-                      <el-option-group label="常用出口">
-                        <el-option
-                          v-for="c in POPULAR_FILTER_COUNTRIES"
-                          :key="c"
-                          :label="getCountryOptionLabel(c)"
-                          :value="c"
-                        />
-                      </el-option-group>
-                    </el-select>
-                  </div>
-
-                  <!-- 4. 邮箱域名 -->
-                  <div class="filter-item-group">
-                    <div class="filter-group-label">📧 邮箱域名</div>
-                    <el-select
-                      v-model="filterDomain"
-                      size="small"
-                      filterable
-                      clearable
-                      class="popover-select"
-                      @change="load(true)"
-                      @clear="filterDomain = 'all'; load(true)"
-                    >
-                      <el-option label="全部邮箱域名" value="all" />
-                      <el-option label="微软全系 (@outlook/@hotmail)" value="microsoft" />
-                      <el-option label="Outlook (@outlook.com)" value="outlook" />
-                      <el-option label="Hotmail (@hotmail.com)" value="hotmail" />
-                      <el-option label="Gmail (@gmail.com)" value="gmail" />
-                    </el-select>
-                  </div>
-
-                  <!-- 5. 检测代理 -->
-                  <div class="filter-item-group">
-                    <div class="filter-group-label">🌐 检测代理 (留空直连)</div>
-                    <el-select
-                      v-model="form.proxy"
-                      filterable
-                      clearable
-                      allow-create
-                      placeholder="选择代理或输入"
-                      size="small"
-                      class="popover-select"
-                      @change="load(true)"
-                    >
-                      <el-option v-for="p in proxyList" :key="p" :label="p" :value="p" />
-                    </el-select>
-                  </div>
-                </div>
-              </div>
-            </el-popover>
 
             <!-- 密度切换 -->
             <el-dropdown trigger="click" @command="setTableDensity">
@@ -4948,56 +4865,218 @@ onUnmounted(() => {
           </div>
         </div>
 
-        <!-- 🌟 仅在激活过滤条件时出现的轻量过滤令牌胶囊栏 (Filter Token Ribbon) 🌟 -->
-        <div v-if="hasActiveAttributeFilter || (searchKeyword && searchKeyword.trim())" class="filter-tokens-ribbon">
-          <div class="tokens-left-wrap">
-            <span class="tokens-hint-label">活跃筛选:</span>
+        <!-- ──────── 第 2 行：经典全量水平下拉筛选栏 (All Dropdowns Filter Strip) ──────── -->
+        <div class="command-deck-filters-bar">
+          <div class="filters-wrap-scroll">
+            <!-- 1. 域名筛选 (包含重点 iCloud 苹果邮箱及库内全部实际后缀) -->
+            <div class="filter-item-wrap" :class="{ 'is-filtered': filterDomain !== 'all' }">
+              <span class="filter-label">域名:</span>
+              <el-select
+                v-model="filterDomain"
+                placeholder="全部域名"
+                size="small"
+                class="acct-select acct-select-domain"
+                filterable
+                clearable
+                @change="load(true)"
+                @clear="filterDomain = 'all'; load(true)"
+              >
+                <el-option label="全部邮箱域名" value="all" />
+                <el-option-group label="常用快捷">
+                  <el-option label="🍎 iCloud (苹果邮箱)" value="icloud" />
+                  <el-option label="微软全系 (@outlook/@hotmail)" value="microsoft" />
+                  <el-option label="Outlook (@outlook.com)" value="outlook" />
+                  <el-option label="Hotmail (@hotmail.com)" value="hotmail" />
+                  <el-option label="Gmail (@gmail.com)" value="gmail" />
+                  <el-option label="其它自定义域名" value="custom" />
+                </el-option-group>
+                <el-option-group v-if="domainOptions.length > 0" label="库内实际后缀">
+                  <el-option
+                    v-for="d in domainOptions"
+                    :key="d.domain"
+                    :label="`${d.domain} (${d.count}个)`"
+                    :value="d.domain"
+                  />
+                </el-option-group>
+              </el-select>
+            </div>
 
-            <!-- 关键词标签 -->
-            <span v-if="searchKeyword && searchKeyword.trim()" class="filter-token-pill">
-              <span class="token-cat">搜索:</span>
-              <span class="token-val mono">{{ searchKeyword }}</span>
-              <button class="token-del-btn" @click="searchKeyword = ''; load(true)" title="移除搜索关键词">✕</button>
-            </span>
+            <!-- 2. 出口国家筛选 -->
+            <div class="filter-item-wrap" :class="{ 'is-filtered': filterCountry !== 'all' }">
+              <span class="filter-label">出口:</span>
+              <el-select
+                v-model="filterCountry"
+                placeholder="全部出口国家"
+                size="small"
+                class="acct-select acct-select-country"
+                filterable
+                clearable
+                @change="load(true)"
+                @clear="filterCountry = 'all'; load(true)"
+              >
+                <el-option label="全部出口国家" value="all" />
+                <el-option-group v-if="countryOptions.length > 0" label="库内实际出口">
+                  <el-option
+                    v-for="c in countryOptions"
+                    :key="c.country"
+                    :label="getCountryOptionLabel(c.country, c.count)"
+                    :value="c.country"
+                  />
+                  <el-option label="⚪ 未记录出口国家" value="NONE" />
+                </el-option-group>
+                <el-option-group label="常用国家">
+                  <el-option
+                    v-for="c in POPULAR_FILTER_COUNTRIES"
+                    :key="c"
+                    :label="getCountryOptionLabel(c)"
+                    :value="c"
+                  />
+                </el-option-group>
+              </el-select>
+            </div>
 
-            <!-- 安全状态标签 -->
-            <span v-if="filterSec !== 'all'" class="filter-token-pill pill-sec">
-              <span class="token-cat">安全:</span>
-              <span class="token-val">{{ getSecFilterLabel(filterSec) }}</span>
-              <button class="token-del-btn" @click="removeFilter('sec')" title="移除安全筛选">✕</button>
-            </span>
+            <!-- 3. 安全防护筛选 -->
+            <div class="filter-item-wrap" :class="{ 'is-filtered': filterSec !== 'all' }">
+              <span class="filter-label">安全:</span>
+              <el-select
+                v-model="filterSec"
+                placeholder="安全防护"
+                size="small"
+                class="acct-select acct-select-sec"
+                @change="load(true)"
+              >
+                <el-option label="全部安全状态" value="all" />
+                <el-option :label="`已绑 2FA (${regSummary.with_2fa})`" value="with_2fa" />
+                <el-option :label="`待补 2FA (${Math.max(0, (regSummary.total || total) - regSummary.with_2fa)})`" value="missing_2fa" />
+                <el-option :label="`已设密码 (${regSummary.with_pwd})`" value="with_pwd" />
+                <el-option :label="`免密未设 (${Math.max(0, (regSummary.total || total) - regSummary.with_pwd)})`" value="missing_pwd" />
+                <el-option label="⚠️ 密码或2FA不全" value="missing_security" />
+                <el-option label="✅ 密码与2FA双全" value="both_secured" />
+              </el-select>
+            </div>
 
-            <!-- 套餐特权标签 -->
-            <span v-if="filterPlan !== 'all'" class="filter-token-pill pill-plan">
-              <span class="token-cat">特权:</span>
-              <span class="token-val">{{ getPlanFilterLabel(filterPlan) }}</span>
-              <button class="token-del-btn" @click="removeFilter('plan')" title="移除特权筛选">✕</button>
-            </span>
+            <!-- 4. 套餐特权筛选 -->
+            <div class="filter-item-wrap" :class="{ 'is-filtered': filterPlan !== 'all' }">
+              <span class="filter-label">套餐:</span>
+              <el-select
+                v-model="filterPlan"
+                placeholder="全部套餐"
+                size="small"
+                class="acct-select acct-select-plan"
+                @change="load(true)"
+              >
+                <el-option label="全部套餐特权" value="all" />
+                <el-option label="💎 Plus / 试用特权" value="plus" />
+                <el-option label="👑 Pro 高级特权" value="pro" />
+                <el-option label="⚪ Free 基础号" value="free" />
+                <el-option label="🎁 可领 Plus 免单" value="extract_eligible" />
+              </el-select>
+            </div>
 
-            <!-- 出口国家标签 -->
-            <span v-if="filterCountry !== 'all'" class="filter-token-pill pill-country">
-              <span class="token-cat">出口:</span>
-              <span class="token-val">{{ getCountryOptionLabel(filterCountry) }}</span>
-              <button class="token-del-btn" @click="removeFilter('country')" title="移除国家筛选">✕</button>
-            </span>
+            <!-- 5. 授权状态筛选 -->
+            <div class="filter-item-wrap" :class="{ 'is-filtered': filterOAuth !== 'all' }">
+              <span class="filter-label">授权:</span>
+              <el-select
+                v-model="filterOAuth"
+                placeholder="全部授权"
+                size="small"
+                class="acct-select acct-select-oauth"
+                @change="load(true)"
+              >
+                <el-option label="全部授权状态" value="all" />
+                <el-option label="✅ Codex 授权成功" value="oauth_success" />
+                <el-option label="📱 手机接码成功" value="oauth_phone_verified" />
+                <el-option label="⚡ 免接码直接授权" value="oauth_no_phone" />
+                <el-option label="🔄 具备 RT 凭据" value="has_rt" />
+                <el-option label="📱 需接码 (未接)" value="oauth_need_phone" />
+                <el-option label="❌ 授权失败" value="oauth_failed" />
+                <el-option label="⚪ 从未授权" value="oauth_unchecked" />
+              </el-select>
+            </div>
 
-            <!-- 邮箱域名标签 -->
-            <span v-if="filterDomain !== 'all'" class="filter-token-pill pill-domain">
-              <span class="token-cat">域名:</span>
-              <span class="token-val">{{ getDomainFilterLabel(filterDomain) }}</span>
-              <button class="token-del-btn" @click="removeFilter('domain')" title="移除域名筛选">✕</button>
-            </span>
+            <!-- 6. 导出留痕筛选 -->
+            <div class="filter-item-wrap" :class="{ 'is-filtered': filterAtExport !== 'all' }">
+              <span class="filter-label">导出:</span>
+              <el-select
+                v-model="filterAtExport"
+                placeholder="全部导出"
+                size="small"
+                class="acct-select acct-select-export"
+                @change="load(true)"
+              >
+                <el-option label="全部导出状态" value="all" />
+                <el-option label="⭕ 纯新未导 (未出库)" value="unexported" />
+                <el-option label="✅ 已导出 (全部已导)" value="exported" />
+                <el-option label="🔑 已导 AT 凭据" value="at" />
+                <el-option label="🔐 已导 账密/2FA" value="email_pw" />
+                <el-option label="📦 已导 Sub2API" value="sub2api" />
+                <el-option label="📦 已导 CPA" value="cpa" />
+                <el-option label="🌐 已导 Session" value="session" />
+              </el-select>
+            </div>
 
-            <!-- 代理标签 -->
-            <span v-if="form?.proxy" class="filter-token-pill pill-proxy">
-              <span class="token-cat">代理:</span>
-              <span class="token-val mono">{{ formatProxyHost(form.proxy) }}</span>
-              <button class="token-del-btn" @click="removeFilter('proxy')" title="移除代理筛选">✕</button>
-            </span>
+            <!-- 7. 验活健康度筛选 -->
+            <div class="filter-item-wrap" :class="{ 'is-filtered': filterHealth !== 'all' }">
+              <span class="filter-label">验活:</span>
+              <el-select
+                v-model="filterHealth"
+                placeholder="全部验活"
+                size="small"
+                class="acct-select acct-select-health"
+                @change="load(true)"
+              >
+                <el-option label="全部验活状态" value="all" />
+                <el-option label="💀 失效与封号 (全部坏号)" value="dead" />
+                <el-option label="❌ 凭证失效 (401/过期)" value="token_invalid" />
+                <el-option label="🚫 账号封禁 (Banned)" value="banned" />
+                <el-option label="✅ 全部存活有效" value="alive" />
+                <el-option label="⏳ 未验活" value="unchecked" />
+              </el-select>
+            </div>
 
-            <!-- 一键清空全部 -->
-            <button class="tokens-clear-all-btn" @click="resetAdvancedFilters" title="清空全部属性筛选">
-              <span>✕ 清空筛选</span>
+            <!-- 8. 提链状态筛选 -->
+            <div class="filter-item-wrap" :class="{ 'is-filtered': filterExtract !== 'all' }">
+              <span class="filter-label">提链:</span>
+              <el-select
+                v-model="filterExtract"
+                placeholder="全部提链"
+                size="small"
+                class="acct-select acct-select-extract"
+                @change="load(true)"
+              >
+                <el-option label="全部提链状态" value="all" />
+                <el-option label="🎁 待提链" value="extract_eligible" />
+                <el-option label="✅ 提链成功" value="extract_success" />
+                <el-option label="❌ 提链失败" value="extract_failed" />
+              </el-select>
+            </div>
+
+            <!-- 9. 代理出口 -->
+            <div class="filter-item-wrap" :class="{ 'is-filtered': Boolean(form?.proxy) }">
+              <span class="filter-label">代理:</span>
+              <el-select
+                v-model="form.proxy"
+                placeholder="全部代理 / 直连"
+                size="small"
+                class="acct-select acct-select-proxy"
+                filterable
+                clearable
+                allow-create
+                @change="load(true)"
+                @clear="form.proxy = ''; load(true)"
+              >
+                <el-option v-for="p in proxyList" :key="p" :label="p" :value="p" />
+              </el-select>
+            </div>
+
+            <!-- 10. 一键重置全部条件 -->
+            <button
+              v-if="hasActiveAttributeFilter"
+              class="filter-reset-link-btn"
+              title="清空所有下拉条件与快捷筛选"
+              @click="resetAdvancedFilters"
+            >
+              <span>✕ 重置</span>
             </button>
           </div>
         </div>
@@ -9116,6 +9195,8 @@ onUnmounted(() => {
   background: #0a0d13;
   border: 1px solid rgba(255, 255, 255, 0.08);
   box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.4);
+  flex-shrink: 0;
+  flex-wrap: nowrap;
 }
 
 .segmented-tab {
@@ -9132,19 +9213,81 @@ onUnmounted(() => {
   cursor: pointer;
   transition: all 0.15s ease;
   white-space: nowrap;
+  user-select: none;
 }
 .segmented-tab:hover {
   color: #f1f5f9;
   background: rgba(255, 255, 255, 0.05);
 }
 .segmented-tab.is-active {
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.1) 0%, rgba(255, 255, 255, 0.04) 100%);
-  color: #ffffff;
   font-weight: 600;
-  border-color: rgba(255, 255, 255, 0.14);
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
 }
 
+/* 各标签激活专属微光主题与状态 */
+.segmented-tab.tab-all.is-active {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.1) 0%, rgba(255, 255, 255, 0.04) 100%);
+  color: #ffffff;
+  border-color: rgba(255, 255, 255, 0.16);
+}
+
+.segmented-tab.tab-cyan.is-active {
+  background: rgba(6, 182, 212, 0.15);
+  color: #22d3ee;
+  border-color: rgba(6, 182, 212, 0.45);
+  box-shadow: 0 0 10px rgba(6, 182, 212, 0.2);
+}
+
+.segmented-tab.tab-slate.is-active {
+  background: rgba(148, 163, 184, 0.15);
+  color: #f1f5f9;
+  border-color: rgba(148, 163, 184, 0.4);
+  box-shadow: 0 0 10px rgba(148, 163, 184, 0.15);
+}
+
+.segmented-tab.tab-amber.is-active {
+  background: rgba(245, 158, 11, 0.15);
+  color: #fbbf24;
+  border-color: rgba(245, 158, 11, 0.45);
+  box-shadow: 0 0 10px rgba(245, 158, 11, 0.2);
+}
+
+.segmented-tab.tab-emerald.is-active {
+  background: rgba(16, 185, 129, 0.15);
+  color: #34d399;
+  border-color: rgba(16, 185, 129, 0.45);
+  box-shadow: 0 0 10px rgba(16, 185, 129, 0.2);
+}
+
+.segmented-tab.tab-rose.is-active {
+  background: rgba(239, 68, 68, 0.15);
+  color: #f87171;
+  border-color: rgba(239, 68, 68, 0.45);
+  box-shadow: 0 0 10px rgba(239, 68, 68, 0.2);
+}
+
+/* 激活标签右上角微型取消小叉 */
+.tab-close-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.15);
+  margin-left: 2px;
+  opacity: 0.75;
+  line-height: 1;
+  transition: all 0.15s ease;
+}
+.segmented-tab:hover .tab-close-pill {
+  opacity: 1;
+  background: rgba(255, 255, 255, 0.3);
+  color: #fff;
+}
+
+/* 状态小圆点 */
 .status-dot {
   width: 6px;
   height: 6px;
@@ -9155,7 +9298,9 @@ onUnmounted(() => {
 .dot-cyan { background: #06b6d4; box-shadow: 0 0 6px rgba(6, 182, 212, 0.5); }
 .dot-amber { background: #f59e0b; box-shadow: 0 0 6px rgba(245, 158, 11, 0.5); }
 .dot-rose { background: #ef4444; box-shadow: 0 0 6px rgba(239, 68, 68, 0.5); }
+.dot-slate { background: #94a3b8; box-shadow: 0 0 6px rgba(148, 163, 184, 0.4); }
 
+/* 角标胶囊 */
 .tab-count-badge {
   font-size: 10px;
   font-family: var(--el-font-family-monospace, monospace);
@@ -9171,6 +9316,45 @@ onUnmounted(() => {
 .tab-count-badge.count-amber {
   background: rgba(245, 158, 11, 0.18);
   color: #fbbf24;
+}
+.tab-count-badge.count-emerald {
+  background: rgba(16, 185, 129, 0.18);
+  color: #34d399;
+}
+.tab-count-badge.count-rose {
+  background: rgba(239, 68, 68, 0.18);
+  color: #f87171;
+}
+
+/* 复合多选筛选指示标签 */
+.rail-combo-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 7px;
+  border-radius: 5px;
+  background: rgba(16, 185, 129, 0.1);
+  border: 1px dashed rgba(16, 185, 129, 0.35);
+  font-size: 10.5px;
+  color: #34d399;
+  margin-left: 4px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  line-height: 1;
+}
+.combo-clear-btn {
+  border: none;
+  background: transparent;
+  color: #94a3b8;
+  cursor: pointer;
+  font-size: 10px;
+  padding: 0;
+  line-height: 1;
+  text-decoration: underline;
+  transition: color 0.15s ease;
+}
+.combo-clear-btn:hover {
+  color: #f87171;
 }
 
 .command-deck-search {
@@ -9231,138 +9415,126 @@ onUnmounted(() => {
   100% { transform: rotate(360deg); }
 }
 
-/* Linear 风格属性筛选器触发按钮 */
-.filter-builder-trigger-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 0 10px;
-  height: 28px;
-  border-radius: 6px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(255, 255, 255, 0.04);
-  color: #cbd5e1;
-  font-size: 11.5px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.15s ease;
-  user-select: none;
-}
-.filter-builder-trigger-btn:hover {
-  background: rgba(255, 255, 255, 0.08);
-  border-color: rgba(255, 255, 255, 0.18);
-  color: #fff;
-}
-.filter-builder-trigger-btn.is-active {
-  background: rgba(16, 185, 129, 0.12);
-  border-color: rgba(16, 185, 129, 0.4);
-  color: #10b981;
-}
-.filter-count-badge {
-  font-size: 10px;
-  font-weight: 700;
-  background: #10b981;
-  color: #042f24;
-  padding: 0 5px;
-  border-radius: 999px;
-  line-height: 14px;
-}
-.caret-ico {
-  font-size: 10px;
-  opacity: 0.6;
-}
-
-/* 过滤标签栏 (Linear Token Ribbon) */
-.filter-tokens-ribbon {
+/* ════════════════ 全量水平下拉筛选栏 (Command Deck Filters Bar) ════════════════ */
+.command-deck-filters-bar {
+  padding: 5px 16px 7px;
+  background: #090c13;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
   display: flex;
   align-items: center;
-  padding: 5px 16px;
-  background: rgba(0, 0, 0, 0.28);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
   overflow-x: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.1) transparent;
 }
-.tokens-left-wrap {
+.command-deck-filters-bar::-webkit-scrollbar {
+  height: 3px;
+}
+.command-deck-filters-bar::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 3px;
+}
+
+.filters-wrap-scroll {
   display: flex;
   align-items: center;
   gap: 6px;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
+  width: 100%;
 }
-.tokens-hint-label {
-  font-size: 11px;
-  color: #64748b;
-  white-space: nowrap;
-  margin-right: 2px;
-}
-.filter-token-pill {
+
+.filter-item-wrap {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 2px 7px;
-  border-radius: 4px;
-  font-size: 11px;
+  gap: 3px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  padding: 1px 3px 1px 7px;
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+}
+.filter-item-wrap:hover {
+  border-color: rgba(255, 255, 255, 0.18);
   background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  color: #e2e8f0;
-  white-space: nowrap;
 }
-.filter-token-pill .token-cat {
-  color: #94a3b8;
+.filter-item-wrap.is-filtered {
+  border-color: rgba(16, 185, 129, 0.45);
+  background: rgba(16, 185, 129, 0.09);
 }
-.filter-token-pill .token-val {
-  font-weight: 500;
-}
-.filter-token-pill.pill-sec {
-  background: rgba(16, 185, 129, 0.08);
-  border-color: rgba(16, 185, 129, 0.25);
+.filter-item-wrap.is-filtered .filter-label {
   color: #34d399;
 }
-.filter-token-pill.pill-plan {
-  background: rgba(14, 165, 233, 0.08);
-  border-color: rgba(14, 165, 233, 0.25);
-  color: #38bdf8;
+
+.filter-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #94a3b8;
+  white-space: nowrap;
+  flex-shrink: 0;
+  user-select: none;
 }
-.filter-token-pill.pill-country {
-  background: rgba(245, 158, 11, 0.08);
-  border-color: rgba(245, 158, 11, 0.25);
-  color: #fbbf24;
+
+.acct-select {
+  width: 116px;
 }
-.filter-token-pill.pill-domain {
-  background: rgba(168, 85, 247, 0.08);
-  border-color: rgba(168, 85, 247, 0.25);
-  color: #c084fc;
+.acct-select.acct-select-domain {
+  width: 142px;
 }
-.filter-token-pill.pill-proxy {
-  background: rgba(236, 72, 153, 0.08);
-  border-color: rgba(236, 72, 153, 0.25);
-  color: #f472b6;
+.acct-select.acct-select-country {
+  width: 136px;
 }
-.token-del-btn {
-  border: none;
-  background: transparent;
-  color: inherit;
-  opacity: 0.6;
-  cursor: pointer;
-  padding: 0 2px;
-  font-size: 10px;
-  display: flex;
-  align-items: center;
+.acct-select.acct-select-sec {
+  width: 122px;
 }
-.token-del-btn:hover {
-  opacity: 1;
+.acct-select.acct-select-plan {
+  width: 118px;
 }
-.tokens-clear-all-btn {
-  border: 1px solid rgba(239, 68, 68, 0.25);
+.acct-select.acct-select-oauth {
+  width: 124px;
+}
+.acct-select.acct-select-export {
+  width: 128px;
+}
+.acct-select.acct-select-health {
+  width: 118px;
+}
+.acct-select.acct-select-extract {
+  width: 112px;
+}
+.acct-select.acct-select-proxy {
+  width: 140px;
+}
+
+.acct-select :deep(.el-select__wrapper) {
+  background: transparent !important;
+  box-shadow: none !important;
+  padding: 0 4px !important;
+  min-height: 24px !important;
+  height: 24px !important;
+  font-size: 11.5px !important;
+  color: #f1f5f9;
+}
+.acct-select :deep(.el-select__placeholder) {
+  color: #cbd5e1 !important;
+}
+
+.filter-reset-link-btn {
+  border: 1px solid rgba(239, 68, 68, 0.35);
   background: rgba(239, 68, 68, 0.08);
   color: #f87171;
+  border-radius: 5px;
   font-size: 11px;
-  padding: 2px 8px;
-  border-radius: 4px;
+  font-weight: 600;
+  padding: 3px 8px;
   cursor: pointer;
-  white-space: nowrap;
   transition: all 0.15s ease;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
-.tokens-clear-all-btn:hover {
+.filter-reset-link-btn:hover {
   background: rgba(239, 68, 68, 0.18);
+  border-color: rgba(239, 68, 68, 0.55);
+  color: #fca5a5;
 }
 
 /* Row 3: Action Ribbon */
@@ -13653,62 +13825,6 @@ onUnmounted(() => {
 }
 .feat-overlay .el-overlay-dialog {
   overflow: hidden !important;
-}
-
-/* 属性筛选器浮层面板 (Linear Filter Popover) */
-.linear-filter-builder-popover {
-  background: #10151c !important;
-  border: 1px solid rgba(255, 255, 255, 0.12) !important;
-  border-radius: 10px !important;
-  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.6) !important;
-  padding: 12px 14px !important;
-}
-.filter-builder-panel {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-.filter-panel-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding-bottom: 8px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-}
-.panel-header-title {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  font-weight: 600;
-  color: #f1f5f9;
-}
-.filter-builder-items {
-  display: flex;
-  flex-direction: column;
-  gap: 9px;
-}
-.filter-item-group {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.filter-group-label {
-  font-size: 11px;
-  color: #94a3b8;
-  font-weight: 500;
-}
-.popover-select {
-  width: 100%;
-}
-.popover-select .el-input__wrapper,
-.popover-select .el-select__wrapper {
-  background: rgba(0, 0, 0, 0.35) !important;
-  border: 1px solid rgba(255, 255, 255, 0.08) !important;
-  border-radius: 6px !important;
-  box-shadow: none !important;
-  height: 28px !important;
-  font-size: 11.5px !important;
 }
 
 /* ════════════════ 张鱼烧脑 Octopus 考公级暗黑工作台视觉规范 ════════════════ */
