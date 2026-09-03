@@ -619,12 +619,14 @@ class AutoLoopController:
                 time.sleep(2)
                 continue
 
+            target_country = self._options.get("proxy_country", "") or ""
             now_ts = time.time()
             task_item = {
                 "run_id": run_id,
                 "email": account["email"],
                 "worker_id": worker_id,
                 "proxy": proxy,
+                "target_country": target_country,
                 "status": "running",
                 "phase": "starting",
                 "phase_text": "正在注册...",
@@ -632,7 +634,7 @@ class AutoLoopController:
                 "finished_at": None,
                 "elapsed": 0,
                 "error": "",
-                "reg_country": "",
+                "reg_country": target_country,
                 "reg_city": "",
                 "reg_ip": "",
             }
@@ -642,6 +644,7 @@ class AutoLoopController:
                     "email": account["email"],
                     "run_id": run_id,
                     "proxy": proxy,
+                    "target_country": target_country,
                     "started_at": now_ts,
                 }
                 self._tasks_map[run_id] = task_item
@@ -656,6 +659,7 @@ class AutoLoopController:
                 "email": account["email"],
                 "run_id": run_id,
                 "proxy": proxy,
+                "target_country": target_country,
             })
 
             # 等当前 run 跑完

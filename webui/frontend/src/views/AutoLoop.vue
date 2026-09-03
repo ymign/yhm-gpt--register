@@ -153,12 +153,14 @@ function isPlaceholder(email) {
 }
 
 function getTaskCountry(row) {
-  if (row.reg_country) return row.reg_country
+  if (row.reg_country && row.reg_country.trim()) return row.reg_country.trim()
+  if (row.target_country && row.target_country.trim()) return row.target_country.trim()
+  if (form.value.autoProxyCountry && form.value.autoProxyCountry.trim()) return form.value.autoProxyCountry.trim()
   if (row.proxy) {
     const m = row.proxy.match(/[-_]([A-Za-z]{2})[-_]/) || row.proxy.match(/([a-zA-Z]{2})\.cliproxy/i)
     if (m && m[1] && m[1].length === 2) return m[1].toUpperCase()
   }
-  return form.value.autoProxyCountry || ''
+  return ''
 }
 
 // 账号任务流水列表
