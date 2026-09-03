@@ -35,6 +35,22 @@ DB_PATH = Path(__file__).resolve().parent / "webui.db"
 
 _lock = threading.Lock()  # SQLite 写入串行化
 
+# ── 注册资产全表统计高频内存缓存 (彻底消除反复全表扫描导致的卡顿与锁等待) ──
+_summary_cache = {"time": 0.0, "data": None}
+_domains_cache = {"time": 0.0, "data": None}
+_countries_cache = {"time": 0.0, "data": None}
+_CACHE_TTL = 3.0  # 3秒TTL缓存，足以吸收并发轰炸与切换筛选，同时保证准实时性
+
+
+def invalidate_registered_caches() -> None:
+    """当发生资产新增、删除、导入或凭证更新时，令统计缓存失效。"""
+    _summary_cache["time"] = 0.0
+    _summary_cache["data"] = None
+    _domains_cache["time"] = 0.0
+    _domains_cache["data"] = None
+    _countries_cache["time"] = 0.0
+    _countries_cache["data"] = None
+
 
 def _conn() -> sqlite3.Connection:
     con = sqlite3.connect(str(DB_PATH), check_same_thread=False, timeout=30)
@@ -200,6 +216,7 @@ def init_db():
     con.execute("CREATE INDEX IF NOT EXISTS idx_reg_created ON registered(created_at DESC)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_reg_country_created ON registered(reg_country, created_at DESC)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_reg_export_created ON registered(exported_at, created_at DESC)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_reg_at_export ON registered(at_exported_at)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_reg_oauth_status ON registered(oauth_status)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_pool_status_kind ON outlook_accounts(status, kind)")
     con.commit()
@@ -1172,6 +1189,10 @@ def get_dashboard_summary() -> dict:
 
 def get_registered_summary() -> dict:
     """获取注册资产专项概览与透视统计（总数、双全安全率、出库留痕比、OAuth授权率、Top国家）。"""
+    now = time.time()
+    if _summary_cache["data"] is not None and (now - _summary_cache["time"]) < _CACHE_TTL:
+        return _summary_cache["data"]
+
     con = _conn()
     row = con.execute("""
         SELECT
@@ -1206,7 +1227,7 @@ def get_registered_summary() -> dict:
     """)
     top_countries = [{"country": r["country"], "count": r["n"]} for r in cur_geo.fetchall()]
 
-    return {
+    res = {
         "ok": True,
         "total": total,
         "both_sec": both_sec,
@@ -1222,6 +1243,9 @@ def get_registered_summary() -> dict:
         "twofa_rate": round((with_2fa / total * 100), 1) if total > 0 else 0,
         "top_countries": top_countries,
     }
+    _summary_cache["time"] = now
+    _summary_cache["data"] = res
+    return res
 
 
 # ──────────────────────── 注册结果存储 ────────────────────────
@@ -1311,6 +1335,7 @@ def save_registered(d: dict) -> None:
             ),
         )
         con.commit()
+        invalidate_registered_caches()
 
     # 代理健康度记账：只有**新建**的号才 +1（同号重跑覆盖不计）。
     # reg_proxy 由 registrar 在注册成功时写进 d，随 extra_json 落库；
@@ -1556,6 +1581,7 @@ def recover_oauth_credentials(emails: Optional[list[str]] = None) -> dict:
                     recovered_from_files += 1
 
         con.commit()
+        invalidate_registered_caches()
 
     return {
         "recovered_from_db": recovered_from_db,
@@ -1806,6 +1832,7 @@ def update_registered_manual(email: str, password: Optional[str] = None,
         vals.append(email)
         con.execute(f"UPDATE registered SET {', '.join(sets)} WHERE email=?", vals)
         con.commit()
+        invalidate_registered_caches()
         return True
 
 
@@ -2381,6 +2408,10 @@ def _parse_domain_filter_clause(domain_str: str) -> tuple[Optional[str], list]:
 
 def get_registered_domains() -> list[dict]:
     """统计当前数据库中所有注册账号的邮箱后缀域名及数量。"""
+    now = time.time()
+    if _domains_cache["data"] is not None and (now - _domains_cache["time"]) < _CACHE_TTL:
+        return _domains_cache["data"]
+
     con = _conn()
     cur = con.execute("""
         SELECT
@@ -2393,11 +2424,18 @@ def get_registered_domains() -> list[dict]:
         GROUP BY domain
         ORDER BY count DESC
     """)
-    return [{"domain": r[0], "count": r[1]} for r in cur.fetchall() if r[0]]
+    res = [{"domain": r[0], "count": r[1]} for r in cur.fetchall() if r[0]]
+    _domains_cache["time"] = now
+    _domains_cache["data"] = res
+    return res
 
 
 def get_registered_countries() -> list[dict]:
     """统计当前数据库中所有注册账号的出口国家分布及数量。"""
+    now = time.time()
+    if _countries_cache["data"] is not None and (now - _countries_cache["time"]) < _CACHE_TTL:
+        return _countries_cache["data"]
+
     con = _conn()
     cur = con.execute("""
         SELECT
@@ -2408,7 +2446,10 @@ def get_registered_countries() -> list[dict]:
         GROUP BY country
         ORDER BY count DESC
     """)
-    return [{"country": r[0], "count": r[1]} for r in cur.fetchall() if r[0]]
+    res = [{"country": r[0], "count": r[1]} for r in cur.fetchall() if r[0]]
+    _countries_cache["time"] = now
+    _countries_cache["data"] = res
+    return res
 
 
 def _registered_where(
@@ -2803,6 +2844,7 @@ def delete_registered(email: str) -> bool:
         con = _conn()
         rc = con.execute("DELETE FROM registered WHERE email=?", (email.lower(),))
         con.commit()
+        invalidate_registered_caches()
         return rc.rowcount > 0
 
 
@@ -2818,6 +2860,7 @@ def delete_registered_by_emails(emails: list[str]) -> int:
             cleaned,
         )
         con.commit()
+        invalidate_registered_caches()
         return rc.rowcount
 
 
@@ -2826,6 +2869,7 @@ def delete_all_registered() -> int:
         con = _conn()
         rc = con.execute("DELETE FROM registered")
         con.commit()
+        invalidate_registered_caches()
         return rc.rowcount
 
 

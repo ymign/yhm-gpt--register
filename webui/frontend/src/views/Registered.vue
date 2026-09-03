@@ -177,6 +177,7 @@ const filterAtExport = ref('all') // AT 导出留痕筛选：all / exported / un
 const countryOptions = ref([])
 const searchKeyword = ref('')
 const selected = ref([])
+const selectedCount = computed(() => selected.value.length)
 const loading = ref(false)
 let searchTimer = null
 
@@ -531,28 +532,50 @@ function isHotCountry(code) {
   return ['JP', 'BR', 'VN', 'DE', 'GB', 'PL', 'ES', 'AR', 'TH', 'US', 'SG'].includes(String(code).toUpperCase())
 }
 
+const _emailMetaCache = new Map()
 function getEmailProviderMeta(email) {
   if (!email) return { name: 'Mail', icon: '✉️', bg: 'rgba(100, 116, 139, 0.12)', color: '#94a3b8' }
-  const em = email.toLowerCase()
-  if (em.includes('@outlook.') || em.includes('@hotmail.') || em.includes('@live.') || em.includes('@msn.')) {
-    if (em.includes('@hotmail.')) {
-      return { name: 'Hotmail', icon: 'Ⓜ️', bg: 'rgba(0, 120, 212, 0.15)', color: '#0078d4' }
+  const atIdx = email.indexOf('@')
+  const domain = atIdx >= 0 ? email.slice(atIdx + 1).toLowerCase() : email.toLowerCase()
+  const cached = _emailMetaCache.get(domain)
+  if (cached) return cached
+
+  let meta
+  if (domain.startsWith('outlook.') || domain.startsWith('hotmail.') || domain.startsWith('live.') || domain.startsWith('msn.')) {
+    if (domain.startsWith('hotmail.')) {
+      meta = { name: 'Hotmail', icon: 'Ⓜ️', bg: 'rgba(0, 120, 212, 0.15)', color: '#0078d4' }
+    } else {
+      meta = { name: 'Outlook', icon: '📫', bg: 'rgba(2, 132, 199, 0.15)', color: '#0284c7' }
     }
-    return { name: 'Outlook', icon: '📫', bg: 'rgba(2, 132, 199, 0.15)', color: '#0284c7' }
+  } else if (domain.startsWith('gmail.') || domain.startsWith('googlemail.')) {
+    meta = { name: 'Gmail', icon: '🇬', bg: 'rgba(234, 67, 53, 0.12)', color: '#ea4335' }
+  } else if (domain.startsWith('icloud.') || domain.startsWith('me.') || domain.startsWith('mac.')) {
+    meta = { name: 'iCloud', icon: '🍎', bg: 'rgba(148, 163, 184, 0.15)', color: '#cbd5e1' }
+  } else if (domain.startsWith('yahoo.')) {
+    meta = { name: 'Yahoo', icon: '🇾', bg: 'rgba(147, 51, 234, 0.15)', color: '#9333ea' }
+  } else if (domain.startsWith('proton.') || domain.startsWith('protonmail.')) {
+    meta = { name: 'Proton', icon: '⚡', bg: 'rgba(124, 58, 237, 0.15)', color: '#7c3aed' }
+  } else {
+    meta = { name: 'Custom', icon: '🌐', bg: 'rgba(100, 116, 139, 0.12)', color: '#94a3b8' }
   }
-  if (em.includes('@gmail.') || em.includes('@googlemail.')) {
-    return { name: 'Gmail', icon: '🇬', bg: 'rgba(234, 67, 53, 0.12)', color: '#ea4335' }
-  }
-  if (em.includes('@icloud.') || em.includes('@me.') || em.includes('@mac.')) {
-    return { name: 'iCloud', icon: '🍎', bg: 'rgba(148, 163, 184, 0.15)', color: '#cbd5e1' }
-  }
-  if (em.includes('@yahoo.')) {
-    return { name: 'Yahoo', icon: '🇾', bg: 'rgba(147, 51, 234, 0.15)', color: '#9333ea' }
-  }
-  if (em.includes('@proton.') || em.includes('@protonmail.')) {
-    return { name: 'Proton', icon: '⚡', bg: 'rgba(124, 58, 237, 0.15)', color: '#7c3aed' }
-  }
-  return { name: 'Custom', icon: '🌐', bg: 'rgba(100, 116, 139, 0.12)', color: '#94a3b8' }
+  _emailMetaCache.set(domain, meta)
+  return meta
+}
+
+function prepareRowData(r) {
+  if (!r) return r
+  r._providerMeta = getEmailProviderMeta(r.email)
+  r._badges = getStatusBadges(r)
+  r._createdTime = fmtTime(r.created_at)
+  r._timeAgo = timeAgo(r.created_at)
+  r._countryLabel = r.reg_country ? formatCountry(r.reg_country) : ''
+  r._proxyHost = r.reg_proxy ? formatProxyHost(r.reg_proxy) : ''
+  r._exportDate = (r.exported_at || r.at_exported_at) ? formatExportDateShort(r.exported_at || r.at_exported_at) : ''
+  return r
+}
+
+function getRowClassName({ row }) {
+  return focusedRow.value && focusedRow.value.email === row.email ? 'is-focused-row' : ''
 }
 
 function onSearchInput() {
@@ -2812,13 +2835,6 @@ function stopFocusedTotpTicker() {
   }
 }
 
-function getRowClassName({ row }) {
-  if (focusedRow.value && focusedRow.value.email === row.email) {
-    return 'is-focused-row'
-  }
-  return ''
-}
-
 // ════════════════ 左侧分类折叠组 ════════════════
 const categoryGroupsOpen = ref({
   status: true,
@@ -2835,9 +2851,6 @@ function toggleCategoryGroup(k) {
 async function load(resetPage = false) {
   if (resetPage) page.value = 1
   loading.value = true
-  loadDomains()
-  loadCountries()
-  loadRegSummary()
   try {
     const { items, total: t } = await listRegistered({
       limit: pageSize.value,
@@ -2853,7 +2866,7 @@ async function load(resetPage = false) {
       filter_at_export: filterAtExport.value,
       search: searchKeyword.value.trim(),
     })
-    rows.value = items || []
+    rows.value = (items || []).map(prepareRowData)
     total.value = t || 0
     if (rows.value.length) {
       const cur = focusedRow.value
@@ -2867,6 +2880,15 @@ async function load(resetPage = false) {
   } finally {
     loading.value = false
   }
+}
+
+async function refreshAll() {
+  await Promise.allSettled([
+    load(false),
+    loadRegSummary(),
+    loadDomains(),
+    loadCountries(),
+  ])
 }
 
 function handleSizeChange(val) {
@@ -2891,16 +2913,25 @@ async function confirm(msg) {
 
 async function deleteOne(email) {
   if (!(await confirm(`删除 ${email} 的凭证？`))) return
-  try { await deleteRegistered(email); ElMessage.success('已删除'); load() }
-  catch (e) { ElMessage.error(e.message) }
+  try {
+    await deleteRegistered(email)
+    ElMessage.success('已删除')
+    load()
+    loadRegSummary()
+  } catch (e) { ElMessage.error(e.message) }
 }
 
 async function deleteSelected() {
   const emails = selected.value.map((r) => r.email)
   if (!emails.length) return
   if (!(await confirm(`确定删除选中的 ${emails.length} 条凭证？(不可恢复)`))) return
-  try { const r = await bulkDeleteRegistered({ emails }); ElMessage.success(`已删除 ${r.deleted} 条`); load() }
-  catch (e) { ElMessage.error(e.message) }
+  try {
+    const r = await bulkDeleteRegistered({ emails })
+    ElMessage.success(`已删除 ${r.deleted} 条`)
+    clearSelected()
+    load()
+    loadRegSummary()
+  } catch (e) { ElMessage.error(e.message) }
 }
 
 async function cleanInvalid() {
@@ -2909,6 +2940,7 @@ async function cleanInvalid() {
     const r = await cleanInvalidRegistered()
     ElMessage.success(`已清理 ${r.deleted} 个无凭证空号`)
     load()
+    loadRegSummary()
   } catch (e) {
     ElMessage.error(e.message)
   }
@@ -2934,6 +2966,7 @@ async function doRecoverOAuth(emails = null) {
         message: `🎉 成功找回/修复 ${totalRec} 个账号的授权凭证！(库内自愈: ${data.recovered_from_db || 0}, 本地历史文件追回: ${data.recovered_from_files || 0})，已满血恢复状态！`,
         duration: 5000,
       })
+      loadRegSummary()
     } else {
       ElMessage.info('扫描完成，当前所选账号均已是最新正常状态，无需找回')
     }
@@ -2948,8 +2981,13 @@ async function doRecoverOAuth(emails = null) {
 async function deleteAll() {
   if (!(await confirm('这会清空注册结果表里的所有凭证！邮箱列表不受影响，确定？'))) return
   if (!(await confirm('再次确认：真的要删除全部凭证吗？此操作不可恢复！'))) return
-  try { const r = await bulkDeleteRegistered({ all: true }); ElMessage.success(`已清空 ${r.deleted} 条`); load() }
-  catch (e) { ElMessage.error(e.message) }
+  try {
+    const r = await bulkDeleteRegistered({ all: true })
+    ElMessage.success(`已清空 ${r.deleted} 条`)
+    clearSelected()
+    load()
+    loadRegSummary()
+  } catch (e) { ElMessage.error(e.message) }
 }
 
 // ──────────── 批量导出与全格式留痕归档 ────────────
@@ -2979,6 +3017,18 @@ const exportPresetNotes = [
   '验活合格',
   '2026-09-02批次',
 ]
+
+// 导出后保持弹窗设置（默认开启：方便用户继续导出其他格式且不刷新破坏勾选）
+const KEEP_EXPORT_MODAL_KEY = 'reg_keep_export_modal'
+const keepModalAfterExport = ref(localStorage.getItem(KEEP_EXPORT_MODAL_KEY) !== 'false')
+const lastExportedInfo = ref(null)
+
+function toggleKeepExportModal(val) {
+  keepModalAfterExport.value = val
+  try {
+    localStorage.setItem(KEEP_EXPORT_MODAL_KEY, String(val))
+  } catch (_) {}
+}
 
 // 导出分割线 / 分隔符自定义设置 (Delimiter)
 const exportDelimiterMode = ref('----') // '----' | '---' | '--' | '|' | ',' | ':' | '\t' | 'custom'
@@ -3062,6 +3112,7 @@ function openExportModal(fmt = null) {
   }
   exportScope.value = selected.value.length ? 'selected' : 'all'
   exportNoteInput.value = ''
+  lastExportedInfo.value = null
   exportConfigModalVisible.value = true
 }
 
@@ -3090,27 +3141,51 @@ async function submitExport() {
     ? { format: fmt.id, emails, chunk_size: chunk, note, delimiter: delim }
     : { format: fmt.id, all: true, chunk_size: chunk, note, delimiter: delim }
 
-  exportConfigModalVisible.value = false
+  // 若未勾选“导出后保持弹窗”，则先关闭弹窗
+  if (!keepModalAfterExport.value) {
+    exportConfigModalVisible.value = false
+  }
   exporting.value = true
 
   try {
     const r = await exportRegistered(payload)
     exportedEmails.value = (r.emails || []).filter(Boolean)
+
+    // 本地将已选中的账号就地标记为已导出（绝不触发 load(false) 重新请求，避免勾选被清空或被纯新未导视图过滤）
+    const nowSec = Math.floor(Date.now() / 1000)
+    if (isSelectedScope) {
+      selected.value.forEach((row) => {
+        if (!row.exported_at) row.exported_at = nowSec
+        if (note) row.export_note = note
+        row.export_fmt_label = fmt.label
+      })
+    }
+
+    lastExportedInfo.value = {
+      filename: r.filename || 'export.txt',
+      format: fmt.label,
+      count: r.count || 0,
+      time: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+    }
+
     if (r.mode === 'download') {
       saveBlob(b64ToBytes(r.b64), r.filename, r.mime)
       const parts = r.parts ? ` · 分卷打包 ${r.parts} 个文件` : ''
-      const mark = ' · 已记录导出状态及备注'
-      ElMessage.success(`🎉 已下载 ${r.filename}（${r.count} 个账号${parts}）${mark}`)
-      load(false)
+      const mark = ' · 已记录留痕'
+      if (keepModalAfterExport.value) {
+        ElMessage.success(`🎉 已下载 ${r.filename}（${r.count} 个账号${parts}）${mark}！弹窗已保留，可继续选择其他格式导出`)
+      } else {
+        ElMessage.success(`🎉 已下载 ${r.filename}（${r.count} 个账号${parts}）${mark}（未刷新界面，保留当前勾选）`)
+      }
       return
     }
+
     exportText.value = r.text || ''
     exportCount.value = r.count || 0
     exportFilename.value = r.filename || 'export.txt'
     exportLabel.value = r.label || fmt.label
     ElMessage.success(`🎉 已成功生成 ${r.count} 个账号数据并记录导出留痕`)
     exportVisible.value = true
-    load(false)
   } catch (e) {
     ElMessage.error('导出失败: ' + e.message)
   } finally {
@@ -4859,7 +4934,7 @@ onUnmounted(() => {
             </button>
 
             <!-- 刷新 -->
-            <button class="ghost-tool-btn" :class="{ 'is-loading': loading }" title="刷新数据" @click="load(false)">
+            <button class="ghost-tool-btn" :class="{ 'is-loading': loading }" title="刷新数据与汇总统计" @click="refreshAll">
               <el-icon :class="{ 'is-spinning': loading }"><Refresh /></el-icon>
             </button>
           </div>
@@ -5092,34 +5167,34 @@ onUnmounted(() => {
             <!-- 左侧：操作菜单组 -->
             <div class="actions-group-left">
               <!-- 勾选指示器 -->
-              <div v-if="selected.length" class="selection-pill">
+              <div v-if="selectedCount" class="selection-pill">
                 <span class="selection-dot"></span>
-                <span>已选 <b>{{ selected.length }}</b> 项</span>
+                <span>已选 <b>{{ selectedCount }}</b> 项</span>
                 <button class="clear-sel-link" @click="clearSelected" title="取消全部勾选">✕</button>
               </div>
 
               <!-- 1. 批量流水线 (Tasks ▾) -->
               <el-dropdown trigger="click" @command="handleHealthCheckCommand">
-                <button class="action-menu-btn" :class="{ 'has-selected': selected.length }">
+                <button class="action-menu-btn" :class="{ 'has-selected': selectedCount }">
                   <el-icon><Timer /></el-icon>
-                  <span>批量流水线{{ selected.length ? ` (${selected.length})` : '' }}</span>
+                  <span>批量流水线{{ selectedCount ? ` (${selectedCount})` : '' }}</span>
                   <el-icon class="arrow-down"><ArrowDown /></el-icon>
                 </button>
                 <template #dropdown>
                   <el-dropdown-menu class="extract-dropdown-menu">
                     <div class="dropdown-group-title">Token 验活与探测</div>
-                    <el-dropdown-item command="token_selected" :disabled="!selected.length">验活选中账号 ({{ selected.length }})</el-dropdown-item>
+                    <el-dropdown-item command="token_selected" :disabled="!selectedCount">验活选中账号 ({{ selectedCount }})</el-dropdown-item>
                     <el-dropdown-item command="token_unchecked">验活未检账号</el-dropdown-item>
                     <el-dropdown-item command="token_all">全量全库重验</el-dropdown-item>
                     <div class="dropdown-group-title divider-title">OAuth 接码授权</div>
-                    <el-dropdown-item @click="handleOAuthCommand('oauth_selected')" :disabled="!selected.length">📱 Codex OAuth 接码 (选中)</el-dropdown-item>
+                    <el-dropdown-item @click="handleOAuthCommand('oauth_selected')" :disabled="!selectedCount">📱 Codex OAuth 接码 (选中)</el-dropdown-item>
                     <el-dropdown-item @click="handleOAuthCommand('oauth_all')">📱 Codex OAuth 全量接码</el-dropdown-item>
                     <div class="dropdown-group-title divider-title">提链 / 出码</div>
                     <el-dropdown-item @click="openExtractChannel('paypal_pipeline')">🎁 PayPal 提链+代付 (一条龙)</el-dropdown-item>
                     <el-dropdown-item @click="openExtractChannel('paypal')">🔗 PayPal 仅提链</el-dropdown-item>
                     <el-dropdown-item @click="openExtractChannel('gcash')">🇵🇭 GCash 提链/出码</el-dropdown-item>
                     <div class="dropdown-group-title divider-title">账号保温保鲜</div>
-                    <el-dropdown-item @click="handleWarmingCommand('warm_selected')" :disabled="!selected.length">☀️ 保温选中账号 ({{ selected.length }})</el-dropdown-item>
+                    <el-dropdown-item @click="handleWarmingCommand('warm_selected')" :disabled="!selectedCount">☀️ 保温选中账号 ({{ selectedCount }})</el-dropdown-item>
                     <el-dropdown-item @click="handleWarmingCommand('warm_cold')">☀️ 保温未保鲜冷号</el-dropdown-item>
                     <el-dropdown-item @click="handleWarmingCommand('warm_all')">☀️ 全库轮询保温</el-dropdown-item>
                   </el-dropdown-menu>
@@ -5136,13 +5211,13 @@ onUnmounted(() => {
                 <template #dropdown>
                   <el-dropdown-menu class="extract-dropdown-menu">
                     <div class="dropdown-group-title">Access Token (AT)</div>
-                    <el-dropdown-item command="copy_at_selected" :disabled="!selected.length">复制选中 AT ({{ selected.length }})</el-dropdown-item>
-                    <el-dropdown-item command="copy_at_with_email" :disabled="!selected.length">复制「邮箱----AT」格式</el-dropdown-item>
+                    <el-dropdown-item command="copy_at_selected" :disabled="!selectedCount">复制选中 AT ({{ selectedCount }})</el-dropdown-item>
+                    <el-dropdown-item command="copy_at_with_email" :disabled="!selectedCount">复制「邮箱----AT」格式</el-dropdown-item>
                     <el-dropdown-item command="copy_at_page">复制当前页 AT</el-dropdown-item>
                     <el-dropdown-item command="copy_at_all" divided>全库复制 AT</el-dropdown-item>
                     <div class="dropdown-group-title divider-title">Session 结构</div>
-                    <el-dropdown-item @click="handleCopySessionCommand('copy_session_selected')" :disabled="!selected.length">复制选中 Session (JSON 数组)</el-dropdown-item>
-                    <el-dropdown-item @click="handleCopySessionCommand('copy_session_lines_selected')" :disabled="!selected.length">复制选中 Session (单行)</el-dropdown-item>
+                    <el-dropdown-item @click="handleCopySessionCommand('copy_session_selected')" :disabled="!selectedCount">复制选中 Session (JSON 数组)</el-dropdown-item>
+                    <el-dropdown-item @click="handleCopySessionCommand('copy_session_lines_selected')" :disabled="!selectedCount">复制选中 Session (单行)</el-dropdown-item>
                   </el-dropdown-menu>
                 </template>
               </el-dropdown>
@@ -5157,18 +5232,18 @@ onUnmounted(() => {
                 <template #dropdown>
                   <el-dropdown-menu class="extract-dropdown-menu">
                     <div class="dropdown-group-title">安全补密与 2FA</div>
-                    <el-dropdown-item @click="handleSecurityCommand('batch_pwd_selected')" :disabled="!selected.length">🔑 批量设密码 (选中无密)</el-dropdown-item>
+                    <el-dropdown-item @click="handleSecurityCommand('batch_pwd_selected')" :disabled="!selectedCount">🔑 批量设密码 (选中无密)</el-dropdown-item>
                     <el-dropdown-item @click="handleSecurityCommand('batch_pwd_all_missing')">🔑 全量补设密码</el-dropdown-item>
-                    <el-dropdown-item @click="handleSecurityCommand('batch_2fa_selected')" :disabled="!selected.length">🛡️ 批量补绑 2FA (选中)</el-dropdown-item>
+                    <el-dropdown-item @click="handleSecurityCommand('batch_2fa_selected')" :disabled="!selectedCount">🛡️ 批量补绑 2FA (选中)</el-dropdown-item>
                     <el-dropdown-item @click="handleSecurityCommand('batch_2fa_all_missing')">🛡️ 全量补绑 2FA</el-dropdown-item>
                     <div class="dropdown-group-title divider-title">Token 刷新与自愈</div>
-                    <el-dropdown-item @click="handleRefreshCommand('refresh_selected')" :disabled="!selected.length">🔄 刷新选中 Token</el-dropdown-item>
+                    <el-dropdown-item @click="handleRefreshCommand('refresh_selected')" :disabled="!selectedCount">🔄 刷新选中 Token</el-dropdown-item>
                     <el-dropdown-item @click="handleRefreshCommand('refresh_all')">🔄 全量刷新 Token</el-dropdown-item>
                     <el-dropdown-item @click="() => doRecoverOAuth()">⚡ 扫描并找回历史授权 (RT自愈)</el-dropdown-item>
                     <el-dropdown-item @click="openFeatBoard">📊 特征工程大屏</el-dropdown-item>
                     <div class="dropdown-group-title divider-title">数据清理与删除</div>
                     <el-dropdown-item @click="cleanInvalid">🧹 清理库内空号</el-dropdown-item>
-                    <el-dropdown-item :disabled="!selected.length" @click="deleteSelected" style="color: var(--el-color-danger)">🗑️ 删除选中账号 ({{ selected.length }})</el-dropdown-item>
+                    <el-dropdown-item :disabled="!selectedCount" @click="deleteSelected" style="color: var(--el-color-danger)">🗑️ 删除选中账号 ({{ selectedCount }})</el-dropdown-item>
                     <el-dropdown-item @click="deleteAll" style="color: var(--el-color-danger)">⚠️ 清空全部账号</el-dropdown-item>
                   </el-dropdown-menu>
                 </template>
@@ -5211,15 +5286,16 @@ onUnmounted(() => {
               ref="tableRef"
               v-loading="loading"
               :data="rows"
+              row-key="email"
               height="100%"
               size="small"
-              :row-class-name="({ row }) => (focusedRow && focusedRow.email === row.email ? 'is-focused-row' : '')"
+              :row-class-name="getRowClassName"
               :class="['octopus-table-grid', `density-${tableDensity}`]"
               @row-click="setFocusedRow"
               @selection-change="(v) => (selected = v)"
             >
-              <!-- 1. 勾选列 -->
-              <el-table-column type="selection" width="38" align="center" header-align="center" fixed="left" />
+              <!-- 1. 勾选列 (开启 reserve-selection，确保换页/导出勾选永不丢失) -->
+              <el-table-column type="selection" width="38" align="center" header-align="center" fixed="left" :reserve-selection="true" />
 
               <!-- 2. 账号与网络出口 -->
               <el-table-column prop="email" label="账号与网络出口" min-width="260" fixed="left" align="center" header-align="center" show-overflow-tooltip>
@@ -5227,8 +5303,8 @@ onUnmounted(() => {
                   <div class="account-cell-container">
                     <!-- 主行：品牌微标 + 邮箱等宽字 + 复制按键 -->
                     <div class="account-main-line">
-                      <span class="provider-avatar-badge" :style="{ background: getEmailProviderMeta(row.email).bg, color: getEmailProviderMeta(row.email).color }">
-                        {{ getEmailProviderMeta(row.email).icon }}
+                      <span class="provider-avatar-badge" :style="{ background: (row._providerMeta || getEmailProviderMeta(row.email)).bg, color: (row._providerMeta || getEmailProviderMeta(row.email)).color }">
+                        {{ (row._providerMeta || getEmailProviderMeta(row.email)).icon }}
                       </span>
                       <span class="email-text mono" @click.stop="copyText(row.email)" title="点击复制邮箱">{{ row.email }}</span>
                       <el-icon class="email-copy-btn" @click.stop="copyText(row.email)"><CopyDocument /></el-icon>
@@ -5239,10 +5315,10 @@ onUnmounted(() => {
                       <span
                         v-if="row.reg_country"
                         class="meta-badge-pill country-pill"
-                        :title="`注册出口: ${formatCountry(row.reg_country)} [${row.reg_country}] (点击过滤该国家)`"
+                        :title="`注册出口: ${row._countryLabel || formatCountry(row.reg_country)} [${row.reg_country}] (点击过滤该国家)`"
                         @click.stop="applyFilter('country', row.reg_country)"
                       >
-                        {{ formatCountry(row.reg_country) }}
+                        {{ row._countryLabel || formatCountry(row.reg_country) }}
                       </span>
                       <span
                         v-if="row.reg_ip"
@@ -5257,7 +5333,7 @@ onUnmounted(() => {
                         class="meta-badge-pill ip-pill mono"
                         :title="`出口代理: ${row.reg_proxy}`"
                       >
-                        {{ formatProxyHost(row.reg_proxy) }}
+                        {{ row._proxyHost || formatProxyHost(row.reg_proxy) }}
                       </span>
                       <span
                         v-if="row.mail_oauth?.pickup_url"
@@ -5337,9 +5413,9 @@ onUnmounted(() => {
               <el-table-column v-if="columnVisibility.status" label="套餐与业务特权" min-width="160" align="center" header-align="center">
                 <template #default="{ row }">
                   <div class="cell-entitlements-block">
-                    <template v-if="getStatusBadges(row).length">
+                    <template v-if="(row._badges || getStatusBadges(row)).length">
                       <span
-                        v-for="(b, idx) in getStatusBadges(row)"
+                        v-for="(b, idx) in (row._badges || getStatusBadges(row))"
                         :key="idx"
                         class="entitlement-badge"
                         :class="[b.type, b.effect]"
@@ -5361,7 +5437,7 @@ onUnmounted(() => {
                     <div v-if="row.exported_at || row.at_exported_at" class="export-status-line" @click.stop="quickEditExportNote(row)">
                       <span class="pulse-indicator-dot dot-cyan"></span>
                       <span class="export-tag-label">已导: {{ row.export_fmt_label || row.export_fmt || 'AT' }}</span>
-                      <span class="export-date-mono mono">({{ formatExportDateShort(row.exported_at || row.at_exported_at) }})</span>
+                      <span class="export-date-mono mono">({{ row._exportDate || formatExportDateShort(row.exported_at || row.at_exported_at) }})</span>
                     </div>
                     <div v-else class="export-status-line">
                       <span class="pulse-indicator-dot dot-emerald"></span>
@@ -5378,8 +5454,8 @@ onUnmounted(() => {
               <el-table-column v-if="columnVisibility.time" label="注册时间" min-width="135" align="center" header-align="center">
                 <template #default="{ row }">
                   <div class="cell-time-block">
-                    <div class="time-main-mono mono">{{ fmtTime(row.created_at) }}</div>
-                    <div class="time-relative-text">{{ timeAgo(row.created_at) }}</div>
+                    <div class="time-main-mono mono">{{ row._createdTime || fmtTime(row.created_at) }}</div>
+                    <div class="time-relative-text">{{ row._timeAgo || timeAgo(row.created_at) }}</div>
                   </div>
                 </template>
               </el-table-column>
@@ -5460,7 +5536,7 @@ onUnmounted(() => {
           <!-- 分页底栏 -->
           <div class="table-footer-bar">
             <div class="footer-left-info">
-              <span v-if="selected.length" class="selected-badge">已勾选 <b>{{ selected.length }}</b> 项</span>
+              <span v-if="selectedCount" class="selected-badge">已勾选 <b>{{ selectedCount }}</b> 项</span>
               <span v-else class="total-badge">当前页共 {{ rows.length }} 条记录</span>
             </div>
 
@@ -5814,12 +5890,12 @@ onUnmounted(() => {
 
     <!-- ──────────────── 底部毛玻璃极客悬浮批量操作栏 (Floating Action Bar) ──────────────── -->
     <transition name="floating-bar-slide">
-      <div v-if="selected.length" class="floating-action-bar">
+      <div v-if="selectedCount" class="floating-action-bar">
         <div class="floating-bar-pill">
           <!-- 选中计数 -->
           <div class="floating-counter-chip">
             <span class="pulse-counter-dot"></span>
-            <span class="counter-text">已选 <strong>{{ selected.length }}</strong> 项</span>
+            <span class="counter-text">已选 <strong>{{ selectedCount }}</strong> 项</span>
           </div>
 
           <div class="floating-divider"></div>
@@ -5832,7 +5908,7 @@ onUnmounted(() => {
               title="一键多格式批量导出"
             >
               <el-icon><Download /></el-icon>
-              <span>导出选中 ({{ selected.length }})</span>
+              <span>导出选中 ({{ selectedCount }})</span>
             </button>
 
             <button
@@ -8359,6 +8435,17 @@ onUnmounted(() => {
       </template>
 
       <div class="export-modal-body">
+        <!-- 连环导出成功状态横幅 (若上次已成功导出) -->
+        <div v-if="lastExportedInfo" class="export-last-success-banner">
+          <div class="banner-left">
+            <span class="success-indicator-dot"></span>
+            <span class="banner-msg">
+              已成功下载: <strong>{{ lastExportedInfo.filename }}</strong> ({{ lastExportedInfo.format }})
+            </span>
+          </div>
+          <span class="banner-hint">✨ 弹窗与勾选已保留，可继续切换格式连续导出</span>
+        </div>
+
         <!-- 1. 导出目标格式选择 -->
         <div class="export-field-group">
           <div class="field-title-row">
@@ -8399,14 +8486,14 @@ onUnmounted(() => {
           <div class="scope-radio-cards">
             <div
               class="scope-card"
-              :class="{ 'is-active': exportScope === 'selected', 'is-disabled': !selected.length }"
-              @click="selected.length && (exportScope = 'selected')"
+              :class="{ 'is-active': exportScope === 'selected', 'is-disabled': !selectedCount }"
+              @click="selectedCount && (exportScope = 'selected')"
             >
               <div class="scope-card-left">
                 <div class="scope-title">导出当前勾选账号</div>
-                <div class="scope-desc">仅导出表格中已勾选的 {{ selected.length }} 个账号</div>
+                <div class="scope-desc">仅导出表格中已勾选的 {{ selectedCount }} 个账号</div>
               </div>
-              <div class="scope-badge">{{ selected.length }} 条</div>
+              <div class="scope-badge">{{ selectedCount }} 条</div>
             </div>
 
             <div
@@ -8565,11 +8652,23 @@ onUnmounted(() => {
       <template #footer>
         <div class="export-modal-footer">
           <div class="export-summary-text">
-            <span>即将导出 <strong>{{ exportTargetCount }}</strong> 个账号</span>
-            <span v-if="effectiveExportChunk > 0" class="sub-summary">（分卷打包为 {{ estimatedChunksCount }} 个文件）</span>
+            <div class="summary-count-line">
+              <span>即将导出 <strong>{{ exportTargetCount }}</strong> 个账号</span>
+              <span v-if="effectiveExportChunk > 0" class="sub-summary">（分卷打包为 {{ estimatedChunksCount }} 个文件）</span>
+            </div>
+            <el-checkbox
+              v-model="keepModalAfterExport"
+              size="small"
+              class="keep-modal-checkbox"
+              @change="toggleKeepExportModal"
+            >
+              导出后保持弹窗（不刷新列表，方便连续导出多种格式）
+            </el-checkbox>
           </div>
           <div class="footer-btn-group">
-            <el-button @click="exportConfigModalVisible = false">取消</el-button>
+            <el-button @click="exportConfigModalVisible = false">
+              {{ lastExportedInfo ? '完成并关闭' : '取消' }}
+            </el-button>
             <el-button
               type="primary"
               class="export-submit-btn"
@@ -8577,7 +8676,8 @@ onUnmounted(() => {
               :disabled="!exportTargetCount"
               @click="submitExport"
             >
-              <el-icon><Download /></el-icon> 立即导出并记录留痕
+              <el-icon><Download /></el-icon>
+              <span>{{ lastExportedInfo ? '继续导出所选格式' : '立即导出并记录留痕' }}</span>
             </el-button>
           </div>
         </div>
@@ -13453,6 +13553,21 @@ onUnmounted(() => {
 .export-summary-text {
   font-size: 12px;
   color: var(--el-text-color-primary);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.summary-count-line {
+  display: flex;
+  align-items: center;
+}
+.keep-modal-checkbox {
+  font-size: 11px !important;
+  height: 20px !important;
+}
+.keep-modal-checkbox :deep(.el-checkbox__label) {
+  font-size: 11px !important;
+  color: #94a3b8 !important;
 }
 .export-summary-text strong {
   color: var(--el-color-primary);
@@ -13467,6 +13582,39 @@ onUnmounted(() => {
 .export-submit-btn {
   font-weight: 700;
   padding: 8px 16px;
+}
+
+/* 连环导出成功状态横幅 */
+.export-last-success-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 7px;
+  background: rgba(16, 185, 129, 0.12);
+  border: 1px solid rgba(16, 185, 129, 0.35);
+  margin-bottom: 2px;
+}
+.export-last-success-banner .banner-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: #34d399;
+}
+.export-last-success-banner .success-indicator-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #10b981;
+  box-shadow: 0 0 8px #10b981;
+  flex-shrink: 0;
+}
+.export-last-success-banner .banner-hint {
+  font-size: 10.5px;
+  color: #6ee7b7;
+  font-weight: 500;
 }
 
 /* 字段分隔符设置与实时预览横幅 */
