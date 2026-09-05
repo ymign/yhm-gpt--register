@@ -231,7 +231,8 @@ def classify_error(err: str, mail_source: str = "") -> str:
         "wrong_email_otp_code", "invalid_grant", "imap xoauth2",
         "outlook imap account unusable", "user is authenticated but not connected",
         "outlook refresh failed", "authentication failed", "authenticate failed",
-        "outlook otp timeout", "registration_disallowed",
+        "outlook otp timeout", "registration_disallowed", "user_already_exists",
+        "already exists for this email", "continue_to_login",
         "account_deactivated", "deleted or deactivated", "deactivated",
         "mfa-challenge", "缺少 totp 密钥", "已开启 2fa", "2fa 两步验证",
         "已被官方封禁", "已有账号", "账号被", "refresh_token 失效",
@@ -682,8 +683,16 @@ def _do_register(
             pass  # flow 还没建出来（异常发生在 AuthFlow 之前），没密码可救
         if category != "account":
             logging.getLogger("registrar").error(traceback.format_exc())
-        # Remail 已购邮箱未完成注册时自动回收进暂存复用池（严格按时效暂存，下一轮自动复用，零损耗）
-        if mail_source == "remail":
+        # Remail 处理：如果账号已被 OpenAI 判定为已有/被占，彻底废弃；仅临时网络问题回收进暂存复用池
+        is_user_exists = "user_already_exists" in err.lower() or "already exists" in err.lower()
+        if is_user_exists:
+            bought_email = getattr(mail, "current_email", "") or email
+            if bought_email:
+                try:
+                    db.discard_remail_recycled(bought_email, reason="OpenAI 报告 user_already_exists (母账号已存在)")
+                except Exception:
+                    pass
+        elif mail_source == "remail":
             try:
                 bought_email = getattr(mail, "current_email", "")
                 bought_token = getattr(mail, "current_token", "")

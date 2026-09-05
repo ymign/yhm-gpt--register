@@ -364,7 +364,7 @@ def _submit_totp_if_needed(
     if not totp_code:
         raise RuntimeError("库里有 totp_secret，但当前窗口无法算出 6 位动态码")
     if log_fn:
-        log_fn(f"[2/6] 当前是 2FA 页，提交 TOTP={totp_code} challenge_id={challenge_id[:8] or '无'}")
+        log_fn(f"[2/6] 🌐 [OpenAI REQ] POST /api/accounts/mfa/verify (challenge_id={challenge_id[:8] or '无'}, TOTP={totp_code})")
     mfa_headers = dict(post_headers)
     mfa_headers["Referer"] = (
         f"https://auth.openai.com/mfa-challenge/{challenge_id}" if challenge_id else "https://auth.openai.com/mfa-challenge"
@@ -380,7 +380,7 @@ def _submit_totp_if_needed(
     page_type, continue_url, next_mode = _parse_auth_page(step_data)
     verify_mode = next_mode or verify_mode
     if log_fn:
-        log_fn(f"[2/6] 2FA 验证 HTTP {mfa_resp.status_code} {_describe_auth_page(page_type, continue_url, verify_mode)}")
+        log_fn(f"[2/6] 🌐 [OpenAI RESP] HTTP {mfa_resp.status_code} {_describe_auth_page(page_type, continue_url, verify_mode)}")
     if mfa_resp.status_code != 200:
         raise RuntimeError(f"2FA 验证失败: HTTP {mfa_resp.status_code} - {(mfa_resp.text or '')[:180]}")
     if _is_password_page(page_type, continue_url):
@@ -405,6 +405,8 @@ def _enter_auth_page(session, url: str, nav_headers: dict, timeout, log_fn, labe
         return ""
     for hop in range(6):
         try:
+            if log_fn and hop == 0:
+                log_fn(f"{label} 🌐 [OpenAI REQ] GET {_short_url(curr)}")
             r = session.get(curr, headers=nav_headers, allow_redirects=False, timeout=timeout)
         except Exception as e:
             if log_fn:
@@ -413,7 +415,7 @@ def _enter_auth_page(session, url: str, nav_headers: dict, timeout, log_fn, labe
         loc = (r.headers.get("Location") or r.headers.get("location") or "").strip()
         kind = _page_kind_from_url(loc or curr)
         if log_fn:
-            log_fn(f"{label} GET hop {hop + 1} HTTP {r.status_code} {kind} {_short_url(loc or curr)}")
+            log_fn(f"{label} 🌐 [OpenAI RESP] hop {hop + 1} HTTP {r.status_code} {kind} {_short_url(loc or curr)}")
         if loc:
             loc = _abs_auth_url(loc)
             if _page_kind_from_url(loc) in ("登录页", "密码页"):
@@ -467,6 +469,7 @@ def _follow_oauth_callback(
             r = None
             for retry_idx in range(3):
                 try:
+                    _log(f"[5/6] 🌐 [OpenAI REQ] hop {hop+1} GET {_short_url(curr)}")
                     r = session.get(curr, headers=nav_headers, allow_redirects=False, timeout=timeout)
                     break
                 except Exception as e:
@@ -483,9 +486,9 @@ def _follow_oauth_callback(
             kind = _page_kind_from_url(loc or curr)
             if loc:
                 loc_full = loc if not loc.startswith("/") else urljoin("https://auth.openai.com", loc)
-                _log(f"[5/6] hop {hop+1}: HTTP {status} {kind} -> {_short_url(loc_full)}")
+                _log(f"[5/6] 🌐 [OpenAI RESP] hop {hop+1}: HTTP {status} {kind} -> {_short_url(loc_full)}")
             else:
-                _log(f"[5/6] hop {hop+1}: HTTP {status} 停在{kind} {_short_url(curr)}")
+                _log(f"[5/6] 🌐 [OpenAI RESP] hop {hop+1}: HTTP {status} 停在{kind} {_short_url(curr)}")
 
             if loc:
                 if loc.startswith("/"):
@@ -537,10 +540,7 @@ def _follow_oauth_callback(
                 is_workspace_like = _is_real_workspace_url(curr)
                 if is_workspace_like:
                     wid = _extract_workspace_id_from_session(session, html_text) or fallback_workspace_id
-                    if wid:
-                        _log(f"[5/6] 工作空间页，提交 workspace/select id={wid[:8]}...")
-                    else:
-                        _log("[5/6] 工作空间页，但没解析到 workspace_id，改空 payload 试一次")
+                    _log(f"[5/6] 🌐 [OpenAI REQ] POST /api/accounts/workspace/select (workspace_id={wid[:8] if wid else '空'})")
                     ws_headers = dict(post_headers)
                     ws_headers["Origin"] = "https://auth.openai.com"
                     ws_headers["Referer"] = curr
@@ -568,7 +568,7 @@ def _follow_oauth_callback(
                         if ws_resp is None:
                             break
                         ws_loc = (ws_resp.headers.get("Location") or ws_resp.headers.get("location") or "").strip()
-                        _log(f"[5/6] workspace/select HTTP {ws_resp.status_code} loc={_short_url(ws_loc) or '无'}")
+                        _log(f"[5/6] 🌐 [OpenAI RESP] HTTP {ws_resp.status_code} loc={_short_url(ws_loc) or '无'}")
                         if ws_loc:
                             if ws_loc.startswith("/"):
                                 ws_loc = urljoin("https://auth.openai.com", ws_loc)
@@ -733,14 +733,22 @@ class OAuthExportTask:
 
     def add_email_log(self, email: str, line: str) -> None:
         ts_str = time.strftime("%H:%M:%S")
-        formatted = f"{ts_str} {line}"
+        clean_line = str(line or "").strip()
+        # 确保每行日志都有规范的 [HH:MM:SS] 时间前缀
+        if clean_line.startswith("[") and len(clean_line) > 9 and clean_line[1:3].isdigit() and clean_line[3] == ":":
+            formatted = clean_line
+        elif len(clean_line) >= 8 and clean_line[:2].isdigit() and clean_line[2] == ":" and clean_line[5] == ":":
+            formatted = f"[{clean_line[:8]}] {clean_line[9:].strip()}"
+        else:
+            formatted = f"[{ts_str}] {clean_line}"
+
         with self._lock:
             if email in self.items:
                 self.items[email]["logs"].append(formatted)
                 if len(self.items[email]["logs"]) > 200:
                     self.items[email]["logs"] = self.items[email]["logs"][-200:]
         try:
-            self.queue.put({"kind": "log", "email": email, "line": f"[{email}] {line}"})
+            self.queue.put({"kind": "log", "email": email, "line": f"{formatted} [{email}]"})
         except Exception:
             pass
 
@@ -1081,6 +1089,7 @@ def execute_codex_oauth_flow(
     if so_token:
         post_headers["openai-sentinel-so-token"] = so_token
 
+    _log(f"[2/6] 🌐 [OpenAI REQ] POST /api/accounts/authorize/continue (email={email}, PoW={len(st_token)}B)")
     step_resp = session.post(
         "https://auth.openai.com/api/accounts/authorize/continue",
         headers=post_headers,
@@ -1176,7 +1185,7 @@ def execute_codex_oauth_flow(
 
     step_data = _json_or_empty(step_resp)
     page_type, continue_url, verify_mode = _parse_auth_page(step_data)
-    _log(f"[2/6] 邮箱已提交: HTTP {step_resp.status_code} {_describe_auth_page(page_type, continue_url, verify_mode)}")
+    _log(f"[2/6] 🌐 [OpenAI RESP] HTTP {step_resp.status_code} {_describe_auth_page(page_type, continue_url, verify_mode)}")
     _trace_put(trace, first_page_type=page_type or _page_kind_from_url(continue_url))
     if page_type:
         path_steps.append(page_type)
@@ -1207,6 +1216,7 @@ def execute_codex_oauth_flow(
                 _log(f"[2/6] 打开密码页 GET 失败（继续提交验证）: {e}")
             pw_headers = dict(post_headers)
             pw_headers["Referer"] = "https://auth.openai.com/log-in/password"
+            _log(f"[2/6] 🌐 [OpenAI REQ] POST /api/accounts/password/verify (提交登录密码, 长度={len(password)})")
             pw_resp = session.post(
                 "https://auth.openai.com/api/accounts/password/verify",
                 headers=pw_headers,
@@ -1216,7 +1226,7 @@ def execute_codex_oauth_flow(
             )
             step_data = _json_or_empty(pw_resp)
             page_type, continue_url, verify_mode = _parse_auth_page(step_data)
-            _log(f"[2/6] 密码验证 HTTP {pw_resp.status_code} {_describe_auth_page(page_type, continue_url, verify_mode)}")
+            _log(f"[2/6] 🌐 [OpenAI RESP] HTTP {pw_resp.status_code} {_describe_auth_page(page_type, continue_url, verify_mode)}")
             if pw_resp.status_code != 200:
                 raise RuntimeError(
                     f"密码验证失败: HTTP {pw_resp.status_code} - {(pw_resp.text or '')[:180]}"
@@ -1300,7 +1310,7 @@ def execute_codex_oauth_flow(
         _log(f"[3/6] 收到邮箱 OTP: {otp_code} (耗时 {t_otp}s)")
 
         _step("4", "[4/6] 校验OTP (验证码核验)")
-        _log(f"[4/6] 正在提交邮箱 OTP: {otp_code}")
+        _log(f"[4/6] 🌐 [OpenAI REQ] POST /api/accounts/email-otp/validate (code={otp_code})")
         st_token_v, so_token_v = "", ""
         try:
             st_token_v, so_token_v = get_sentinel_token(
@@ -1329,7 +1339,7 @@ def execute_codex_oauth_flow(
         )
         step_data = _json_or_empty(v_resp)
         page_type, continue_url, verify_mode = _parse_auth_page(step_data)
-        _log(f"[4/6] 邮箱 OTP 校验 HTTP {v_resp.status_code} {_describe_auth_page(page_type, continue_url, verify_mode)}")
+        _log(f"[4/6] 🌐 [OpenAI RESP] HTTP {v_resp.status_code} {_describe_auth_page(page_type, continue_url, verify_mode)}")
         if v_resp.status_code != 200:
             raise RuntimeError(f"邮箱 OTP 验证失败: HTTP {v_resp.status_code} - {(v_resp.text or '')[:150]}")
         if _is_otp_page(page_type, continue_url, verify_mode):
@@ -1387,13 +1397,27 @@ def execute_codex_oauth_flow(
 
         provider_key = str(sms_cfg.get("sms_provider") or "smsbower").strip().lower()
         api_key = str(sms_cfg.get("sms_api_key") or "").strip()
-        country = str(sms_cfg.get("sms_country") or "52").strip()
+        is_cdk = provider_key in ("cdk_sms", "cdk", "ndk", "ndk_cdk", "lubansms")
+        if is_cdk:
+            # 若传入的是普通平台的 32 位 API Key，自动清空以让 CdkSmsProvider 严格从号池申领可用卡密
+            if api_key and len(api_key) == 32 and "-" not in api_key and not api_key.upper().startswith("SMS"):
+                _log(f"[sms] 💡 提示: 检测到传入参数为普通接码平台 API Key，已自动切换为从【🎟️ CDK号池】申领专属卡密")
+                api_key = ""
+        country = str(sms_cfg.get("sms_country") or ("44" if is_cdk else "52")).strip()
         max_price_raw = sms_cfg.get("sms_max_price") or sms_cfg.get("sms_price")
         min_p, max_p, exact_p = parse_price_spec(max_price_raw)
         max_attempts = max(1, min(10, int(sms_cfg.get("sms_max_attempts") or 3)))
-        raw_timeout = int(sms_cfg.get("sms_timeout") or 75)
-        # OpenAI 的 /add-phone 授权会话总生命周期仅约 150~180 秒，单个号码超时若超过 90 秒会导致超时后整个会话过期报 400 invalid_auth_step
-        if raw_timeout > 90:
+        raw_timeout = int(sms_cfg.get("sms_timeout") or (50 if is_cdk else 75))
+        # OpenAI 的 /add-phone 授权会话总生命周期约 90~120 秒
+        # CDK 模式下验证码若遇延迟，通过在 18s、38s 触发二次补发 (resend) 可大幅提升到达率
+        # 单号等待时间设为 50~55s 最为均衡，既能容纳 2 次补发又可确保在 OpenAI 会话 TTL 内安全完成
+        if is_cdk:
+            if raw_timeout > 60:
+                _log(f"[sms] 💡 提示: 原配置超时 {raw_timeout}s 过长易致 OpenAI 会话过期(400)，已自动优化为 50s 补发安全周期")
+                per_phone_timeout = 50
+            else:
+                per_phone_timeout = max(20, raw_timeout)
+        elif raw_timeout > 90:
             _log(f"[sms] 💡 提示: 原配置超时 {raw_timeout}s 过长易致 OpenAI 会话失效，已自动优化为 85s 安全周期")
             per_phone_timeout = 85
         else:
@@ -1434,14 +1458,18 @@ def execute_codex_oauth_flow(
             sms_price_spec=str(max_price_raw or ""),
         )
 
-        _step("5_sms", f"[5/6] 手机号接码 ({provider_key})")
+        _step("5_sms", f"[5/6] 手机号接码 ({'CDK卡密兑换' if provider_key in ('cdk_sms', 'cdk', 'ndk', 'ndk_cdk', 'lubansms') else provider_key})")
         id_tip = f", 指定供应商={provider_ids}" if provider_ids else ""
-        _log(f"[5/6] 遇到手机验证，已启用 {provider_key} 接码 (国家={country}{id_tip}, 金额要求={price_desc}, 最多换号={max_attempts}次, 超时={per_phone_timeout}s)...")
+        if provider_key in ("cdk_sms", "cdk", "ndk", "ndk_cdk", "lubansms"):
+            _log(f"[5/6] 遇到手机验证，已启用 🎟️ CDK卡密号池兑换接码 (最多换号={max_attempts}次, 超时={per_phone_timeout}s)...")
+        else:
+            _log(f"[5/6] 遇到手机验证，已启用 {provider_key} 接码 (国家={country}{id_tip}, 金额要求={price_desc}, 最多换号={max_attempts}次, 超时={per_phone_timeout}s)...")
 
         ctrl = PhoneCallbackController(
             provider_key=provider_key,
             config={
                 "sms_api_key": api_key,
+                "sms_cdk_url": str(sms_cfg.get("sms_cdk_url") or "https://ndk.cc.cd").strip(),
                 "sms_country": primary_country,
                 "sms_allowed_countries": allowed_countries,
                 "sms_service": "dr",
@@ -1486,19 +1514,47 @@ def execute_codex_oauth_flow(
                 phone_headers = dict(post_headers)
                 phone_headers["Referer"] = "https://auth.openai.com/add-phone"
                 phone_headers["Origin"] = "https://auth.openai.com"
+                for k in ("openai-sentinel-token", "openai-sentinel-so-token"):
+                    phone_headers.pop(k, None)
                 if device_id:
                     phone_headers["oai-device-id"] = device_id
+
+                def _phone_otp_resend():
+                    resend_headers = dict(post_headers)
+                    resend_headers["Referer"] = "https://auth.openai.com/phone-verification"
+                    resend_headers["Origin"] = "https://auth.openai.com"
+                    for k in ("openai-sentinel-token", "openai-sentinel-so-token"):
+                        resend_headers.pop(k, None)
+                    if device_id:
+                        resend_headers["oai-device-id"] = device_id
+                    try:
+                        _log("[sms] 🌐 [OpenAI REQ] POST /api/accounts/phone-otp/resend (请求补发短信)")
+                        r = session.post(
+                            "https://auth.openai.com/api/accounts/phone-otp/resend",
+                            headers=resend_headers,
+                            timeout=20,
+                        )
+                        _log(f"[sms] 🌐 [OpenAI RESP] HTTP {r.status_code} (补发结果: {(r.text or '')[:100]})")
+                        return r.status_code == 200
+                    except Exception as e:
+                        _log(f"[sms] 触发 OpenAI 短信补发异常: {e}")
+                        return False
+
+                ctrl.set_resend_callback(_phone_otp_resend)
 
                 def _send_phone():
                     return session.post(
                         "https://auth.openai.com/api/accounts/add-phone/send",
                         headers=phone_headers,
-                        json={"phone_number": phone},
+                        json={"phone_number": phone, "channel": "sms"},
                         timeout=30,
                     )
 
+                _log(f"[5/6] 🌐 [OpenAI REQ] POST /api/accounts/add-phone/send (phone_number={phone}, channel=sms)")
                 send_resp = _send_phone()
-                err_msg = (send_resp.text or "")[:180]
+                full_resp_text = send_resp.text or ""
+                _log(f"[5/6] 🌐 [OpenAI RESP] HTTP {send_resp.status_code} 完整响应: {full_resp_text[:300]}")
+                err_msg = full_resp_text[:180]
                 err_lc = err_msg.lower()
                 session_dead = (
                     send_resp.status_code in (401, 403, 409)
@@ -1554,18 +1610,20 @@ def execute_codex_oauth_flow(
                 try:
                     sms_code = ctrl.get_code(timeout=per_phone_timeout)
                 except Exception as e:
-                    _log(f"[sms] ⏱️ 等待短信超时或异常: {e}，立即取消并释放退款该号码...")
-                    ctrl.mark_send_failed("timeout_no_sms")  # 释放退款
-                    time.sleep(2)
+                    _log(f"[sms] ⏱️ 等待短信超时或异常: {e}，立即取消并极速换号...")
+                    ctrl.mark_send_failed("timeout_no_sms")
+                    time.sleep(1)
                     continue
 
                 if not sms_code:
-                    _log(f"[sms] ⏱️ 未在 {per_phone_timeout}s 内收到短信，立即取消并释放退款该号码...")
-                    ctrl.mark_send_failed("timeout_no_sms")  # 释放退款
-                    time.sleep(2)
-                    continue
+                    _log(f"[sms] ⏱️ 未在 {per_phone_timeout}s 内收到短信，已申请更换新号码")
+                    ctrl.mark_send_failed("timeout_no_sms")
+                    last_sms_err = "未收到短信"
+                    # 当号码已发送且进入 phone_otp_verification 后，OpenAI 锁死在等待当前号验证码状态。
+                    # 为彻底杜绝 400 invalid_auth_step，单号超时直接退出当前 flow，由外层自动重新建立干净鉴权会话发起绑定新号！
+                    break
 
-                _log(f"[sms] ✅ 成功收取到短信验证码: {sms_code}，正在提交校验...")
+                _log(f"[5/6] 🌐 [OpenAI REQ] POST /api/accounts/phone-otp/validate (code={sms_code})")
                 val_headers = dict(phone_headers)
                 val_headers["Referer"] = "https://auth.openai.com/phone-verification"
                 val_resp = session.post(
@@ -1574,6 +1632,7 @@ def execute_codex_oauth_flow(
                     json={"code": sms_code},
                     timeout=30,
                 )
+                _log(f"[5/6] 🌐 [OpenAI RESP] HTTP {val_resp.status_code} 响应: {(val_resp.text or '')[:120]}")
                 if val_resp.status_code != 200:
                     _log(f"[sms] ❌ 手机验证码校验失败 ({val_resp.status_code}): {(val_resp.text or '')[:120]}，取消并退款该号码...")
                     ctrl.mark_send_failed("validate_failed")  # 释放退款
@@ -1701,12 +1760,14 @@ def execute_codex_oauth_flow(
     t_resp = None
     for token_try in range(3):
         try:
+            _log(f"[6/6] 🌐 [OpenAI REQ] POST /oauth/token (换取 Token, try={token_try+1})")
             t_resp = session.post(
                 "https://auth.openai.com/oauth/token",
                 headers=token_headers,
                 data=urlencode(token_form),
                 timeout=timeout,
             )
+            _log(f"[6/6] 🌐 [OpenAI RESP] HTTP {t_resp.status_code}")
             break
         except Exception as t_err:
             if token_try < 2:
@@ -1930,135 +1991,134 @@ def _run_one_oauth_export(task: OAuthExportTask, email: str) -> None:
             logger.warning("[oauth_export] 特征落库失败: %s", persist_err)
 
     started_ts = time.time()
-    try:
-        flow_res = execute_codex_oauth_flow(
-            email=email,
-            mail_provider=mail,
-            proxy=proxy,
-            target_country=target_country,
-            account_info=cred_with_sms,
-            log_fn=lambda msg: task.add_email_log(email, msg),
-            step_fn=lambda step_k, step_t: task.set_step(email, step_k, step_t),
-            skip_sms=not sms_enabled,
-            timeout=float(task.config.get("timeout") or 45.0),
-            trace=flow_trace,
-        )
-        req_ms = int((time.time() - started_ts) * 1000)
-
-        # 检查是否需接码
-        if flow_res.get("status") == "need_phone":
-            res = {
-                "status": "need_phone",
-                "label": "需接码(已跳过)",
-                "error": "OpenAI 要求绑定手机号 (已跳过)",
-                "req_ms": req_ms,
-            }
-            db.update_registered_oauth_status(email, "need_phone", "需要手机号验证 (已跳过)")
-            _persist_oauth_feat("need_phone", "OpenAI 要求绑定手机号 (已跳过)", req_ms, flow_res.get("trace"))
+    max_flow_retries = max(1, min(5, int(sms_cfg.get("sms_max_attempts") or 3))) if sms_enabled else 1
+    flow_res = None
+    for flow_attempt in range(1, max_flow_retries + 1):
+        try:
+            flow_res = execute_codex_oauth_flow(
+                email=email,
+                mail_provider=mail,
+                proxy=proxy,
+                target_country=target_country,
+                account_info=cred_with_sms,
+                log_fn=lambda msg: task.add_email_log(email, msg),
+                step_fn=lambda step_k, step_t: task.set_step(email, step_k, step_t),
+                skip_sms=not sms_enabled,
+                timeout=float(task.config.get("timeout") or 45.0),
+                trace=flow_trace,
+            )
+            break
+        except Exception as e:
+            err_text = str(e)
+            if ("未收到短信" in err_text or "超时" in err_text) and flow_attempt < max_flow_retries and not task.cancelled:
+                task.add_email_log(email, f"[sms] 🔄 上一号码等待超时，正在重新发起鉴权以绑定新换的号码 (第 {flow_attempt+1}/{max_flow_retries} 轮)...")
+                time.sleep(2)
+                continue
+            req_ms = int((time.time() - started_ts) * 1000)
+            task.add_email_log(email, f"OAuth 授权失败 ({req_ms}ms): {err_text}")
+            res = {"status": "failed", "label": "授权失败", "error": err_text, "req_ms": req_ms}
+            db.update_registered_oauth_status(email, "failed", err_text[:300])
+            _persist_oauth_feat("failed", err_text, req_ms, flow_trace)
             task.mark_done(email, res)
             return
-        if flow_res.get("status") == "cancelled":
-            _persist_oauth_feat("cancelled", "任务被中止", req_ms, flow_res.get("trace"))
-            task.mark_done(email, flow_res)
-            return
-        if flow_res.get("status") not in ("success", None, "") and not flow_res.get("access_token") and not flow_res.get("refresh_token"):
-            st = str(flow_res.get("status") or "error")
-            err = str(flow_res.get("error") or flow_res.get("label") or st)
-            _persist_oauth_feat(st, err, req_ms, flow_res.get("trace"))
-            task.mark_done(email, {**flow_res, "req_ms": req_ms})
-            return
 
-        at = flow_res.get("access_token") or cred.get("access_token") or ""
-        rt = flow_res.get("refresh_token") or ""
-        it = flow_res.get("id_token") or cred.get("id_token") or ""
-        account_id = flow_res.get("account_id") or ""
-        plan_type = flow_res.get("plan_type") or "free"
-        exp_iso = flow_res.get("exp_iso") or ""
+    req_ms = int((time.time() - started_ts) * 1000)
 
-        # 构造 CPA 格式 JSON
-        cpa_data = {
-            "type": "codex",
-            "email": email,
-            "access_token": at,
-            "refresh_token": rt,
-            "id_token": it,
-            "account_id": account_id,
-            "plan_type": plan_type,
-            "last_refresh": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "expired": exp_iso,
-        }
-
-        # 构造 Sub2API 格式 JSON
-        sub2_account = cpa_credential_to_sub2_account(cpa_data)
-
-        # 落盘本地文件
-        cpa_file = CPA_DIR / f"codex-{email}.json"
-        sub2_file = SUB2_DIR / f"sub2-{email}.json"
-        cpa_file.write_text(json.dumps(cpa_data, ensure_ascii=False, indent=2), encoding="utf-8")
-        sub2_file.write_text(json.dumps(sub2_account, ensure_ascii=False, indent=2), encoding="utf-8")
-
-        phone_verified = bool(flow_res.get("phone_verified") or (flow_res.get("trace") or {}).get("phone_verified"))
-        verified_phone = str(flow_res.get("verified_phone") or (flow_res.get("trace") or {}).get("sms_phone_prefix") or "")
-        auth_method = "phone_verified" if phone_verified else "no_phone_needed"
-        oauth_status = "success_phone" if phone_verified else "success_direct"
-
-        # 回写数据库 registered 表
-        db.update_registered_oauth(
-            email=email,
-            access_token=at,
-            refresh_token=rt,
-            id_token=it,
-            cookie_header=cred.get("cookie_header") or "",
-            oauth_status=oauth_status,
-            extra_data={
-                "oauth_export": {
-                    "status": oauth_status,
-                    "auth_method": auth_method,
-                    "phone_verified": phone_verified,
-                    "verified_phone": verified_phone,
-                    "exported_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                    "plan_type": plan_type,
-                    "account_id": account_id,
-                }
-            },
-        )
-
+    # 检查是否需接码
+    if flow_res.get("status") == "need_phone":
         res = {
-            "status": "success",
-            "label": f"成功 ({plan_type.upper()})",
-            "access_token_len": len(at),
-            "refresh_token_len": len(rt),
-            "id_token_len": len(it),
-            "plan_type": plan_type,
-            "account_id": account_id,
-            "cpa": cpa_data,
-            "sub2api": sub2_account,
+            "status": "need_phone",
+            "label": "需接码(已跳过)",
+            "error": "OpenAI 要求绑定手机号 (已跳过)",
             "req_ms": req_ms,
         }
-        extra_trace = flow_res.get("trace") if isinstance(flow_res.get("trace"), dict) else {}
-        extra_trace["plan_type"] = plan_type
-        _persist_oauth_feat("success", "", req_ms, extra_trace)
-        task.add_email_log(email, f"✅ OAuth 导出成功 ({req_ms}ms): RT={len(rt)} 字符, Plan={plan_type}, AccountId={account_id[:8]}...")
+        db.update_registered_oauth_status(email, "need_phone", "需要手机号验证 (已跳过)")
+        _persist_oauth_feat("need_phone", "OpenAI 要求绑定手机号 (已跳过)", req_ms, flow_res.get("trace"))
         task.mark_done(email, res)
+        return
+    if flow_res.get("status") == "cancelled":
+        _persist_oauth_feat("cancelled", "任务被中止", req_ms, flow_res.get("trace"))
+        task.mark_done(email, flow_res)
+        return
+    if flow_res.get("status") not in ("success", None, "") and not flow_res.get("access_token") and not flow_res.get("refresh_token"):
+        st = str(flow_res.get("status") or "error")
+        err = str(flow_res.get("error") or flow_res.get("label") or st)
+        _persist_oauth_feat(st, err, req_ms, flow_res.get("trace"))
+        task.mark_done(email, {**flow_res, "req_ms": req_ms})
+        return
 
-    except Exception as e:
-        req_ms = int((time.time() - started_ts) * 1000)
-        err_str = str(e)
-        if ("add_phone" in err_str.lower() or "手机" in err_str) and not sms_enabled:
-            res = {"status": "need_phone", "label": "需接码(已跳过)", "error": "需要手机号验证 (已跳过)", "req_ms": req_ms}
-            db.update_registered_oauth_status(email, "need_phone", "需要手机号验证 (已跳过)")
-            task.add_email_log(email, "检测到需要手机号验证 (未开启自动接码，已跳过)")
-            _persist_oauth_feat("need_phone", "需要手机号验证 (已跳过)", req_ms)
-        else:
-            is_sms_fail = sms_enabled and ("接码" in err_str or "NO_NUMBERS" in err_str or "短信" in err_str)
-            is_business_fail = is_sms_fail or any(k in err_str for k in ("密码", "password", "封禁", "banned", "取件凭证", "未找到", "400", "invalid_grant", "access_denied"))
-            fail_status = "failed" if is_business_fail else "error"
-            fail_label = "接码失败" if is_sms_fail else ("授权失败" if is_business_fail else "授权异常")
-            res = {"status": fail_status, "label": fail_label, "error": err_str, "req_ms": req_ms}
-            db.update_registered_oauth_status(email, fail_status, err_str)
-            task.add_email_log(email, f"OAuth {fail_label} ({req_ms}ms): {err_str}")
-            _persist_oauth_feat(fail_status, err_str, req_ms)
-        task.mark_done(email, res)
+    at = flow_res.get("access_token") or cred.get("access_token") or ""
+    rt = flow_res.get("refresh_token") or ""
+    it = flow_res.get("id_token") or cred.get("id_token") or ""
+    account_id = flow_res.get("account_id") or ""
+    plan_type = flow_res.get("plan_type") or "free"
+    exp_iso = flow_res.get("exp_iso") or ""
+
+    # 构造 CPA 格式 JSON
+    cpa_data = {
+        "type": "codex",
+        "email": email,
+        "access_token": at,
+        "refresh_token": rt,
+        "id_token": it,
+        "account_id": account_id,
+        "plan_type": plan_type,
+        "last_refresh": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "expired": exp_iso,
+    }
+
+    # 构造 Sub2API 格式 JSON
+    sub2_account = cpa_credential_to_sub2_account(cpa_data)
+
+    # 落盘本地文件
+    cpa_file = CPA_DIR / f"codex-{email}.json"
+    sub2_file = SUB2_DIR / f"sub2-{email}.json"
+    cpa_file.write_text(json.dumps(cpa_data, ensure_ascii=False, indent=2), encoding="utf-8")
+    sub2_file.write_text(json.dumps(sub2_account, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    phone_verified = bool(flow_res.get("phone_verified") or (flow_res.get("trace") or {}).get("phone_verified"))
+    verified_phone = str(flow_res.get("verified_phone") or (flow_res.get("trace") or {}).get("sms_phone_prefix") or "")
+    auth_method = "phone_verified" if phone_verified else "no_phone_needed"
+    oauth_status = "success_phone" if phone_verified else "success_direct"
+
+    # 回写数据库 registered 表
+    db.update_registered_oauth(
+        email=email,
+        access_token=at,
+        refresh_token=rt,
+        id_token=it,
+        cookie_header=cred.get("cookie_header") or "",
+        oauth_status=oauth_status,
+        extra_data={
+            "oauth_export": {
+                "status": oauth_status,
+                "auth_method": auth_method,
+                "phone_verified": phone_verified,
+                "verified_phone": verified_phone,
+                "exported_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "plan_type": plan_type,
+                "account_id": account_id,
+            }
+        },
+    )
+
+    res = {
+        "status": "success",
+        "label": f"成功 ({plan_type.upper()})",
+        "access_token_len": len(at),
+        "refresh_token_len": len(rt),
+        "id_token_len": len(it),
+        "plan_type": plan_type,
+        "account_id": account_id,
+        "cpa": cpa_data,
+        "sub2api": sub2_account,
+        "req_ms": req_ms,
+    }
+    extra_trace = flow_res.get("trace") if isinstance(flow_res.get("trace"), dict) else {}
+    extra_trace["plan_type"] = plan_type
+    _persist_oauth_feat("success", "", req_ms, extra_trace)
+    task.add_email_log(email, f"✅ OAuth 导出成功 ({req_ms}ms): RT={len(rt)} 字符, Plan={plan_type}, AccountId={account_id[:8]}...")
+    task.mark_done(email, res)
 
 
 def _worker_loop(task: OAuthExportTask, email_queue: queue.Queue) -> None:
@@ -2109,6 +2169,92 @@ def start(emails: list[str], config: dict) -> str:
     t = threading.Thread(target=_run, daemon=True, name=f"OAuthExportTaskRunner-{task_id}")
     t.start()
     return task_id
+
+
+def retry(task_id: str, emails: Optional[list[str]] = None, new_config: Optional[dict] = None) -> dict:
+    """重新授权失败、异常或指定的账号（支持批量或单个重新授权）。"""
+    with _tasks_lock:
+        task = _tasks.get(task_id)
+    if not task:
+        raise ValueError(f"未找到对应任务实例: {task_id}")
+
+    with task._lock:
+        if new_config:
+            task.config.update(new_config)
+            if "proxies" in new_config:
+                task.proxies = new_config.get("proxies") or []
+
+        if emails:
+            target_emails = [e.strip().lower() for e in emails if e.strip().lower() in task.items]
+        else:
+            # 默认筛选未成功的账号（失败、异常、需要接码已跳过、已取消）
+            target_emails = [
+                e for e, it in task.items.items()
+                if it.get("status") in ("failed", "error", "cancelled")
+                or (it.get("result") and it.get("result", {}).get("status") != "success")
+            ]
+
+        if not target_emails:
+            return {"ok": False, "message": "当前没有需要重试的失败账号"}
+
+        task.cancelled = False
+        task.finished_at = 0.0
+
+        for e in target_emails:
+            it = task.items[e]
+            old_res = it.get("result") or {}
+            old_st = old_res.get("status") or it.get("status") or "error"
+            if old_st in task.stats and task.stats[old_st] > 0:
+                task.stats[old_st] -= 1
+            it["status"] = "pending"
+            it["step"] = "pending"
+            it["step_text"] = "排队重新授权中..."
+            it["result"] = None
+            it["started_at"] = 0.0
+            it["finished_at"] = 0.0
+            it["elapsed"] = 0.0
+            task.done_count = max(0, task.done_count - 1)
+            try:
+                task.queue.put({
+                    "kind": "progress",
+                    "email": e,
+                    "status": "pending",
+                    "step": "pending",
+                    "step_text": "排队重新授权中...",
+                    "result": None,
+                    "elapsed": 0,
+                })
+            except Exception:
+                pass
+
+    workers = max(1, min(20, int(task.config.get("workers") or 5)))
+    email_queue: queue.Queue = queue.Queue()
+    for em in target_emails:
+        email_queue.put(em)
+
+    def _run_retry():
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix=f"oauth_retry_{task_id}") as pool:
+            futures = [pool.submit(_worker_loop, task, email_queue) for _ in range(workers)]
+            for f in futures:
+                try:
+                    f.result()
+                except Exception as e:
+                    logger.warning(f"[oauth_export] Retry Worker 异常: {e}")
+
+        task.finished_at = time.time()
+        try:
+            task.queue.put({"kind": "end", "task_id": task_id, "stats": task.stats})
+        except Exception:
+            pass
+
+    t = threading.Thread(target=_run_retry, daemon=True, name=f"OAuthRetryRunner-{task_id}")
+    t.start()
+
+    return {
+        "ok": True,
+        "task_id": task_id,
+        "retrying_count": len(target_emails),
+    }
 
 
 def stop(task_id: str) -> bool:

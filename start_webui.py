@@ -80,27 +80,44 @@ def get_listening_pids(port: int) -> set[int]:
     return pids
 
 
+def is_pid_alive(pid: int) -> bool:
+    """检查指定 PID 在系统中是否依然存活。"""
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except (ProcessLookupError, OSError):
+        return False
+
+
 def kill_process_tree(pid: int) -> bool:
-    """终结指定进程及其子进程树。"""
+    """终结指定进程及其子进程树，并同步等待其在操作系统中彻底退出。"""
     if pid <= 0 or pid == os.getpid():
         return False
     if sys.platform.startswith("win"):
         try:
-            res = subprocess.run(
+            subprocess.run(
                 ["taskkill", "/F", "/T", "/PID", str(pid)],
                 capture_output=True,
                 text=True,
-                timeout=3,
+                timeout=5,
             )
-            return res.returncode == 0 or "SUCCESS" in (res.stdout or "").upper()
         except Exception:
-            return False
+            pass
     else:
         try:
             os.kill(pid, getattr(signal, "SIGKILL", 9))
-            return True
         except Exception:
-            return False
+            pass
+
+    # 同步等待进程彻底退出（最多等 3 秒）
+    for _ in range(15):
+        if not is_pid_alive(pid):
+            return True
+        time.sleep(0.2)
+
+    return not is_pid_alive(pid)
 
 
 def stop_webui(port: int = 8765) -> bool:
@@ -124,34 +141,35 @@ def stop_webui(port: int = 8765) -> bool:
     listening_pids = get_listening_pids(port)
     pids_to_kill.update(listening_pids)
 
-    # 3. 统一强制终结
-    for pid in pids_to_kill:
-        if kill_process_tree(pid):
-            killed += 1
-            print(f"  [-] 已终结服务进程 PID: {pid}")
+    # 3. 统一强制终结并等待退出
+    for pid in list(pids_to_kill):
+        if is_pid_alive(pid):
+            if kill_process_tree(pid):
+                killed += 1
+                print(f"  [-] 已终结服务进程 PID: {pid}")
 
-    # 4. 等待 Windows 操作系统内核释放套接字
-    if is_port_in_use(port):
-        for _ in range(8):
-            time.sleep(0.15)
-            if not is_port_in_use(port):
-                break
+    # 4. 等待套接字与监听状态彻底解脱（最多 3 秒）
+    for _ in range(15):
+        if not get_listening_pids(port) and not is_port_in_use(port):
+            break
+        time.sleep(0.2)
 
-    # 5. 校验结果：只要已无任何监听进程且端口可复用，即代表成功关闭
+    # 5. 校验结果
     remaining_listeners = get_listening_pids(port)
-    if not remaining_listeners and not is_port_in_use(port):
+    if remaining_listeners:
+        for p in remaining_listeners:
+            kill_process_tree(p)
+        time.sleep(0.5)
+        remaining_listeners = get_listening_pids(port)
+
+    if not remaining_listeners:
         if killed > 0:
-            print(f"  [OK] WebUI 服务已成功关闭（端口 {port} 已释放）！\n")
+            print(f"  [OK] WebUI 服务已成功关闭（端口 {port} 已完全释放）！\n")
         else:
             print(f"  [OK] WebUI 服务未运行，端口 {port} 空闲可用。\n")
         return True
     else:
-        if remaining_listeners:
-            for p in remaining_listeners:
-                kill_process_tree(p)
-            print(f"  [OK] WebUI 服务已强制关闭（终结残留 PID: {list(remaining_listeners)}）！\n")
-            return True
-        print(f"  [!] 警告：端口 {port} 仍被其他程序占用，请检查系统。\n")
+        print(f"  [!] 警告：端口 {port} 仍被其他程序占用 (PID: {list(remaining_listeners)})，请检查系统。\n")
         return False
 
 
@@ -170,19 +188,21 @@ def main():
 
     # 启动前先清理一次可能残留的同端口旧服务并确保端口完全就绪
     stop_webui(args.port)
-    if is_port_in_use(args.port, args.host):
-        print(f"[*] 检测到端口 {args.port} 仍有残留监听，正在进行最终查杀与释放...")
-        for p in get_listening_pids(args.port):
-            kill_process_tree(p)
-        for _ in range(8):
-            time.sleep(0.15)
-            if not is_port_in_use(args.port, args.host):
+    if get_listening_pids(args.port) or is_port_in_use(args.port, args.host):
+        print(f"[*] 等待端口 {args.port} 内核套接字完全回收释放...")
+        for _ in range(15):
+            for p in get_listening_pids(args.port):
+                kill_process_tree(p)
+            time.sleep(0.2)
+            if not get_listening_pids(args.port) and not is_port_in_use(args.port, args.host):
                 break
         else:
-            print(f"\n[!] 错误：端口 {args.port} 被其他程序占用且无法释放。")
-            print(f"    请检查是否有其他软件占用了该端口，或尝试指定其他端口启动：")
-            print(f"    python start_webui.py --port 8766\n")
-            return
+            # 若无任何监听进程，仅处于短时 TIME_WAIT，允许尝试直接启动
+            if get_listening_pids(args.port):
+                print(f"\n[!] 错误：端口 {args.port} 被其他程序占用且无法释放 (PID: {list(get_listening_pids(args.port))})。")
+                print(f"    请检查是否有其他软件占用了该端口，或尝试指定其他端口启动：")
+                print(f"    python start_webui.py --port 8766\n")
+                return
 
     # 确保依赖装了
     try:
@@ -226,6 +246,11 @@ def main():
             reload=args.reload,
             log_level="info",
         )
+    except Exception as e:
+        print(f"\n[!] WebUI 启动失败: {e}")
+        if "10048" in str(e) or "address already in use" in str(e).lower():
+            print(f"    端口 {args.port} 冲突，请尝试指定其他端口启动：")
+            print(f"    python start_webui.py --port 8766\n")
     finally:
         try:
             pid_file.unlink(missing_ok=True)

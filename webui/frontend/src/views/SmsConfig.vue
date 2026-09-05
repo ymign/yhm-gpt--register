@@ -1,6 +1,6 @@
 <script setup>
 import { computed, onActivated, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   Setting,
   Check,
@@ -14,14 +14,34 @@ import {
   CircleCheckFilled,
   Location,
   Money,
+  Ticket,
+  Plus,
+  Delete,
+  Refresh,
+  CopyDocument,
+  WarningFilled,
+  Document,
 } from '@element-plus/icons-vue'
-import { getSmsConfig, saveSmsConfig, testSms, getSmsAllCountries, getSmsPriceTiers } from '@/api/settings'
+import {
+  getSmsConfig,
+  saveSmsConfig,
+  testSms,
+  getSmsAllCountries,
+  getSmsPriceTiers,
+  getSmsCdkPool,
+  getSmsCdkPoolStats,
+  importSmsCdks,
+  updateSmsCdk,
+  deleteSmsCdk,
+  clearSmsCdkPool,
+} from '@/api/settings'
 import FooterToolbar from '@/components/FooterToolbar.vue'
 
 const enabled = ref(false)
 const provider = ref('smsbower')
 const apiKey = ref('')
 const apiKeyPh = ref('粘贴接码平台 API Key')
+const cdkUrl = ref('https://ndk.cc.cd')
 const country = ref('150')
 const service = ref('dr')
 const maxPrice = ref('')
@@ -42,6 +62,173 @@ const saving = ref(false)
 const testing = ref(false)
 const priceTiers = ref([])
 const priceTiersLoading = ref(false)
+
+// ── CDK 卡密号池状态与管理 ──
+const cdkPoolItems = ref([])
+const cdkPoolTotal = ref(0)
+const cdkPoolLoading = ref(false)
+const cdkPoolPage = ref(1)
+const cdkPoolLimit = ref(20)
+const cdkPoolStatus = ref('all')
+const cdkPoolSearch = ref('')
+const cdkPoolStats = ref({
+  total: 0,
+  available: 0,
+  exhausted: 0,
+  expired: 0,
+  total_success_codes: 0,
+})
+
+// 批量导入弹窗
+const showImportModal = ref(false)
+const importing = ref(false)
+const importForm = ref({
+  cdks: '',
+  max_use_mode: 'multi', // multi(多次卡/不限次) | single(单次卡) | custom(自定义N次)
+  custom_max_use: 3,
+  notes: '',
+})
+
+async function loadCdkPool() {
+  cdkPoolLoading.value = true
+  try {
+    const res = await getSmsCdkPool({
+      status: cdkPoolStatus.value,
+      search: cdkPoolSearch.value.trim(),
+      limit: cdkPoolLimit.value,
+      offset: (cdkPoolPage.value - 1) * cdkPoolLimit.value,
+    })
+    cdkPoolItems.value = res.items || []
+    cdkPoolTotal.value = res.total || 0
+  } catch (e) {
+    console.error('加载 CDK 号池失败:', e)
+  } finally {
+    cdkPoolLoading.value = false
+  }
+}
+
+async function loadCdkStats() {
+  try {
+    const res = await getSmsCdkPoolStats()
+    if (res.stats) {
+      cdkPoolStats.value = res.stats
+    }
+  } catch (e) {
+    console.error('加载 CDK 号池统计失败:', e)
+  }
+}
+
+function openImportModal() {
+  importForm.value = {
+    cdks: '',
+    max_use_mode: 'multi',
+    custom_max_use: 3,
+    notes: '',
+  }
+  showImportModal.value = true
+}
+
+async function handleImportSubmit() {
+  const text = importForm.value.cdks.trim()
+  if (!text) {
+    ElMessage.warning('请输入至少一行 CDK 卡密')
+    return
+  }
+
+  let maxUse = 0
+  if (importForm.value.max_use_mode === 'single') {
+    maxUse = 1
+  } else if (importForm.value.max_use_mode === 'custom') {
+    maxUse = Math.max(1, parseInt(importForm.value.custom_max_use || 3))
+  } else {
+    maxUse = 0 // 多次卡/长期不限次
+  }
+
+  importing.value = true
+  try {
+    const res = await importSmsCdks({
+      cdks: text,
+      max_use_count: maxUse,
+      notes: importForm.value.notes.trim(),
+    })
+    const r = res.result || {}
+    ElMessage.success(
+      `成功导入 ${r.inserted || 0} 个新卡密，更新 ${r.updated || 0} 个现有卡密 (模式: ${
+        maxUse === 0 ? '多次长期卡' : `${maxUse}次限制卡`
+      })`
+    )
+    showImportModal.value = false
+    cdkPoolPage.value = 1
+    await Promise.all([loadCdkPool(), loadCdkStats()])
+  } catch (e) {
+    ElMessage.error(e.message || '导入失败')
+  } finally {
+    importing.value = false
+  }
+}
+
+async function handleDeleteCdk(row) {
+  try {
+    await ElMessageBox.confirm(`确定要从号池中删除卡密【${row.cdk}】吗？`, '删除确认', {
+      type: 'warning',
+      confirmButtonText: '确定删除',
+      cancelButtonText: '取消',
+    })
+    await deleteSmsCdk(row.id)
+    ElMessage.success('已从号池删除卡密')
+    await Promise.all([loadCdkPool(), loadCdkStats()])
+  } catch (e) {
+    if (e !== 'cancel') ElMessage.error(e.message || '删除失败')
+  }
+}
+
+async function handleSetMode(row, maxUse) {
+  try {
+    await updateSmsCdk(row.id, {
+      max_use_count: maxUse,
+      status: maxUse === 0 || row.use_count < maxUse ? 'available' : 'exhausted',
+    })
+    ElMessage.success(`卡密已变更为: ${maxUse === 0 ? '多次卡 (长期复用)' : '单次卡 (接码1次用尽)'}`)
+    await Promise.all([loadCdkPool(), loadCdkStats()])
+  } catch (e) {
+    ElMessage.error(e.message || '修改失败')
+  }
+}
+
+async function handleResetAvailable(row) {
+  try {
+    await updateSmsCdk(row.id, { status: 'available' })
+    ElMessage.success(`卡密【${row.cdk}】已手动重置为可用就绪状态`)
+    await Promise.all([loadCdkPool(), loadCdkStats()])
+  } catch (e) {
+    ElMessage.error(e.message || '重置失败')
+  }
+}
+
+async function handleClearPool(status) {
+  const statusLabel = status === 'all' ? '全部卡密' : status === 'exhausted' ? '已用尽卡密' : '已失效/到期卡密'
+  try {
+    await ElMessageBox.confirm(`确定要彻底清理号池中的【${statusLabel}】吗？此操作无法撤销。`, '清理确认', {
+      type: 'warning',
+      confirmButtonText: '立即清理',
+      cancelButtonText: '取消',
+    })
+    const res = await clearSmsCdkPool({ status })
+    ElMessage.success(`清理完成，已清除 ${res.cleared || 0} 个卡密`)
+    cdkPoolPage.value = 1
+    await Promise.all([loadCdkPool(), loadCdkStats()])
+  } catch (e) {
+    if (e !== 'cancel') ElMessage.error(e.message || '清理失败')
+  }
+}
+
+function handleCopy(text, label = '内容') {
+  if (!text) return
+  navigator.clipboard
+    .writeText(text)
+    .then(() => ElMessage.success(`${label}已复制到剪贴板`))
+    .catch(() => ElMessage.error('复制失败，请手动选择复制'))
+}
 
 const countryOptions = computed(() =>
   allCountries.value.map((c) => {
@@ -70,6 +257,10 @@ async function loadPriceTiers() {
 }
 
 async function loadCountries(p) {
+  if (p === 'cdk_sms') {
+    allCountries.value = []
+    return
+  }
   countriesLoading.value = true
   try {
     const r = await getSmsAllCountries(p || provider.value)
@@ -85,10 +276,22 @@ async function load() {
   try {
     const { config } = await getSmsConfig()
     provider.value = config.sms_provider || 'smsbower'
-    await loadCountries(provider.value)
+    cdkUrl.value = config.sms_cdk_url || 'https://ndk.cc.cd'
+    if (provider.value !== 'cdk_sms') {
+      await loadCountries(provider.value)
+    } else {
+      await Promise.all([loadCdkPool(), loadCdkStats()])
+    }
     enabled.value = config.sms_enabled === '1'
     apiKey.value = ''
-    apiKeyPh.value = config.sms_api_key === '***' ? '已设置（留空不修改）' : '粘贴接码平台 API Key'
+    if (provider.value === 'cdk_sms') {
+      apiKeyPh.value =
+        config.sms_api_key === '***'
+          ? '已设定固定卡密（留空则全自动走号池）'
+          : '全自动走号池调度（亦可填单个静态卡密）'
+    } else {
+      apiKeyPh.value = config.sms_api_key === '***' ? '已设置（留空不修改）' : '粘贴接码平台 API Key'
+    }
     country.value = config.sms_country || '150'
     service.value = config.sms_service || 'dr'
     maxPrice.value = config.sms_max_price || ''
@@ -117,17 +320,26 @@ async function onCountryChange() {
 
 async function onProviderChange() {
   allowed.value = []
-  await loadCountries(provider.value)
-  await loadPriceTiers()
+  if (provider.value === 'cdk_sms') {
+    apiKeyPh.value = '全自动走号池调度（亦可填单个静态卡密）'
+    allCountries.value = []
+    priceTiers.value = []
+    await Promise.all([loadCdkPool(), loadCdkStats()])
+  } else {
+    apiKeyPh.value = '粘贴接码平台 API Key'
+    await loadCountries(provider.value)
+    await loadPriceTiers()
+  }
 }
 
-async function save() {
+async function save(notify = true) {
   saving.value = true
   try {
     await saveSmsConfig({
       sms_enabled: enabled.value ? '1' : '0',
       sms_provider: provider.value,
       sms_api_key: apiKey.value.trim() || '***',
+      sms_cdk_url: cdkUrl.value.trim() || 'https://ndk.cc.cd',
       sms_country: String(country.value || '').trim() || '52',
       sms_service: service.value.trim() || 'dr',
       sms_max_price: maxPrice.value.trim(),
@@ -142,10 +354,10 @@ async function save() {
       sms_max_phone_attempts: maxPhoneAttempts.value.trim(),
       sms_per_phone_timeout: perPhoneTimeout.value.trim() || '80',
     })
-    ElMessage.success('SMS 配置保存成功')
+    if (notify) ElMessage.success('SMS 配置保存成功')
     setTimeout(load, 300)
   } catch (e) {
-    ElMessage.error(e.message)
+    if (notify) ElMessage.error(e.message)
   } finally {
     saving.value = false
   }
@@ -154,10 +366,16 @@ async function save() {
 async function test() {
   testing.value = true
   try {
+    if (apiKey.value.trim()) {
+      await save(false)
+    }
     const r = await testSms()
-    ElMessage.success(r.message || '接码平台连通正常，余额充足')
+    ElMessage.success(r.message || '接码平台连通正常')
+    if (provider.value === 'cdk_sms') {
+      await Promise.all([loadCdkPool(), loadCdkStats()])
+    }
   } catch (e) {
-    ElMessage.error(e.message)
+    ElMessage.error(e.message || '测试连接失败')
   } finally {
     testing.value = false
   }
@@ -223,32 +441,324 @@ load()
                       <span class="radio-label-bold">HeroSMS</span>
                       <span class="radio-label-sub">20分退</span>
                     </el-radio-button>
+                    <el-radio-button value="cdk_sms">
+                      <span class="radio-label-bold">🎟️ CDK 卡密兑换</span>
+                      <span class="radio-label-sub">ndk.cc.cd</span>
+                    </el-radio-button>
                   </el-radio-group>
                 </div>
               </el-col>
               <el-col :xs="24" :sm="14">
                 <div class="field-col">
                   <div class="label-with-action">
-                    <span class="field-label">接码平台 API 密钥 (API Key)</span>
+                    <span class="field-label">
+                      {{ provider === 'cdk_sms' ? 'CDK 卡密兑换码 (支持单卡密或换行批量填入)' : '接码平台 API 密钥 (API Key)' }}
+                    </span>
                     <el-button size="small" type="primary" link :loading="testing" @click="test">
-                      <el-icon><Wallet /></el-icon> 测试连通与余额
+                      <el-icon><Wallet /></el-icon> {{ provider === 'cdk_sms' ? '测试卡密并兑换' : '测试连通与余额' }}
                     </el-button>
                   </div>
                   <el-input
                     v-model="apiKey"
-                    type="password"
-                    show-password
+                    :type="provider === 'cdk_sms' ? 'text' : 'password'"
+                    :show-password="provider !== 'cdk_sms'"
                     :placeholder="apiKeyPh"
-                    :prefix-icon="Lock"
+                    :prefix-icon="provider === 'cdk_sms' ? Ticket : Lock"
                     clearable
                   />
                 </div>
               </el-col>
             </el-row>
+
+            <!-- CDK 专属平台地址与快捷填充栏 -->
+            <el-row v-if="provider === 'cdk_sms'" :gutter="14" class="field-grid" style="margin-top: 10px;">
+              <el-col :xs="24" :sm="12">
+                <div class="field-col">
+                  <span class="field-label">CDK 平台接口基地址</span>
+                  <el-input v-model="cdkUrl" placeholder="https://ndk.cc.cd" clearable />
+                </div>
+              </el-col>
+              <el-col :xs="24" :sm="12">
+                <div class="field-col">
+                  <span class="field-label">快捷预设操作</span>
+                  <div style="display: flex; gap: 8px; margin-top: 4px;">
+                    <el-button size="small" type="success" plain @click="apiKey = 'SMS-59B1-A897'; save(false)">
+                      填入当前卡密: SMS-59B1-A897
+                    </el-button>
+                  </div>
+                </div>
+              </el-col>
+            </el-row>
           </div>
 
-          <!-- 卡片 2: 首选国家与号池档位精确锁定 -->
-          <div class="card-section">
+          <!-- 卡片 2 (CDK专属工作台 或 常规国家号池锁定) -->
+          <div v-if="provider === 'cdk_sms'" class="cdk-pool-container">
+            <!-- 空池严重警告条 -->
+            <el-alert
+              v-if="cdkPoolStats.available === 0"
+              type="error"
+              show-icon
+              :closable="false"
+              class="empty-pool-alert"
+            >
+              <template #title>
+                <div class="empty-pool-title">
+                  <span>⚠️ 当前 CDK 号池已耗尽！可用卡密为 0 张</span>
+                  <el-button size="small" type="danger" plain @click="openImportModal">
+                    <el-icon><Plus /></el-icon> 立即批量导入新卡密
+                  </el-button>
+                </div>
+              </template>
+              <div class="empty-pool-desc">
+                当号池无可用卡密时，若注册或 OAuth 导出命中手机号风控（add-phone），系统将无法进行短信验证并自动中断报错。请导入可用卡密！
+              </div>
+            </el-alert>
+
+            <!-- 号池 5 大核心 KPI 磁贴 -->
+            <div class="cdk-kpi-grid">
+              <div class="kpi-card total-card">
+                <div class="kpi-icon"><Ticket /></div>
+                <div class="kpi-body">
+                  <div class="kpi-num">{{ cdkPoolStats.total }}</div>
+                  <div class="kpi-label">号池总收纳</div>
+                </div>
+              </div>
+              <div class="kpi-card available-card" :class="{ 'is-zero': cdkPoolStats.available === 0 }">
+                <div class="kpi-icon"><CircleCheckFilled /></div>
+                <div class="kpi-body">
+                  <div class="kpi-num">{{ cdkPoolStats.available }}</div>
+                  <div class="kpi-label">当前就绪可用</div>
+                </div>
+              </div>
+              <div class="kpi-card exhausted-card">
+                <div class="kpi-icon"><WarningFilled /></div>
+                <div class="kpi-body">
+                  <div class="kpi-num">{{ cdkPoolStats.exhausted }}</div>
+                  <div class="kpi-label">次数已用尽</div>
+                </div>
+              </div>
+              <div class="kpi-card expired-card">
+                <div class="kpi-icon"><Lock /></div>
+                <div class="kpi-body">
+                  <div class="kpi-num">{{ cdkPoolStats.expired }}</div>
+                  <div class="kpi-label">平台到期/失效</div>
+                </div>
+              </div>
+              <div class="kpi-card success-card">
+                <div class="kpi-icon"><Check /></div>
+                <div class="kpi-body">
+                  <div class="kpi-num">{{ cdkPoolStats.total_success_codes }}</div>
+                  <div class="kpi-label">累计成功接码</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 卡密列表与操作工作台 -->
+            <div class="card-section cdk-table-card">
+              <div class="section-header-row">
+                <div class="section-title-wrap">
+                  <el-icon class="section-icon text-accent"><Ticket /></el-icon>
+                  <span class="section-heading">CDK 号池卡密明细与调度台</span>
+                </div>
+                <div class="table-actions-right">
+                  <el-radio-group v-model="cdkPoolStatus" size="small" @change="cdkPoolPage = 1; loadCdkPool()">
+                    <el-radio-button value="all">全部 ({{ cdkPoolStats.total }})</el-radio-button>
+                    <el-radio-button value="available">可用 ({{ cdkPoolStats.available }})</el-radio-button>
+                    <el-radio-button value="exhausted">已用尽 ({{ cdkPoolStats.exhausted }})</el-radio-button>
+                    <el-radio-button value="expired">已失效 ({{ cdkPoolStats.expired }})</el-radio-button>
+                  </el-radio-group>
+                  <el-input
+                    v-model="cdkPoolSearch"
+                    size="small"
+                    placeholder="搜索 CDK / 号码 / 地区"
+                    clearable
+                    style="width: 170px"
+                    @change="cdkPoolPage = 1; loadCdkPool()"
+                    @clear="cdkPoolPage = 1; loadCdkPool()"
+                  />
+                  <el-button size="small" :loading="cdkPoolLoading" @click="loadCdkPool(); loadCdkStats()">
+                    <el-icon><Refresh /></el-icon>
+                  </el-button>
+                  <el-button size="small" type="primary" class="glow-btn" @click="openImportModal">
+                    <el-icon><Plus /></el-icon> 批量导入卡密
+                  </el-button>
+                  <el-dropdown trigger="click">
+                    <el-button size="small" plain>
+                      清理 <el-icon class="el-icon--right"><Setting /></el-icon>
+                    </el-button>
+                    <template #dropdown>
+                      <el-dropdown-menu>
+                        <el-dropdown-item @click="handleClearPool('expired')">清理失效/到期卡密</el-dropdown-item>
+                        <el-dropdown-item @click="handleClearPool('exhausted')">清理已用尽卡密</el-dropdown-item>
+                        <el-dropdown-item divided style="color: var(--el-color-danger)" @click="handleClearPool('all')">
+                          清空号池全部卡密
+                        </el-dropdown-item>
+                      </el-dropdown-menu>
+                    </template>
+                  </el-dropdown>
+                </div>
+              </div>
+
+              <!-- 卡密数据表格 -->
+              <el-table
+                v-loading="cdkPoolLoading"
+                :data="cdkPoolItems"
+                stripe
+                size="small"
+                class="cdk-data-table"
+                empty-text="暂无卡密，请点击右上角【批量导入卡密】"
+              >
+                <el-table-column prop="id" label="#" width="50" align="center" />
+                <el-table-column label="CDK 兑换码" min-width="170">
+                  <template #default="{ row }">
+                    <div class="cdk-code-cell">
+                      <span class="mono-cdk-text">{{ row.cdk }}</span>
+                      <el-button link size="small" @click="handleCopy(row.cdk, 'CDK卡密')">
+                        <el-icon><CopyDocument /></el-icon>
+                      </el-button>
+                    </div>
+                  </template>
+                </el-table-column>
+                <el-table-column label="使用模式" width="160">
+                  <template #default="{ row }">
+                    <el-tag v-if="row.max_use_count === 0" size="small" type="success" effect="dark">
+                      多次长期卡 (不限次)
+                    </el-tag>
+                    <el-tag v-else-if="row.max_use_count === 1" size="small" type="info" effect="plain">
+                      单次卡 (接1次即满)
+                    </el-tag>
+                    <el-tag v-else size="small" type="warning" effect="plain">
+                      限制卡 (上限{{ row.max_use_count }}次)
+                    </el-tag>
+                  </template>
+                </el-table-column>
+                <el-table-column label="成功接码次数" width="130" align="center">
+                  <template #default="{ row }">
+                    <span class="use-count-badge">
+                      <b>{{ row.use_count }}</b> 次
+                      <span class="count-sub" v-if="row.max_use_count > 0">/ {{ row.max_use_count }}</span>
+                      <span class="count-sub text-success" v-else>/ 长期</span>
+                    </span>
+                  </template>
+                </el-table-column>
+                <el-table-column label="状态" width="110" align="center">
+                  <template #default="{ row }">
+                    <el-tag v-if="row.status === 'available'" size="small" type="success">就绪可用</el-tag>
+                    <el-tag v-else-if="row.status === 'exhausted'" size="small" type="warning">已用尽</el-tag>
+                    <el-tag v-else-if="row.status === 'expired'" size="small" type="danger">已失效/到期</el-tag>
+                    <el-tag v-else size="small">{{ row.status }}</el-tag>
+                  </template>
+                </el-table-column>
+                <el-table-column label="分配手机号 / 地区" min-width="190">
+                  <template #default="{ row }">
+                    <div v-if="row.phone_number" class="phone-cell">
+                      <span class="mono-phone">{{ row.phone_number }}</span>
+                      <el-button link size="small" @click="handleCopy(row.phone_number, '手机号')">
+                        <el-icon><CopyDocument /></el-icon>
+                      </el-button>
+                      <el-tag size="small" type="info" class="region-badge" v-if="row.region_label">
+                        {{ row.region_label }}
+                      </el-tag>
+                    </div>
+                    <span v-else class="text-muted-xs">未分配 (接码时自动兑换)</span>
+                  </template>
+                </el-table-column>
+                <el-table-column label="平台到期时间" min-width="150">
+                  <template #default="{ row }">
+                    <span class="expiry-text" v-if="row.expiry_label">{{ row.expiry_label }}</span>
+                    <span class="text-muted-xs" v-else>-</span>
+                  </template>
+                </el-table-column>
+                <el-table-column label="备注说明" min-width="140" show-overflow-tooltip>
+                  <template #default="{ row }">
+                    <span class="notes-text">{{ row.notes || '-' }}</span>
+                  </template>
+                </el-table-column>
+                <el-table-column label="操作" width="170" fixed="right" align="center">
+                  <template #default="{ row }">
+                    <div class="row-actions">
+                      <el-button
+                        v-if="row.status !== 'available'"
+                        link
+                        size="small"
+                        type="success"
+                        @click="handleResetAvailable(row)"
+                      >
+                        设为可用
+                      </el-button>
+                      <el-button
+                        v-if="row.max_use_count !== 0"
+                        link
+                        size="small"
+                        type="primary"
+                        @click="handleSetMode(row, 0)"
+                      >
+                        转多次卡
+                      </el-button>
+                      <el-button
+                        v-else
+                        link
+                        size="small"
+                        type="warning"
+                        @click="handleSetMode(row, 1)"
+                      >
+                        转单次卡
+                      </el-button>
+                      <el-button link size="small" type="danger" @click="handleDeleteCdk(row)">
+                        删除
+                      </el-button>
+                    </div>
+                  </template>
+                </el-table-column>
+              </el-table>
+
+              <!-- 分页器 -->
+              <div class="cdk-pagination-wrap" v-if="cdkPoolTotal > cdkPoolLimit">
+                <el-pagination
+                  v-model:current-page="cdkPoolPage"
+                  :page-size="cdkPoolLimit"
+                  :total="cdkPoolTotal"
+                  layout="prev, pager, next, total"
+                  size="small"
+                  @current-change="loadCdkPool"
+                />
+              </div>
+            </div>
+
+            <!-- CDK 专属运行机理说明 -->
+            <div class="card-section cdk-hero-section">
+              <div class="section-header-row">
+                <div class="section-title-wrap">
+                  <el-icon class="section-icon text-accent"><InfoFilled /></el-icon>
+                  <span class="section-heading">CDK 智能接码全景工作机制</span>
+                </div>
+                <el-tag size="small" type="success" effect="plain">ndk.cc.cd 驱动已就绪</el-tag>
+              </div>
+              <div class="cdk-desc-grid">
+                <div class="cdk-desc-item">
+                  <span class="cdk-item-title">🔄 严格支持多次复用 (用户核心要求)</span>
+                  <span class="cdk-item-desc">
+                    默认以<b>多次长期卡</b>模式入库。成功接码 1 次后仅递增使用计数，<b>绝不提前标记为已用尽</b>，持续保持就绪，直到平台返回 409(到期) 或 422(作废)。
+                  </span>
+                </div>
+                <div class="cdk-desc-item">
+                  <span class="cdk-item-title">⚡ 遇被拒自动免费换新号码</span>
+                  <span class="cdk-item-desc">
+                    当手机号被 OpenAI 判定已被注册或拦截时，系统自动调用 <code>/api/v2/public/change-number</code> 免人工干预更换新号 (支持免费换号 20 次)。
+                  </span>
+                </div>
+                <div class="cdk-desc-item">
+                  <span class="cdk-item-title">🇬🇧 号码国家自适应绑定</span>
+                  <span class="cdk-item-desc">
+                    卡密兑换时平台自动下发对应运营商号源（默认分配英国 44 线路 OpenAI 专属号码），无需在控制台反复调试国家代码与单价。
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 卡片 2: 首选国家与号池档位精确锁定 (仅常规平台展示) -->
+          <div v-else class="card-section">
             <div class="section-header-row">
               <div class="section-title-wrap">
                 <el-icon class="section-icon text-accent"><Location /></el-icon>
@@ -520,21 +1030,107 @@ load()
           <div class="footer-summary">
             <span class="summary-dot"></span>
             <span class="footer-info-text">
-              当前接码商：<b>{{ provider === 'herosms' ? 'HeroSMS' : 'SmsBower' }}</b>
-              <span v-if="allowed.length" class="summary-extra"> · 允许轮换 {{ allowed.length }} 国</span>
-              <span v-if="maxPrice" class="summary-extra"> · 锁定金额 ${{ maxPrice }}</span>
+              当前接码商：<b>{{ provider === 'herosms' ? 'HeroSMS' : (provider === 'cdk_sms' ? '🎟️ CDK卡密兑换 (ndk.cc.cd)' : 'SmsBower') }}</b>
+              <span v-if="provider === 'cdk_sms'" class="summary-extra">
+                · 号池可用: {{ cdkPoolStats.available }}/{{ cdkPoolStats.total }} 张 · 累计接码: {{ cdkPoolStats.total_success_codes }} 次
+              </span>
+              <span v-else-if="allowed.length" class="summary-extra"> · 允许轮换 {{ allowed.length }} 国</span>
+              <span v-else-if="maxPrice" class="summary-extra"> · 锁定金额 ${{ maxPrice }}</span>
             </span>
           </div>
         </template>
         <template #right>
+          <el-button v-if="provider === 'cdk_sms'" type="success" plain class="ghost-toolbar-btn" @click="openImportModal">
+            <el-icon><Plus /></el-icon>批量导入卡密
+          </el-button>
           <el-button :loading="testing" class="ghost-toolbar-btn" @click="test">
-            <el-icon><Wallet /></el-icon>测试连通与余额
+            <el-icon><Wallet /></el-icon>{{ provider === 'cdk_sms' ? '测试卡密兑换' : '测试连通与余额' }}
           </el-button>
           <el-button type="primary" :loading="saving" class="primary-toolbar-btn" @click="save">
             <el-icon><Check /></el-icon>保存 SMS 全局配置
           </el-button>
         </template>
       </FooterToolbar>
+
+      <!-- 批量导入 CDK 卡密对话框 -->
+      <el-dialog
+        v-model="showImportModal"
+        title="🎟️ 批量导入 CDK 卡密到号池"
+        width="620px"
+        align-center
+        destroy-on-close
+        class="cdk-import-dialog"
+      >
+        <div class="import-modal-body">
+          <div class="import-tip-banner">
+            <el-icon><InfoFilled /></el-icon>
+            <span>
+              支持同时粘贴多个 CDK 卡密（每行一个，或逗号/分号分隔）。系统会自动进行清洗与去重。
+            </span>
+          </div>
+
+          <el-form label-position="top">
+            <el-form-item label="卡密列表 (一行一个)">
+              <el-input
+                v-model="importForm.cdks"
+                type="textarea"
+                :rows="6"
+                placeholder="例如：
+SMS-336A-20BC
+SMS-E7CA-0727
+SMS-59B1-A897"
+              />
+            </el-form-item>
+
+            <el-form-item label="接码使用模式 (核心约束设置)">
+              <el-radio-group v-model="importForm.max_use_mode" class="import-mode-radios">
+                <el-radio value="multi">
+                  <div class="radio-content">
+                    <span class="radio-main">🔄 多次卡 / 长期复用 (强烈推荐)</span>
+                    <span class="radio-hint">成功接码后<b>绝不提前置为已用尽</b>，可持续反复用于多个账号接码，直到平台明确报到期。</span>
+                  </div>
+                </el-radio>
+                <el-radio value="single">
+                  <div class="radio-content">
+                    <span class="radio-main">1️⃣ 单次卡</span>
+                    <span class="radio-hint">成功接码 1 次后立即标记为已用尽 (exhausted)，不再分配。</span>
+                  </div>
+                </el-radio>
+                <el-radio value="custom">
+                  <div class="radio-content">
+                    <span class="radio-main">🔢 限制使用次数</span>
+                    <div v-if="importForm.max_use_mode === 'custom'" class="custom-use-input" @click.stop>
+                      最多成功接码
+                      <el-input-number
+                        v-model="importForm.custom_max_use"
+                        :min="1"
+                        :max="999"
+                        size="small"
+                        controls-position="right"
+                        style="width: 80px; margin: 0 6px;"
+                      />
+                      次后标记用尽
+                    </div>
+                  </div>
+                </el-radio>
+              </el-radio-group>
+            </el-form-item>
+
+            <el-form-item label="卡密备注 (可选)">
+              <el-input v-model="importForm.notes" placeholder="例如：9月采购长期英国卡、自用测试等" clearable />
+            </el-form-item>
+          </el-form>
+        </div>
+
+        <template #footer>
+          <div class="dialog-footer">
+            <el-button @click="showImportModal = false">取消</el-button>
+            <el-button type="primary" :loading="importing" @click="handleImportSubmit">
+              <el-icon><Check /></el-icon> 确认导入号池
+            </el-button>
+          </div>
+        </template>
+      </el-dialog>
     </div>
   </div>
 </template>
@@ -927,6 +1523,36 @@ html.dark code {
   color: #f1f5f9;
 }
 
+.cdk-hero-section {
+  border-color: rgba(16, 185, 129, 0.3);
+  background: rgba(16, 185, 129, 0.03);
+}
+.cdk-desc-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+  margin-top: 4px;
+}
+.cdk-desc-item {
+  background: var(--el-bg-color-overlay, #fff);
+  border: 1px solid rgba(16, 185, 129, 0.2);
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.cdk-item-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #10b981;
+}
+.cdk-item-desc {
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+  line-height: 1.4;
+}
+
 .footer-summary {
   display: flex;
   align-items: center;
@@ -953,5 +1579,257 @@ html.dark code {
   border-color: #007aff;
   border-radius: 6px;
   font-weight: 600;
+}
+
+/* ──────────────── CDK 号池工作台专属样式 ──────────────── */
+.cdk-pool-container {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.empty-pool-alert {
+  border-radius: 8px;
+  border: 1px solid var(--el-color-error-light-5);
+}
+
+.empty-pool-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.empty-pool-desc {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.5;
+  opacity: 0.9;
+}
+
+/* KPI 磁贴网格 */
+.cdk-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 10px;
+}
+
+@media (max-width: 900px) {
+  .cdk-kpi-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+@media (max-width: 600px) {
+  .cdk-kpi-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+.kpi-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: var(--el-bg-color-overlay);
+  border: 1px solid var(--el-border-color-lighter);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03);
+  transition: all 0.2s ease;
+}
+
+.kpi-card:hover {
+  transform: translateY(-1px);
+  border-color: var(--el-color-primary-light-5);
+}
+
+.kpi-icon {
+  font-size: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 6px;
+  background: var(--el-fill-color-light);
+}
+
+.total-card .kpi-icon { color: var(--el-color-primary); }
+.available-card .kpi-icon { color: var(--el-color-success); }
+.available-card.is-zero .kpi-icon { color: var(--el-color-error); background: var(--el-color-error-light-9); }
+.available-card.is-zero .kpi-num { color: var(--el-color-error); }
+.exhausted-card .kpi-icon { color: var(--el-color-warning); }
+.expired-card .kpi-icon { color: var(--el-color-info); }
+.success-card .kpi-icon { color: var(--el-color-success); }
+
+.kpi-body {
+  display: flex;
+  flex-direction: column;
+}
+
+.kpi-num {
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1.2;
+  font-family: var(--el-font-family);
+}
+
+.kpi-label {
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+  margin-top: 2px;
+}
+
+/* 工作台表格卡片 */
+.cdk-table-card {
+  padding: 14px 18px;
+}
+
+.table-actions-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.cdk-data-table {
+  width: 100%;
+  margin-top: 10px;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.cdk-code-cell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.mono-cdk-text {
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--el-color-primary);
+  background: var(--el-color-primary-light-9);
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
+.phone-cell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.mono-phone {
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.use-count-badge {
+  font-size: 13px;
+}
+
+.use-count-badge b {
+  color: var(--el-color-primary);
+}
+
+.count-sub {
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+  margin-left: 2px;
+}
+
+.expiry-text {
+  font-size: 11px;
+  color: var(--el-text-color-regular);
+}
+
+.notes-text {
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+}
+
+.text-muted-xs {
+  font-size: 11px;
+  color: var(--el-text-color-placeholder);
+}
+
+.row-actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+}
+
+.cdk-pagination-wrap {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+
+/* 导入弹窗样式 */
+.import-tip-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 14px;
+  border-radius: 6px;
+  background: var(--el-color-info-light-9);
+  color: var(--el-color-info);
+  font-size: 12px;
+  line-height: 1.5;
+  margin-bottom: 14px;
+}
+
+.import-mode-radios {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+}
+
+.import-mode-radios .el-radio {
+  height: auto;
+  align-items: flex-start;
+  padding: 8px 12px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 6px;
+  width: 100%;
+  margin-right: 0;
+  transition: all 0.2s;
+}
+
+.import-mode-radios .el-radio.is-checked {
+  border-color: var(--el-color-primary);
+  background: var(--el-color-primary-light-9);
+}
+
+.radio-content {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.radio-main {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--el-text-color-primary);
+}
+
+.radio-hint {
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+  line-height: 1.4;
+}
+
+.custom-use-input {
+  display: flex;
+  align-items: center;
+  font-size: 12px;
+  margin-top: 4px;
 }
 </style>

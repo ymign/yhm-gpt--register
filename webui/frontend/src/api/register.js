@@ -107,6 +107,9 @@ export const exportToPanel = (email, targets) =>
 export const startOAuthExport = (payload) =>
   http.post('/api/registered/oauth_export/start', payload)
 
+export const retryOAuthExport = (taskId, payload = {}) =>
+  http.post(`/api/registered/oauth_export/${encodeURIComponent(taskId)}/retry`, payload)
+
 export const stopOAuthExport = (taskId) =>
   http.post(`/api/registered/oauth_export/${encodeURIComponent(taskId)}/stop`)
 

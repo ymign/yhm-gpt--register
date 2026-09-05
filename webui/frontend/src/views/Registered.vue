@@ -80,6 +80,7 @@ import {
   oaCheckStreamUrl,
   getOACheckLog,
   startOAuthExport,
+  retryOAuthExport,
   stopOAuthExport,
   oauthExportStreamUrl,
   getOAuthExportLog,
@@ -104,7 +105,7 @@ import {
   getSentinelPoolStats,
   getProxyHealthSummary,
 } from '@/api/register'
-import { saveSmsConfig, getSmsPriceTiers, getSmsAllCountries } from '@/api/settings'
+import { saveSmsConfig, getSmsPriceTiers, getSmsAllCountries, getSmsConfig, getSmsCdkPoolStats } from '@/api/settings'
 import { copyText, fmtTime, createSSE } from '@/api/request'
 import { useFormStore, proxyText, COUNTRY_OPTIONS, COUNTRY_NAME_MAP, formatCountry } from '@/stores/form'
 import { useProxyStore } from '@/stores/proxy'
@@ -1424,27 +1425,31 @@ const refreshStats = computed(() => {
   }
 })
 
-async function openTokenRefresh(scope = 'selected') {
+async function openTokenRefresh(scope = 'selected', customEmails = null) {
   let emails = []
-  if (scope === 'selected') {
+  if (Array.isArray(customEmails) && customEmails.length) {
+    emails = customEmails.map((e) => String(e).trim().toLowerCase()).filter(Boolean)
+  } else if (typeof scope === 'string' && scope.includes('@')) {
+    emails = [scope.trim().toLowerCase()]
+  } else if (scope === 'selected') {
     if (!selected.value.length) {
       ElMessage.warning('请先在表格中勾选要刷新 Token 的账号')
       return
     }
     emails = selected.value.map((r) => r.email)
-  } else if (scope === 'no_token') {
+  } else if (scope === 'no_token' || scope === 'missing') {
     loading.value = true
     try {
       const res = await listRegisteredEmails('no_at')
       emails = res.emails || []
     } catch (e) {
-      ElMessage.error('获取无Token账号失败: ' + e.message)
+      ElMessage.error('获取缺少Token账号失败: ' + e.message)
       return
     } finally {
       loading.value = false
     }
     if (!emails.length) {
-      ElMessage.info('当前没有缺少 Token 的账号')
+      ElMessage.info('当前没有缺少或失效 Token 的账号')
       return
     }
   } else if (scope === 'all') {
@@ -1479,6 +1484,12 @@ async function openTokenRefresh(scope = 'selected') {
 
   refreshVisible.value = true
   loadSmsCountries()
+}
+
+function openTokenRefreshForOne(row) {
+  const email = typeof row === 'string' ? row : row?.email
+  if (!email) return
+  openTokenRefresh('single', [email])
 }
 
 function handleRefreshCommand(cmd) {
@@ -1951,9 +1962,11 @@ const oauthForm = reactive({
   proxyCountry: savedOAuth.proxyCountry || 'RANDOM_HOT',
   workers: savedOAuth.workers || 5,
   timeout: savedOAuth.timeout || 45,
-  smsEnabled: !!savedOAuth.smsEnabled,
-  smsProvider: savedOAuth.smsProvider || 'smsbower',
+  smsStrategy: savedOAuth.smsStrategy || (savedOAuth.smsEnabled ? (savedOAuth.smsProvider === 'cdk_sms' ? 'cdk' : 'api') : 'cdk'),
+  smsEnabled: savedOAuth.smsStrategy ? savedOAuth.smsStrategy !== 'skip' : true,
+  smsProvider: savedOAuth.smsProvider || 'cdk_sms',
   smsApiKey: savedOAuth.smsApiKey || '',
+  smsCdkUrl: savedOAuth.smsCdkUrl || 'https://ndk.cc.cd',
   smsCountry: savedOAuth.smsCountry || '52',
   smsMaxPrice: savedOAuth.smsMaxPrice || '',
   smsProviderIds: savedOAuth.smsProviderIds || '',
@@ -1966,6 +1979,35 @@ const oauthForm = reactive({
   smsMaxAttempts: savedOAuth.smsMaxAttempts || 3,
   smsTimeout: savedOAuth.smsTimeout || 80,
 })
+
+const oauthCdkStats = ref({
+  total: 0,
+  available: 0,
+  exhausted: 0,
+  expired: 0,
+  total_success_codes: 0,
+})
+
+function onOAuthStrategyChange(val) {
+  if (val === 'skip') {
+    oauthForm.smsEnabled = false
+  } else if (val === 'cdk') {
+    oauthForm.smsEnabled = true
+    oauthForm.smsProvider = 'cdk_sms'
+    // CDK模式推荐 35s，极速换号防 OpenAI 授权会话失效(400)
+    if (!oauthForm.smsTimeout || oauthForm.smsTimeout > 45) {
+      oauthForm.smsTimeout = 35
+    }
+    oauthActiveTab.value = 'sms'
+  } else if (val === 'api') {
+    oauthForm.smsEnabled = true
+    if (oauthForm.smsProvider === 'cdk_sms') {
+      oauthForm.smsProvider = 'smsbower'
+      oauthForm.smsTimeout = 80
+    }
+    oauthActiveTab.value = 'sms'
+  }
+}
 
 watch(oauthForm, (v) => {
   try { localStorage.setItem(OAUTH_FORM_KEY, JSON.stringify(v)) } catch (_) {}
@@ -2255,6 +2297,10 @@ const SMS_COUNTRY_OPTIONS = computed(() => {
 })
 
 async function loadSmsCountries() {
+  if (oauthForm.smsProvider === 'cdk_sms') {
+    smsAllCountries.value = []
+    return
+  }
   smsCountriesLoading.value = true
   try {
     const r = await getSmsAllCountries(oauthForm.smsProvider || 'smsbower')
@@ -2328,6 +2374,14 @@ const oauthStats = computed(() => {
   }
 })
 
+// 失败或未成功的账号邮箱列表 (用于批量重新授权)
+const failedOAuthEmails = computed(() => {
+  const items = Object.values(oauthItems.value)
+  return items
+    .filter((i) => i.status === 'done' && i.result && i.result.status !== 'success')
+    .map((i) => i.email)
+})
+
 function handleOAuthCommand(cmd) {
   if (cmd === 'oauth_selected') {
     openOAuthExport('selected')
@@ -2386,6 +2440,36 @@ async function openOAuthExport(target = 'selected') {
 
   oauthVisible.value = true
   loadSmsCountries()
+  loadOAuthSmsMeta()
+}
+
+async function loadOAuthSmsMeta() {
+  try {
+    const [cfgRes, statsRes] = await Promise.allSettled([
+      getSmsConfig(),
+      getSmsCdkPoolStats(),
+    ])
+    if (cfgRes.status === 'fulfilled' && cfgRes.value?.config) {
+      const cfg = cfgRes.value.config
+      if (!localStorage.getItem(OAUTH_FORM_KEY)) {
+        if (cfg.sms_provider === 'cdk_sms') {
+          oauthForm.smsStrategy = 'cdk'
+          oauthForm.smsProvider = 'cdk_sms'
+          oauthForm.smsEnabled = true
+        } else if (cfg.sms_enabled === '1') {
+          oauthForm.smsStrategy = 'api'
+          oauthForm.smsProvider = cfg.sms_provider || 'smsbower'
+          oauthForm.smsEnabled = true
+        }
+      }
+      if (cfg.sms_cdk_url) {
+        oauthForm.smsCdkUrl = cfg.sms_cdk_url
+      }
+    }
+    if (statsRes.status === 'fulfilled' && statsRes.value?.stats) {
+      oauthCdkStats.value = statsRes.value.stats
+    }
+  } catch (_) {}
 }
 
 function closeOAuthExport() {
@@ -2445,6 +2529,11 @@ async function startOAuthExportTask() {
   }
 
   try {
+    const isCdk = oauthForm.smsStrategy === 'cdk'
+    const isApi = oauthForm.smsStrategy === 'api'
+    const effectiveSmsEnabled = isCdk || isApi
+    const effectiveProvider = isCdk ? 'cdk_sms' : (oauthForm.smsProvider || 'smsbower')
+
     const res = await startOAuthExport({
       emails,
       proxies: proxiesParam,
@@ -2452,9 +2541,10 @@ async function startOAuthExportTask() {
       proxy_country: oauthForm.proxyCountry || '',
       workers: oauthForm.workers || 5,
       timeout: oauthForm.timeout || 45,
-      sms_enabled: !!oauthForm.smsEnabled,
-      sms_provider: oauthForm.smsProvider || 'smsbower',
+      sms_enabled: effectiveSmsEnabled,
+      sms_provider: effectiveProvider,
       sms_api_key: oauthForm.smsApiKey || '',
+      sms_cdk_url: oauthForm.smsCdkUrl || 'https://ndk.cc.cd',
       sms_country: String(oauthForm.smsCountry || '52').trim(),
       sms_max_price: String(oauthForm.smsMaxPrice || '').trim(),
       sms_provider_ids: String(oauthForm.smsProviderIds || '').trim(),
@@ -2467,73 +2557,151 @@ async function startOAuthExportTask() {
     const taskId = res.taskId || res.task_id
     if (!taskId) throw new Error('未获取到任务 ID')
     oauthTaskId.value = taskId
-
-    oauthEs.value = createSSE(oauthExportStreamUrl(taskId), {
-      init: (ev) => {
-        try {
-          const snap = JSON.parse(ev.data)
-          if (snap.items) oauthItems.value = snap.items
-        } catch (_) {}
-      },
-      progress: (ev) => {
-        try {
-          const msg = JSON.parse(ev.data)
-          if (msg.email) {
-            if (!oauthItems.value[msg.email]) {
-              oauthItems.value[msg.email] = { email: msg.email }
-            }
-            const it = oauthItems.value[msg.email]
-            if (msg.status !== undefined) {
-              it.status = msg.status
-              if (msg.status === 'running' && !it.started_at) {
-                it.started_at = msg.started_at || (Date.now() / 1000)
-              }
-            }
-            if (msg.started_at) it.started_at = msg.started_at
-            if (msg.step !== undefined) it.step = msg.step
-            if (msg.step_text !== undefined) it.step_text = msg.step_text
-            if (msg.result !== undefined) it.result = msg.result
-            if (msg.elapsed !== undefined) it.elapsed = msg.elapsed
-          }
-        } catch (_) {}
-      },
-      log: (ev) => {
-        try {
-          const msg = JSON.parse(ev.data)
-          if (msg.line) {
-            oauthLogs.value.push(msg.line)
-            if (oauthLogs.value.length > 500) oauthLogs.value.splice(0, oauthLogs.value.length - 500)
-            nextTick(scrollOAuthLog)
-            if (oauthLogModalVisible.value && currentOAuthLogItem.value) {
-              const targetEmail = currentOAuthLogItem.value.email
-              if (!msg.email || msg.email === targetEmail || msg.line.includes(targetEmail)) {
-                oauthLogLines.value.push(msg.line)
-                scrollOAuthModalLog()
-              }
-            }
-          }
-        } catch (_) {}
-      },
-      end: () => {
-        oauthRunning.value = false
-        if (oauthEs.value) {
-          oauthEs.value.close()
-          oauthEs.value = null
-        }
-        ElMessage.success('OAuth 导出任务已全部完成！')
-        load(false)
-        if (featVisible.value) loadFeatBoard()
-      },
-    }, () => {
-      if (!oauthRunning.value && oauthEs.value) {
-        oauthEs.value.close()
-        oauthEs.value = null
-      }
-    })
+    connectOAuthStream(taskId)
   } catch (e) {
     oauthRunning.value = false
     oauthConfigCollapsed.value = false
     ElMessage.error('启动 OAuth 导出失败: ' + (e.response?.data?.detail || e.message))
+  }
+}
+
+function connectOAuthStream(taskId) {
+  if (oauthEs.value) {
+    oauthEs.value.close()
+    oauthEs.value = null
+  }
+
+  oauthEs.value = createSSE(oauthExportStreamUrl(taskId), {
+    init: (ev) => {
+      try {
+        const snap = JSON.parse(ev.data)
+        if (snap.items) oauthItems.value = snap.items
+      } catch (_) {}
+    },
+    progress: (ev) => {
+      try {
+        const msg = JSON.parse(ev.data)
+        if (msg.email) {
+          if (!oauthItems.value[msg.email]) {
+            oauthItems.value[msg.email] = { email: msg.email }
+          }
+          const it = oauthItems.value[msg.email]
+          if (msg.status !== undefined) {
+            it.status = msg.status
+            if (msg.status === 'running' && !it.started_at) {
+              it.started_at = msg.started_at || (Date.now() / 1000)
+            }
+          }
+          if (msg.started_at) it.started_at = msg.started_at
+          if (msg.step !== undefined) it.step = msg.step
+          if (msg.step_text !== undefined) it.step_text = msg.step_text
+          if (msg.result !== undefined) it.result = msg.result
+          if (msg.elapsed !== undefined) it.elapsed = msg.elapsed
+        }
+      } catch (_) {}
+    },
+    log: (ev) => {
+      try {
+        const msg = JSON.parse(ev.data)
+        if (msg.line) {
+          oauthLogs.value.push(msg.line)
+          if (oauthLogs.value.length > 500) oauthLogs.value.splice(0, oauthLogs.value.length - 500)
+          nextTick(scrollOAuthLog)
+          if (oauthLogModalVisible.value && currentOAuthLogItem.value) {
+            const targetEmail = currentOAuthLogItem.value.email
+            if (!msg.email || msg.email === targetEmail || msg.line.includes(targetEmail)) {
+              oauthLogLines.value.push(msg.line)
+              scrollOAuthModalLog()
+            }
+          }
+        }
+      } catch (_) {}
+    },
+    end: () => {
+      oauthRunning.value = false
+      if (oauthEs.value) {
+        oauthEs.value.close()
+        oauthEs.value = null
+      }
+      ElMessage.success('OAuth 任务已全部完成！')
+      load(false)
+      if (featVisible.value) loadFeatBoard()
+    },
+  }, () => {
+    if (!oauthRunning.value && oauthEs.value) {
+      oauthEs.value.close()
+      oauthEs.value = null
+    }
+  })
+}
+
+// ── 重新授权：支持单个失败重试 与 批量重新授权失败账号 ──
+async function retryOAuthExportRunner(targetEmails = null) {
+  if (!oauthTaskId.value) {
+    ElMessage.warning('当前无任务实例，请点击开始任务')
+    return
+  }
+
+  let emails = targetEmails
+  if (!emails || !emails.length) {
+    emails = failedOAuthEmails.value
+  }
+
+  if (!emails.length) {
+    ElMessage.info('当前没有需要重新授权的失败账号')
+    return
+  }
+
+  let proxiesParam = ''
+  let proxyParam = ''
+  if (oauthForm.proxy === '__POOL__') {
+    proxiesParam = proxyList.value.join('\n')
+  } else {
+    proxyParam = (oauthForm.proxy || '').trim()
+  }
+
+  try {
+    const isCdk = oauthForm.smsStrategy === 'cdk'
+    const isApi = oauthForm.smsStrategy === 'api'
+    const effectiveSmsEnabled = isCdk || isApi
+    const effectiveProvider = isCdk ? 'cdk_sms' : (oauthForm.smsProvider || 'smsbower')
+
+    const res = await retryOAuthExport(oauthTaskId.value, {
+      emails,
+      proxies: proxiesParam,
+      proxy: proxyParam,
+      proxy_country: oauthForm.proxyCountry || '',
+      workers: oauthForm.workers || 5,
+      timeout: oauthForm.timeout || 45,
+      sms_enabled: effectiveSmsEnabled,
+      sms_provider: effectiveProvider,
+      sms_api_key: oauthForm.smsApiKey || '',
+      sms_cdk_url: oauthForm.smsCdkUrl || 'https://ndk.cc.cd',
+      sms_country: String(oauthForm.smsCountry || '52').trim(),
+      sms_max_price: String(oauthForm.smsMaxPrice || '').trim(),
+      sms_provider_ids: String(oauthForm.smsProviderIds || '').trim(),
+      sms_except_provider_ids: Array.isArray(oauthForm.smsExceptProviderIds)
+        ? oauthForm.smsExceptProviderIds.join(',')
+        : String(oauthForm.smsExceptProviderIds || '').trim(),
+      sms_max_attempts: Number(oauthForm.smsMaxAttempts) || 3,
+      sms_timeout: Number(oauthForm.smsTimeout) || 80,
+    })
+
+    for (const em of emails) {
+      if (oauthItems.value[em]) {
+        oauthItems.value[em].status = 'pending'
+        oauthItems.value[em].step_text = '排队重新授权中...'
+        oauthItems.value[em].result = null
+        oauthItems.value[em].elapsed = 0
+      }
+    }
+
+    oauthRunning.value = true
+    ElMessage.success(`已开始重新授权 ${res.retrying_count || emails.length} 个账号`)
+
+    connectOAuthStream(oauthTaskId.value)
+  } catch (e) {
+    ElMessage.error('重新授权失败: ' + (e.response?.data?.detail || e.message))
   }
 }
 
@@ -3927,7 +4095,8 @@ async function handleCopySessionCommand(cmd) {
 
 // 6. 行内更多操作菜单处理
 function handleRowMoreCommand(cmd, row) {
-  if (cmd === 'edit') openEdit(row)
+  if (cmd === 'refresh_token') openTokenRefreshForOne(row)
+  else if (cmd === 'edit') openEdit(row)
   else if (cmd === 'recover_oauth') doRecoverOAuth([row.email])
   else if (cmd === 'copy_session') copySessionJson(row.email)
   else if (cmd === 'copy_at') copyCell(row.email, 'access_token')
@@ -5222,7 +5391,34 @@ onUnmounted(() => {
                 </template>
               </el-dropdown>
 
-              <!-- 3. 运维管理 (Ops ▾) -->
+              <!-- 3. Token 刷新与自愈 (Refresh ▾) -->
+              <el-dropdown trigger="click">
+                <button class="action-menu-btn action-refresh-btn" :class="{ 'has-selected': selectedCount }" title="双模 Token 刷新与失效重登自愈">
+                  <el-icon><Refresh /></el-icon>
+                  <span>刷新 Token{{ selectedCount ? ` (${selectedCount})` : '' }}</span>
+                  <el-icon class="arrow-down"><ArrowDown /></el-icon>
+                </button>
+                <template #dropdown>
+                  <el-dropdown-menu class="extract-dropdown-menu">
+                    <div class="dropdown-group-title">Token 快速刷新与重获</div>
+                    <el-dropdown-item @click="handleRefreshCommand('refresh_selected')" :disabled="!selectedCount">
+                      🔄 刷新选中 Token ({{ selectedCount }})
+                    </el-dropdown-item>
+                    <el-dropdown-item @click="handleRefreshCommand('refresh_no_token')">
+                      ⚡ 一键刷新缺少/失效 Token 账号
+                    </el-dropdown-item>
+                    <el-dropdown-item @click="handleRefreshCommand('refresh_all')">
+                      🔄 全量全库刷新 Token
+                    </el-dropdown-item>
+                    <div class="dropdown-group-title divider-title">授权自愈</div>
+                    <el-dropdown-item @click="() => doRecoverOAuth()">
+                      ⚡ 扫描并找回历史授权 (RT自愈)
+                    </el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
+
+              <!-- 4. 运维管理 (Ops ▾) -->
               <el-dropdown trigger="click">
                 <button class="action-menu-btn">
                   <el-icon><Setting /></el-icon>
@@ -5238,6 +5434,7 @@ onUnmounted(() => {
                     <el-dropdown-item @click="handleSecurityCommand('batch_2fa_all_missing')">🛡️ 全量补绑 2FA</el-dropdown-item>
                     <div class="dropdown-group-title divider-title">Token 刷新与自愈</div>
                     <el-dropdown-item @click="handleRefreshCommand('refresh_selected')" :disabled="!selectedCount">🔄 刷新选中 Token</el-dropdown-item>
+                    <el-dropdown-item @click="handleRefreshCommand('refresh_no_token')">⚡ 一键刷新缺少/失效 Token 账号</el-dropdown-item>
                     <el-dropdown-item @click="handleRefreshCommand('refresh_all')">🔄 全量刷新 Token</el-dropdown-item>
                     <el-dropdown-item @click="() => doRecoverOAuth()">⚡ 扫描并找回历史授权 (RT自愈)</el-dropdown-item>
                     <el-dropdown-item @click="openFeatBoard">📊 特征工程大屏</el-dropdown-item>
@@ -5390,20 +5587,37 @@ onUnmounted(() => {
               </el-table-column>
 
               <!-- 4. Token 凭据健康度 -->
-              <el-table-column v-if="columnVisibility.tokens" label="Token 凭据健康" min-width="155" align="center" header-align="center">
+              <el-table-column v-if="columnVisibility.tokens" label="Token 凭据健康" min-width="160" align="center" header-align="center">
                 <template #default="{ row }">
                   <div class="cell-token-block">
                     <div class="token-status-line">
                       <span class="pulse-indicator-dot" :class="row.at_len ? 'dot-emerald' : 'dot-rose'"></span>
-                      <span class="token-main-text mono" :class="{ 'is-ok': row.at_len }">
-                        {{ row.at_len ? `AT 正常 (${(row.at_len / 1024).toFixed(1)}KB)` : 'AT 缺失失效' }}
+                      <span
+                        class="token-main-text mono"
+                        :class="{ 'is-ok': row.at_len, 'is-refreshable': !row.at_len }"
+                        :title="!row.at_len ? '该账号 Token 缺失或已过期，点击立即唤起双模刷新重登' : 'Access Token 正常 (点击亦可手动刷新)'"
+                        @click.stop="openTokenRefreshForOne(row)"
+                      >
+                        {{ row.at_len ? `AT 正常 (${(row.at_len / 1024).toFixed(1)}KB)` : 'AT 缺失失效 🔄' }}
                       </span>
                     </div>
                     <div class="token-sub-line">
-                      <span v-if="row.rt_len && row.rt_len > 20" class="rt-active-text mono" title="具备 Refresh Token，支持无感自愈续签">
-                        ⚡ RT 永久在库
+                      <span
+                        v-if="row.rt_len && row.rt_len > 20"
+                        class="rt-active-text mono rt-click-refresh"
+                        title="具备 Refresh Token，支持无感自愈续签 (点击刷新)"
+                        @click.stop="openTokenRefreshForOne(row)"
+                      >
+                        ⚡ RT 在库 (可自愈) 🔄
                       </span>
-                      <span v-else class="rt-none-text">○ 仅AT凭证</span>
+                      <span
+                        v-else
+                        class="rt-none-text"
+                        title="无 Refresh Token，点击可通过密码/OTP重登自愈"
+                        @click.stop="openTokenRefreshForOne(row)"
+                      >
+                        ○ 仅AT凭证 🔄
+                      </span>
                     </div>
                   </div>
                 </template>
@@ -5461,7 +5675,7 @@ onUnmounted(() => {
               </el-table-column>
 
               <!-- 8. 快捷操作列 (固定右侧，精致圆润按键) -->
-              <el-table-column label="快捷操作" width="180" fixed="right" align="center" header-align="center">
+              <el-table-column label="快捷操作" width="226" fixed="right" align="center" header-align="center">
                 <template #default="{ row }">
                   <div class="cell-actions-block">
                     <button class="octopus-row-btn btn-cred" @click.stop="viewCred(row.email)" title="查看完整账号凭据">
@@ -5469,6 +5683,9 @@ onUnmounted(() => {
                     </button>
                     <button v-if="row.totp_secret" class="octopus-row-btn btn-2fa" @click.stop="openTotpModal(row)" title="生成当前 6 位 2FA 动态码">
                       2FA
+                    </button>
+                    <button class="octopus-row-btn btn-refresh" @click.stop="openTokenRefreshForOne(row)" title="刷新 Access Token / 重新登录获取凭证">
+                      刷Token
                     </button>
                     <button class="octopus-row-btn btn-mail" @click.stop="openMailOtpModal(row)" title="检索邮件验证码">
                       查码
@@ -5480,12 +5697,16 @@ onUnmounted(() => {
                       </button>
                       <template #dropdown>
                         <el-dropdown-menu class="extract-dropdown-menu">
-                          <div class="dropdown-group-title">数据与凭证管理</div>
-                          <el-dropdown-item command="edit">
-                            <el-icon><Setting /></el-icon> 编辑/补全凭证
+                          <div class="dropdown-group-title">Token 凭证与自愈</div>
+                          <el-dropdown-item command="refresh_token">
+                            <el-icon><Refresh /></el-icon> 🔄 刷新此账号 Token
                           </el-dropdown-item>
                           <el-dropdown-item command="recover_oauth">
-                            <el-icon><CircleCheckFilled /></el-icon> 找回历史授权凭据
+                            <el-icon><CircleCheckFilled /></el-icon> 找回历史授权凭据 (RT自愈)
+                          </el-dropdown-item>
+                          <div class="dropdown-group-title divider-title">数据与凭证导出</div>
+                          <el-dropdown-item command="edit">
+                            <el-icon><Setting /></el-icon> 编辑/补全凭证
                           </el-dropdown-item>
                           <el-dropdown-item command="copy_session">
                             <el-icon><Document /></el-icon> 复制 Session JSON
@@ -6531,26 +6752,39 @@ onUnmounted(() => {
         <el-collapse-transition>
           <div v-show="!oauthConfigCollapsed" class="oa-config-card">
             <!-- 手机号接码策略全局快捷切换卡片 (Hero Strategy Selector) -->
-            <div class="oa-strategy-hero-card" :class="oauthForm.smsEnabled ? 'is-sms-mode' : 'is-skip-mode'">
+            <div class="oa-strategy-hero-card" :class="'is-' + oauthForm.smsStrategy + '-mode'">
               <div class="strategy-left-control">
                 <span class="strategy-label">手机号策略:</span>
-                <el-radio-group v-model="oauthForm.smsEnabled" size="small" class="strategy-radio-group" :disabled="oauthRunning">
-                  <el-radio-button :value="false">
+                <el-radio-group
+                  v-model="oauthForm.smsStrategy"
+                  size="small"
+                  class="strategy-radio-group"
+                  :disabled="oauthRunning"
+                  @change="onOAuthStrategyChange"
+                >
+                  <el-radio-button value="skip">
                     <span class="strategy-btn-content">⏩ 极速跳过模式</span>
                   </el-radio-button>
-                  <el-radio-button :value="true">
-                    <span class="strategy-btn-content">📱 智能短信接码</span>
+                  <el-radio-button value="cdk">
+                    <span class="strategy-btn-content">🎟️ CDK 卡密号池接码</span>
+                  </el-radio-button>
+                  <el-radio-button value="api">
+                    <span class="strategy-btn-content">📱 短信平台 API</span>
                   </el-radio-button>
                 </el-radio-group>
               </div>
               <div class="strategy-right-meta">
-                <div v-if="!oauthForm.smsEnabled" class="strategy-tip text-emerald">
+                <div v-if="oauthForm.smsStrategy === 'skip'" class="strategy-tip text-emerald">
                   <span class="strategy-dot emerald"></span>
                   <span>遇到手机号风控（add-phone）安全跳过并标记「需接码」，零费用消耗</span>
                 </div>
+                <div v-else-if="oauthForm.smsStrategy === 'cdk'" class="strategy-tip text-amber">
+                  <span class="strategy-dot amber"></span>
+                  <span>遇到手机号验证时自动从 CDK 号池提取卡密兑换号码，被拒自动免费换号 (多次卡支持长期复用)</span>
+                </div>
                 <div v-else class="strategy-tip text-blue">
                   <span class="strategy-dot blue"></span>
-                  <span>遇到手机号验证时自动连接接码平台租号收码（未接通自动退款）</span>
+                  <span>遇到手机号验证时自动连接 SmsBower/HeroSMS 平台租号收码（未接通自动退款）</span>
                 </div>
               </div>
             </div>
@@ -6603,9 +6837,85 @@ onUnmounted(() => {
               </el-tab-pane>
 
               <!-- Tab 2: 短信接码设置 -->
-              <el-tab-pane label="📱 手机号短信接码参数" name="sms">
+              <el-tab-pane
+                :label="oauthForm.smsStrategy === 'cdk' ? '🎟️ CDK 卡密接码参数' : (oauthForm.smsStrategy === 'api' ? '📱 短信平台API参数' : '📱 手机号接码策略')"
+                name="sms"
+              >
                 <el-form label-position="top" :disabled="oauthRunning" size="small" class="oa-tab-form">
-                  <div v-show="oauthForm.smsEnabled">
+                  <!-- A. CDK 卡密模式专属配置 -->
+                  <div v-if="oauthForm.smsStrategy === 'cdk'" class="oa-cdk-config-panel">
+                    <div class="cdk-pool-mini-bar" :class="{ 'is-empty': oauthCdkStats.available === 0 }">
+                      <div class="pool-bar-left">
+                        <el-icon class="pool-bar-icon text-amber"><Ticket /></el-icon>
+                        <span class="pool-bar-label">当前 CDK 号池状态：</span>
+                        <el-tag size="small" :type="oauthCdkStats.available > 0 ? 'success' : 'danger'" effect="dark">
+                          就绪可用 {{ oauthCdkStats.available }} 张
+                        </el-tag>
+                        <span class="pool-bar-sub">（号池总收纳 {{ oauthCdkStats.total }} 张 · 累计接码 {{ oauthCdkStats.total_success_codes }} 次）</span>
+                      </div>
+                      <div class="pool-bar-right">
+                        <router-link to="/sms" target="_blank" class="pool-link-btn">
+                          前往管理 CDK 号池 →
+                        </router-link>
+                      </div>
+                    </div>
+
+                    <el-alert
+                      v-if="oauthCdkStats.available === 0 && !oauthForm.smsApiKey"
+                      type="warning"
+                      show-icon
+                      :closable="false"
+                      style="margin-bottom: 10px;"
+                      title="⚠️ 当前号池中可用卡密为 0 张！请前往【接码设置】批量导入新卡密，或在下方输入临时卡密。"
+                    />
+
+                    <el-row :gutter="12">
+                      <el-col :xs="24" :sm="14">
+                        <el-form-item label="临时卡密兑换码 (留空自动走号池调度)">
+                          <el-input
+                            v-model="oauthForm.smsApiKey"
+                            placeholder="留空自动从 CDK 号池智能提取可用卡密 (推荐)，亦可填临时卡密"
+                            clearable
+                            :prefix-icon="Ticket"
+                          />
+                        </el-form-item>
+                      </el-col>
+                      <el-col :xs="12" :sm="5">
+                        <el-form-item label="最多换号重试次数">
+                          <el-input-number v-model="oauthForm.smsMaxAttempts" :min="1" :max="20" style="width: 100%" />
+                        </el-form-item>
+                      </el-col>
+                      <el-col :xs="12" :sm="5">
+                        <el-form-item label="收码等待超时 (秒)">
+                          <template #label>
+                            <span>收码等待超时 (秒)</span>
+                            <el-tooltip content="CDK 推荐 30~35 秒。若超过 45 秒，单个号码超时后 OpenAI 整个登录会话会过期报 400 invalid_auth_step；35 秒内未收到极速自动换新号码以保住会话！" placement="top">
+                              <el-icon class="info-ico" style="margin-left: 3px;"><QuestionFilled /></el-icon>
+                            </el-tooltip>
+                          </template>
+                          <el-input-number v-model="oauthForm.smsTimeout" :min="15" :max="90" :step="5" style="width: 100%" />
+                        </el-form-item>
+                      </el-col>
+                    </el-row>
+
+                    <div class="oa-cdk-feature-tips">
+                      <div class="feature-tip-item">
+                        <span class="tip-title">🇬🇧 英国 OpenAI 专属号</span>
+                        <span class="tip-desc">由平台自动分配英国 44 线路 OpenAI 专属号，无需手动选择国家与金额。</span>
+                      </div>
+                      <div class="feature-tip-item">
+                        <span class="tip-title">🔄 被风控自动换新号</span>
+                        <span class="tip-desc">遇 OpenAI 提示被注册或拒绝，自动调用 change-number 更换新号码 (免费换号20次)。</span>
+                      </div>
+                      <div class="feature-tip-item">
+                        <span class="tip-title">🔁 多次卡支持长期复用</span>
+                        <span class="tip-desc">成功接码后只累加次数保持可用，绝不提前作废，支持多个账号循环利用。</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <!-- B. 常规短信平台 API 模式 (SmsBower / HeroSMS) -->
+                  <div v-else-if="oauthForm.smsStrategy === 'api'">
                     <el-row :gutter="12">
                       <el-col :xs="24" :sm="12" :md="6">
                         <el-form-item label="接码服务平台">
@@ -6743,10 +7053,12 @@ onUnmounted(() => {
                       </el-col>
                     </el-row>
                   </div>
-                  <div v-show="!oauthForm.smsEnabled" class="oa-skip-mode-panel">
+
+                  <!-- C. 极速跳过模式 -->
+                  <div v-else class="oa-skip-mode-panel">
                     <el-icon class="skip-icon"><CircleCheckFilled /></el-icon>
                     <div class="skip-text">
-                      当前处于 <b>极速跳过接码模式</b>。OpenAI 遇到需手机号验证（add-phone）时将<b>直接安全跳过</b>并标记为「需接码」，不会产生任何接码扣费。如需自动接码推进，请在上方切换为「智能短信接码」。
+                      当前处于 <b>极速跳过接码模式</b>。OpenAI 遇到需手机号验证（add-phone）时将<b>直接安全跳过</b>并标记为「需接码」，不会产生任何接码扣费。如需自动接码推进，请在上方切换为「🎟️ CDK 卡密号池接码」或「📱 短信平台 API」。
                     </div>
                   </div>
                 </el-form>
@@ -6776,8 +7088,18 @@ onUnmounted(() => {
             <span class="kpi-label">📱 需手机接码 (已跳过)</span>
             <span class="kpi-num text-warning">{{ oauthStats.need_phone }}</span>
           </div>
-          <div class="plus-kpi-card" :class="{ 'card-danger': oauthStats.error > 0 }">
-            <span class="kpi-label">❌ 失败 / 异常</span>
+          <div
+            class="plus-kpi-card"
+            :class="{ 'card-danger': oauthStats.error > 0, 'clickable-card': failedOAuthEmails.length > 0 }"
+            :title="failedOAuthEmails.length > 0 ? `点击立即批量重新授权 ${failedOAuthEmails.length} 个未成功账号` : ''"
+            @click="failedOAuthEmails.length > 0 && !oauthRunning && retryOAuthExportRunner()"
+          >
+            <div style="display: flex; justify-content: space-between; align-items: center">
+              <span class="kpi-label">❌ 失败 / 异常</span>
+              <el-tag v-if="failedOAuthEmails.length > 0 && !oauthRunning" size="small" type="danger" effect="dark" style="cursor: pointer">
+                重试全部
+              </el-tag>
+            </div>
             <span class="kpi-num text-danger">{{ oauthStats.error }}</span>
           </div>
         </div>
@@ -6821,7 +7143,7 @@ onUnmounted(() => {
                   <span class="spin-dot"></span> {{ row.step_text || '[1/6] 建立会话...' }}
                 </el-tag>
                 <el-tag v-else-if="row.status === 'pending'" size="small" type="info" effect="plain">
-                  待处理
+                  {{ row.step_text || '待处理' }}
                 </el-tag>
                 <el-tag v-else-if="row.result?.status === 'success'" size="small" type="success" effect="light">
                   ✅ {{ row.result?.label || '成功' }}
@@ -6853,11 +7175,22 @@ onUnmounted(() => {
               </template>
             </el-table-column>
 
-            <el-table-column label="操作" width="150" align="center">
+            <el-table-column label="操作" width="190" align="center" fixed="right">
               <template #default="{ row }">
                 <div style="display: flex; gap: 4px; justify-content: center; align-items: center">
                   <el-button size="small" text type="primary" @click="openOAuthItemLog(row)">
                     日志
+                  </el-button>
+                  <el-button
+                    v-if="row.result && row.result.status !== 'success'"
+                    size="small"
+                    text
+                    type="warning"
+                    :loading="row.status === 'running'"
+                    @click="retryOAuthExportRunner([row.email])"
+                    title="对此失败账号重新发起授权"
+                  >
+                    <el-icon><Refresh /></el-icon>重试授权
                   </el-button>
                   <el-button
                     v-if="row.result?.status === 'success' || row.result?.refresh_token_len"
@@ -6877,7 +7210,7 @@ onUnmounted(() => {
 
       <template #footer>
         <div class="oa-footer">
-          <div class="footer-left" style="display: flex; gap: 8px">
+          <div class="footer-left">
             <el-button
               type="primary" plain size="small"
               :disabled="oauthStats.success === 0 && !oauthTargetEmails.length"
@@ -6894,6 +7227,17 @@ onUnmounted(() => {
             </el-button>
           </div>
           <div class="footer-right">
+            <el-button
+              v-if="failedOAuthEmails.length > 0"
+              size="small"
+              type="warning"
+              plain
+              :loading="oauthRunning"
+              @click="retryOAuthExportRunner()"
+              title="一键将所有失败/需接码账号重新加入队列执行授权"
+            >
+              <el-icon><Refresh /></el-icon>批量重新授权失败账号 ({{ failedOAuthEmails.length }})
+            </el-button>
             <el-button size="small" @click="closeOAuthExport">关闭</el-button>
             <el-button
               v-if="oauthRunning"
@@ -7520,9 +7864,8 @@ onUnmounted(() => {
                       <el-form-item label="接码平台">
                         <el-select v-model="refreshForm.smsProvider" style="width: 100%">
                           <el-option label="SMSBower (高成功率推荐)" value="smsbower" />
-                          <el-option label="SMS-Activate" value="smsactivate" />
                           <el-option label="HeroSMS" value="herosms" />
-                          <el-option label="DaisySMS" value="daisysms" />
+                          <el-option label="🎟️ CDK 卡密兑换 (ndk.cc.cd)" value="cdk_sms" />
                         </el-select>
                       </el-form-item>
                     </el-col>
@@ -9675,6 +10018,17 @@ onUnmounted(() => {
   border-color: rgba(14, 165, 233, 0.4);
   color: #38bdf8;
   background: rgba(14, 165, 233, 0.12);
+}
+.action-menu-btn.action-refresh-btn {
+  border-color: rgba(245, 158, 11, 0.25);
+  background: rgba(245, 158, 11, 0.06);
+  color: #fbbf24;
+}
+.action-menu-btn.action-refresh-btn:hover {
+  border-color: rgba(245, 158, 11, 0.5);
+  background: rgba(245, 158, 11, 0.14);
+  color: #fde68a;
+  box-shadow: 0 0 10px rgba(245, 158, 11, 0.2);
 }
 .linear-chunk-select {
   width: 105px;
@@ -12876,6 +13230,12 @@ onUnmounted(() => {
   border-color: rgba(16, 185, 129, 0.25);
 }
 
+.oa-strategy-hero-card.is-cdk-mode {
+  background: rgba(245, 158, 11, 0.07);
+  border-color: rgba(245, 158, 11, 0.35);
+}
+
+.oa-strategy-hero-card.is-api-mode,
 .oa-strategy-hero-card.is-sms-mode {
   background: rgba(0, 122, 255, 0.05);
   border-color: rgba(0, 122, 255, 0.25);
@@ -12912,9 +13272,11 @@ onUnmounted(() => {
   border-radius: 50%;
 }
 .strategy-dot.emerald { background: #10b981; }
+.strategy-dot.amber { background: #f59e0b; }
 .strategy-dot.blue { background: #007aff; }
 
 .text-emerald { color: #10b981; }
+.text-amber { color: #f59e0b; }
 .text-blue { color: #007aff; }
 
 .oa-tab-form {
@@ -13042,6 +13404,123 @@ onUnmounted(() => {
 .oa-save-default-btn {
   font-size: 11.5px;
   font-weight: 500;
+}
+
+/* CDK 模式专属面板 */
+.oa-cdk-config-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cdk-pool-mini-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: var(--el-fill-color-light);
+  border: 1px solid var(--el-border-color-lighter);
+  font-size: 12px;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.cdk-pool-mini-bar.is-empty {
+  border-color: rgba(239, 68, 68, 0.35);
+  background: rgba(239, 68, 68, 0.06);
+}
+
+.pool-bar-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.pool-bar-icon {
+  font-size: 15px;
+}
+
+.pool-bar-label {
+  font-weight: 600;
+  color: var(--app-title);
+}
+
+.pool-bar-sub {
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+}
+
+.pool-link-btn {
+  font-size: 11px;
+  color: var(--el-color-primary);
+  text-decoration: none;
+  font-weight: 500;
+}
+
+.pool-link-btn:hover {
+  text-decoration: underline;
+}
+
+.oa-cdk-feature-tips {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-top: 4px;
+}
+
+@media (max-width: 768px) {
+  .oa-cdk-feature-tips {
+    grid-template-columns: 1fr;
+  }
+}
+
+.feature-tip-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: var(--el-fill-color-lighter);
+  border: 1px solid var(--el-border-color-extra-light);
+}
+
+.tip-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+}
+
+.tip-desc {
+  font-size: 10.5px;
+  color: var(--el-text-color-secondary);
+  line-height: 1.35;
+}
+
+/* 底部操作工具栏 (横向两端对齐，彻底消除堆叠错位) */
+.oa-footer {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  width: 100% !important;
+  gap: 12px !important;
+  box-sizing: border-box !important;
+}
+
+.oa-footer .footer-left {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  flex-shrink: 0 !important;
+}
+
+.oa-footer .footer-right {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: flex-end !important;
+  gap: 8px !important;
+  flex-wrap: wrap !important;
 }
 
 :deep(.feat-dialog) {
@@ -14680,6 +15159,15 @@ onUnmounted(() => {
 .token-main-text.is-ok {
   color: #d6dbd8;
 }
+.token-main-text.is-refreshable {
+  color: #f43f5e;
+  cursor: pointer;
+  text-decoration: underline dotted rgba(244, 63, 94, 0.4);
+}
+.token-main-text.is-refreshable:hover {
+  color: #fb7185;
+  text-decoration: underline solid #f43f5e;
+}
 
 .token-sub-line {
   font-size: 10.5px;
@@ -14691,8 +15179,20 @@ onUnmounted(() => {
 .rt-active-text {
   color: #c4b5fd;
 }
+.rt-active-text.rt-click-refresh {
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.rt-active-text.rt-click-refresh:hover {
+  color: #ddd6fe;
+  text-shadow: 0 0 6px rgba(196, 181, 253, 0.5);
+}
 .rt-none-text {
   color: #5c6662;
+  cursor: pointer;
+}
+.rt-none-text:hover {
+  color: #94a3b8;
 }
 
 /* ──────────── 4. 套餐与特权订阅 ──────────── */
@@ -14854,6 +15354,18 @@ onUnmounted(() => {
   border-color: #10b981;
   color: #6ee7b7;
   box-shadow: 0 0 8px rgba(16, 185, 129, 0.3);
+}
+.octopus-row-btn.btn-refresh {
+  background: rgba(245, 158, 11, 0.12);
+  border-color: rgba(245, 158, 11, 0.28);
+  color: #fbbf24;
+  font-weight: 600;
+}
+.octopus-row-btn.btn-refresh:hover {
+  background: rgba(245, 158, 11, 0.24);
+  border-color: #f59e0b;
+  color: #fde68a;
+  box-shadow: 0 0 8px rgba(245, 158, 11, 0.3);
 }
 .octopus-row-btn.btn-mail {
   background: rgba(14, 165, 233, 0.12);

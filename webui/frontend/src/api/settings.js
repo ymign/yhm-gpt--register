@@ -26,3 +26,12 @@ export const getSmsPriceTiers = (country = '6', service = 'dr', provider = '') =
 export const getExportConfig = () => http.get('/api/settings/export')
 export const saveExportConfig = (payload) => http.post('/api/settings/export', payload)
 export const testExport = (target) => http.post('/api/settings/export/test', { target })
+
+// ──────────────── CDK 卡密号池 API ────────────────
+export const getSmsCdkPool = (params = {}) => http.get('/api/settings/sms/cdk_pool', { params })
+export const getSmsCdkPoolStats = () => http.get('/api/settings/sms/cdk_pool/stats')
+export const importSmsCdks = (payload) => http.post('/api/settings/sms/cdk_pool/import', payload)
+export const updateSmsCdk = (id, payload) => http.post(`/api/settings/sms/cdk_pool/${id}/update`, payload)
+export const deleteSmsCdk = (id) => http.delete(`/api/settings/sms/cdk_pool/${id}`)
+export const clearSmsCdkPool = (payload) => http.post('/api/settings/sms/cdk_pool/clear', payload)
+

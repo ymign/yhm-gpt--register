@@ -532,6 +532,17 @@ class AuthFlow:
         msg = str(exc).lower()
         return "registration_disallowed" in msg
 
+    @staticmethod
+    def _is_user_already_exists_error(exc: Exception) -> bool:
+        msg = str(exc).lower()
+        markers = [
+            "user_already_exists",
+            "already exists for this email",
+            "useralreadyexistsrecovery",
+            "continue_to_login",
+        ]
+        return any(m in msg for m in markers)
+
     def _get_cookie_value_by_name(self, name: str) -> str:
         """按 cookie 名称获取值（忽略 domain 冲突）。"""
         try:
@@ -965,7 +976,7 @@ class AuthFlow:
             resp = self.session.post(
                 "https://auth.openai.com/api/accounts/add-phone/send",
                 headers=headers,
-                json={"phone_number": phone_number},
+                json={"phone_number": phone_number, "channel": "sms"},
                 timeout=30,
             )
         except Exception as e:
@@ -2852,9 +2863,9 @@ class AuthFlow:
         )
         self._trace_http("create_account", resp)
         if resp.status_code != 200:
-            body = (resp.text or "")[:500]
+            body = (resp.text or "")[:1000]
             logger.error("创建账户失败: http=%s body=%s", resp.status_code, body)
-            raise RuntimeError(f"创建账户失败: {resp.status_code} - {body[:260]}")
+            raise RuntimeError(f"创建账户失败: {resp.status_code} - {body}")
         data = resp.json()
         continue_url = data.get("continue_url", "")
         self._sniff_login_verifier(continue_url, "create_account_continue_url")
@@ -3038,6 +3049,9 @@ class AuthFlow:
         """手动跟踪重定向，返回 (callback_url, final_url)"""
         logger.info("[9/10] 跟踪重定向链...")
         current_url = start_url
+        if "/api/auth/callback/openai" in current_url:
+            logger.info("已直接获取 callback URL，跳过重定向链")
+            return current_url, current_url
         callback_url = ""
         max_hops = 15
         referer = "https://auth.openai.com/"
@@ -3692,9 +3706,14 @@ class AuthFlow:
             try:
                 continue_url = self.create_account()
             except Exception as e:
-                # registration_disallowed 时尝试 reauthorize 兜底，若仍不可用再抛出
-                if self._is_registration_disallowed_error(e):
-                    logger.warning("create_account 被拒绝，尝试 reauthorize 兜底获取 session ...")
+                # registration_disallowed 或 user_already_exists 时尝试 reauthorize 兜底，若仍不可用再抛出
+                if self._is_registration_disallowed_error(e) or self._is_user_already_exists_error(e):
+                    reason = (
+                        "user_already_exists (服务端账号已建好/指示 continue_to_login)"
+                        if self._is_user_already_exists_error(e)
+                        else "registration_disallowed (注册被限制)"
+                    )
+                    logger.warning(f"create_account 触发 {reason}，自动调用 reauthorize 兜底获取 session ...")
                     continue_url = self._reauthorize_for_session(auth_url) or ""
                     if not continue_url:
                         raise
@@ -3941,8 +3960,13 @@ class AuthFlow:
                 try:
                     continue_url = self.create_account()
                 except Exception as e:
-                    if self._is_registration_disallowed_error(e):
-                        logger.warning("about-you create_account 被拒绝，尝试 reauthorize 兜底获取 session ...")
+                    if self._is_registration_disallowed_error(e) or self._is_user_already_exists_error(e):
+                        reason = (
+                            "user_already_exists"
+                            if self._is_user_already_exists_error(e)
+                            else "registration_disallowed"
+                        )
+                        logger.warning(f"about-you create_account 触发 {reason}，尝试 reauthorize 兜底获取 session ...")
                         continue_url = self._reauthorize_for_session(auth_url) or ""
                         if continue_url:
                             logger.info("reauthorize 兜底成功，继续后续 session 获取")
@@ -4240,7 +4264,13 @@ class AuthFlow:
                     issued_after=otp_sent_at,
                 )
                 self.verify_otp(otp_code)
-                continue_url = self.create_account()
+                try:
+                    continue_url = self.create_account()
+                except Exception as e:
+                    if self._is_registration_disallowed_error(e) or self._is_user_already_exists_error(e):
+                        continue_url = self._reauthorize_for_session(auth_url) or ""
+                    else:
+                        raise
             else:
                 page_type = (self._existing_page_type or "").lower()
                 mode = (self._existing_email_verification_mode or "").lower()

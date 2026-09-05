@@ -25,6 +25,28 @@ import {
 } from '@/api/settings'
 import FooterToolbar from '@/components/FooterToolbar.vue'
 
+// 统一归一化邮箱后缀（智能兼容 gmail, gamil, gmail变种, icloud 等各种常见写法）
+function canonicalizeSuffix(val) {
+  const raw = (val || '').trim().toLowerCase()
+  if (!raw) return 'gmail.com'
+  if (['gmail_variant', 'gmail变种', 'gmail-variant', 'gmail+', 'variant', 'jiahao'].includes(raw)) {
+    return 'gmail_variant'
+  }
+  if (['gmail', 'gmail.com', 'gamil', 'gamil.com', '@gmail.com', '@gmail'].includes(raw)) {
+    return 'gmail.com'
+  }
+  if (['icloud', 'icloud.com', '@icloud.com', 'apple'].includes(raw)) {
+    return 'icloud.com'
+  }
+  if (['outlook', 'outlook.com', '@outlook.com', 'microsoft'].includes(raw)) {
+    return 'outlook.com'
+  }
+  if (['hotmail', 'hotmail.com', '@hotmail.com'].includes(raw)) {
+    return 'hotmail.com'
+  }
+  return raw
+}
+
 // 默认内置的 4 大邮箱渠道（防止初次渲染空白）
 const DEFAULT_PROVIDERS = [
   {
@@ -266,6 +288,19 @@ const currentProjectSuffixOptions = computed(() => {
     result.push({ suffix: 'gmail.com', label: '🇬 gmail.com (Gmail官方点号 · 200.00积分 · 库1.1M)', price: '200.00', type: 'gmail', stock: 1075070, weight: 70 })
   }
 
+  // 确保当前选中的自定义后缀在选项列表中呈现，防止回退丢失
+  const curSuffix = canonicalizeSuffix(form.value?.remail_email_suffix || '')
+  if (curSuffix && !result.some((r) => r.suffix.toLowerCase() === curSuffix.toLowerCase())) {
+    result.push({
+      suffix: curSuffix,
+      label: `✉️ ${curSuffix} (已选)`,
+      price: '自定',
+      type: 'custom',
+      stock: 9999,
+      weight: 105,
+    })
+  }
+
   // 按权重降序排序，使最推荐常用后缀排在最前
   result.sort((a, b) => (b.weight || 0) - (a.weight || 0))
   return result
@@ -273,12 +308,12 @@ const currentProjectSuffixOptions = computed(() => {
 
 // 当前选定后缀的预估消耗价格说明
 const currentSelectedSuffixPriceHint = computed(() => {
-  const suffix = (form.value.remail_email_suffix || 'outlook.com').trim().toLowerCase()
-  const matched = currentProjectSuffixOptions.value.find((s) => s.suffix.toLowerCase() === suffix)
+  const suffix = canonicalizeSuffix(form.value.remail_email_suffix || 'gmail.com')
+  const matched = currentProjectSuffixOptions.value.find((s) => s.suffix.toLowerCase() === suffix.toLowerCase())
   if (matched) {
     return `当前选择后缀: ${suffix} · 预计单价: ${matched.price} 积分 / 每次购买`
   }
-  return `当前选择后缀: ${suffix} · 预计单价: 约 10.00 ~ 60.00 积分`
+  return `当前选择后缀: ${suffix} · 预计单价: 约 10.00 ~ 200.00 积分`
 })
 
 function phFor(f) {
@@ -307,12 +342,18 @@ async function load() {
         }
       }
     }
-    // 强行合并 saved 中的全部已知属性，避免遗漏
+    // 强行合并 saved 中的全部已知属性，并做类型规范与别名纠错
     if (saved.value) {
       for (const k of Object.keys(saved.value)) {
         if (saved.value[k] !== undefined && saved.value[k] !== '') {
           next[k] = saved.value[k]
         }
+      }
+      if (saved.value.remail_email_suffix) {
+        next.remail_email_suffix = canonicalizeSuffix(saved.value.remail_email_suffix)
+      }
+      if (saved.value.remail_max_recycle_retries !== undefined) {
+        next.remail_max_recycle_retries = Number(saved.value.remail_max_recycle_retries) || 1
       }
     }
     form.value = next
@@ -384,18 +425,15 @@ async function handleFetchRemailProjects(silent = false) {
 
 function selectRemailProject(pid) {
   form.value.remail_project_id = String(pid)
-  const opts = currentProjectSuffixOptions.value
-  if (opts.length > 0 && !opts.some((o) => o.suffix.toLowerCase() === (form.value.remail_email_suffix || '').toLowerCase())) {
-    form.value.remail_email_suffix = opts[0].suffix
-  }
   save(false)
   ElMessage.success(`已切换项目 ID: ${pid}`)
 }
 
 function selectRemailSuffix(suffix) {
-  form.value.remail_email_suffix = suffix
+  const clean = canonicalizeSuffix(suffix)
+  form.value.remail_email_suffix = clean
   save(false)
-  ElMessage.success(`已切换邮箱后缀: ${suffix}`)
+  ElMessage.success(`已选定邮箱后缀: ${clean}`)
 }
 
 function resetDefaultRemailKey() {
@@ -430,11 +468,11 @@ async function save(notify = true) {
 
   if (source.value === 'remail') {
     payload.remail_project_id = String(form.value.remail_project_id || '2').trim()
-    payload.remail_email_suffix = (form.value.remail_email_suffix || 'icloud.com').trim().toLowerCase()
+    payload.remail_email_suffix = canonicalizeSuffix(form.value.remail_email_suffix)
     payload.remail_service_mode = (form.value.remail_service_mode || 'purchase').trim()
     payload.remail_base_url = (form.value.remail_base_url || 'https://remail.aishop6.com').trim()
     payload.remail_api_key = (form.value.remail_api_key || '').trim()
-    payload.remail_max_recycle_retries = form.value.remail_max_recycle_retries || 3
+    payload.remail_max_recycle_retries = Number(form.value.remail_max_recycle_retries) || 1
   } else if (source.value === 'cf_temp') {
     payload.cf_api_url = (form.value.cf_api_url || '').trim()
     payload.cf_admin_token = (form.value.cf_admin_token || '').trim()
@@ -446,7 +484,7 @@ async function save(notify = true) {
   try {
     const res = await saveMailConfig(payload)
     saved.value = res.config || payload
-    if (notify) ElMessage.success('邮箱配置已保存并生效！')
+    if (notify) ElMessage.success('🎉 邮箱配置已成功保存并写入数据库，重启不丢失！')
     return true
   } catch (e) {
     if (notify) ElMessage.error(e.message || '保存失败')
@@ -454,6 +492,10 @@ async function save(notify = true) {
   } finally {
     saving.value = false
   }
+}
+
+function handleFieldChange() {
+  save(false)
 }
 
 async function test() {
@@ -643,7 +685,7 @@ onActivated(() => load())
                         v-for="s in currentProjectSuffixOptions"
                         :key="s.suffix"
                         size="small"
-                        :type="(form.remail_email_suffix || 'icloud.com').toLowerCase() === s.suffix.toLowerCase() ? 'primary' : 'default'"
+                        :type="canonicalizeSuffix(form.remail_email_suffix) === canonicalizeSuffix(s.suffix) ? 'primary' : 'default'"
                         class="preset-capsule-btn"
                         @click="selectRemailSuffix(s.suffix)"
                       >
@@ -673,8 +715,19 @@ onActivated(() => load())
                   </div>
 
                   <div class="price-hint-bar">
-                    <el-icon><Money /></el-icon>
-                    <span>{{ currentSelectedSuffixPriceHint }}</span>
+                    <div class="price-hint-left">
+                      <el-icon><Money /></el-icon>
+                      <span>{{ currentSelectedSuffixPriceHint }}</span>
+                    </div>
+                    <el-button
+                      size="small"
+                      type="success"
+                      plain
+                      :loading="saving"
+                      @click="save(true)"
+                    >
+                      <el-icon><Check /></el-icon>立即永久保存此后缀
+                    </el-button>
                   </div>
                 </div>
               </el-form-item>
@@ -683,7 +736,7 @@ onActivated(() => load())
               <el-row :gutter="12">
                 <el-col :span="12">
                   <el-form-item label="3. 服务模式 (Service Mode)">
-                    <el-radio-group v-model="form.remail_service_mode" class="mode-radio-group">
+                    <el-radio-group v-model="form.remail_service_mode" class="mode-radio-group" @change="handleFieldChange">
                       <el-radio-button value="purchase">📦 purchase (长效独享购买 · 推荐)</el-radio-button>
                       <el-radio-button value="code">⚡ code (短效接码)</el-radio-button>
                     </el-radio-group>
@@ -696,6 +749,7 @@ onActivated(() => load())
                       :min="1"
                       :max="10"
                       style="width: 100%"
+                      @change="handleFieldChange"
                     />
                     <div class="hint-text" style="font-size: 11px; margin-top: 4px; color: var(--el-text-color-secondary);">
                       同一购买暂存邮箱失败重试超过此次数（默认 3 次）后自动放弃复用并重新购号。
@@ -708,7 +762,7 @@ onActivated(() => load())
               <el-row :gutter="12">
                 <el-col :span="12">
                   <el-form-item label="5. 平台 API 地址">
-                    <el-input v-model="form.remail_base_url" placeholder="https://remail.aishop6.com" clearable />
+                    <el-input v-model="form.remail_base_url" placeholder="https://remail.aishop6.com" clearable @change="handleFieldChange" />
                   </el-form-item>
                 </el-col>
                 <el-col :span="12">
@@ -719,10 +773,27 @@ onActivated(() => load())
                       show-password
                       placeholder="rk-a18f1eed-cc59-4eaf-9c5f-ac4d711c758d"
                       clearable
+                      @change="handleFieldChange"
                     />
                   </el-form-item>
                 </el-col>
               </el-row>
+
+              <!-- 5. 卡片内常驻操作与保存条 -->
+              <div class="card-embedded-save-bar">
+                <div class="save-status-hint">
+                  <el-icon color="#10b981"><Check /></el-icon>
+                  <span>配置将持久化保存至本地数据库，服务重启后自动加载生效。</span>
+                </div>
+                <div class="save-btn-group">
+                  <el-button :loading="testing" @click="test">
+                    <el-icon><Connection /></el-icon>测试连通性与余额
+                  </el-button>
+                  <el-button type="primary" :loading="saving" @click="save(true)">
+                    <el-icon><Check /></el-icon>保存配置并生效
+                  </el-button>
+                </div>
+              </div>
             </el-form>
           </div>
 
@@ -730,16 +801,18 @@ onActivated(() => load())
           <div v-else-if="fields.length" class="card-section form-section">
             <div class="section-header-row">
               <span class="section-heading">渠道参数详情</span>
-              <el-button
-                v-if="source === 'cf_temp'"
-                size="small"
-                type="primary"
-                plain
-                :loading="fetchingDomains"
-                @click="handleFetchDomains(false)"
-              >
-                <el-icon><Search /></el-icon>探测可用域名
-              </el-button>
+              <div class="header-actions">
+                <el-button
+                  v-if="source === 'cf_temp'"
+                  size="small"
+                  type="primary"
+                  plain
+                  :loading="fetchingDomains"
+                  @click="handleFetchDomains(false)"
+                >
+                  <el-icon><Search /></el-icon>探测可用域名
+                </el-button>
+              </div>
             </div>
 
             <el-form label-position="top" size="small">
@@ -771,6 +844,7 @@ onActivated(() => load())
                     v-model="form[f.key]"
                     placeholder="输入单个域名（如 yhmsiming.site）或多域名逗号分隔（如 yhmsiming.site, shaosiming.online）"
                     clearable
+                    @change="handleFieldChange"
                   />
 
                   <div v-if="discoveredDomains.length > 0" class="discovered-domains-list">
@@ -798,10 +872,27 @@ onActivated(() => load())
                     :show-password="f.type === 'password'"
                     :placeholder="phFor(f)"
                     clearable
+                    @change="handleFieldChange"
                   />
                   <div v-if="f.help" class="hint-text">{{ f.help }}</div>
                 </div>
               </el-form-item>
+
+              <!-- 通用表单底部保存条 -->
+              <div class="card-embedded-save-bar">
+                <div class="save-status-hint">
+                  <el-icon color="#10b981"><Check /></el-icon>
+                  <span>修改后点击保存，配置将持久化写入本地数据库，重启不丢失。</span>
+                </div>
+                <div class="save-btn-group">
+                  <el-button v-if="canTest" :loading="testing" @click="test">
+                    <el-icon><Connection /></el-icon>测试连通性
+                  </el-button>
+                  <el-button type="primary" :loading="saving" @click="save(true)">
+                    <el-icon><Check /></el-icon>保存配置并生效 (重启保留)
+                  </el-button>
+                </div>
+              </div>
             </el-form>
           </div>
 
@@ -1080,14 +1171,21 @@ onActivated(() => load())
 .price-hint-bar {
   display: flex;
   align-items: center;
-  gap: 6px;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
   font-size: 11.5px;
   color: #10b981;
   font-weight: 600;
   background: rgba(16, 185, 129, 0.08);
   border: 1px dashed #10b981;
   border-radius: 6px;
-  padding: 6px 10px;
+  padding: 6px 12px;
+}
+.price-hint-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .mode-radio-group {
@@ -1174,5 +1272,32 @@ onActivated(() => load())
   margin: 0;
   white-space: pre-wrap;
   word-break: break-all;
+}
+
+.card-embedded-save-bar {
+  margin-top: 14px;
+  padding: 12px 16px;
+  background: var(--el-fill-color);
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.save-status-hint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--el-text-color-secondary);
+}
+
+.save-btn-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 </style>

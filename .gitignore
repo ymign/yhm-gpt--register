@@ -20,6 +20,7 @@ webui_*.log
 *.sqlite3
 run.log
 run*.log
+start_webui*.log
 account_*.json
 *.session
 *.token

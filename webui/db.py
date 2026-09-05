@@ -126,6 +126,25 @@ def init_db():
             error           TEXT,
             error_category  TEXT         -- network / account / unknown
         );
+
+        CREATE TABLE IF NOT EXISTS sms_cdk_pool (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            cdk             TEXT UNIQUE NOT NULL,           -- 卡密兑换码 (如 SMS-336A-20BC)
+            status          TEXT NOT NULL DEFAULT 'available', -- 'available'(可用) / 'exhausted'(次数用尽) / 'expired'(到期/失效作废)
+            max_use_count   INTEGER NOT NULL DEFAULT 0,     -- 最大可用次数: 0=不限次数(多次卡，直到平台到期); 1=单次; N=可接N次
+            use_count       INTEGER NOT NULL DEFAULT 0,     -- 累计成功接码次数
+            phone_number    TEXT DEFAULT '',                -- 最近一次兑换到的手机号
+            region_label    TEXT DEFAULT '',                -- 地区标签 (如 英国 / HongKong / USA)
+            project_name    TEXT DEFAULT 'OpenAI/ChatGPT',  -- 业务项目
+            expiry_label    TEXT DEFAULT '',                -- 平台到期时间提示
+            fail_count      INTEGER NOT NULL DEFAULT 0,     -- 连续失败/换号次数
+            notes           TEXT DEFAULT '',                -- 用户备注或错误说明
+            created_at      REAL NOT NULL,                  -- 导入时间
+            last_used_at    REAL                            -- 最近一次使用/接码时间
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_sms_cdk_status ON sms_cdk_pool(status, use_count);
+        CREATE INDEX IF NOT EXISTS idx_sms_cdk_cdk ON sms_cdk_pool(cdk);
     """)
     con.commit()
     # 老 DB migrate：error_category 在后期才加，对已建表补列
@@ -3039,13 +3058,14 @@ def get_sms_config() -> dict:
         "sms_auto_max_price":      get_setting("sms_auto_max_price", ""),
         "sms_max_phone_attempts":  get_setting("sms_max_phone_attempts", ""),
         "sms_per_phone_timeout":   get_setting("sms_per_phone_timeout", "80"),
+        "sms_cdk_url":             get_setting("sms_cdk_url", "https://ndk.cc.cd"),
     }
 
 
 def save_sms_config(data: dict) -> None:
     """保存 SMS 配置。sms_api_key 传 '***' 表示不修改。"""
     # 校验 provider
-    valid_providers = {"smsbower", "herosms"}
+    valid_providers = {"smsbower", "herosms", "cdk_sms"}
     if "sms_provider" in data:
         p = str(data["sms_provider"]).strip().lower()
         if p not in valid_providers:
@@ -3057,7 +3077,7 @@ def save_sms_config(data: dict) -> None:
         "sms_provider_ids", "sms_except_provider_ids",
         "sms_phone_success_max", "sms_auto_min_stock", "sms_auto_max_price",
         "sms_max_phone_attempts", "sms_per_phone_timeout",
-        "sms_allowed_countries",
+        "sms_allowed_countries", "sms_cdk_url",
     ):
         if key in data:
             set_setting(key, str(data[key]).strip())
@@ -3234,6 +3254,19 @@ def mark_remail_consumed(email: str) -> None:
         con.commit()
 
 
+def discard_remail_recycled(email: str, reason: str = "") -> None:
+    """因账号已被官方占用/致命封禁等不可逆原因，彻底废弃复用池中的邮箱，避免无限循环重试。"""
+    email_clean = (email or "").strip().lower()
+    if not email_clean:
+        return
+    with _lock:
+        con = _conn()
+        con.execute("UPDATE remail_recycle_pool SET is_used=2 WHERE email = ?", (email_clean,))
+        con.commit()
+    if reason:
+        logging.getLogger("db").warning(f"[remail_pool] 🚫 彻底废弃不可用暂存邮箱: {email_clean} (原因: {reason})")
+
+
 def release_remail_recycled(email: str) -> None:
     """领取后若因某种原因无法初始化，归还复用池。"""
     email_clean = (email or "").strip().lower()
@@ -3317,6 +3350,7 @@ def get_sms_internal_config() -> dict:
         "sms_auto_max_price":      get_setting("sms_auto_max_price", ""),
         "sms_max_phone_attempts":  get_setting("sms_max_phone_attempts", ""),
         "sms_per_phone_timeout":   get_setting("sms_per_phone_timeout", "80"),
+        "sms_cdk_url":             get_setting("sms_cdk_url", "https://ndk.cc.cd"),
     }
 
 
@@ -3469,5 +3503,388 @@ def update_registered_extract(email: str, extract_data: dict) -> bool:
         return True
 
 
-# 模块加载时自动建表
+# ──────────────────────── CDK 卡密号池管理 (ndk.cc.cd / 鲁班SMS) ────────────────────────
+
+
+def import_sms_cdks(
+    cdk_inputs: list[str] | str,
+    max_use_count: int = 0,
+    notes: str = "",
+) -> dict:
+    """批量导入 CDK 卡密到号池。
+
+    max_use_count:
+        0: 多次卡/长期卡（不限次数，直到平台提示到期409或作废422才置为已过期）
+        1: 单次卡（成功接码 1 次后即置为已用尽 exhausted）
+        N: 限制接码 N 次（成功接码 N 次后置为 exhausted）
+    """
+    import re
+    if isinstance(cdk_inputs, str):
+        raw_items = re.split(r"[\r\n,;]+", cdk_inputs)
+    else:
+        raw_items = []
+        for it in cdk_inputs:
+            if isinstance(it, str):
+                raw_items.extend(re.split(r"[\r\n,;]+", it))
+            else:
+                raw_items.append(str(it))
+
+    cleaned = []
+    seen = set()
+    for item in raw_items:
+        c = str(item or "").strip().upper()
+        if c and c not in seen:
+            seen.add(c)
+            cleaned.append(c)
+
+    if not cleaned:
+        return {"total": 0, "inserted": 0, "updated": 0, "skipped": 0}
+
+    now = time.time()
+    inserted = 0
+    updated = 0
+    skipped = 0
+
+    with _lock:
+        con = _conn()
+        for cdk in cleaned:
+            row = con.execute("SELECT id, status, use_count, max_use_count FROM sms_cdk_pool WHERE cdk = ?", (cdk,)).fetchone()
+            if not row:
+                con.execute(
+                    """
+                    INSERT INTO sms_cdk_pool (cdk, status, max_use_count, use_count, notes, created_at)
+                    VALUES (?, 'available', ?, 0, ?, ?)
+                    """,
+                    (cdk, max_use_count, notes, now),
+                )
+                inserted += 1
+            else:
+                cur_use = int(row["use_count"] or 0)
+                # 若重新导入，允许更新可使用上限与备注；若原来因次数用尽，新设上限后恢复为可用
+                new_status = row["status"]
+                if row["status"] == "exhausted" and (max_use_count == 0 or max_use_count > cur_use):
+                    new_status = "available"
+                con.execute(
+                    """
+                    UPDATE sms_cdk_pool
+                    SET max_use_count = ?, notes = coalesce(nullif(?, ''), notes), status = ?
+                    WHERE cdk = ?
+                    """,
+                    (max_use_count, notes, new_status, cdk),
+                )
+                updated += 1
+        con.commit()
+
+    logging.getLogger("db").info(
+        f"[sms_cdk_pool] 批量导入完成: 总提交={len(cleaned)}, 新增={inserted}, 更新={updated}, 上限设置={'不限次(多次卡)' if max_use_count == 0 else f'{max_use_count}次'}"
+    )
+    return {
+        "total": len(cleaned),
+        "inserted": inserted,
+        "updated": updated,
+        "skipped": skipped,
+    }
+
+
+def claim_sms_cdk() -> Optional[dict]:
+    """从号池中原子检索并获取一条当前可用的 CDK 卡密。
+
+    核心逻辑：
+    1. 必须为 status = 'available'
+    2. 必须满足 max_use_count == 0 (多次卡) 或 use_count < max_use_count (未达上限)
+    3. 优先选择使用次数少 (use_count ASC)、导入时间早的卡密进行均衡轮询调度。
+    """
+    with _lock:
+        con = _conn()
+        cur = con.execute(
+            """
+            SELECT * FROM sms_cdk_pool
+            WHERE status = 'available' AND (max_use_count = 0 OR use_count < max_use_count)
+            ORDER BY use_count ASC, last_used_at ASC, id ASC
+            LIMIT 1
+            """
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        return dict(row)
+
+
+def record_sms_cdk_success(
+    cdk: str,
+    phone_number: str = "",
+    region_label: str = "",
+    expiry_label: str = "",
+) -> dict:
+    """记录 CDK 成功完成一次接码验证。
+
+    【核心约束保障】：
+    严禁将支持多次接码的 CDK 一次就置为已使用！
+    只有当显式设置了 max_use_count > 0 且 use_count >= max_use_count 时，才标记为已用尽 (exhausted)；
+    对于默认的多次卡 (max_use_count == 0)，无论成功接码多少次，都必须永久保持 available 状态，
+    直到平台接口返回 409(到期) 或 422(作废) 为止。
+    """
+    c = str(cdk or "").strip().upper()
+    if not c:
+        return {}
+
+    now = time.time()
+    with _lock:
+        con = _conn()
+        row = con.execute("SELECT * FROM sms_cdk_pool WHERE cdk = ?", (c,)).fetchone()
+        if not row:
+            # 库中未记录的自动自愈录入
+            con.execute(
+                """
+                INSERT INTO sms_cdk_pool(cdk, status, max_use_count, use_count, phone_number, region_label, expiry_label, created_at, last_used_at)
+                VALUES (?, 'available', 0, 1, ?, ?, ?, ?, ?)
+                """,
+                (c, phone_number, region_label, expiry_label, now, now),
+            )
+            con.commit()
+            return {"cdk": c, "status": "available", "use_count": 1, "max_use_count": 0}
+
+        cur_use = int(row["use_count"] or 0) + 1
+        max_use = int(row["max_use_count"] or 0)
+
+        # 核心判定：仅当设定了上限且达到时，才标记已用尽；不限次/多次卡绝不提前标记已用！
+        if max_use > 0 and cur_use >= max_use:
+            new_status = "exhausted"
+            logging.getLogger("db").info(
+                f"[sms_cdk_pool] 🎟️ 卡密 {c} 成功接码，已达设定使用上限 ({cur_use}/{max_use}次)，状态变更为已用尽(exhausted)"
+            )
+        else:
+            new_status = "available"
+            logging.getLogger("db").info(
+                f"[sms_cdk_pool] 🎟️ 卡密 {c} 成功接码第 {cur_use} 次 (使用模式: {'长期/多次卡' if max_use == 0 else f'限制{max_use}次'})，继续保持可用(available)！"
+            )
+
+        con.execute(
+            """
+            UPDATE sms_cdk_pool
+            SET use_count = ?,
+                status = ?,
+                phone_number = coalesce(nullif(?, ''), phone_number),
+                region_label = coalesce(nullif(?, ''), region_label),
+                expiry_label = coalesce(nullif(?, ''), expiry_label),
+                fail_count = 0,
+                last_used_at = ?
+            WHERE cdk = ?
+            """,
+            (cur_use, new_status, phone_number, region_label, expiry_label, now, c),
+        )
+        con.commit()
+        return {
+            "cdk": c,
+            "status": new_status,
+            "use_count": cur_use,
+            "max_use_count": max_use,
+            "phone_number": phone_number or row["phone_number"],
+        }
+
+
+def update_sms_cdk_meta(
+    cdk: str,
+    phone_number: str = "",
+    region_label: str = "",
+    expiry_label: str = "",
+) -> None:
+    """在兑换号码或换号成功时，更新卡密的当前号码与地区信息。"""
+    c = str(cdk or "").strip().upper()
+    if not c:
+        return
+    with _lock:
+        con = _conn()
+        con.execute(
+            """
+            UPDATE sms_cdk_pool
+            SET phone_number = coalesce(nullif(?, ''), phone_number),
+                region_label = coalesce(nullif(?, ''), region_label),
+                expiry_label = coalesce(nullif(?, ''), expiry_label),
+                last_used_at = ?
+            WHERE cdk = ?
+            """,
+            (phone_number, region_label, expiry_label, time.time(), c),
+        )
+        con.commit()
+
+
+def discard_sms_cdk(cdk: str, reason: str = "", is_expired: bool = False) -> None:
+    """处理卡密接码异常或上游作废。
+
+    is_expired:
+        True: 平台明确返回 409 (订单取消/到期) 或 422 (无效卡密)，状态置为 expired
+        False: 临时请求异常、未捕获验证码或网络超时，仅增加 fail_count，不作废卡密
+    """
+    c = str(cdk or "").strip().upper()
+    if not c:
+        return
+    now = time.time()
+    with _lock:
+        con = _conn()
+        if is_expired:
+            con.execute(
+                """
+                UPDATE sms_cdk_pool
+                SET status = 'expired', notes = ?, last_used_at = ?
+                WHERE cdk = ?
+                """,
+                ((reason or "平台返回卡密已到期或无效")[:500], now, c),
+            )
+            logging.getLogger("db").warning(f"[sms_cdk_pool] 🚫 卡密 {c} 已作废/到期，置为 expired: {reason}")
+        else:
+            con.execute(
+                """
+                UPDATE sms_cdk_pool
+                SET fail_count = fail_count + 1, notes = ?, last_used_at = ?
+                WHERE cdk = ?
+                """,
+                ((reason or "接码临时异常")[:500], now, c),
+            )
+            logging.getLogger("db").info(f"[sms_cdk_pool] ⚠️ 卡密 {c} 出现临时异常，fail_count+1 (仍保持可用): {reason}")
+        con.commit()
+
+
+def list_sms_cdk_pool(
+    status: str = "",
+    search: str = "",
+    limit: int = 100,
+    offset: int = 0,
+) -> dict:
+    """查询 CDK 号池列表及总数。"""
+    con = _conn()
+    where = []
+    args = []
+
+    s = (status or "").strip().lower()
+    if s and s != "all":
+        where.append("status = ?")
+        args.append(s)
+
+    q = (search or "").strip().upper()
+    if q:
+        where.append("(cdk LIKE ? OR phone_number LIKE ? OR notes LIKE ? OR region_label LIKE ?)")
+        args.extend([f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%"])
+
+    where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+    total = con.execute(f"SELECT COUNT(*) FROM sms_cdk_pool {where_sql}", args).fetchone()[0]
+
+    cur = con.execute(
+        f"""
+        SELECT id, cdk, status, max_use_count, use_count, phone_number,
+               region_label, project_name, expiry_label, fail_count,
+               notes, created_at, last_used_at
+        FROM sms_cdk_pool
+        {where_sql}
+        ORDER BY created_at DESC
+        LIMIT ? OFFSET ?
+        """,
+        args + [limit, offset],
+    )
+    items = [dict(r) for r in cur.fetchall()]
+    return {"total": total, "items": items}
+
+
+def get_sms_cdk_pool_stats() -> dict:
+    """获取 CDK 号池全景统计指标。"""
+    con = _conn()
+    row = con.execute(
+        """
+        SELECT
+            COUNT(*) AS total,
+            SUM(CASE WHEN status = 'available' AND (max_use_count = 0 OR use_count < max_use_count) THEN 1 ELSE 0 END) AS available,
+            SUM(CASE WHEN status = 'exhausted' OR (max_use_count > 0 AND use_count >= max_use_count) THEN 1 ELSE 0 END) AS exhausted,
+            SUM(CASE WHEN status = 'expired' THEN 1 ELSE 0 END) AS expired,
+            COALESCE(SUM(use_count), 0) AS total_success_codes
+        FROM sms_cdk_pool
+        """
+    ).fetchone()
+
+    total = row["total"] or 0
+    available = row["available"] or 0
+    exhausted = row["exhausted"] or 0
+    expired = row["expired"] or 0
+    total_success_codes = row["total_success_codes"] or 0
+
+    return {
+        "total": total,
+        "available": available,
+        "exhausted": exhausted,
+        "expired": expired,
+        "total_success_codes": total_success_codes,
+    }
+
+
+def delete_sms_cdk(cdk_id: int) -> bool:
+    """删除指定的 CDK 卡密。"""
+    with _lock:
+        con = _conn()
+        rc = con.execute("DELETE FROM sms_cdk_pool WHERE id = ?", (cdk_id,))
+        con.commit()
+        return rc.rowcount > 0
+
+
+def clear_sms_cdk_pool(status: str = "") -> int:
+    """按状态批量清理号池。传 'all' 则清空整个号池。"""
+    s = (status or "").strip().lower()
+    valid = {"available", "exhausted", "expired", "all"}
+    if s not in valid:
+        return 0
+    with _lock:
+        con = _conn()
+        if s == "all":
+            rc = con.execute("DELETE FROM sms_cdk_pool")
+        else:
+            rc = con.execute("DELETE FROM sms_cdk_pool WHERE status = ?", (s,))
+        con.commit()
+        return rc.rowcount
+
+
+def update_sms_cdk_item(
+    cdk_id: int,
+    status: Optional[str] = None,
+    max_use_count: Optional[int] = None,
+    notes: Optional[str] = None,
+) -> bool:
+    """手动调整卡密状态或使用上限。"""
+    updates = []
+    args = []
+    if status is not None:
+        updates.append("status = ?")
+        args.append(status.strip().lower())
+    if max_use_count is not None:
+        updates.append("max_use_count = ?")
+        args.append(int(max_use_count))
+    if notes is not None:
+        updates.append("notes = ?")
+        args.append(notes.strip())
+
+    if not updates:
+        return False
+
+    args.append(cdk_id)
+    with _lock:
+        con = _conn()
+        rc = con.execute(
+            f"UPDATE sms_cdk_pool SET {', '.join(updates)} WHERE id = ?",
+            args,
+        )
+        con.commit()
+        return rc.rowcount > 0
+
+
+def seed_default_sms_cdks() -> None:
+    """自动将初始有效卡密导入号池（多次卡/长期模式），方便开箱即用。"""
+    try:
+        con = _conn()
+        cnt = con.execute("SELECT COUNT(*) FROM sms_cdk_pool").fetchone()[0]
+        if cnt == 0:
+            import_sms_cdks(["SMS-336A-20BC", "SMS-E7CA-0727"], max_use_count=0, notes="初始可用卡密(多次长期卡)")
+    except Exception as e:
+        logging.getLogger("db").warning(f"[sms_cdk_pool] 种子卡密预填充异常: {e}")
+
+
+# 模块加载时自动建表与填充种子
 init_db()
+seed_default_sms_cdks()
+

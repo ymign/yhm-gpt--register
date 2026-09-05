@@ -1034,8 +1034,9 @@ def api_get_sms_config():
 
 class SaveSmsConfigReq(BaseModel):
     sms_enabled: Optional[str] = None              # "0" / "1"
-    sms_provider: Optional[str] = None             # smsbower / herosms
-    sms_api_key: Optional[str] = None              # 传 '***' 表示不修改
+    sms_provider: Optional[str] = None             # smsbower / herosms / cdk_sms
+    sms_api_key: Optional[str] = None              # 传 '***' 表示不修改 (CDK模式下即为卡密)
+    sms_cdk_url: Optional[str] = None              # 平台地址 (默认 https://ndk.cc.cd)
     sms_country: Optional[str] = None              # ID 或国家代码（'52' / 'th'）
     sms_service: Optional[str] = None              # OpenAI = 'dr'
     sms_max_price: Optional[str] = None
@@ -1060,9 +1061,11 @@ def api_save_sms_config(req: SaveSmsConfigReq):
 
 @app.post("/api/settings/sms/test")
 def api_test_sms():
-    """测试 SMS provider 连通性：查询余额。"""
+    """测试 SMS provider 连通性：查询余额或卡密兑换状态。"""
     cfg = db.get_sms_internal_config()
-    if not cfg.get("sms_api_key"):
+    p_key = (cfg.get("sms_provider") or "").strip().lower()
+    is_cdk = p_key in ("cdk_sms", "cdk", "ndk", "ndk_cdk", "lubansms")
+    if not cfg.get("sms_api_key") and not is_cdk:
         raise HTTPException(400, "未配置 sms_api_key")
 
     import sys as _sys
@@ -1072,6 +1075,15 @@ def api_test_sms():
     from sms_provider import create_sms_provider
     try:
         provider = create_sms_provider(cfg["sms_provider"], cfg)
+        if hasattr(provider, "get_detail_status"):
+            detail = provider.get_detail_status()
+            return {
+                "ok": True,
+                "provider": cfg["sms_provider"],
+                "balance": provider.get_balance(),
+                "message": detail.get("message", f"连接成功，剩余换号: {provider.get_balance()}次"),
+                "data": detail,
+            }
         balance = provider.get_balance()
         return {
             "ok": True,
@@ -1083,10 +1095,90 @@ def api_test_sms():
         raise HTTPException(500, f"连接失败: {e}")
 
 
+# ──────────────────────── CDK 号池工作台 API ────────────────────────
+
+
+class ImportSmsCdkReq(BaseModel):
+    cdks: str                                      # 多行卡密文本 (换行/逗号/分号分隔)
+    max_use_count: Optional[int] = 0               # 0: 多次卡/长期不限次; 1: 单次卡; N: 限N次
+    notes: Optional[str] = ""
+
+
+class UpdateSmsCdkReq(BaseModel):
+    status: Optional[str] = None                   # available / exhausted / expired
+    max_use_count: Optional[int] = None
+    notes: Optional[str] = None
+
+
+class ClearSmsCdkReq(BaseModel):
+    status: str = "all"                            # all / exhausted / expired / available
+
+
+@app.get("/api/settings/sms/cdk_pool")
+def api_get_sms_cdk_pool(
+    status: str = "all",
+    search: str = "",
+    limit: int = 50,
+    offset: int = 0,
+):
+    """获取 CDK 卡密号池列表。"""
+    res = db.list_sms_cdk_pool(status=status, search=search, limit=limit, offset=offset)
+    return {"ok": True, **res}
+
+
+@app.get("/api/settings/sms/cdk_pool/stats")
+def api_get_sms_cdk_pool_stats():
+    """获取 CDK 号池全景统计数据。"""
+    stats = db.get_sms_cdk_pool_stats()
+    return {"ok": True, "stats": stats}
+
+
+@app.post("/api/settings/sms/cdk_pool/import")
+def api_import_sms_cdks(req: ImportSmsCdkReq):
+    """批量多行导入 CDK 卡密到号池。"""
+    res = db.import_sms_cdks(
+        cdk_inputs=req.cdks,
+        max_use_count=req.max_use_count or 0,
+        notes=req.notes or "",
+    )
+    return {"ok": True, "result": res}
+
+
+@app.post("/api/settings/sms/cdk_pool/{cdk_id}/update")
+def api_update_sms_cdk(cdk_id: int, req: UpdateSmsCdkReq):
+    """更新单个卡密的使用上限、状态或备注。"""
+    ok = db.update_sms_cdk_item(
+        cdk_id=cdk_id,
+        status=req.status,
+        max_use_count=req.max_use_count,
+        notes=req.notes,
+    )
+    if not ok:
+        raise HTTPException(404, "卡密不存在或未做任何更改")
+    return {"ok": True}
+
+
+@app.delete("/api/settings/sms/cdk_pool/{cdk_id}")
+def api_delete_sms_cdk(cdk_id: int):
+    """删除指定 ID 的卡密。"""
+    ok = db.delete_sms_cdk(cdk_id)
+    return {"ok": ok}
+
+
+@app.post("/api/settings/sms/cdk_pool/clear")
+def api_clear_sms_cdk_pool(req: ClearSmsCdkReq):
+    """按状态清空卡密号池。"""
+    count = db.clear_sms_cdk_pool(status=req.status)
+    return {"ok": True, "cleared": count}
+
+
 @app.get("/api/settings/sms/countries")
 def api_sms_top_countries():
     """查询当前接码平台的国家排名（价格 + 库存）。"""
     cfg = db.get_sms_internal_config()
+    p_key = (cfg.get("sms_provider") or "").strip().lower()
+    if p_key in ("cdk_sms", "cdk", "ndk", "ndk_cdk", "lubansms"):
+        return {"ok": True, "countries": [], "openai_sms_safe": []}
     if not cfg.get("sms_api_key"):
         raise HTTPException(400, "未配置 sms_api_key")
 
@@ -1124,10 +1216,11 @@ def api_sms_all_countries(provider: str = ""):
     if cfg.get("sms_api_key"):
         try:
             p = create_sms_provider(cfg["sms_provider"], cfg)
-            for r in p.get_top_countries(service=cfg.get("sms_service") or "dr") or []:
-                cid = str(r.get("country") or "").strip()
-                if cid:
-                    live_map[cid] = r
+            if hasattr(p, "get_top_countries"):
+                for r in p.get_top_countries(service=cfg.get("sms_service") or "dr") or []:
+                    cid = str(r.get("country") or "").strip()
+                    if cid:
+                        live_map[cid] = r
         except Exception:
             live_map = {}
 
@@ -2371,8 +2464,9 @@ class StartOAuthExportReq(BaseModel):
     timeout: float = Field(45.0, description="单账号超时秒数")
     # SMS 接码配置扩展
     sms_enabled: bool = Field(False, description="是否启用自动 SMS 接码")
-    sms_provider: Optional[str] = Field("smsbower", description="接码服务平台 (smsbower / herosms)")
-    sms_api_key: Optional[str] = Field("", description="接码平台 API Key（留空使用系统全局配置）")
+    sms_provider: Optional[str] = Field("smsbower", description="接码服务平台 (smsbower / herosms / cdk_sms)")
+    sms_api_key: Optional[str] = Field("", description="接码平台 API Key / CDK 卡密（留空使用系统全局配置）")
+    sms_cdk_url: Optional[str] = Field("https://ndk.cc.cd", description="CDK 平台接口基地址")
     sms_country: Optional[str] = Field("52", description="接码国家ID，默认52泰国")
     sms_max_price: Optional[str] = Field("", description="最高单价限制")
     sms_provider_ids: Optional[str] = Field("", description="指定供应商ID(如3237)")
@@ -2412,14 +2506,22 @@ def api_oauth_export_start(req: StartOAuthExportReq):
 
     # 接码配置组装
     sms_api_key = (req.sms_api_key or "").strip()
-    if not sms_api_key or sms_api_key == "***":
-        global_sms = db.get_sms_internal_config()
-        sms_api_key = global_sms.get("sms_api_key") or ""
+    global_sms = db.get_sms_internal_config()
+    is_cdk_mode = (req.sms_provider or "").strip().lower() in ("cdk_sms", "cdk", "ndk", "ndk_cdk", "lubansms")
+    if is_cdk_mode:
+        # CDK 模式下，若未单独指定卡密，则置空以严格走数据库 CDK 号池自动调度，切勿混用普通接码平台的 API Key！
+        if not sms_api_key or sms_api_key == "***" or (len(sms_api_key) == 32 and "-" not in sms_api_key and not sms_api_key.upper().startswith("SMS")):
+            sms_api_key = ""
+    else:
+        if not sms_api_key or sms_api_key == "***":
+            sms_api_key = global_sms.get("sms_api_key") or ""
+    sms_cdk_url = (req.sms_cdk_url or "").strip() or global_sms.get("sms_cdk_url") or "https://ndk.cc.cd"
 
     sms_config = {
         "sms_enabled": req.sms_enabled,
         "sms_provider": (req.sms_provider or "smsbower").strip().lower(),
         "sms_api_key": sms_api_key,
+        "sms_cdk_url": sms_cdk_url,
         "sms_country": (req.sms_country or "52").strip(),
         "sms_max_price": (req.sms_max_price or "").strip(),
         "sms_provider_ids": (req.sms_provider_ids or "").strip(),
@@ -2441,6 +2543,65 @@ def api_oauth_export_start(req: StartOAuthExportReq):
         raise HTTPException(400, str(e))
     logger.info(f"[oauth_export] 任务 {task_id} 启动: {len(emails)} 个账号, workers={config['workers']}, sms_enabled={req.sms_enabled}")
     return {"ok": True, "task_id": task_id, "taskId": task_id, "total": len(emails)}
+
+
+class RetryOAuthExportReq(BaseModel):
+    emails: Optional[list[str]] = None
+    proxy: Optional[str] = None
+    proxies: Optional[str] = None
+    proxy_country: Optional[str] = None
+    workers: Optional[int] = None
+    timeout: Optional[int] = None
+    sms_enabled: Optional[bool] = None
+    sms_provider: Optional[str] = None
+    sms_api_key: Optional[str] = None
+    sms_cdk_url: Optional[str] = None
+    sms_country: Optional[str] = None
+    sms_max_price: Optional[str] = None
+    sms_provider_ids: Optional[str] = None
+    sms_except_provider_ids: Optional[str] = None
+    sms_max_attempts: Optional[int] = None
+    sms_timeout: Optional[int] = None
+
+
+@app.post("/api/registered/oauth_export/{task_id}/retry")
+def api_oauth_export_retry(task_id: str, req: Optional[RetryOAuthExportReq] = None):
+    """重新授权失败或指定的账号。"""
+    from . import oauth_export
+
+    emails = req.emails if req else None
+    new_cfg = {}
+    if req:
+        if req.proxy is not None:
+            new_cfg["proxy"] = req.proxy
+        if req.proxies is not None:
+            new_cfg["proxies"] = [p.strip() for p in str(req.proxies).splitlines() if p.strip() and not p.startswith("#")]
+        if req.proxy_country is not None:
+            new_cfg["proxy_country"] = req.proxy_country
+        if req.workers is not None:
+            new_cfg["workers"] = req.workers
+        if req.timeout is not None:
+            new_cfg["timeout"] = req.timeout
+
+        sms_up = {}
+        if req.sms_enabled is not None: sms_up["sms_enabled"] = req.sms_enabled
+        if req.sms_provider is not None: sms_up["sms_provider"] = req.sms_provider
+        if req.sms_api_key is not None: sms_up["sms_api_key"] = req.sms_api_key
+        if req.sms_cdk_url is not None: sms_up["sms_cdk_url"] = req.sms_cdk_url
+        if req.sms_country is not None: sms_up["sms_country"] = req.sms_country
+        if req.sms_max_price is not None: sms_up["sms_max_price"] = req.sms_max_price
+        if req.sms_provider_ids is not None: sms_up["sms_provider_ids"] = req.sms_provider_ids
+        if req.sms_except_provider_ids is not None: sms_up["sms_except_provider_ids"] = req.sms_except_provider_ids
+        if req.sms_max_attempts is not None: sms_up["sms_max_attempts"] = req.sms_max_attempts
+        if req.sms_timeout is not None: sms_up["sms_timeout"] = req.sms_timeout
+        if sms_up:
+            new_cfg["sms_config"] = sms_up
+
+    try:
+        res = oauth_export.retry(task_id, emails=emails, new_config=new_cfg or None)
+        return res
+    except Exception as e:
+        raise HTTPException(400, str(e))
 
 
 @app.post("/api/registered/oauth_export/{task_id}/stop")
@@ -3639,7 +3800,21 @@ def root():
     )
 
 
-app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+class NoCacheStaticFiles(StaticFiles):
+    """确保前端重新打包后，浏览器不缓存旧 JS/CSS 代码，即时加载最新构建产物。"""
+
+    def is_not_modified(self, response_headers, request_headers) -> bool:
+        return False
+
+    async def get_response(self, path: str, scope):
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+        return response
+
+
+app.mount("/static", NoCacheStaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
 if __name__ == "__main__":
