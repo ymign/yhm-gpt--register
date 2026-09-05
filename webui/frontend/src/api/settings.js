@@ -13,6 +13,7 @@ export const fetchCfDomains = (payload) => http.post('/api/mail/cf/domains', pay
 export const fetchRemailProjects = (payload = {}) => http.post('/api/mail/remail/projects', payload)
 
 // ──────────────── SMS 接码配置 ────────────────
+export const getSmsProviders = () => http.get('/api/sms/providers')
 export const getSmsConfig = () => http.get('/api/settings/sms')
 export const saveSmsConfig = (payload) => http.post('/api/settings/sms', payload)
 export const testSms = () => http.post('/api/settings/sms/test')

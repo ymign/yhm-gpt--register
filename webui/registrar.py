@@ -25,7 +25,7 @@ from mail_providers import (  # noqa: E402
     create_mail_provider,
     get_provider_class,
 )
-from sms_provider import PhoneCallbackController  # noqa: E402
+from sms_providers import PhoneCallbackController, canonicalize_kind, get_provider_class  # noqa: E402
 
 from . import db  # noqa: E402
 from .proxy_util import (  # noqa: E402
@@ -825,8 +825,14 @@ def _build_sms_callback(run_id: str) -> Optional[PhoneCallbackController]:
     cfg = db.get_sms_internal_config()
     if not cfg.get("sms_enabled"):
         return None
+    kind = canonicalize_kind(cfg.get("sms_provider") or "smsbower") or "smsbower"
+    try:
+        p_cls = get_provider_class(kind)
+    except Exception as e:
+        logging.getLogger("registrar").warning(f"[sms] 未知接码渠道 {kind}: {e}")
+        return None
     api_key = (cfg.get("sms_api_key") or "").strip()
-    if not api_key:
+    if p_cls.needs_api_key and not api_key:
         logging.getLogger("registrar").warning("[sms] 已启用接码但未配置 sms_api_key，跳过")
         return None
 
@@ -842,7 +848,7 @@ def _build_sms_callback(run_id: str) -> Optional[PhoneCallbackController]:
 
     try:
         return PhoneCallbackController(
-            provider_key=cfg["sms_provider"],
+            provider_key=kind,
             config=cfg,
             service=cfg.get("sms_service") or "openai",
             country=cfg.get("sms_country") or "52",

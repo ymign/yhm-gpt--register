@@ -1393,33 +1393,42 @@ def execute_codex_oauth_flow(
             )
 
         # ── 开启接码：执行 SmsBower 自动租号、发码、收码与验证 ──
-        from sms_provider import PhoneCallbackController, parse_price_spec
+        from sms_providers import (
+            PhoneCallbackController,
+            canonicalize_kind,
+            get_provider_class,
+            parse_price_spec,
+            provider_display_name,
+            uses_cdk_pool,
+        )
 
-        provider_key = str(sms_cfg.get("sms_provider") or "smsbower").strip().lower()
+        provider_key = canonicalize_kind(str(sms_cfg.get("sms_provider") or "smsbower")) or "smsbower"
         api_key = str(sms_cfg.get("sms_api_key") or "").strip()
-        is_cdk = provider_key in ("cdk_sms", "cdk", "ndk", "ndk_cdk", "lubansms")
+        try:
+            p_cls = get_provider_class(provider_key)
+        except Exception:
+            p_cls = None
+        is_cdk = uses_cdk_pool(provider_key)
         if is_cdk:
             # 若传入的是普通平台的 32 位 API Key，自动清空以让 CdkSmsProvider 严格从号池申领可用卡密
             if api_key and len(api_key) == 32 and "-" not in api_key and not api_key.upper().startswith("SMS"):
                 _log(f"[sms] 💡 提示: 检测到传入参数为普通接码平台 API Key，已自动切换为从【🎟️ CDK号池】申领专属卡密")
                 api_key = ""
-        country = str(sms_cfg.get("sms_country") or ("44" if is_cdk else "52")).strip()
+        default_country = (getattr(p_cls, "default_country", None) if p_cls else None) or ("44" if is_cdk else "52")
+        rec_timeout = int(getattr(p_cls, "recommended_timeout", 0) or (35 if is_cdk else 80))
+        max_timeout = int(getattr(p_cls, "max_timeout", 0) or (60 if is_cdk else 90))
+        country = str(sms_cfg.get("sms_country") or default_country).strip()
         max_price_raw = sms_cfg.get("sms_max_price") or sms_cfg.get("sms_price")
         min_p, max_p, exact_p = parse_price_spec(max_price_raw)
         max_attempts = max(1, min(10, int(sms_cfg.get("sms_max_attempts") or 3)))
-        raw_timeout = int(sms_cfg.get("sms_timeout") or (50 if is_cdk else 75))
+        raw_timeout = int(sms_cfg.get("sms_timeout") or rec_timeout)
         # OpenAI 的 /add-phone 授权会话总生命周期约 90~120 秒
-        # CDK 模式下验证码若遇延迟，通过在 18s、38s 触发二次补发 (resend) 可大幅提升到达率
-        # 单号等待时间设为 50~55s 最为均衡，既能容纳 2 次补发又可确保在 OpenAI 会话 TTL 内安全完成
-        if is_cdk:
-            if raw_timeout > 60:
-                _log(f"[sms] 💡 提示: 原配置超时 {raw_timeout}s 过长易致 OpenAI 会话过期(400)，已自动优化为 50s 补发安全周期")
-                per_phone_timeout = 50
-            else:
-                per_phone_timeout = max(20, raw_timeout)
-        elif raw_timeout > 90:
-            _log(f"[sms] 💡 提示: 原配置超时 {raw_timeout}s 过长易致 OpenAI 会话失效，已自动优化为 85s 安全周期")
-            per_phone_timeout = 85
+        if raw_timeout > max_timeout:
+            _log(
+                f"[sms] 💡 提示: 原配置超时 {raw_timeout}s 过长易致 OpenAI 会话过期(400)，"
+                f"已自动优化为 {rec_timeout}s 安全周期"
+            )
+            per_phone_timeout = rec_timeout
         else:
             per_phone_timeout = max(20, raw_timeout)
 
@@ -1458,12 +1467,13 @@ def execute_codex_oauth_flow(
             sms_price_spec=str(max_price_raw or ""),
         )
 
-        _step("5_sms", f"[5/6] 手机号接码 ({'CDK卡密兑换' if provider_key in ('cdk_sms', 'cdk', 'ndk', 'ndk_cdk', 'lubansms') else provider_key})")
+        display_name = provider_display_name(provider_key) or provider_key
+        _step("5_sms", f"[5/6] 手机号接码 ({display_name})")
         id_tip = f", 指定供应商={provider_ids}" if provider_ids else ""
-        if provider_key in ("cdk_sms", "cdk", "ndk", "ndk_cdk", "lubansms"):
-            _log(f"[5/6] 遇到手机验证，已启用 🎟️ CDK卡密号池兑换接码 (最多换号={max_attempts}次, 超时={per_phone_timeout}s)...")
+        if is_cdk:
+            _log(f"[5/6] 遇到手机验证，已启用 🎟️ {display_name} (最多换号={max_attempts}次, 超时={per_phone_timeout}s)...")
         else:
-            _log(f"[5/6] 遇到手机验证，已启用 {provider_key} 接码 (国家={country}{id_tip}, 金额要求={price_desc}, 最多换号={max_attempts}次, 超时={per_phone_timeout}s)...")
+            _log(f"[5/6] 遇到手机验证，已启用 {display_name} 接码 (国家={country}{id_tip}, 金额要求={price_desc}, 最多换号={max_attempts}次, 超时={per_phone_timeout}s)...")
 
         ctrl = PhoneCallbackController(
             provider_key=provider_key,
@@ -1491,6 +1501,7 @@ def execute_codex_oauth_flow(
         phone_verified = False
         verified_phone = ""
         last_sms_err = ""
+        tried_phones = 0
         try:
             for attempt in range(1, max_attempts + 1):
                 remain_cnt = max_attempts - attempt
@@ -1508,6 +1519,7 @@ def execute_codex_oauth_flow(
                     last_sms_err = "接码平台未返回有效手机号"
                     time.sleep(2)
                     continue
+                tried_phones += 1
 
                 _step("5_sms_send", f"[5/6] 发送短信: {phone} (第{attempt}/{max_attempts}号)")
                 _log(f"[sms] 租到手机号: {phone}，正在向 OpenAI 提交发送验证短信...")
@@ -1597,7 +1609,8 @@ def execute_codex_oauth_flow(
                             f"OpenAI 绑手机接口会话已超时失效 (HTTP {send_resp.status_code})。"
                             "通常是因为上一号码等待时间过长导致 OpenAI 授权会话过期，已自动释放号码退款。"
                         )
-                    _log(f"[sms] OpenAI 拒绝该手机号 HTTP {send_resp.status_code}: {err_msg}，退号换下一个")
+                    last_sms_err = f"OpenAI 拒绝该手机号 HTTP {send_resp.status_code}: {err_msg}"
+                    _log(f"[sms] {last_sms_err}，退号换下一个")
                     ctrl.mark_send_failed(err_msg)
                     time.sleep(2)
                     continue
@@ -1662,7 +1675,8 @@ def execute_codex_oauth_flow(
             ctrl._release_lock()
 
         if not phone_verified:
-            raise RuntimeError(f"接码失败 (已尝试 {max_attempts} 个号码均已安全退回): {last_sms_err or '未收到短信'}")
+            used = tried_phones or max_attempts
+            raise RuntimeError(f"接码失败 (本轮已尝试 {used} 个号码): {last_sms_err or '未收到短信'}")
 
     # ──────────────── 阶段 5: 选择工作区与捕获回调 ────────────────
     _step("5", "[5/6] 选工作区 (提取回调)")
@@ -1991,7 +2005,9 @@ def _run_one_oauth_export(task: OAuthExportTask, email: str) -> None:
             logger.warning("[oauth_export] 特征落库失败: %s", persist_err)
 
     started_ts = time.time()
-    max_flow_retries = max(1, min(5, int(sms_cfg.get("sms_max_attempts") or 3))) if sms_enabled else 1
+    # 整轮 OAuth 重登只用于「短信已发出但会话过期 / 等码超时」；
+    # 换号次数 sms_max_attempts 只约束本轮绑手机，不再拿来把整次登录重跑 5 遍。
+    max_flow_retries = 2 if sms_enabled else 1
     flow_res = None
     for flow_attempt in range(1, max_flow_retries + 1):
         try:
@@ -2010,8 +2026,25 @@ def _run_one_oauth_export(task: OAuthExportTask, email: str) -> None:
             break
         except Exception as e:
             err_text = str(e)
-            if ("未收到短信" in err_text or "超时" in err_text) and flow_attempt < max_flow_retries and not task.cancelled:
-                task.add_email_log(email, f"[sms] 🔄 上一号码等待超时，正在重新发起鉴权以绑定新换的号码 (第 {flow_attempt+1}/{max_flow_retries} 轮)...")
+            err_lc = err_text.lower()
+            session_stale = (
+                "会话已超时失效" in err_text
+                or "invalid_auth_step" in err_lc
+                or "等待时间过长" in err_text
+            )
+            sms_wait_timeout = "未收到短信" in err_text
+            can_reauth = (
+                sms_enabled
+                and (session_stale or sms_wait_timeout)
+                and flow_attempt < max_flow_retries
+                and not task.cancelled
+            )
+            if can_reauth:
+                task.add_email_log(
+                    email,
+                    f"[sms] 🔄 本轮绑手机因会话过期或等码超时失败，重新发起一次干净鉴权 "
+                    f"(第 {flow_attempt + 1}/{max_flow_retries} 轮，换号次数仍受本轮 {sms_cfg.get('sms_max_attempts') or 3} 次限制)...",
+                )
                 time.sleep(2)
                 continue
             req_ms = int((time.time() - started_ts) * 1000)

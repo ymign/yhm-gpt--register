@@ -105,7 +105,7 @@ import {
   getSentinelPoolStats,
   getProxyHealthSummary,
 } from '@/api/register'
-import { saveSmsConfig, getSmsPriceTiers, getSmsAllCountries, getSmsConfig, getSmsCdkPoolStats } from '@/api/settings'
+import { saveSmsConfig, getSmsPriceTiers, getSmsAllCountries, getSmsConfig, getSmsCdkPoolStats, getSmsProviders } from '@/api/settings'
 import { copyText, fmtTime, createSSE } from '@/api/request'
 import { useFormStore, proxyText, COUNTRY_OPTIONS, COUNTRY_NAME_MAP, formatCountry } from '@/stores/form'
 import { useProxyStore } from '@/stores/proxy'
@@ -1957,14 +1957,81 @@ const OAUTH_FORM_KEY = 'gpt_oauth_export_form_v2'
 let savedOAuth = {}
 try { savedOAuth = JSON.parse(localStorage.getItem(OAUTH_FORM_KEY) || '{}') } catch (_) {}
 
+const DEFAULT_SMS_PROVIDERS = [
+  {
+    kind: 'smsbower',
+    display_name: 'SmsBower',
+    short_label: '即退款',
+    description: '遇到手机号验证时自动租号收码，未接通即时取消即退款',
+    uses_cdk_pool: false,
+    uses_country: true,
+    uses_price_tiers: true,
+    uses_auto_country: true,
+    recommended_timeout: 80,
+    max_timeout: 90,
+    timeout_hint: '推荐 60~85 秒。超过 90 秒容易导致 OpenAI 授权会话过期。',
+  },
+  {
+    kind: 'herosms',
+    display_name: 'HeroSMS',
+    short_label: '20分退',
+    description: '与 SmsBower 同协议，号码约 20 分钟未用自动退款',
+    uses_cdk_pool: false,
+    uses_country: true,
+    uses_price_tiers: true,
+    uses_auto_country: true,
+    recommended_timeout: 80,
+    max_timeout: 90,
+    timeout_hint: '推荐 60~85 秒。超过 90 秒容易导致 OpenAI 授权会话过期。',
+  },
+  {
+    kind: 'cdk_sms',
+    aliases: ['cdk', 'ndk', 'ndk_cdk', 'lubansms'],
+    display_name: 'CDK 卡密兑换',
+    short_label: 'ndk.cc.cd',
+    description: '从 CDK 号池提取卡密兑换号码，被拒自动免费换号，多次卡支持长期复用',
+    uses_cdk_pool: true,
+    uses_country: false,
+    uses_price_tiers: false,
+    uses_auto_country: false,
+    recommended_timeout: 35,
+    max_timeout: 60,
+    timeout_hint: 'CDK 推荐 30~35 秒。超过 45 秒容易导致 OpenAI 授权会话过期。',
+  },
+]
+const smsProviders = ref(DEFAULT_SMS_PROVIDERS)
+
+function findSmsProviderMeta(kind) {
+  const k = String(kind || '').trim()
+  return (
+    smsProviders.value.find((p) => p.kind === k || (p.aliases || []).includes(k)) || null
+  )
+}
+
+function normalizeOAuthSmsStrategy(saved) {
+  const raw = saved?.smsStrategy
+  if (raw === 'skip') return 'skip'
+  if (raw === 'cdk') return 'cdk_sms'
+  if (raw === 'api') {
+    const p = saved?.smsProvider
+    return p && p !== 'cdk_sms' ? p : 'smsbower'
+  }
+  if (raw) return raw
+  if (saved?.smsEnabled === false) return 'skip'
+  if (saved?.smsProvider) return saved.smsProvider
+  return 'smsbower'
+}
+
+const _oauthSmsStrategy = normalizeOAuthSmsStrategy(savedOAuth)
+
 const oauthForm = reactive({
   proxy: savedOAuth.proxy || '__POOL__',
   proxyCountry: savedOAuth.proxyCountry || 'RANDOM_HOT',
   workers: savedOAuth.workers || 5,
   timeout: savedOAuth.timeout || 45,
-  smsStrategy: savedOAuth.smsStrategy || (savedOAuth.smsEnabled ? (savedOAuth.smsProvider === 'cdk_sms' ? 'cdk' : 'api') : 'cdk'),
-  smsEnabled: savedOAuth.smsStrategy ? savedOAuth.smsStrategy !== 'skip' : true,
-  smsProvider: savedOAuth.smsProvider || 'cdk_sms',
+  smsStrategy: _oauthSmsStrategy,
+  smsEnabled: _oauthSmsStrategy !== 'skip',
+  smsProvider: _oauthSmsStrategy === 'skip' ? (savedOAuth.smsProvider || 'smsbower') : _oauthSmsStrategy,
   smsApiKey: savedOAuth.smsApiKey || '',
   smsCdkUrl: savedOAuth.smsCdkUrl || 'https://ndk.cc.cd',
   smsCountry: savedOAuth.smsCountry || '52',
@@ -1988,25 +2055,33 @@ const oauthCdkStats = ref({
   total_success_codes: 0,
 })
 
+const oauthSmsMeta = computed(() =>
+  oauthForm.smsStrategy === 'skip' ? null : findSmsProviderMeta(oauthForm.smsStrategy),
+)
+
 function onOAuthStrategyChange(val) {
   if (val === 'skip') {
     oauthForm.smsEnabled = false
-  } else if (val === 'cdk') {
-    oauthForm.smsEnabled = true
-    oauthForm.smsProvider = 'cdk_sms'
-    // CDK模式推荐 35s，极速换号防 OpenAI 授权会话失效(400)
-    if (!oauthForm.smsTimeout || oauthForm.smsTimeout > 45) {
-      oauthForm.smsTimeout = 35
-    }
-    oauthActiveTab.value = 'sms'
-  } else if (val === 'api') {
-    oauthForm.smsEnabled = true
-    if (oauthForm.smsProvider === 'cdk_sms') {
-      oauthForm.smsProvider = 'smsbower'
-      oauthForm.smsTimeout = 80
-    }
-    oauthActiveTab.value = 'sms'
+    return
   }
+  oauthForm.smsEnabled = true
+  oauthForm.smsProvider = val
+  const meta = findSmsProviderMeta(val)
+  if (meta?.recommended_timeout) {
+    oauthForm.smsTimeout = meta.recommended_timeout
+  }
+  oauthActiveTab.value = 'sms'
+  loadSmsCountries()
+  loadOAuthPriceTiers()
+}
+
+async function loadSmsProviderCatalog() {
+  try {
+    const res = await getSmsProviders()
+    if (Array.isArray(res.providers) && res.providers.length) {
+      smsProviders.value = res.providers
+    }
+  } catch (_) {}
 }
 
 watch(oauthForm, (v) => {
@@ -2227,6 +2302,7 @@ onMounted(() => {
   load()
   loadDomains()
   loadCountries()
+  loadSmsProviderCatalog()
   loadSmsCountries()
   loadRegSummary()
   oauthLiveTimer = setInterval(() => {
@@ -2260,7 +2336,7 @@ function saveOAuthFormDefault() {
     if (oauthForm.smsApiKey && oauthForm.smsApiKey !== '***') {
       saveSmsConfig({
         sms_enabled: oauthForm.smsEnabled ? '1' : '0',
-        sms_provider: oauthForm.smsProvider || 'smsbower',
+        sms_provider: (oauthForm.smsStrategy !== 'skip' ? oauthForm.smsStrategy : oauthForm.smsProvider) || 'smsbower',
         sms_api_key: oauthForm.smsApiKey,
         sms_country: String(oauthForm.smsCountry || '52').trim(),
         sms_max_price: String(oauthForm.smsMaxPrice || '').trim(),
@@ -2284,8 +2360,10 @@ const smsCountriesLoading = ref(false)
 function formatSmsCountryOption(c) {
   const bits = [`${c.id} · ${c.name_cn}`]
   if (c.openai_sms_safe) bits.push('免WhatsApp')
-  if (c.count != null && c.count !== '') bits.push(`余${c.count}`)
-  else bits.push('暂无库存')
+  if (c.count != null && c.count !== '') {
+    const n = Number(c.count)
+    bits.push(Number.isFinite(n) && n > 0 ? `余${c.count}` : '暂无库存')
+  }
   if (c.price != null && c.price !== '') bits.push(`${c.price}`)
   return { value: String(c.id), label: bits.join(' · '), safe: !!c.openai_sms_safe }
 }
@@ -2297,7 +2375,9 @@ const SMS_COUNTRY_OPTIONS = computed(() => {
 })
 
 async function loadSmsCountries() {
-  if (oauthForm.smsProvider === 'cdk_sms') {
+  const kind = oauthForm.smsStrategy === 'skip' ? oauthForm.smsProvider : oauthForm.smsStrategy
+  const meta = findSmsProviderMeta(kind)
+  if (meta && !meta.uses_country) {
     smsAllCountries.value = []
     return
   }
@@ -2318,15 +2398,30 @@ const oauthPriceTiers = ref([])
 const oauthPriceTiersLoading = ref(false)
 
 async function loadOAuthPriceTiers() {
+  const kind = oauthForm.smsStrategy === 'skip' ? oauthForm.smsProvider : oauthForm.smsStrategy
+  const meta = findSmsProviderMeta(kind)
   const c = String(oauthForm.smsCountry || '').trim()
-  if (!c || c === 'AUTO' || oauthForm.smsProvider !== 'smsbower') {
+  if (!c || c === 'AUTO' || !meta?.uses_price_tiers) {
     oauthPriceTiers.value = []
     return
   }
   oauthPriceTiersLoading.value = true
   try {
-    const res = await getSmsPriceTiers(c, 'dr', oauthForm.smsProvider || 'smsbower')
+    const res = await getSmsPriceTiers(c, 'dr', kind || 'smsbower')
     oauthPriceTiers.value = res.tiers || []
+    if (oauthPriceTiers.value.length) {
+      const sum = oauthPriceTiers.value.reduce((s, t) => s + (Number(t.count) || 0), 0)
+      const prices = oauthPriceTiers.value.map((t) => Number(t.price)).filter((n) => Number.isFinite(n) && n > 0)
+      const idx = smsAllCountries.value.findIndex((x) => String(x.id) === String(c))
+      if (idx >= 0) {
+        const cur = smsAllCountries.value[idx]
+        smsAllCountries.value[idx] = {
+          ...cur,
+          count: Math.max(Number(cur.count) || 0, sum),
+          price: prices.length ? Math.min(Number(cur.price) || prices[0], ...prices) : cur.price,
+        }
+      }
+    }
   } catch (e) {
     oauthPriceTiers.value = []
   } finally {
@@ -2335,7 +2430,7 @@ async function loadOAuthPriceTiers() {
 }
 
 watch(
-  () => [oauthForm.smsCountry, oauthForm.smsProvider],
+  () => [oauthForm.smsCountry, oauthForm.smsProvider, oauthForm.smsStrategy],
   () => {
     loadOAuthPriceTiers()
   },
@@ -2439,6 +2534,7 @@ async function openOAuthExport(target = 'selected') {
   }
 
   oauthVisible.value = true
+  loadSmsProviderCatalog()
   loadSmsCountries()
   loadOAuthSmsMeta()
 }
@@ -2452,14 +2548,10 @@ async function loadOAuthSmsMeta() {
     if (cfgRes.status === 'fulfilled' && cfgRes.value?.config) {
       const cfg = cfgRes.value.config
       if (!localStorage.getItem(OAUTH_FORM_KEY)) {
-        if (cfg.sms_provider === 'cdk_sms') {
-          oauthForm.smsStrategy = 'cdk'
-          oauthForm.smsProvider = 'cdk_sms'
-          oauthForm.smsEnabled = true
-        } else if (cfg.sms_enabled === '1') {
-          oauthForm.smsStrategy = 'api'
-          oauthForm.smsProvider = cfg.sms_provider || 'smsbower'
-          oauthForm.smsEnabled = true
+        if (cfg.sms_provider) {
+          oauthForm.smsStrategy = cfg.sms_enabled === '1' ? cfg.sms_provider : 'skip'
+          oauthForm.smsProvider = cfg.sms_provider
+          oauthForm.smsEnabled = cfg.sms_enabled === '1'
         }
       }
       if (cfg.sms_cdk_url) {
@@ -2529,10 +2621,10 @@ async function startOAuthExportTask() {
   }
 
   try {
-    const isCdk = oauthForm.smsStrategy === 'cdk'
-    const isApi = oauthForm.smsStrategy === 'api'
-    const effectiveSmsEnabled = isCdk || isApi
-    const effectiveProvider = isCdk ? 'cdk_sms' : (oauthForm.smsProvider || 'smsbower')
+    const skipSms = oauthForm.smsStrategy === 'skip'
+    const effectiveProvider = skipSms
+      ? (oauthForm.smsProvider || 'smsbower')
+      : oauthForm.smsStrategy
 
     const res = await startOAuthExport({
       emails,
@@ -2541,7 +2633,7 @@ async function startOAuthExportTask() {
       proxy_country: oauthForm.proxyCountry || '',
       workers: oauthForm.workers || 5,
       timeout: oauthForm.timeout || 45,
-      sms_enabled: effectiveSmsEnabled,
+      sms_enabled: !skipSms,
       sms_provider: effectiveProvider,
       sms_api_key: oauthForm.smsApiKey || '',
       sms_cdk_url: oauthForm.smsCdkUrl || 'https://ndk.cc.cd',
@@ -2661,10 +2753,10 @@ async function retryOAuthExportRunner(targetEmails = null) {
   }
 
   try {
-    const isCdk = oauthForm.smsStrategy === 'cdk'
-    const isApi = oauthForm.smsStrategy === 'api'
-    const effectiveSmsEnabled = isCdk || isApi
-    const effectiveProvider = isCdk ? 'cdk_sms' : (oauthForm.smsProvider || 'smsbower')
+    const skipSms = oauthForm.smsStrategy === 'skip'
+    const effectiveProvider = skipSms
+      ? (oauthForm.smsProvider || 'smsbower')
+      : oauthForm.smsStrategy
 
     const res = await retryOAuthExport(oauthTaskId.value, {
       emails,
@@ -2673,7 +2765,7 @@ async function retryOAuthExportRunner(targetEmails = null) {
       proxy_country: oauthForm.proxyCountry || '',
       workers: oauthForm.workers || 5,
       timeout: oauthForm.timeout || 45,
-      sms_enabled: effectiveSmsEnabled,
+      sms_enabled: !skipSms,
       sms_provider: effectiveProvider,
       sms_api_key: oauthForm.smsApiKey || '',
       sms_cdk_url: oauthForm.smsCdkUrl || 'https://ndk.cc.cd',
@@ -6763,13 +6855,14 @@ onUnmounted(() => {
                   @change="onOAuthStrategyChange"
                 >
                   <el-radio-button value="skip">
-                    <span class="strategy-btn-content">⏩ 极速跳过模式</span>
+                    <span class="strategy-btn-content">⏩ 跳过</span>
                   </el-radio-button>
-                  <el-radio-button value="cdk">
-                    <span class="strategy-btn-content">🎟️ CDK 卡密号池接码</span>
-                  </el-radio-button>
-                  <el-radio-button value="api">
-                    <span class="strategy-btn-content">📱 短信平台 API</span>
+                  <el-radio-button
+                    v-for="p in smsProviders"
+                    :key="p.kind"
+                    :value="p.kind"
+                  >
+                    <span class="strategy-btn-content">{{ p.display_name }}</span>
                   </el-radio-button>
                 </el-radio-group>
               </div>
@@ -6778,13 +6871,9 @@ onUnmounted(() => {
                   <span class="strategy-dot emerald"></span>
                   <span>遇到手机号风控（add-phone）安全跳过并标记「需接码」，零费用消耗</span>
                 </div>
-                <div v-else-if="oauthForm.smsStrategy === 'cdk'" class="strategy-tip text-amber">
-                  <span class="strategy-dot amber"></span>
-                  <span>遇到手机号验证时自动从 CDK 号池提取卡密兑换号码，被拒自动免费换号 (多次卡支持长期复用)</span>
-                </div>
-                <div v-else class="strategy-tip text-blue">
-                  <span class="strategy-dot blue"></span>
-                  <span>遇到手机号验证时自动连接 SmsBower/HeroSMS 平台租号收码（未接通自动退款）</span>
+                <div v-else class="strategy-tip" :class="oauthSmsMeta?.uses_cdk_pool ? 'text-amber' : 'text-blue'">
+                  <span class="strategy-dot" :class="oauthSmsMeta?.uses_cdk_pool ? 'amber' : 'blue'"></span>
+                  <span>{{ oauthSmsMeta?.description || '遇到手机号验证时自动调用所选接码渠道租号收码' }}</span>
                 </div>
               </div>
             </div>
@@ -6838,12 +6927,12 @@ onUnmounted(() => {
 
               <!-- Tab 2: 短信接码设置 -->
               <el-tab-pane
-                :label="oauthForm.smsStrategy === 'cdk' ? '🎟️ CDK 卡密接码参数' : (oauthForm.smsStrategy === 'api' ? '📱 短信平台API参数' : '📱 手机号接码策略')"
+                :label="oauthForm.smsStrategy === 'skip' ? '📱 手机号接码策略' : ('📱 ' + (oauthSmsMeta?.display_name || '接码') + ' 参数')"
                 name="sms"
               >
                 <el-form label-position="top" :disabled="oauthRunning" size="small" class="oa-tab-form">
                   <!-- A. CDK 卡密模式专属配置 -->
-                  <div v-if="oauthForm.smsStrategy === 'cdk'" class="oa-cdk-config-panel">
+                  <div v-if="oauthSmsMeta?.uses_cdk_pool" class="oa-cdk-config-panel">
                     <div class="cdk-pool-mini-bar" :class="{ 'is-empty': oauthCdkStats.available === 0 }">
                       <div class="pool-bar-left">
                         <el-icon class="pool-bar-icon text-amber"><Ticket /></el-icon>
@@ -6881,15 +6970,21 @@ onUnmounted(() => {
                         </el-form-item>
                       </el-col>
                       <el-col :xs="12" :sm="5">
-                        <el-form-item label="最多换号重试次数">
-                          <el-input-number v-model="oauthForm.smsMaxAttempts" :min="1" :max="20" style="width: 100%" />
+                        <el-form-item>
+                          <template #label>
+                            <span>最多换号次数</span>
+                            <el-tooltip content="本轮绑手机最多换几个号，按你填的次数跑满。被 OpenAI 拒绝也会继续换到次数用完。" placement="top">
+                              <el-icon class="info-ico" style="margin-left: 3px;"><QuestionFilled /></el-icon>
+                            </el-tooltip>
+                          </template>
+                          <el-input-number v-model="oauthForm.smsMaxAttempts" :min="1" :max="10" style="width: 100%" />
                         </el-form-item>
                       </el-col>
                       <el-col :xs="12" :sm="5">
                         <el-form-item label="收码等待超时 (秒)">
                           <template #label>
                             <span>收码等待超时 (秒)</span>
-                            <el-tooltip content="CDK 推荐 30~35 秒。若超过 45 秒，单个号码超时后 OpenAI 整个登录会话会过期报 400 invalid_auth_step；35 秒内未收到极速自动换新号码以保住会话！" placement="top">
+                            <el-tooltip :content="oauthSmsMeta?.timeout_hint || 'CDK 推荐 30~35 秒。超过 45 秒容易导致 OpenAI 授权会话过期。'" placement="top">
                               <el-icon class="info-ico" style="margin-left: 3px;"><QuestionFilled /></el-icon>
                             </el-tooltip>
                           </template>
@@ -6914,27 +7009,21 @@ onUnmounted(() => {
                     </div>
                   </div>
 
-                  <!-- B. 常规短信平台 API 模式 (SmsBower / HeroSMS) -->
-                  <div v-else-if="oauthForm.smsStrategy === 'api'">
+                  <!-- B. 常规短信平台（国家 / 金额 / 线路） -->
+                  <div v-else-if="oauthSmsMeta?.uses_country">
                     <el-row :gutter="12">
-                      <el-col :xs="24" :sm="12" :md="6">
-                        <el-form-item label="接码服务平台">
-                          <el-select v-model="oauthForm.smsProvider" style="width: 100%">
-                            <el-option label="SmsBower (即时取消即退款)" value="smsbower" />
-                            <el-option label="HeroSMS (20分钟自动退款)" value="herosms" />
-                          </el-select>
-                        </el-form-item>
-                      </el-col>
                       <el-col :xs="24" :sm="12" :md="8">
                         <el-form-item label="接码国家 (可搜索)">
                           <el-select
                             v-model="oauthForm.smsCountry"
                             filterable
                             allow-create
+                            @visible-change="(open) => open && loadSmsCountries()"
                             default-first-option
                             :loading="smsCountriesLoading"
                             placeholder="搜索国家名或输入ID"
                             style="width: 100%"
+                            @change="loadOAuthPriceTiers"
                           >
                             <el-option v-for="sc in SMS_COUNTRY_OPTIONS" :key="sc.value" :label="sc.label" :value="sc.value">
                               <div class="country-option-item">
@@ -6974,11 +7063,22 @@ onUnmounted(() => {
                         </el-form-item>
                       </el-col>
 
-                      <!-- 号池实时档位直选区 -->
-                      <el-col v-if="oauthPriceTiers.length" :span="24">
+                      <!-- 号池实时档位直选区：选中国家后始终展示，避免空数组把整块藏掉 -->
+                      <el-col :span="24">
                         <div class="oa-tier-chips-block">
-                          <span class="oa-tier-title"><el-icon><Discount /></el-icon> 实时号池档位 (点击即锁定):</span>
-                          <div class="oa-tier-chips">
+                          <span class="oa-tier-title">
+                            <el-icon><Discount /></el-icon>
+                            OpenAI 接码档位 dr（{{ oauthForm.smsCountry || '未选国家' }} · 点击锁定）
+                            <el-button
+                              link
+                              type="primary"
+                              size="small"
+                              :loading="oauthPriceTiersLoading"
+                              @click="loadOAuthPriceTiers"
+                            >刷新</el-button>
+                          </span>
+                          <div v-if="oauthPriceTiersLoading" class="oa-tier-empty">正在拉取该国实时价格与库存...</div>
+                          <div v-else-if="oauthPriceTiers.length" class="oa-tier-chips">
                             <div
                               v-for="t in oauthPriceTiers"
                               :key="t.id || t.price_str"
@@ -6991,6 +7091,9 @@ onUnmounted(() => {
                                 <CircleCheckFilled />
                               </el-icon>
                             </div>
+                          </div>
+                          <div v-else class="oa-tier-empty">
+                            该国暂无 OpenAI（dr）库存。不会展示其它业务号源。可点刷新或换国家。
                           </div>
                         </div>
                       </el-col>
@@ -7023,7 +7126,13 @@ onUnmounted(() => {
                         </el-form-item>
                       </el-col>
                       <el-col :xs="12" :sm="6" :md="4">
-                        <el-form-item label="最多换号次数">
+                        <el-form-item>
+                          <template #label>
+                            <span>最多换号次数</span>
+                            <el-tooltip content="本轮绑手机最多换几个号，按你填的次数跑满。被 OpenAI 拒绝也会继续换到次数用完。" placement="top">
+                              <el-icon class="info-ico" style="margin-left: 3px;"><QuestionFilled /></el-icon>
+                            </el-tooltip>
+                          </template>
                           <el-input-number v-model="oauthForm.smsMaxAttempts" :min="1" :max="10" style="width: 100%" />
                         </el-form-item>
                       </el-col>
@@ -7031,7 +7140,7 @@ onUnmounted(() => {
                         <el-form-item>
                           <template #label>
                             <span>收码等待超时 (秒)</span>
-                            <el-tooltip content="推荐 60~85 秒。若超过 90 秒，单个号码超时后 OpenAI 整个授权会话会过期并报错 400 invalid_auth_step" placement="top">
+                            <el-tooltip :content="oauthSmsMeta?.timeout_hint || '推荐 60~85 秒。超过 90 秒容易导致 OpenAI 授权会话过期。'" placement="top">
                               <el-icon class="info-ico" style="margin-left: 3px;"><QuestionFilled /></el-icon>
                             </el-tooltip>
                           </template>
@@ -7058,7 +7167,7 @@ onUnmounted(() => {
                   <div v-else class="oa-skip-mode-panel">
                     <el-icon class="skip-icon"><CircleCheckFilled /></el-icon>
                     <div class="skip-text">
-                      当前处于 <b>极速跳过接码模式</b>。OpenAI 遇到需手机号验证（add-phone）时将<b>直接安全跳过</b>并标记为「需接码」，不会产生任何接码扣费。如需自动接码推进，请在上方切换为「🎟️ CDK 卡密号池接码」或「📱 短信平台 API」。
+                      当前处于 <b>极速跳过接码模式</b>。OpenAI 遇到需手机号验证（add-phone）时将<b>直接安全跳过</b>并标记为「需接码」，不会产生任何接码扣费。如需自动接码推进，请在上方切换到任一接码渠道。
                     </div>
                   </div>
                 </el-form>
@@ -7066,7 +7175,9 @@ onUnmounted(() => {
             </el-tabs>
 
             <div class="oa-config-footer-row">
-              <span class="oa-config-hint">💡 提示：点选档位即锁定该价格（选 <code>0.008</code> 绝不拿 0.007）。若该档位无货会报 NO_NUMBERS，不会擅自换号。</span>
+              <span v-if="oauthSmsMeta?.uses_price_tiers" class="oa-config-hint">💡 提示：点选档位即锁定该价格（选 <code>0.008</code> 绝不拿 0.007）。若该档位无货会报 NO_NUMBERS，不会擅自换号。</span>
+              <span v-else-if="oauthSmsMeta?.uses_cdk_pool" class="oa-config-hint">💡 提示：卡密留空则自动从 CDK 号池调度。被拒会自动换号，多次卡不会提前作废。</span>
+              <span v-else class="oa-config-hint">💡 提示：跳过接码不会产生费用。需要自动推进时，在上方切换到任一接码渠道即可。</span>
               <el-button size="small" class="oa-save-default-btn" @click="saveOAuthFormDefault">
                 <el-icon><Check /></el-icon> 保存为默认配置
               </el-button>
@@ -7863,9 +7974,12 @@ onUnmounted(() => {
                     <el-col :xs="24" :sm="8">
                       <el-form-item label="接码平台">
                         <el-select v-model="refreshForm.smsProvider" style="width: 100%">
-                          <el-option label="SMSBower (高成功率推荐)" value="smsbower" />
-                          <el-option label="HeroSMS" value="herosms" />
-                          <el-option label="🎟️ CDK 卡密兑换 (ndk.cc.cd)" value="cdk_sms" />
+                          <el-option
+                            v-for="p in smsProviders"
+                            :key="p.kind"
+                            :label="p.display_name"
+                            :value="p.kind"
+                          />
                         </el-select>
                       </el-form-item>
                     </el-col>
@@ -13230,13 +13344,16 @@ onUnmounted(() => {
   border-color: rgba(16, 185, 129, 0.25);
 }
 
-.oa-strategy-hero-card.is-cdk-mode {
+.oa-strategy-hero-card.is-cdk-mode,
+.oa-strategy-hero-card.is-cdk_sms-mode {
   background: rgba(245, 158, 11, 0.07);
   border-color: rgba(245, 158, 11, 0.35);
 }
 
 .oa-strategy-hero-card.is-api-mode,
-.oa-strategy-hero-card.is-sms-mode {
+.oa-strategy-hero-card.is-sms-mode,
+.oa-strategy-hero-card.is-smsbower-mode,
+.oa-strategy-hero-card.is-herosms-mode {
   background: rgba(0, 122, 255, 0.05);
   border-color: rgba(0, 122, 255, 0.25);
 }
@@ -13245,6 +13362,10 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 10px;
+}
+.strategy-radio-group {
+  display: inline-flex;
+  flex-wrap: wrap;
 }
 .strategy-label {
   font-weight: 700;
@@ -13300,7 +13421,13 @@ onUnmounted(() => {
   color: var(--app-title);
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 5px;
+}
+.oa-tier-empty {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  padding: 4px 0 2px;
 }
 .oa-tier-chips {
   display: flex;

@@ -1027,6 +1027,17 @@ def api_get_remail_recycle_pool():
 # ──────────────────────── SMS 接码配置 ────────────────────────
 
 
+@app.get("/api/sms/providers")
+def api_sms_providers():
+    """已注册接码渠道清单（能力声明 + 配置项），前端据此动态渲染。"""
+    import sys as _sys
+    ROOT_DIR = Path(__file__).resolve().parents[1]
+    if str(ROOT_DIR) not in _sys.path:
+        _sys.path.insert(0, str(ROOT_DIR))
+    from sms_providers import list_providers
+    return {"ok": True, "providers": list_providers()}
+
+
 @app.get("/api/settings/sms")
 def api_get_sms_config():
     return {"ok": True, "config": db.get_sms_config()}
@@ -1034,7 +1045,7 @@ def api_get_sms_config():
 
 class SaveSmsConfigReq(BaseModel):
     sms_enabled: Optional[str] = None              # "0" / "1"
-    sms_provider: Optional[str] = None             # smsbower / herosms / cdk_sms
+    sms_provider: Optional[str] = None             # 已注册接码渠道 kind
     sms_api_key: Optional[str] = None              # 传 '***' 表示不修改 (CDK模式下即为卡密)
     sms_cdk_url: Optional[str] = None              # 平台地址 (默认 https://ndk.cc.cd)
     sms_country: Optional[str] = None              # ID 或国家代码（'52' / 'th'）
@@ -1064,15 +1075,14 @@ def api_test_sms():
     """测试 SMS provider 连通性：查询余额或卡密兑换状态。"""
     cfg = db.get_sms_internal_config()
     p_key = (cfg.get("sms_provider") or "").strip().lower()
-    is_cdk = p_key in ("cdk_sms", "cdk", "ndk", "ndk_cdk", "lubansms")
-    if not cfg.get("sms_api_key") and not is_cdk:
-        raise HTTPException(400, "未配置 sms_api_key")
-
     import sys as _sys
     ROOT_DIR = Path(__file__).resolve().parents[1]
     if str(ROOT_DIR) not in _sys.path:
         _sys.path.insert(0, str(ROOT_DIR))
-    from sms_provider import create_sms_provider
+    from sms_providers import create_sms_provider, uses_cdk_pool
+    is_cdk = uses_cdk_pool(p_key)
+    if not cfg.get("sms_api_key") and not is_cdk:
+        raise HTTPException(400, "未配置 sms_api_key")
     try:
         provider = create_sms_provider(cfg["sms_provider"], cfg)
         if hasattr(provider, "get_detail_status"):
@@ -1177,16 +1187,26 @@ def api_sms_top_countries():
     """查询当前接码平台的国家排名（价格 + 库存）。"""
     cfg = db.get_sms_internal_config()
     p_key = (cfg.get("sms_provider") or "").strip().lower()
-    if p_key in ("cdk_sms", "cdk", "ndk", "ndk_cdk", "lubansms"):
-        return {"ok": True, "countries": [], "openai_sms_safe": []}
-    if not cfg.get("sms_api_key"):
-        raise HTTPException(400, "未配置 sms_api_key")
-
     import sys as _sys
     ROOT_DIR = Path(__file__).resolve().parents[1]
     if str(ROOT_DIR) not in _sys.path:
         _sys.path.insert(0, str(ROOT_DIR))
-    from sms_provider import create_sms_provider, OPENAI_SMS_COUNTRIES, SMS_COUNTRY_NAMES_CN
+    from sms_providers import (
+        OPENAI_SMS_COUNTRIES,
+        SMS_COUNTRY_NAMES_CN,
+        create_sms_provider,
+        get_provider_class,
+        uses_cdk_pool,
+    )
+    if uses_cdk_pool(p_key):
+        return {"ok": True, "countries": [], "openai_sms_safe": []}
+    try:
+        if not get_provider_class(p_key).uses_country:
+            return {"ok": True, "countries": [], "openai_sms_safe": []}
+    except Exception:
+        pass
+    if not cfg.get("sms_api_key"):
+        raise HTTPException(400, "未配置 sms_api_key")
     try:
         provider = create_sms_provider(cfg["sms_provider"], cfg)
         rows = provider.get_top_countries(service=cfg.get("sms_service") or "dr")
@@ -1206,7 +1226,7 @@ def api_sms_all_countries(provider: str = ""):
     ROOT_DIR = Path(__file__).resolve().parents[1]
     if str(ROOT_DIR) not in _sys.path:
         _sys.path.insert(0, str(ROOT_DIR))
-    from sms_provider import SMS_COUNTRY_NAMES_CN, OPENAI_SMS_COUNTRIES, create_sms_provider
+    from sms_providers import SMS_COUNTRY_NAMES_CN, OPENAI_SMS_COUNTRIES, create_sms_provider
 
     cfg = db.get_sms_internal_config()
     if provider:
@@ -1221,7 +1241,8 @@ def api_sms_all_countries(provider: str = ""):
                     cid = str(r.get("country") or "").strip()
                     if cid:
                         live_map[cid] = r
-        except Exception:
+        except Exception as e:
+            logger.warning(f"拉取接码国家实时库存失败: {e}")
             live_map = {}
 
     seen = set()
@@ -1280,16 +1301,20 @@ def api_sms_country_price_tiers(country: str = "6", service: str = "dr", provide
     ROOT_DIR = Path(__file__).resolve().parents[1]
     if str(ROOT_DIR) not in _sys.path:
         _sys.path.insert(0, str(ROOT_DIR))
-    from sms_provider import create_sms_provider, SmsBowerProvider
+    from sms_providers import create_sms_provider, get_provider_class
 
     cfg = db.get_sms_internal_config()
     p_key = (provider or cfg.get("sms_provider") or "smsbower").strip().lower()
-    if p_key != "smsbower" or not cfg.get("sms_api_key"):
+    try:
+        cls = get_provider_class(p_key)
+    except Exception:
+        return {"ok": True, "tiers": []}
+    if not cls.uses_price_tiers or not cfg.get("sms_api_key"):
         return {"ok": True, "tiers": []}
 
     try:
-        p = create_sms_provider("smsbower", cfg)
-        if isinstance(p, SmsBowerProvider):
+        p = create_sms_provider(p_key, cfg)
+        if hasattr(p, "get_country_price_tiers"):
             tiers = p.get_country_price_tiers(country=country, service=service)
             return {"ok": True, "tiers": tiers}
     except Exception as e:
@@ -2464,7 +2489,7 @@ class StartOAuthExportReq(BaseModel):
     timeout: float = Field(45.0, description="单账号超时秒数")
     # SMS 接码配置扩展
     sms_enabled: bool = Field(False, description="是否启用自动 SMS 接码")
-    sms_provider: Optional[str] = Field("smsbower", description="接码服务平台 (smsbower / herosms / cdk_sms)")
+    sms_provider: Optional[str] = Field("smsbower", description="接码服务平台 kind")
     sms_api_key: Optional[str] = Field("", description="接码平台 API Key / CDK 卡密（留空使用系统全局配置）")
     sms_cdk_url: Optional[str] = Field("https://ndk.cc.cd", description="CDK 平台接口基地址")
     sms_country: Optional[str] = Field("52", description="接码国家ID，默认52泰国")
@@ -2507,7 +2532,13 @@ def api_oauth_export_start(req: StartOAuthExportReq):
     # 接码配置组装
     sms_api_key = (req.sms_api_key or "").strip()
     global_sms = db.get_sms_internal_config()
-    is_cdk_mode = (req.sms_provider or "").strip().lower() in ("cdk_sms", "cdk", "ndk", "ndk_cdk", "lubansms")
+    import sys as _sys
+    ROOT_DIR = Path(__file__).resolve().parents[1]
+    if str(ROOT_DIR) not in _sys.path:
+        _sys.path.insert(0, str(ROOT_DIR))
+    from sms_providers import canonicalize_kind, uses_cdk_pool
+    sms_provider_kind = canonicalize_kind(req.sms_provider or "smsbower") or "smsbower"
+    is_cdk_mode = uses_cdk_pool(sms_provider_kind)
     if is_cdk_mode:
         # CDK 模式下，若未单独指定卡密，则置空以严格走数据库 CDK 号池自动调度，切勿混用普通接码平台的 API Key！
         if not sms_api_key or sms_api_key == "***" or (len(sms_api_key) == 32 and "-" not in sms_api_key and not sms_api_key.upper().startswith("SMS")):
@@ -2519,7 +2550,7 @@ def api_oauth_export_start(req: StartOAuthExportReq):
 
     sms_config = {
         "sms_enabled": req.sms_enabled,
-        "sms_provider": (req.sms_provider or "smsbower").strip().lower(),
+        "sms_provider": sms_provider_kind,
         "sms_api_key": sms_api_key,
         "sms_cdk_url": sms_cdk_url,
         "sms_country": (req.sms_country or "52").strip(),

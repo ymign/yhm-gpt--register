@@ -23,6 +23,7 @@ import {
   Document,
 } from '@element-plus/icons-vue'
 import {
+  getSmsProviders,
   getSmsConfig,
   saveSmsConfig,
   testSms,
@@ -37,6 +38,50 @@ import {
 } from '@/api/settings'
 import FooterToolbar from '@/components/FooterToolbar.vue'
 
+const DEFAULT_SMS_PROVIDERS = [
+  {
+    kind: 'smsbower',
+    display_name: 'SmsBower',
+    short_label: '即退款',
+    description: '遇到手机号验证时自动租号收码，未接通即时取消即退款',
+    uses_cdk_pool: false,
+    uses_country: true,
+    uses_price_tiers: true,
+    uses_provider_ids: true,
+    uses_auto_country: true,
+    needs_api_key: true,
+    recommended_timeout: 80,
+  },
+  {
+    kind: 'herosms',
+    display_name: 'HeroSMS',
+    short_label: '20分退',
+    description: '与 SmsBower 同协议，号码约 20 分钟未用自动退款',
+    uses_cdk_pool: false,
+    uses_country: true,
+    uses_price_tiers: true,
+    uses_provider_ids: true,
+    uses_auto_country: true,
+    needs_api_key: true,
+    recommended_timeout: 80,
+  },
+  {
+    kind: 'cdk_sms',
+    aliases: ['cdk', 'ndk', 'ndk_cdk', 'lubansms'],
+    display_name: 'CDK 卡密兑换',
+    short_label: 'ndk.cc.cd',
+    description: '从 CDK 号池提取卡密兑换号码，被拒自动免费换号',
+    uses_cdk_pool: true,
+    uses_country: false,
+    uses_price_tiers: false,
+    uses_provider_ids: false,
+    uses_auto_country: false,
+    needs_api_key: false,
+    recommended_timeout: 35,
+  },
+]
+
+const smsProviders = ref(DEFAULT_SMS_PROVIDERS)
 const enabled = ref(false)
 const provider = ref('smsbower')
 const apiKey = ref('')
@@ -62,6 +107,13 @@ const saving = ref(false)
 const testing = ref(false)
 const priceTiers = ref([])
 const priceTiersLoading = ref(false)
+let loadSeq = 0
+let saveSeq = 0
+
+const currentProvider = computed(
+  () => smsProviders.value.find((p) => p.kind === provider.value) || smsProviders.value[0] || null,
+)
+const isCdkProvider = computed(() => !!currentProvider.value?.uses_cdk_pool)
 
 // ── CDK 卡密号池状态与管理 ──
 const cdkPoolItems = ref([])
@@ -233,15 +285,17 @@ function handleCopy(text, label = '内容') {
 const countryOptions = computed(() =>
   allCountries.value.map((c) => {
     const bits = [`${c.id} · ${c.name_cn}`]
-    if (c.count != null && c.count !== '') bits.push(`余${c.count}`)
-    else bits.push('暂无库存')
+    if (c.count != null && c.count !== '') {
+      const n = Number(c.count)
+      bits.push(Number.isFinite(n) && n > 0 ? `余${c.count}` : '暂无库存')
+    }
     if (c.price != null && c.price !== '') bits.push(`${c.price}`)
     return { value: c.id, label: bits.join(' · '), safe: c.openai_sms_safe }
   }),
 )
 
 async function loadPriceTiers() {
-  if (provider.value !== 'smsbower' || !country.value || country.value === 'AUTO') {
+  if (!currentProvider.value?.uses_price_tiers || !country.value || country.value === 'AUTO') {
     priceTiers.value = []
     return
   }
@@ -249,6 +303,19 @@ async function loadPriceTiers() {
   try {
     const res = await getSmsPriceTiers(country.value, service.value || 'dr', provider.value)
     priceTiers.value = res.tiers || []
+    if (priceTiers.value.length) {
+      const sum = priceTiers.value.reduce((s, t) => s + (Number(t.count) || 0), 0)
+      const prices = priceTiers.value.map((t) => Number(t.price)).filter((n) => Number.isFinite(n) && n > 0)
+      const idx = allCountries.value.findIndex((x) => String(x.id) === String(country.value))
+      if (idx >= 0) {
+        const cur = allCountries.value[idx]
+        allCountries.value[idx] = {
+          ...cur,
+          count: Math.max(Number(cur.count) || 0, sum),
+          price: prices.length ? Math.min(Number(cur.price) || prices[0], ...prices) : cur.price,
+        }
+      }
+    }
   } catch (e) {
     priceTiers.value = []
   } finally {
@@ -256,8 +323,20 @@ async function loadPriceTiers() {
   }
 }
 
+async function loadSmsProviderCatalog() {
+  try {
+    const res = await getSmsProviders()
+    if (Array.isArray(res.providers) && res.providers.length) {
+      smsProviders.value = res.providers
+    }
+  } catch (e) {
+    console.error('加载接码渠道清单失败:', e)
+  }
+}
+
 async function loadCountries(p) {
-  if (p === 'cdk_sms') {
+  const meta = smsProviders.value.find((x) => x.kind === (p || provider.value))
+  if (meta && !meta.uses_country) {
     allCountries.value = []
     return
   }
@@ -273,45 +352,56 @@ async function loadCountries(p) {
 }
 
 async function load() {
+  const seq = ++loadSeq
   try {
+    await loadSmsProviderCatalog()
+    if (seq !== loadSeq) return
     const { config } = await getSmsConfig()
-    provider.value = config.sms_provider || 'smsbower'
-    cdkUrl.value = config.sms_cdk_url || 'https://ndk.cc.cd'
-    if (provider.value !== 'cdk_sms') {
-      await loadCountries(provider.value)
-    } else {
+    if (seq !== loadSeq) return
+    applyConfig(config)
+    if (isCdkProvider.value) {
       await Promise.all([loadCdkPool(), loadCdkStats()])
-    }
-    enabled.value = config.sms_enabled === '1'
-    apiKey.value = ''
-    if (provider.value === 'cdk_sms') {
-      apiKeyPh.value =
-        config.sms_api_key === '***'
-          ? '已设定固定卡密（留空则全自动走号池）'
-          : '全自动走号池调度（亦可填单个静态卡密）'
+      if (seq !== loadSeq) return
     } else {
-      apiKeyPh.value = config.sms_api_key === '***' ? '已设置（留空不修改）' : '粘贴接码平台 API Key'
+      await loadCountries(provider.value)
+      if (seq !== loadSeq) return
     }
-    country.value = config.sms_country || '150'
-    service.value = config.sms_service || 'dr'
-    maxPrice.value = config.sms_max_price || ''
-    providerIds.value = config.sms_provider_ids || config.sms_operator || ''
-    exceptProviderIds.value = String(config.sms_except_provider_ids || '')
-      .split(/[,;]/)
-      .map((s) => s.trim())
-      .filter(Boolean)
-    phoneSuccessMax.value = config.sms_phone_success_max || '3'
-    reusePhone.value = config.sms_reuse_phone === '1'
-    autoCountry.value = config.sms_auto_country === '1'
-    autoMinStock.value = config.sms_auto_min_stock || '20'
-    autoMaxPrice.value = config.sms_auto_max_price || ''
-    allowed.value = (config.sms_allowed_countries || '').split(',').map((s) => s.trim()).filter(Boolean)
-    maxPhoneAttempts.value = config.sms_max_phone_attempts || ''
-    perPhoneTimeout.value = config.sms_per_phone_timeout || '80'
     await loadPriceTiers()
   } catch (e) {
-    ElMessage.error(e.message)
+    if (seq === loadSeq) ElMessage.error(e.message)
   }
+}
+
+function applyConfig(config) {
+  provider.value = config.sms_provider || 'smsbower'
+  cdkUrl.value = config.sms_cdk_url || 'https://ndk.cc.cd'
+  enabled.value = config.sms_enabled === '1'
+  apiKey.value = ''
+  const meta = smsProviders.value.find((p) => p.kind === provider.value)
+  if (meta?.uses_cdk_pool) {
+    apiKeyPh.value =
+      config.sms_api_key === '***'
+        ? '已设定固定卡密（留空则全自动走号池）'
+        : '全自动走号池调度（亦可填单个静态卡密）'
+  } else {
+    apiKeyPh.value = config.sms_api_key === '***' ? '已设置（留空不修改）' : '粘贴接码平台 API Key'
+  }
+  country.value = config.sms_country || '150'
+  service.value = config.sms_service || 'dr'
+  maxPrice.value = config.sms_max_price || ''
+  providerIds.value = config.sms_provider_ids || config.sms_operator || ''
+  exceptProviderIds.value = String(config.sms_except_provider_ids || '')
+    .split(/[,;]/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+  phoneSuccessMax.value = config.sms_phone_success_max || '3'
+  reusePhone.value = config.sms_reuse_phone === '1'
+  autoCountry.value = config.sms_auto_country === '1'
+  autoMinStock.value = config.sms_auto_min_stock || '20'
+  autoMaxPrice.value = config.sms_auto_max_price || ''
+  allowed.value = (config.sms_allowed_countries || '').split(',').map((s) => s.trim()).filter(Boolean)
+  maxPhoneAttempts.value = config.sms_max_phone_attempts || ''
+  perPhoneTimeout.value = config.sms_per_phone_timeout || '80'
 }
 
 async function onCountryChange() {
@@ -319,23 +409,41 @@ async function onCountryChange() {
 }
 
 async function onProviderChange() {
+  loadSeq += 1
   allowed.value = []
-  if (provider.value === 'cdk_sms') {
+  const persist = save(false, { reload: false })
+  const meta = currentProvider.value
+  if (meta?.recommended_timeout && !perPhoneTimeout.value) {
+    perPhoneTimeout.value = String(meta.recommended_timeout)
+  }
+  if (meta?.uses_cdk_pool) {
     apiKeyPh.value = '全自动走号池调度（亦可填单个静态卡密）'
     allCountries.value = []
     priceTiers.value = []
     await Promise.all([loadCdkPool(), loadCdkStats()])
   } else {
-    apiKeyPh.value = '粘贴接码平台 API Key'
+    if (!apiKeyPh.value.includes('已设置')) apiKeyPh.value = '粘贴接码平台 API Key'
     await loadCountries(provider.value)
     await loadPriceTiers()
   }
+  const ok = await persist
+  if (ok) {
+    ElMessage.success(`接码平台已切换为 ${meta?.display_name || provider.value}，已写入配置`)
+  }
 }
 
-async function save(notify = true) {
+async function onEnabledChange() {
+  const ok = await save(false, { reload: false })
+  if (ok) {
+    ElMessage.success(enabled.value ? '已开启自动接码并保存' : '已关闭自动接码并保存')
+  }
+}
+
+async function save(notify = true, { reload = true } = {}) {
+  const seq = ++saveSeq
   saving.value = true
   try {
-    await saveSmsConfig({
+    const res = await saveSmsConfig({
       sms_enabled: enabled.value ? '1' : '0',
       sms_provider: provider.value,
       sms_api_key: apiKey.value.trim() || '***',
@@ -354,24 +462,35 @@ async function save(notify = true) {
       sms_max_phone_attempts: maxPhoneAttempts.value.trim(),
       sms_per_phone_timeout: perPhoneTimeout.value.trim() || '80',
     })
+    if (seq !== saveSeq) return false
+    if (res?.config?.sms_api_key === '***') {
+      apiKey.value = ''
+      apiKeyPh.value = isCdkProvider.value
+        ? '已设定固定卡密（留空则全自动走号池）'
+        : '已设置（留空不修改）'
+    }
     if (notify) ElMessage.success('SMS 配置保存成功')
-    setTimeout(load, 300)
+    if (reload) await load()
+    return true
   } catch (e) {
-    if (notify) ElMessage.error(e.message)
+    if (seq === saveSeq) ElMessage.error(e.message || 'SMS 配置保存失败')
+    return false
   } finally {
-    saving.value = false
+    if (seq === saveSeq) saving.value = false
   }
 }
 
 async function test() {
   testing.value = true
   try {
-    if (apiKey.value.trim()) {
-      await save(false)
+    const ok = await save(false, { reload: false })
+    if (!ok) {
+      ElMessage.error('当前接码配置未能保存，已取消测试')
+      return
     }
     const r = await testSms()
     ElMessage.success(r.message || '接码平台连通正常')
-    if (provider.value === 'cdk_sms') {
+    if (isCdkProvider.value) {
       await Promise.all([loadCdkPool(), loadCdkStats()])
     }
   } catch (e) {
@@ -381,7 +500,9 @@ async function test() {
   }
 }
 
-onActivated(() => load())
+onActivated(() => {
+  if (!saving.value && !testing.value) load()
+})
 load()
 </script>
 
@@ -423,7 +544,7 @@ load()
                   当注册流程或 OAuth 导出命中 OpenAI 手机号风控（add-phone）时，全自动调用 API 租用虚拟号收码推进
                 </span>
               </div>
-              <el-switch v-model="enabled" size="large" inline-prompt active-text="开" inactive-text="关" />
+              <el-switch v-model="enabled" size="large" inline-prompt active-text="开" inactive-text="关" @change="onEnabledChange" />
             </div>
 
             <div class="field-divider"></div>
@@ -433,17 +554,14 @@ load()
                 <div class="field-col">
                   <span class="field-label">接码平台服务商</span>
                   <el-radio-group v-model="provider" class="segmented-radio-group" @change="onProviderChange">
-                    <el-radio-button value="smsbower">
-                      <span class="radio-label-bold">SmsBower</span>
-                      <span class="radio-label-sub">即退款</span>
-                    </el-radio-button>
-                    <el-radio-button value="herosms">
-                      <span class="radio-label-bold">HeroSMS</span>
-                      <span class="radio-label-sub">20分退</span>
-                    </el-radio-button>
-                    <el-radio-button value="cdk_sms">
-                      <span class="radio-label-bold">🎟️ CDK 卡密兑换</span>
-                      <span class="radio-label-sub">ndk.cc.cd</span>
+                    <el-radio-button
+                      v-for="p in smsProviders"
+                      :key="p.kind"
+                      :value="p.kind"
+                      :label="p.kind"
+                    >
+                      <span class="radio-label-bold">{{ p.display_name }}</span>
+                      <span class="radio-label-sub">{{ p.short_label }}</span>
                     </el-radio-button>
                   </el-radio-group>
                 </div>
@@ -452,18 +570,18 @@ load()
                 <div class="field-col">
                   <div class="label-with-action">
                     <span class="field-label">
-                      {{ provider === 'cdk_sms' ? 'CDK 卡密兑换码 (支持单卡密或换行批量填入)' : '接码平台 API 密钥 (API Key)' }}
+                      {{ isCdkProvider ? 'CDK 卡密兑换码 (支持单卡密或换行批量填入)' : '接码平台 API 密钥 (API Key)' }}
                     </span>
                     <el-button size="small" type="primary" link :loading="testing" @click="test">
-                      <el-icon><Wallet /></el-icon> {{ provider === 'cdk_sms' ? '测试卡密并兑换' : '测试连通与余额' }}
+                      <el-icon><Wallet /></el-icon> {{ isCdkProvider ? '测试卡密并兑换' : '测试连通与余额' }}
                     </el-button>
                   </div>
                   <el-input
                     v-model="apiKey"
-                    :type="provider === 'cdk_sms' ? 'text' : 'password'"
-                    :show-password="provider !== 'cdk_sms'"
+                    :type="isCdkProvider ? 'text' : 'password'"
+                    :show-password="!isCdkProvider"
                     :placeholder="apiKeyPh"
-                    :prefix-icon="provider === 'cdk_sms' ? Ticket : Lock"
+                    :prefix-icon="isCdkProvider ? Ticket : Lock"
                     clearable
                   />
                 </div>
@@ -471,7 +589,7 @@ load()
             </el-row>
 
             <!-- CDK 专属平台地址与快捷填充栏 -->
-            <el-row v-if="provider === 'cdk_sms'" :gutter="14" class="field-grid" style="margin-top: 10px;">
+            <el-row v-if="isCdkProvider" :gutter="14" class="field-grid" style="margin-top: 10px;">
               <el-col :xs="24" :sm="12">
                 <div class="field-col">
                   <span class="field-label">CDK 平台接口基地址</span>
@@ -492,7 +610,7 @@ load()
           </div>
 
           <!-- 卡片 2 (CDK专属工作台 或 常规国家号池锁定) -->
-          <div v-if="provider === 'cdk_sms'" class="cdk-pool-container">
+          <div v-if="isCdkProvider" class="cdk-pool-container">
             <!-- 空池严重警告条 -->
             <el-alert
               v-if="cdkPoolStats.available === 0"
@@ -758,7 +876,7 @@ load()
           </div>
 
           <!-- 卡片 2: 首选国家与号池档位精确锁定 (仅常规平台展示) -->
-          <div v-else class="card-section">
+          <div v-else-if="currentProvider?.uses_country" class="card-section">
             <div class="section-header-row">
               <div class="section-title-wrap">
                 <el-icon class="section-icon text-accent"><Location /></el-icon>
@@ -776,6 +894,7 @@ load()
                     :loading="countriesLoading"
                     style="width: 100%"
                     @change="onCountryChange"
+                    @visible-change="(open) => open && loadCountries(provider)"
                   >
                     <el-option v-for="o in countryOptions" :key="o.value" :label="o.label" :value="o.value">
                       <div class="country-option-item">
@@ -888,7 +1007,7 @@ load()
           </div>
 
           <!-- 卡片 3: 智能多国自动轮换策略 -->
-          <div class="card-section">
+          <div v-if="currentProvider?.uses_auto_country" class="card-section">
             <div class="section-switch-row">
               <div class="switch-meta">
                 <div class="switch-title-row">
@@ -964,7 +1083,7 @@ load()
           </div>
 
           <!-- 卡片 5: 配置教程与规则速查表 -->
-          <div class="card-section guide-section">
+          <div v-if="currentProvider?.uses_price_tiers" class="card-section guide-section">
             <div class="section-header-row">
               <div class="section-title-wrap">
                 <el-icon class="section-icon text-info"><InfoFilled /></el-icon>
@@ -1030,8 +1149,8 @@ load()
           <div class="footer-summary">
             <span class="summary-dot"></span>
             <span class="footer-info-text">
-              当前接码商：<b>{{ provider === 'herosms' ? 'HeroSMS' : (provider === 'cdk_sms' ? '🎟️ CDK卡密兑换 (ndk.cc.cd)' : 'SmsBower') }}</b>
-              <span v-if="provider === 'cdk_sms'" class="summary-extra">
+              当前接码商：<b>{{ currentProvider?.display_name || provider }}</b>
+              <span v-if="isCdkProvider" class="summary-extra">
                 · 号池可用: {{ cdkPoolStats.available }}/{{ cdkPoolStats.total }} 张 · 累计接码: {{ cdkPoolStats.total_success_codes }} 次
               </span>
               <span v-else-if="allowed.length" class="summary-extra"> · 允许轮换 {{ allowed.length }} 国</span>
@@ -1040,11 +1159,11 @@ load()
           </div>
         </template>
         <template #right>
-          <el-button v-if="provider === 'cdk_sms'" type="success" plain class="ghost-toolbar-btn" @click="openImportModal">
+          <el-button v-if="isCdkProvider" type="success" plain class="ghost-toolbar-btn" @click="openImportModal">
             <el-icon><Plus /></el-icon>批量导入卡密
           </el-button>
           <el-button :loading="testing" class="ghost-toolbar-btn" @click="test">
-            <el-icon><Wallet /></el-icon>{{ provider === 'cdk_sms' ? '测试卡密兑换' : '测试连通与余额' }}
+            <el-icon><Wallet /></el-icon>{{ isCdkProvider ? '测试卡密兑换' : '测试连通与余额' }}
           </el-button>
           <el-button type="primary" :loading="saving" class="primary-toolbar-btn" @click="save">
             <el-icon><Check /></el-icon>保存 SMS 全局配置
