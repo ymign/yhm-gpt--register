@@ -51,8 +51,10 @@ try:
     import sentinel_quickjs as _sq
     _slots = int(db.get_setting("sentinel_pow_slots", "") or _sq.get_pow_slots())
     _applied = _sq.set_pow_slots(_slots)
-    if _applied != 6:
-        logging.getLogger("webui").info(f"[startup] PoW 算力槽位 = {_applied}（已持久化配置）")
+    logging.getLogger("webui").info(
+        f"[startup] PoW 算力槽位 = {_applied}（前端「PoW 算力槽位」= 同时解算的 node 进程数；"
+        f"启动日志里的「预计算池缓冲水位」是另一回事，不是这个值）"
+    )
 except Exception as _e:
     logging.getLogger("webui").warning(f"[startup] 应用 PoW 槽位配置失败: {_e}")
 

@@ -23,9 +23,13 @@ from auth_flow import AuthFlow  # noqa: E402
 from mail_providers import (  # noqa: E402
     MailProviderError,
     create_mail_provider,
-    get_provider_class,
+    get_provider_class as get_mail_provider_class,
 )
-from sms_providers import PhoneCallbackController, canonicalize_kind, get_provider_class  # noqa: E402
+from sms_providers import (  # noqa: E402
+    PhoneCallbackController,
+    canonicalize_kind,
+    get_provider_class as get_sms_provider_class,
+)
 
 from . import db  # noqa: E402
 from .proxy_util import (  # noqa: E402
@@ -71,8 +75,16 @@ def _detect_phase_from_log(msg: str) -> tuple[str, str, int] | None:
     """根据日志特征自动提取细粒度注册步骤与进度百分比。"""
     if not msg:
         return None
+    if "任务线程已启动" in msg or "准备注册环境" in msg:
+        return "starting", "准备注册环境", 5
+    if "创建 TLS" in msg or "创建浏览器会话" in msg or "指纹:" in msg:
+        return "starting", "创建浏览器会话", 8
     if "网络预检" in msg or "检查网络连通性" in msg or "[1/10]" in msg:
         return "network", "网络连通性预检", 15
+    if "warmup" in msg.lower() or "预热 chatgpt" in msg:
+        return "starting", "预热 chatgpt.com", 18
+    if "购买邮箱" in msg or "创建/购买邮箱" in msg or "邮箱已就绪" in msg or "[Remail]" in msg:
+        return "mailbox", "获取邮箱", 22
     if "[2/10]" in msg or "获取 OpenAI 授权地址" in msg:
         return "auth_url", "获取授权地址", 25
     if "[3/10]" in msg or "OAuth 初始化" in msg:
@@ -87,9 +99,9 @@ def _detect_phase_from_log(msg: str) -> tuple[str, str, int] | None:
         return "otp_verify", "正在接收并验证 OTP", 75
     if "[8/10]" in msg or "创建账户" in msg or "create_account" in msg:
         return "creating", "创建 ChatGPT 账户", 85
-    if "2FA" in msg or "two_factor" in msg:
-        if "成功" in msg or "2fa_bound" in msg:
-            return "2fa_done", "2FA 绑定成功", 95
+    if "2fa_bound" in msg or "2FA 绑定成功" in msg:
+        return "2fa_done", "2FA 绑定成功", 95
+    if "绑定 TOTP" in msg or "binding_2fa" in msg or "[register] 2FA 绑定" in msg:
         return "binding_2fa", "绑定 TOTP 二步验证", 90
     if "[register] 完成" in msg or "注册完成" in msg:
         return "done", "注册完成", 100
@@ -157,32 +169,46 @@ class QueueLogHandler(logging.Handler):
             # emit 是在**打日志的那条线程**里同步跑的，所以这里读到的就是
             # 日志产生者的 run_id。别人 run 的日志直接丢掉。
             rid = getattr(_current_run, "run_id", None)
-            if rid is not None and rid != self.run_id:
-                return
-            # rid is None = 不属于任何 run（webui 请求线程、启动期日志等）。
-            # 这类照旧广播给所有 handler —— 宁可多收也不能丢，日志文件
-            # 开头那句 "webui: [run] xxx -> email@..." 就是这么来的。
+            if rid != self.run_id:
+                # 只收本 run 线程的日志。auto_loop 的「worker-N 已锁定，退出」
+                # 产生在 worker 线程（rid=None），旧逻辑会广播进所有正在跑的
+                # 任务日志，看起来像注册失败/没开始。
+                msg_text = record.getMessage() if hasattr(record, "getMessage") else ""
+                if not (
+                    rid is None
+                    and record.name == "webui"
+                    and "[run]" in msg_text
+                ):
+                    return
             msg = self.format(record)
             self._fh.write(msg + "\n")
             self._fh.flush()
 
-            # 语义识别细分步骤
-            detected = _detect_phase_from_log(record.getMessage())
-            if detected and rid:
-                p_code, p_text, p_pct = detected
-                with _lock:
-                    _run_phases[rid] = {
-                        "phase": p_code,
-                        "phase_text": p_text,
-                        "percent": p_pct,
-                        "updated_at": time.time(),
-                    }
-
             q = _run_queues.get(self.run_id)
             if q is not None:
                 q.put(msg)
-        except Exception:
-            pass
+
+            # 绝不能在 emit 里阻塞拿 _lock：logging 已持有 handler.lock，
+            # 再等 _lock 会和 get_run_phase / snapshot 形成死锁，
+            # 日志只留下第一行「任务线程已启动」然后整条注册线程卡死。
+            detected = _detect_phase_from_log(record.getMessage())
+            if detected and rid:
+                p_code, p_text, p_pct = detected
+                if _lock.acquire(blocking=False):
+                    try:
+                        _run_phases[rid] = {
+                            "phase": p_code,
+                            "phase_text": p_text,
+                            "percent": p_pct,
+                            "updated_at": time.time(),
+                        }
+                    finally:
+                        _lock.release()
+        except Exception as e:
+            try:
+                sys.stderr.write(f"QueueLogHandler.emit failed: {type(e).__name__}: {e}\n")
+            except Exception:
+                pass
 
     def close(self):
         try:
@@ -201,6 +227,27 @@ def _emit_status(run_id: str, kind: str, payload: dict | str = ""):
     body = payload if isinstance(payload, dict) else {"message": str(payload)}
     body["kind"] = kind
     q.put("__EVENT__:" + _json.dumps(body, ensure_ascii=False))
+
+
+def _run_log(run_id: str, msg: str, *, phase: str = "", phase_text: str = "", percent: int | None = None) -> None:
+    """不经过 logging 模块的注册进度输出，避免 handler 锁把线程卡死。"""
+    line = time.strftime("%H:%M:%S") + f" [INFO] registrar: {msg}"
+    try:
+        with open(LOG_DIR / f"{run_id}.log", "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
+    q = _run_queues.get(run_id)
+    if q is not None:
+        try:
+            q.put(line)
+        except Exception:
+            pass
+    if phase:
+        try:
+            set_run_phase(run_id, phase, phase_text or msg, int(percent or 0))
+        except Exception:
+            pass
 
 
 # 网络/环境层错误特征：命中任一就把号放回 available（号本身没问题，是环境炸了）
@@ -239,7 +286,7 @@ def classify_error(err: str, mail_source: str = "") -> str:
     ]
     if mail_source:
         try:
-            exempt = get_provider_class(mail_source).accepts_existing_account
+            exempt = get_mail_provider_class(mail_source).accepts_existing_account
         except MailProviderError:
             exempt = False  # 未知来源 —— 按默认最严格规则走
         # ⚠️ 用 if-in 而不是裸 remove()：上面的模式表将来被人改动/重排后，
@@ -254,6 +301,84 @@ def classify_error(err: str, mail_source: str = "") -> str:
     if any(p in s for p in _NETWORK_ERROR_PATTERNS):
         return "network"
     return "unknown"
+
+
+def _record_register_environment(
+    flow,
+    d: dict,
+    *,
+    run_id: str,
+    outcome: str,
+    error: str = "",
+    category: str = "",
+    started_at: float = 0.0,
+) -> None:
+    """把本号指纹 / 出口 IP / 代理写入结果 dict，并记入 register_features 分析表。"""
+    env = {}
+    try:
+        if flow is not None and hasattr(flow, "export_environment"):
+            env = flow.export_environment() or {}
+    except Exception:
+        env = {}
+    fp = env.get("fingerprint") if isinstance(env, dict) else None
+    if isinstance(fp, dict) and fp:
+        d["browser_profile"] = fp
+    if env:
+        if env.get("impersonate"):
+            d["impersonate"] = env["impersonate"]
+        if env.get("oai_session_id"):
+            d["oai_session_id"] = env["oai_session_id"]
+        if env.get("env_id"):
+            d["env_id"] = env["env_id"]
+        if env.get("exit_ip") and not d.get("reg_ip"):
+            d["reg_ip"] = env["exit_ip"]
+        if env.get("exit_country") and not d.get("reg_country"):
+            d["reg_country"] = env["exit_country"]
+        if env.get("proxy") and not d.get("reg_proxy"):
+            d["reg_proxy"] = env["proxy"]
+        if env.get("device_id") and not d.get("device_id"):
+            d["device_id"] = env["device_id"]
+    feat = {
+        "run_id": run_id,
+        "email": d.get("email") or "",
+        "outcome": outcome,
+        "error_class": category or "",
+        "error_text": error or "",
+        "duration_ms": int((time.time() - started_at) * 1000) if started_at else None,
+        "proxy": d.get("reg_proxy") or (env.get("proxy") if env else "") or "",
+        "reg_country": d.get("reg_country") or (env.get("exit_country") if env else "") or "",
+        "reg_ip": d.get("reg_ip") or (env.get("exit_ip") if env else "") or "",
+        "impersonate": (env.get("impersonate") if env else "") or "",
+        "browser_type": (env.get("browser_type") if env else "") or "",
+        "browser_os": (env.get("browser_os") if env else "") or "",
+        "env_id": (env.get("env_id") if env else "") or "",
+        "user_agent": (env.get("user_agent") if env else "") or "",
+        "screen": (env.get("screen") if env else "") or "",
+        "timezone": (env.get("timezone") if env else "") or "",
+        "lang": (env.get("lang") if env else "") or "",
+        "lang_full": (env.get("lang_full") if env else "") or "",
+        "navigator_platform": (env.get("navigator_platform") if env else "") or "",
+        "hardware_concurrency": env.get("hardware_concurrency") if env else None,
+        "device_memory": env.get("device_memory") if env else None,
+        "device_pixel_ratio": env.get("device_pixel_ratio") if env else None,
+        "webgl_vendor": (env.get("webgl_vendor") if env else "") or "",
+        "webgl_renderer": (env.get("webgl_renderer") if env else "") or "",
+        "device_id": d.get("device_id") or (env.get("device_id") if env else "") or "",
+        "oai_session_id": (env.get("oai_session_id") if env else "") or "",
+        "extra": {
+            "fingerprint": fp or {},
+            "sec_ch_ua": (env.get("sec_ch_ua") if env else "") or "",
+            "sec_ch_ua_platform": (env.get("sec_ch_ua_platform") if env else "") or "",
+            "sec_ch_ua_full_version_list": (env.get("sec_ch_ua_full_version_list") if env else "") or "",
+            "sec_ch_ua_arch": (env.get("sec_ch_ua_arch") if env else "") or "",
+            "sec_ch_ua_platform_version": (env.get("sec_ch_ua_platform_version") if env else "") or "",
+            "fingerprint_locked": env.get("fingerprint_locked") if env else None,
+        },
+    }
+    try:
+        db.insert_register_feature(feat)
+    except Exception as e:
+        logging.getLogger("registrar").debug(f"[register] 环境特征落库跳过: {e}")
 
 
 def _do_register(
@@ -285,15 +410,27 @@ def _do_register(
         root_logger.setLevel(logging.INFO)
 
     email = account["email"]
+    started_at = time.time()
+    flow = None
+    _run_log(
+        run_id,
+        f"[register] 任务线程已启动 run={run_id} email={email}",
+        phase="starting",
+        phase_text="准备注册环境...",
+        percent=5,
+    )
     # 提前读取，优先用 options 传入的 mail_source，其次 account['kind']，最后回退全局配置
     mail_source = (options.get("mail_source") or account.get("kind") or db.get_setting("mail_source", "cf_temp")).strip().lower()
     # 要不要操作号池（mark_done / mark_failed / release）由 provider 声明的
     # pooled 决定。未知 kind 时保守当池化处理 —— 号池里真有这行的话
     # 至少不会漏掉状态回写，把号永远卡在 in_use。
+    _run_log(run_id, f"[register] mail_source={mail_source}")
     try:
-        is_pooled = get_provider_class(mail_source).pooled
-    except MailProviderError:
-        is_pooled = True
+        is_pooled = bool(get_mail_provider_class(mail_source).pooled)
+    except Exception as e:
+        _run_log(run_id, f"[register] 读取邮箱渠道失败: {type(e).__name__}: {e}")
+        is_pooled = False
+    _run_log(run_id, f"[register] pooled={is_pooled}")
 
     try:
         # 本次注册专属的配置覆盖。
@@ -313,8 +450,12 @@ def _do_register(
             want_password = True
             options["want_password"] = True
             options["want_2fa"] = True
-            logging.getLogger("registrar").info(
-                "[register] 🔒 Remail 短效邮箱安全策略生效：强制自动设置强随机密码 + 自动绑定 2FA TOTP（保障邮箱失效后凭 账密+2FA 终身登录）"
+            _run_log(
+                run_id,
+                "[register] Remail 策略：先预热 chatgpt.com，成功后再购买邮箱（避免白花钱）",
+                phase="starting",
+                phase_text="准备 Remail 注册...",
+                percent=6,
             )
 
         env_overrides["WANT_PASSWORD"] = "1" if want_password else "0"
@@ -358,8 +499,9 @@ def _do_register(
             routed = route_proxy_country(raw_proxy, target_country, new_proxy_session_id())
             if routed != raw_proxy:
                 rotate_tag = f" (智能轮换自 {raw_target_country})" if raw_target_country != target_country else ""
-                logging.getLogger("registrar").info(
-                    f"[register] 目标注册国家: {target_country}{rotate_tag}，已自动重写代理并生成独立会话"
+                _run_log(
+                    run_id,
+                    f"[register] 目标注册国家: {target_country}{rotate_tag}，已自动重写代理并生成独立会话",
                 )
             final_proxy = routed
 
@@ -369,9 +511,16 @@ def _do_register(
         # ─ 邮箱来源路由 ─
         # 原来是 if cf_temp / else outlook 的写死分支，加一种邮箱就得回来改。
         # 现在交给注册表工厂：provider 自己从 settings + account 里取需要的字段。
+        _run_log(run_id, "[register] 正在读取邮箱配置...")
         mail = create_mail_provider(mail_source, db.get_mail_settings(), account)
-        logging.getLogger("registrar").info(
-            f"[register] 邮箱来源: {mail_source} ({mail.display_name})"
+        _run_log(run_id, f"[register] 邮箱来源: {mail_source} ({mail.display_name})")
+
+        _run_log(
+            run_id,
+            "[register] 正在创建浏览器会话...",
+            phase="starting",
+            phase_text="创建浏览器会话...",
+            percent=8,
         )
 
         # ─ 2FA 绑定钩子：插在「拿到 session」和「Codex 授权」之间 ─
@@ -424,17 +573,23 @@ def _do_register(
                 "expires_at": meta.get("expires_at", 0.0),
             })
 
+        sms_cb = _build_sms_callback(run_id)
         flow = AuthFlow(
             cfg,
-            sms_callback=_build_sms_callback(run_id),
+            sms_callback=sms_cb,
             env_overrides=env_overrides,
             on_password=_save_password_early,
             on_session_ready=_bind_2fa_hook if options.get("want_2fa") else None,
             account_callback=_account_callback_for_flow,
             on_email_assigned=_on_email_assigned_hook,
         )
-        _emit_status(run_id, "phase", {"phase": "starting", "email": email})
-        logging.getLogger("registrar").info(f"[register] 开始: {email}")
+        _run_log(
+            run_id,
+            f"[register] 开始: {email}（先检查代理/预热 chatgpt.com，通过后再向 Remail 买号）",
+            phase="starting",
+            phase_text="检查代理并预热 chatgpt.com...",
+            percent=12,
+        )
 
         partial = False
         d: dict
@@ -590,9 +745,13 @@ def _do_register(
             d["reg_proxy"] = used_proxy_str
         d["reg_city"] = ""
         d["reg_ip"] = ""
-        if d.get("reg_country"):
+        _record_register_environment(
+            flow, d, run_id=run_id, outcome="success", started_at=started_at,
+        )
+        if d.get("reg_country") or d.get("reg_ip"):
             logging.getLogger("registrar").info(
-                f"[register] 注册出口国家: {d['reg_country']}"
+                f"[register] 注册出口: country={d.get('reg_country') or '?'} "
+                f"ip={d.get('reg_ip') or '?'} impersonate={d.get('impersonate') or '?'}"
             )
 
         if target_country:
@@ -663,6 +822,18 @@ def _do_register(
         err = str(e)
         category = classify_error(err, mail_source)
         logging.getLogger("registrar").error(f"[register] 失败 (category={category}): {err}")
+        try:
+            fail_d = {"email": ""}
+            try:
+                fail_d["email"] = (getattr(flow, "result", None) and flow.result.email) or email
+            except Exception:
+                fail_d["email"] = email
+            _record_register_environment(
+                flow, fail_d, run_id=run_id, outcome="failed",
+                error=err, category=category, started_at=started_at,
+            )
+        except Exception:
+            pass
         # 清理可能残留的未完成无凭证脏数据，避免污染注册结果列表
         try:
             db.cleanup_pending_registered(email)
@@ -827,7 +998,7 @@ def _build_sms_callback(run_id: str) -> Optional[PhoneCallbackController]:
         return None
     kind = canonicalize_kind(cfg.get("sms_provider") or "smsbower") or "smsbower"
     try:
-        p_cls = get_provider_class(kind)
+        p_cls = get_sms_provider_class(kind)
     except Exception as e:
         logging.getLogger("registrar").warning(f"[sms] 未知接码渠道 {kind}: {e}")
         return None

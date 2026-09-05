@@ -27,6 +27,7 @@ from fingerprint import (
     generate_fingerprint,
     ua_for_impersonate,
     fingerprint_for_impersonate,
+    apply_geo_to_fingerprint,
 )
 from mail_providers import MailProvider
 from http_client import create_http_session, USER_AGENT
@@ -109,16 +110,27 @@ class AuthFlow:
         self._country_code = target_country  # IP 地理国家码（如指定了目标国家则直接对齐）
         self._fingerprint = generate_fingerprint(country_code=target_country if target_country else None)
         self._ua = self._fingerprint["user_agent"]
+        self._oai_session_id = str(uuid.uuid4())
+        self._exit_ip = ""
+        self._fingerprint_locked = False
         self._impersonate_candidates = self._fingerprint.get(
             "fallback_impersonates",
-            [self._fingerprint["impersonate"], "safari17_0", "safari15_5"],
+            [self._fingerprint["impersonate"], "chrome146", "chrome142"],
         )
         self._impersonate_idx = 0
+        logger.info(
+            f"指纹已生成 type={self._fingerprint.get('browser_type')} "
+            f"os={self._fingerprint.get('browser_os')} "
+            f"impersonate={self._fingerprint.get('impersonate')} "
+            f"screen={self._fingerprint.get('screen')} lang={self._fingerprint.get('lang')} "
+            f"正在创建 TLS 会话..."
+        )
         self.session = create_http_session(
             proxy=config.proxy,
             impersonate=self._impersonate_candidates[self._impersonate_idx],
             user_agent=self._ua,
         )
+        logger.info("HTTP 会话已建立")
         self.result = AuthResult()
         # 可选 SMS 接码控制器（sms_provider.PhoneCallbackController 实例）
         # 命中 add-phone 时自动租手机号 + 接 SMS 验证码，否则回退到环境变量路径
@@ -165,10 +177,9 @@ class AuthFlow:
             "1", "true", "yes", "on"
         )
         self._trace_dump_path = ""
-        logger.debug(
-            f"指纹: impersonate={self._fingerprint['impersonate']} "
-            f"screen={self._fingerprint['screen']} lang={self._fingerprint['lang']} "
-            f"ua={self._ua}"
+        logger.info(
+            f"指纹锁定 env={self._fingerprint.get('env_id', '')[:8]} "
+            f"tz={self._fingerprint.get('timezone')} ua={self._ua}"
         )
 
     def _build_chatgpt_cookie_header(self) -> str:
@@ -1748,17 +1759,14 @@ class AuthFlow:
         统一走 _navigation_headers 后，用真实 CF 域名跑完整 run_register
         **3/3 全成功**（各约 100s，password + access_token 齐全），409 = 0。
         """
-        # 候选回退指纹池：包含同族及高过率跨家族指纹（如 safari / chrome / firefox 互相兜底）
-        extended_candidates = list(self._impersonate_candidates)
-        for high_pass in ("safari17_0", "safari15_3", "safari18_0", "chrome142", "firefox133"):
-            if high_pass not in extended_candidates:
-                extended_candidates.append(high_pass)
+        # 一号一指纹：warmup 失败只换出口 IP，不换 UA / Client Hints / 硬件画像。
+        locked_imp = (self._fingerprint or {}).get("impersonate") or "chrome146"
 
         for attempt in range(5):
             headers = self._navigation_headers()
             if attempt:
                 time.sleep(2 + attempt)
-                # 1. 动态住宅代理一号一 IP：严格保持用户当前选择的目标国家不变，仅在同国家下轮换全新 session IP
+                # 动态住宅代理一号一 IP：保持国家与浏览器画像不变，只换 session
                 try:
                     from webui.proxy_util import new_proxy_session_id, proxy_template_country, route_proxy_country
                     curr_country = (self._country_code or proxy_template_country(self.config.proxy or "") or "").strip().upper()
@@ -1766,24 +1774,16 @@ class AuthFlow:
                         self.config.proxy = route_proxy_country(
                             self.config.proxy, country=curr_country, session_id=new_proxy_session_id()
                         )
-                        logger.info(f"warmup 重试 (第 {attempt + 1}/5 次)：保持目标国家 [{curr_country}] 不变，已自动刷新同国新 IP 会话...")
+                        logger.info(
+                            f"warmup 重试 (第 {attempt + 1}/5 次)：指纹锁定 impersonate={locked_imp}，"
+                            f"仅刷新同国新 IP 会话 [{curr_country}]"
+                        )
                 except Exception as _px_err:
                     logger.debug(f"warmup 代理轮换跳过: {_px_err}")
 
-                # 2. 如果遇到 403 或 TLS 异常，自动切换指纹库
-                if attempt < len(extended_candidates):
-                    imp = extended_candidates[attempt]
-                    self._ua = ua_for_impersonate(imp, self._ua)
-                    try:
-                        self._fingerprint = fingerprint_for_impersonate(imp, self._fingerprint)
-                    except Exception as _sync_err:
-                        logger.debug(f"client hints 同步跳过: {_sync_err}")
-                    headers = self._navigation_headers()
-                    logger.info(f"warmup 自动轮换 TLS 指纹: impersonate={imp}")
-
                 self.session = create_http_session(
                     proxy=self.config.proxy,
-                    impersonate=extended_candidates[min(attempt, len(extended_candidates) - 1)],
+                    impersonate=locked_imp,
                     user_agent=self._ua,
                 )
             try:
@@ -1836,28 +1836,28 @@ class AuthFlow:
                 loc = re.search(r"loc=(\w+)", resp.text)
                 ip = re.search(r"ip=([^\n]+)", resp.text)
                 country_code = loc.group(1) if loc else ""
-                logger.info(f"网络正常 - IP: {ip.group(1) if ip else 'N/A'}, "
+                if ip:
+                    self._exit_ip = ip.group(1).strip()
+                    self._fingerprint["exit_ip"] = self._exit_ip
+                logger.info(f"网络正常 - IP: {self._exit_ip or 'N/A'}, "
                             f"地区: {country_code or 'N/A'}")
 
-                # IP 地理联动：检测到国家码后，重新生成指纹（带时区/语言联动）
-                if country_code and country_code != self._country_code:
-                    self._country_code = country_code
-                    import random
-                    session_seed = id(self.session) % (2**32)
-                    rng = random.Random(session_seed)
-                    self._fingerprint = generate_fingerprint(rng=rng, country_code=country_code)
-                    self._ua = self._fingerprint["user_agent"]
-                    new_imp = self._fingerprint["impersonate"]
-                    self._impersonate_candidates = self._fingerprint.get(
-                        "fallback_impersonates",
-                        [new_imp, "safari17_0", "safari15_5"],
-                    )
-                    self._impersonate_idx = 0
-                    self.session = create_http_session(
-                        proxy=self.config.proxy,
-                        impersonate=new_imp,
-                        user_agent=self._ua,
-                    )
+                # IP 地理联动：只改语言/时区，不换浏览器家族、不重建 session。
+                # 旧逻辑会重新 generate_fingerprint，有概率 Safari↔Chrome 互跳，
+                # TLS 画像和 UA 对不上，Plus 试用曝光也跟着丢。
+                if country_code:
+                    self._fingerprint["geo_country"] = country_code
+                    if country_code != self._country_code:
+                        self._country_code = country_code
+                        self._fingerprint = apply_geo_to_fingerprint(self._fingerprint, country_code)
+                        self._fingerprint["exit_ip"] = self._exit_ip
+                        logger.info(
+                            f"指纹已按出口地区对齐: lang={self._fingerprint.get('lang')} "
+                            f"tz={self._fingerprint.get('timezone')} "
+                            f"os={self._fingerprint.get('browser_os')} "
+                            f"ip={self._exit_ip or '?'}"
+                        )
+                self._fingerprint_locked = True
             else:
                 logger.warning(f"网络探测异常: cloudflare trace {resp.status_code}")
 
@@ -1881,7 +1881,7 @@ class AuthFlow:
             "oai-client-version": "prod-fb4a8a2a751dfec391053cfd7b01c52699ccf78c",
             "oai-client-build-number": "8370486",
             "oai-language": fp.get("lang", "en-US"),
-            "oai-session-id": getattr(self, "_sentinel_sid", "") or device_id,
+            "oai-session-id": getattr(self, "_oai_session_id", "") or getattr(self, "_sentinel_sid", "") or str(uuid.uuid4()),
             "Sec-Fetch-Dest": "empty",
             "Sec-Fetch-Mode": "cors",
             "Sec-Fetch-Site": "same-origin",
@@ -1891,32 +1891,26 @@ class AuthFlow:
             h["sec-ch-ua"] = fp["sec_ch_ua"]
             h["sec-ch-ua-mobile"] = fp.get("sec_ch_ua_mobile") or "?0"
             h["sec-ch-ua-platform"] = fp["sec_ch_ua_platform"]
+            for key, name in (
+                ("sec_ch_ua_full_version_list", "sec-ch-ua-full-version-list"),
+                ("sec_ch_ua_arch", "sec-ch-ua-arch"),
+                ("sec_ch_ua_bitness", "sec-ch-ua-bitness"),
+                ("sec_ch_ua_model", "sec-ch-ua-model"),
+                ("sec_ch_ua_platform_version", "sec-ch-ua-platform-version"),
+            ):
+                if fp.get(key):
+                    h[name] = fp[key]
         if access_token:
             token_str = access_token if access_token.lower().startswith("bearer ") else f"Bearer {access_token}"
             h["Authorization"] = token_str
         return h
 
     def _get_tz_offset_min(self) -> int:
-        """根据当前目标国家/指纹时区计算与 UTC 的分钟差（与 JS getTimezoneOffset 负值一致）。"""
-        cc = (self._country_code or "").strip().upper()
-        offsets = {
-            "JP": -540,   # UTC+9 (日本)
-            "BR": 180,    # UTC-3 (巴西圣保罗)
-            "VN": -420,   # UTC+7 (越南)
-            "AR": 180,    # UTC-3 (阿根廷)
-            "ES": -60,    # UTC+1 (西班牙)
-            "PL": -60,    # UTC+1 (波兰)
-            "DE": -60,    # UTC+1 (德国)
-            "GB": 0,      # UTC+0 (英国)
-            "US": 300,    # UTC-5 (美东)
-            "KR": -540,   # UTC+9 (韩国)
-            "SG": -480,   # UTC+8 (新加坡)
-            "TW": -480,   # UTC+8 (中国台湾)
-            "HK": -480,   # UTC+8 (中国香港)
-            "CN": -480,   # UTC+8 (中国大陆)
-        }
-        if cc in offsets:
-            return offsets[cc]
+        """根据指纹 IANA 时区计算与 UTC 的分钟差（与 JS getTimezoneOffset 负值一致）。
+
+        必须跟 Accept-Language / oai-language 同一套出口画像。旧实现按国家码写死
+        美东 300，美国西海岸代理会语言/时区打架，A/B 试用曝光会被压掉。
+        """
         tz_name = (self._fingerprint or {}).get("timezone", "")
         if tz_name:
             try:
@@ -1928,6 +1922,26 @@ class AuthFlow:
                     return int(-offset.total_seconds() / 60)
             except Exception:
                 pass
+        cc = (self._country_code or "").strip().upper()
+        offsets = {
+            "JP": -540,   # UTC+9 (日本)
+            "BR": 180,    # UTC-3 (巴西圣保罗)
+            "VN": -420,   # UTC+7 (越南)
+            "AR": 180,    # UTC-3 (阿根廷)
+            "ES": -60,    # UTC+1 (西班牙)
+            "PL": -60,    # UTC+1 (波兰)
+            "DE": -60,    # UTC+1 (德国)
+            "GB": 0,      # UTC+0 (英国)
+            "US": 300,    # UTC-5 (美东兜底)
+            "KR": -540,   # UTC+9 (韩国)
+            "SG": -480,   # UTC+8 (新加坡)
+            "TW": -480,   # UTC+8 (中国台湾)
+            "HK": -480,   # UTC+8 (中国香港)
+            "CN": -480,   # UTC+8 (中国大陆)
+            "CL": 240,    # UTC-4 (智利)
+        }
+        if cc in offsets:
+            return offsets[cc]
         return -540 if cc == "JP" else -480
 
     def anonymous_bootstrap(self) -> None:
@@ -2237,6 +2251,45 @@ class AuthFlow:
         return device_id
 
     # ── Step 5: 获取 Sentinel Token ──
+    def export_environment(self) -> dict:
+        """导出本号完整运行环境，供落库 / 试用资格与风控分析。一号一份，不复用。"""
+        fp = dict(self._fingerprint or {})
+        proxy = ""
+        try:
+            proxy = str(getattr(self.config, "proxy", "") or "")
+        except Exception:
+            proxy = ""
+        return {
+            "env_id": fp.get("env_id") or "",
+            "fingerprint": fp,
+            "user_agent": self._ua,
+            "impersonate": fp.get("impersonate") or "",
+            "browser_type": fp.get("browser_type") or "",
+            "browser_os": fp.get("browser_os") or "",
+            "screen": fp.get("screen") or "",
+            "timezone": fp.get("timezone") or "",
+            "lang": fp.get("lang") or "",
+            "lang_full": fp.get("lang_full") or "",
+            "navigator_platform": fp.get("navigator_platform") or "",
+            "navigator_vendor": fp.get("navigator_vendor") or "",
+            "hardware_concurrency": fp.get("hardware_concurrency"),
+            "device_memory": fp.get("device_memory"),
+            "device_pixel_ratio": fp.get("device_pixel_ratio"),
+            "webgl_vendor": fp.get("webgl_vendor") or "",
+            "webgl_renderer": fp.get("webgl_renderer") or "",
+            "sec_ch_ua": fp.get("sec_ch_ua") or "",
+            "sec_ch_ua_platform": fp.get("sec_ch_ua_platform") or "",
+            "sec_ch_ua_full_version_list": fp.get("sec_ch_ua_full_version_list") or "",
+            "sec_ch_ua_arch": fp.get("sec_ch_ua_arch") or "",
+            "sec_ch_ua_platform_version": fp.get("sec_ch_ua_platform_version") or "",
+            "oai_session_id": getattr(self, "_oai_session_id", "") or "",
+            "device_id": (self.result.device_id or "") if getattr(self, "result", None) else "",
+            "exit_ip": getattr(self, "_exit_ip", "") or fp.get("exit_ip") or "",
+            "exit_country": getattr(self, "_country_code", "") or fp.get("geo_country") or "",
+            "proxy": proxy,
+            "fingerprint_locked": bool(getattr(self, "_fingerprint_locked", False)),
+        }
+
     def _sentinel_fp_kwargs(self) -> dict:
         """从 self._fingerprint 抽出 sentinel 需要的指纹/硬件字段。
 
@@ -2270,21 +2323,8 @@ class AuthFlow:
 
     def get_sentinel_token(self, device_id: str) -> str:
         logger.info("[4/10] 获取 Sentinel Token (PoW)...")
-        # 1. 优先尝试从后台预计算池中 0ms 秒级获取
-        try:
-            from webui.sentinel_pool import get_sentinel_pool
-            pool = get_sentinel_pool()
-            precomputed = pool.pop_token(flow="authorize_continue")
-            if precomputed:
-                token, so_token, _ = precomputed
-                self._last_sentinel_token = token or ""
-                self._last_sentinel_so_token = so_token or ""
-                logger.info("[4/10] ⚡ 成功命中 PoW 预计算池，0ms 秒获 Sentinel Token！")
-                return token
-        except Exception as e:
-            logger.debug(f"[Sentinel] 预计算池提取跳过: {e}")
-
-        # 2. 池空或不可用时优雅回落实时计算
+        # 必须用本号会话的指纹现场计算。预计算池里的 token 带着另一套
+        # UA/device_id/屏幕，塞进来等于一号两套环境，事后容易被风控。
         from sentinel import get_sentinel_token
         result = get_sentinel_token(
             self.session,
@@ -3552,10 +3592,12 @@ class AuthFlow:
     def run_register(self, mail_provider: MailProvider) -> AuthResult:
         """执行完整注册流程"""
         # 检查网络
+        logger.info("检查网络连通性...")
         if not self.check_proxy():
             logger.warning("网络预检查未通过，继续尝试注册链路以获取精确错误...")
         # warmup 失败 = 没拿到 oai-did = 后面 authorize/continue 必 409（实测 5/5）。
         # 必须在 create_mailbox 之前拦掉：邮箱是花钱的，不能为一个注定 409 的轮次浪费。
+        logger.info("开始预热 chatgpt.com（成功后再购买 Remail 邮箱）...")
         if not self.warmup():
             raise RuntimeError(
                 "warmup 失败：4 次重试均未拿到 chatgpt.com 的 oai-did cookie，"
@@ -3564,9 +3606,11 @@ class AuthFlow:
             )
 
         # 匿名态 ChatGPT 首页/模型预热链路（建立真实客户端行为轨迹）
+        logger.info("匿名态 ChatGPT 预热...")
         self.anonymous_bootstrap()
 
         # 创建邮箱
+        logger.info("chatgpt.com 预热完成，开始创建/购买邮箱...")
         email = mail_provider.create_mailbox()
         self.result.email = email
         if self._on_email_assigned:

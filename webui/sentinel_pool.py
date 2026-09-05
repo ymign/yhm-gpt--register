@@ -22,6 +22,8 @@ logger = logging.getLogger("sentinel_pool")
 
 # Sentinel Token 在 OpenAI 端的有效时间约为 90~120 秒，本地预计算保质期保守设为 70 秒
 TOKEN_TTL_SECONDS = 70.0
+# 预计算池水位 ≠ 前端「PoW 算力槽位」。默认关闭：池里的 token 是用随机指纹算的，
+# 塞进正在注册的会话会变成「HTTP 一套指纹、Sentinel 另一套」，事后极易被风控。
 DEFAULT_POOL_SIZE = 3
 
 
@@ -53,7 +55,8 @@ class SentinelPrecomputePool:
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
         self._worker_thread: Optional[threading.Thread] = None
-        self._enabled = True
+        # 一号一指纹：禁止用别人的预计算 PoW。需要时再在本号会话里现场算。
+        self._enabled = False
         self._stats = {
             "hits": 0,
             "misses": 0,
@@ -63,6 +66,13 @@ class SentinelPrecomputePool:
 
     def start(self):
         """启动后台预计算守护线程。"""
+        if not self._enabled:
+            logger.info(
+                f"[SentinelPool] 预计算池已停用（不是前端 PoW 槽位；"
+                f"缓冲水位配置={self.target_size}）。"
+                f"注册必须用本号自己的 UA/屏幕/时区现场计算 Sentinel，避免串指纹被风控。"
+            )
+            return
         if self._worker_thread and self._worker_thread.is_alive():
             return
         self._stop_event.clear()
@@ -72,7 +82,10 @@ class SentinelPrecomputePool:
             daemon=True,
         )
         self._worker_thread.start()
-        logger.info(f"[SentinelPool] 预计算池守护线程已启动 (目标缓冲水位={self.target_size})")
+        logger.info(
+            f"[SentinelPool] 预计算池守护线程已启动 (目标缓冲水位={self.target_size}；"
+            f"≠ 前端 PoW 算力槽位)"
+        )
 
     def stop(self):
         """停止后台预计算守护线程。"""
@@ -173,7 +186,7 @@ class SentinelPrecomputePool:
 
             fp = generate_fingerprint()
             ua = fp.get("user_agent") or ""
-            impersonate = fp.get("impersonate", "chrome136")
+            impersonate = fp.get("impersonate", "chrome146")
 
             # 纯内存会话（用于握手 sentinel 计算）
             session = CffiSession(impersonate=impersonate)

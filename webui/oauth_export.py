@@ -935,8 +935,8 @@ def execute_codex_oauth_flow(
 
     # 生成与目标国家对齐的一致性浏览器指纹
     fp = generate_fingerprint(country_code=country_code)
-    ua = fp.get("user_agent") or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
-    impersonate = fp.get("impersonate") or "chrome136"
+    ua = fp.get("user_agent") or "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
+    impersonate = fp.get("impersonate") or "chrome146"
     _trace_put(
         trace,
         impersonate=impersonate,
@@ -1021,7 +1021,7 @@ def execute_codex_oauth_flow(
         if status_code in (401, 403):
             _log(f"[1/6] ⚠️ 授权服务器响应 {status_code}，正在切换备选会话重试...")
             time.sleep(2)
-            session = create_http_session(proxy=proxy or None, impersonate="chrome136", user_agent=ua)
+            session = create_http_session(proxy=proxy or None, impersonate="chrome142", user_agent=ua)
             resp = session.get(auth_url, headers=nav_headers, allow_redirects=True, timeout=timeout)
             status_code = getattr(resp, "status_code", 0)
             if status_code in (401, 403):

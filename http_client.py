@@ -140,7 +140,7 @@ class _TlsRetrySession:
 
 def create_http_session(
     proxy: Optional[str] = None,
-    impersonate: str = "safari18_0",
+    impersonate: str = "chrome146",
     user_agent: Optional[str] = None,
 ):
     """
@@ -148,7 +148,12 @@ def create_http_session(
     不可用时降级到 requests。
     """
     if _HAS_CFFI:
-        session = CffiSession(impersonate=impersonate)
+        try:
+            session = CffiSession(impersonate=impersonate)
+        except Exception as e:
+            logger.warning(f"impersonate={impersonate} 创建失败，回退 chrome146: {e}")
+            session = CffiSession(impersonate="chrome146")
+        session.timeout = 20
         # 使用显式配置，避免被系统 HTTP(S)_PROXY 隐式污染。
         session.trust_env = False
         if proxy:

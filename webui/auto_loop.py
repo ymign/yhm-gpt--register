@@ -83,6 +83,8 @@ class AutoLoopController:
         # 代理池 / 并发数
         self._proxy_pool: list[str] = []
         self._concurrency: int = 1
+        # 实际拉起的 worker 数：目标数量 >0 时不超过剩余目标，避免 15 个 worker 抢 1 个名额
+        self._spawn_count: int = 1
         # 目标成功数：0 = 不限量（保持旧行为）；>0 时累计成功达标即自动停止
         self._target_count: int = 0
         # 任务流水列表（最新 200 条，用于前端表格展示每一个号的进度与日志）
@@ -120,6 +122,11 @@ class AutoLoopController:
             self._proxy_pool = _parse_proxy_pool(pool_text)
             # 目标成功数（0=不限量）
             self._target_count = max(0, int(self._options.get("target_count") or 0))
+            # 目标=1 却开 15 worker 时，多余线程会立刻「已锁定，退出」，日志刷屏、看起来像没开始。
+            # 实际并发不超过目标数量；同一 worker 失败后会自己重试直到达标。
+            self._spawn_count = self._concurrency
+            if self._target_count:
+                self._spawn_count = max(1, min(self._concurrency, self._target_count))
             # 连续网络错误自动暂停阈值（0=关闭熔断）
             raw_cbt = self._options.get("circuit_break_threshold")
             if raw_cbt is None:
@@ -128,7 +135,17 @@ class AutoLoopController:
                 self._circuit_break_threshold = max(0, int(raw_cbt))
             except Exception:
                 self._circuit_break_threshold = 3
-            logger.info(f"auto-loop 启动: concurrency={self._concurrency}, circuit_break_threshold={self._circuit_break_threshold}, target_count={self._target_count}")
+            if self._spawn_count != self._concurrency:
+                logger.info(
+                    f"auto-loop 启动: concurrency={self._concurrency} → 实际 {self._spawn_count} "
+                    f"(目标 {self._target_count})，circuit_break_threshold={self._circuit_break_threshold}"
+                )
+            else:
+                logger.info(
+                    f"auto-loop 启动: concurrency={self._concurrency}, "
+                    f"circuit_break_threshold={self._circuit_break_threshold}, "
+                    f"target_count={self._target_count}"
+                )
             # 启 manage 线程
             self._manage_thread = threading.Thread(
                 target=self._manage_loop, daemon=True, name="auto-loop-manage"
@@ -255,7 +272,8 @@ class AutoLoopController:
             # 4. 多 Worker 多核动态舰队大屏数据 (Fleet HUD)
             fleet_info = []
             target_country = self._options.get("proxy_country", "")
-            for wid in range(self._concurrency):
+            fleet_n = getattr(self, "_spawn_count", None) or self._concurrency
+            for wid in range(fleet_n):
                 if wid in self._worker_status:
                     info = self._worker_status[wid]
                     rid = info.get("run_id", "")
@@ -353,6 +371,7 @@ class AutoLoopController:
                     if self._target_count else None
                 ),
                 "concurrency": self._concurrency,
+                "spawn_count": getattr(self, "_spawn_count", self._concurrency),
                 "circuit_break_threshold": self._circuit_break_threshold,
                 "proxy_pool_size": len(self._proxy_pool),
                 "workers": fleet_info,
@@ -384,6 +403,29 @@ class AutoLoopController:
         with self._lock:
             self._last_message = msg
         self._broadcast("state", self._snapshot())
+
+    def _try_reserve_slot(self, worker_id: int) -> bool:
+        """占一个在跑名额。已占过的 worker 直接放行；目标已满返回 False。"""
+        with self._lock:
+            if worker_id in self._worker_status:
+                return True
+            if self._target_count and (
+                self._registered_ok + len(self._worker_status) >= self._target_count
+            ):
+                return False
+            self._worker_status[worker_id] = {
+                "email": "",
+                "run_id": "",
+                "proxy": "",
+                "target_country": "",
+                "started_at": time.time(),
+                "reserved": True,
+            }
+            return True
+
+    def _release_slot(self, worker_id: int) -> None:
+        with self._lock:
+            self._worker_status.pop(worker_id, None)
 
     def _proxy_for_worker(self, worker_id: int) -> str:
         """按 worker_id 从代理池里挑一个可用代理（自动跳过处于 15 分钟风控冷冻期或黑名单的代理）。
@@ -499,7 +541,8 @@ class AutoLoopController:
 
         try:
             workers = []
-            for wid in range(self._concurrency):
+            spawn_n = getattr(self, "_spawn_count", None) or self._concurrency
+            for wid in range(spawn_n):
                 t = threading.Thread(
                     target=self._worker_loop, args=(wid,),
                     daemon=True, name=f"auto-loop-worker-{wid}",
@@ -534,6 +577,7 @@ class AutoLoopController:
         while True:
             # 检查停止
             if self._stop_event.is_set():
+                self._release_slot(worker_id)
                 logger.info(f"[worker-{worker_id}] 已停止")
                 return
 
@@ -542,18 +586,17 @@ class AutoLoopController:
                 while self._pause_event.is_set() and not self._stop_event.is_set():
                     time.sleep(0.5)
                 if self._stop_event.is_set():
+                    self._release_slot(worker_id)
                     return
 
-            # 目标数量闸门：已成功 + 在跑的（复用 _worker_status 当在跑数）≥ 目标 → 本 worker 退出
-            # 不新增易泄漏的计数器；_worker_status 已在锁内正常维护，最大限度压低超额
-            with self._lock:
-                if self._target_count and (
-                    self._registered_ok + len(self._worker_status) >= self._target_count
-                ):
-                    logger.info(
-                        f"[worker-{worker_id}] 目标 {self._target_count} 已锁定，退出"
-                    )
+            # 目标数量闸门：先占坑再开跑，避免两个 worker 同时看到「还没人在跑」一起冲进去。
+            # 占不到就短等，不要 return——上一发失败后还得有人接着跑。
+            if not self._try_reserve_slot(worker_id):
+                if self._stop_event.is_set():
+                    logger.info(f"[worker-{worker_id}] 已停止")
                     return
+                time.sleep(1.0)
+                continue
 
             # claim 下一个号。要不要走号池由 provider 的 pooled 决定，
             # 非池化的（CF 这类自己造地址的）用虚拟占位。
@@ -563,6 +606,7 @@ class AutoLoopController:
             except MailProviderError as e:
                 logger.error(f"[worker-{worker_id}] {e}，停止")
                 self._set_message(str(e))
+                self._release_slot(worker_id)
                 return
             if pooled:
                 account = db.claim_next(kind=mail_source)
@@ -582,6 +626,7 @@ class AutoLoopController:
                 # 空 10 轮（约 30s）就停掉这个 worker
                 if idle_round >= 10:
                     logger.info(f"[worker-{worker_id}] 号池空 30s，停止")
+                    self._release_slot(worker_id)
                     return
                 # 等 3s 再试
                 for _ in range(30):
@@ -614,6 +659,7 @@ class AutoLoopController:
                 run_id = registrar.start_registration(account, run_options)
             except Exception as e:
                 logger.exception(f"[worker-{worker_id}] 启动注册失败: {e}")
+                self._release_slot(worker_id)
                 if pooled:
                     db.release_unused(account["email"])
                 time.sleep(2)

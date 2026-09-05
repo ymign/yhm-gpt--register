@@ -694,7 +694,7 @@ onUnmounted(() => {
                 <el-form-item>
                   <template #label>
                     <span>PoW 算力槽位</span>
-                    <el-tooltip content="同时解算 sentinel PoW 的 node 进程数上限。网络并发再高，PoW 碰撞也会在这里排队，保护 CPU 不被打满降频。" placement="top">
+                    <el-tooltip content="同时解算 Sentinel PoW 的 node 进程数上限（默认 6）。启动日志里的「预计算池缓冲水位=3」是另一件事，已经停用，不会拿别人的指纹 token。网络并发再高，PoW 也会在这里排队。" placement="top">
                       <el-icon class="info-ico" style="margin-left: 3px;"><QuestionFilled /></el-icon>
                     </el-tooltip>
                   </template>
@@ -727,7 +727,13 @@ onUnmounted(() => {
                 </el-form-item>
               </el-col>
               <el-col :xs="12" :sm="6" :md="3">
-                <el-form-item label="目标数量 (0=不限)">
+                <el-form-item>
+                  <template #label>
+                    <span>目标数量 (0=不限)</span>
+                    <el-tooltip content="只表示要成功几个号。填 1 时即使并发开 15，也只会真正拉起 1 个 Worker；失败后由同一 Worker 重试，不会再刷「目标已锁定，退出」。" placement="top">
+                      <el-icon class="info-ico" style="margin-left: 3px;"><QuestionFilled /></el-icon>
+                    </el-tooltip>
+                  </template>
                   <el-input-number v-model="form.autoTargetCount" :min="0" :max="100000" class="macos-num-input" />
                 </el-form-item>
               </el-col>

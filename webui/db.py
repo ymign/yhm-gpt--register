@@ -55,16 +55,19 @@ def invalidate_registered_caches() -> None:
 def _conn() -> sqlite3.Connection:
     con = sqlite3.connect(str(DB_PATH), check_same_thread=False, timeout=30)
     con.row_factory = sqlite3.Row
-    con.execute("PRAGMA journal_mode = WAL")
-    con.execute("PRAGMA synchronous = NORMAL")
-    con.execute("PRAGMA cache_size = -64000")  # 64MB 内存查询缓存
-    con.execute("PRAGMA busy_timeout = 15000")  # 15秒写锁自动重试，消除高并发冲突
+    # journal_mode=WAL 只在 init_db 设一次。每次新连接都执行是写操作，
+    # 会和 auto_loop 轮询 / get_mail_settings 连开几十次连接互相抢锁，
+    # 注册线程表现为「任务已启动」之后几十秒没有任何日志。
+    con.execute("PRAGMA busy_timeout = 15000")
     con.execute("PRAGMA temp_store = MEMORY")
     return con
 
 
 def init_db():
     con = _conn()
+    con.execute("PRAGMA journal_mode = WAL")
+    con.execute("PRAGMA synchronous = NORMAL")
+    con.execute("PRAGMA cache_size = -64000")
     con.executescript("""
         CREATE TABLE IF NOT EXISTS outlook_accounts (
             email           TEXT PRIMARY KEY,
@@ -303,6 +306,51 @@ def init_db():
     )
     con.execute(
         "CREATE INDEX IF NOT EXISTS idx_oauth_feat_combo ON oauth_attempt_features(proxy_country, impersonate, sms_country, outcome)"
+    )
+
+    # 注册环境特征：一号一指纹一 IP，成功/失败都记，供试用资格与风控分析。
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS register_features (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at REAL NOT NULL,
+            run_id TEXT,
+            email TEXT,
+            outcome TEXT,
+            error_class TEXT,
+            error_text TEXT,
+            duration_ms INTEGER,
+            proxy TEXT,
+            proxy_host TEXT,
+            reg_country TEXT,
+            reg_ip TEXT,
+            impersonate TEXT,
+            browser_type TEXT,
+            browser_os TEXT,
+            env_id TEXT,
+            user_agent TEXT,
+            screen TEXT,
+            timezone TEXT,
+            lang TEXT,
+            lang_full TEXT,
+            navigator_platform TEXT,
+            hardware_concurrency INTEGER,
+            device_memory INTEGER,
+            device_pixel_ratio REAL,
+            webgl_vendor TEXT,
+            webgl_renderer TEXT,
+            device_id TEXT,
+            oai_session_id TEXT,
+            extra_json TEXT
+        )
+    """)
+    con.execute(
+        "CREATE INDEX IF NOT EXISTS idx_reg_feat_email ON register_features(email, created_at)"
+    )
+    con.execute(
+        "CREATE INDEX IF NOT EXISTS idx_reg_feat_outcome ON register_features(outcome, created_at)"
+    )
+    con.execute(
+        "CREATE INDEX IF NOT EXISTS idx_reg_feat_combo ON register_features(reg_country, impersonate, outcome)"
     )
 
     # 代理健康度：按 (代理模板 × 出口国家) 聚合注册号数与验死数。
@@ -1661,6 +1709,55 @@ def insert_oauth_attempt_feature(feat: dict) -> int:
         return int(cur.lastrowid or 0)
 
 
+_REGISTER_FEATURE_COLS = (
+    "created_at", "run_id", "email", "outcome", "error_class", "error_text",
+    "duration_ms", "proxy", "proxy_host", "reg_country", "reg_ip",
+    "impersonate", "browser_type", "browser_os", "env_id", "user_agent",
+    "screen", "timezone", "lang", "lang_full", "navigator_platform",
+    "hardware_concurrency", "device_memory", "device_pixel_ratio",
+    "webgl_vendor", "webgl_renderer", "device_id", "oai_session_id",
+    "extra_json",
+)
+
+
+def insert_register_feature(feat: dict) -> int:
+    """写入一次注册尝试的环境特征（成功/失败都记）。返回 row id。"""
+    if not isinstance(feat, dict):
+        return 0
+    row = {k: feat.get(k) for k in _REGISTER_FEATURE_COLS}
+    row["created_at"] = float(row.get("created_at") or time.time())
+    row["email"] = str(row.get("email") or "").strip().lower()
+    extra = feat.get("extra")
+    if extra is None:
+        extra = {k: v for k, v in feat.items() if k not in _REGISTER_FEATURE_COLS and k != "extra"}
+    if extra:
+        try:
+            row["extra_json"] = json.dumps(extra, ensure_ascii=False, default=str)
+        except Exception:
+            row["extra_json"] = None
+    err = str(row.get("error_text") or "")
+    if len(err) > 400:
+        row["error_text"] = err[:400]
+    proxy = str(row.get("proxy") or "")
+    if proxy and not row.get("proxy_host"):
+        try:
+            from urllib.parse import urlsplit
+            row["proxy_host"] = urlsplit(proxy).hostname or ""
+        except Exception:
+            row["proxy_host"] = ""
+    cols = list(_REGISTER_FEATURE_COLS)
+    placeholders = ",".join("?" for _ in cols)
+    values = [row.get(c) for c in cols]
+    with _lock:
+        con = _conn()
+        cur = con.execute(
+            f"INSERT INTO register_features ({','.join(cols)}) VALUES ({placeholders})",
+            values,
+        )
+        con.commit()
+        return int(cur.lastrowid or 0)
+
+
 def list_oauth_attempt_features(limit: int = 100, outcome: str = "") -> list[dict]:
     limit = max(1, min(500, int(limit or 100)))
     sql = "SELECT * FROM oauth_attempt_features"
@@ -3010,10 +3107,12 @@ def get_mail_settings() -> dict:
     """
     from mail_providers import list_providers
 
-    out = {"mail_source": get_setting("mail_source", "outlook")}
+    con = _conn()
+    rows = {str(r["key"]): (r["value"] if r["value"] is not None else "") for r in con.execute("SELECT key, value FROM settings")}
+    out = {"mail_source": rows.get("mail_source", "outlook")}
     for p in list_providers():
         for f in p["config_fields"]:
-            out[f["key"]] = get_setting(f["key"], "")
+            out[f["key"]] = rows.get(f["key"], "")
     return out
 
 
