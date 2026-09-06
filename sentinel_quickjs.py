@@ -239,12 +239,9 @@ def get_sentinel_token_via_quickjs(
         screen_w, screen_h = parts[0], parts[1]
 
     lang_primary = lang or "en-US"
+    # HAR / Roxy 真 Chrome：navigator.languages 是主语言单值（如 ["ja-JP"]），
+    # 不是把 Accept-Language 的 q 权重链拆进去。拆开会让 Sentinel p[8] 和真浏览器对不上。
     languages = [lang_primary]
-    if lang_full:
-        for part in lang_full.split(","):
-            tag = part.split(";")[0].strip()
-            if tag and tag not in languages:
-                languages.append(tag)
 
     # ── 指纹一致性：platform / vendor 未显式传入时按 UA 推断，绝不写死 MacIntel ──
     ua_l = (user_agent or "").lower()

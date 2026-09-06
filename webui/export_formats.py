@@ -268,10 +268,28 @@ def get_or_build_session_data(r: dict) -> dict:
             extra = json.loads(r["extra_json"])
         except Exception:
             extra = {}
+    stored = None
     if isinstance(r.get("session_data"), dict) and r["session_data"]:
-        return r["session_data"]
-    if isinstance(extra.get("session_data"), dict) and extra["session_data"]:
-        return extra["session_data"]
+        stored = r["session_data"]
+    elif isinstance(extra.get("session_data"), dict) and extra["session_data"]:
+        stored = extra["session_data"]
+    if stored:
+        stored = dict(stored)
+        at = _s(r, "access_token") or stored.get("accessToken") or ""
+        st = _s(r, "session_token") or stored.get("sessionToken") or ""
+        if at:
+            stored["accessToken"] = at
+        if st:
+            stored["sessionToken"] = st
+        if not stored.get("WARNING_BANNER"):
+            stored["WARNING_BANNER"] = (
+                "!!!!!!!!!!!!!!!!!!!! DO NOT SHARE ANY PART OF THE INFORMATION YOU SEE HERE. "
+                "THIS INFORMATION IS SENSITIVE AND CAN GRANT ACCESS TO YOUR ACCOUNT. "
+                "SHARING THIS INFORMATION IS LIKE SHARING YOUR PASSWORD. !!!!!!!!!!!!!!!!!!!!"
+            )
+        if not stored.get("authProvider"):
+            stored["authProvider"] = "openai"
+        return stored
 
     email = _s(r, "email")
     at = _s(r, "access_token")

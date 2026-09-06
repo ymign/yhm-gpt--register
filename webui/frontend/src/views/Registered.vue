@@ -88,11 +88,6 @@ import {
   downloadOAuthExportSub2,
   getOAuthExportFeatures,
   getOAuthExportFeatureWeights,
-  startTokenRefresh,
-  stopTokenRefresh,
-  tokenRefreshStreamUrl,
-  getTokenRefreshLog,
-  downloadTokenRefreshExport,
   startSecurityTask,
   stopSecurityTask,
   retrySecurityTask,
@@ -112,6 +107,7 @@ import { useProxyStore } from '@/stores/proxy'
 import { useRuntimeStore } from '@/stores/runtime'
 import StatusDot from '@/components/StatusDot.vue'
 import ExtractTaskModal from '@/components/ExtractTaskModal.vue'
+import TokenRefreshStudio from '@/components/TokenRefreshStudio.vue'
 
 const { form } = storeToRefs(useFormStore())
 // 检测用的代理必须能从代理池里挑
@@ -153,6 +149,7 @@ async function openExtractChannel(channelKey) {
         filter_domain: filterDomain.value,
         filter_country: filterCountry.value,
         filter_at_export: filterAtExport.value,
+        filter_at_exp: filterAtExp.value,
         search: searchKeyword.value.trim(),
       })
       extractModalEmails.value = res.emails || []
@@ -175,6 +172,9 @@ const filterDomain = ref('all')
 const domainOptions = ref([])
 const filterCountry = ref('all')
 const filterAtExport = ref('all') // AT 导出留痕筛选：all / exported / unexported
+const filterAtExp = ref('all') // AT 有效期：all / valid / expiring / expired / no_at / unknown
+const sortBy = ref('created_at')
+const sortOrder = ref('desc')
 const countryOptions = ref([])
 const searchKeyword = ref('')
 const selected = ref([])
@@ -228,6 +228,7 @@ const hasActiveFilter = computed(() => {
     filterDomain.value !== 'all' ||
     filterCountry.value !== 'all' ||
     filterAtExport.value !== 'all' ||
+    filterAtExp.value !== 'all' ||
     Boolean(form.value?.proxy)
   )
 })
@@ -253,6 +254,7 @@ const hasActiveAttributeFilter = computed(() => {
     filterCountry.value !== 'all' ||
     filterDomain.value !== 'all' ||
     filterExtract.value !== 'all' ||
+    filterAtExp.value !== 'all' ||
     Boolean(form.value?.proxy)
   )
 })
@@ -300,6 +302,7 @@ function removeFilter(key) {
   else if (key === 'health') filterHealth.value = 'all'
   else if (key === 'oauth') filterOAuth.value = 'all'
   else if (key === 'export' || key === 'at_export') filterAtExport.value = 'all'
+  else if (key === 'at_exp') filterAtExp.value = 'all'
   else if (key === 'search') searchKeyword.value = ''
   load(true)
 }
@@ -322,6 +325,7 @@ function resetAdvancedFilters() {
   filterExtract.value = 'all'
   filterAtExport.value = 'all'
   filterHealth.value = 'all'
+  filterAtExp.value = 'all'
   if (form.value) form.value.proxy = ''
   load(true)
 }
@@ -336,6 +340,9 @@ function clearAllFilters() {
   filterDomain.value = 'all'
   filterCountry.value = 'all'
   filterAtExport.value = 'all'
+  filterAtExp.value = 'all'
+  sortBy.value = 'created_at'
+  sortOrder.value = 'desc'
   if (form.value) form.value.proxy = ''
   load(true)
 }
@@ -572,7 +579,39 @@ function prepareRowData(r) {
   r._countryLabel = r.reg_country ? formatCountry(r.reg_country) : ''
   r._proxyHost = r.reg_proxy ? formatProxyHost(r.reg_proxy) : ''
   r._exportDate = (r.exported_at || r.at_exported_at) ? formatExportDateShort(r.exported_at || r.at_exported_at) : ''
+  r._atExp = formatAtExpiry(r)
   return r
+}
+
+function formatDurationShort(sec) {
+  const s = Math.max(0, Math.floor(Number(sec) || 0))
+  const d = Math.floor(s / 86400)
+  const h = Math.floor((s % 86400) / 3600)
+  const m = Math.floor((s % 3600) / 60)
+  if (d > 0) return h > 0 ? `${d}天${h}小时` : `${d}天`
+  if (h > 0) return m > 0 ? `${h}小时${m}分` : `${h}小时`
+  if (m > 0) return `${m}分钟`
+  return `${s}秒`
+}
+
+function formatAtExpiry(row) {
+  if (!row || !row.at_len) {
+    return { text: '无 AT', cls: 'at-exp-none', title: '没有 Access Token，点击刷新获取', expired: true }
+  }
+  const exp = Number(row.at_expires_at) || 0
+  if (exp <= 0) {
+    return { text: '无法解析到期', cls: 'at-exp-unknown', title: 'Token 不是标准 JWT 或没有 exp 字段', expired: false }
+  }
+  const remain = exp - Date.now() / 1000
+  const absText = formatDurationShort(Math.abs(remain))
+  const until = new Date(exp * 1000).toLocaleString('zh-CN', { hour12: false })
+  if (remain <= 0) {
+    return { text: `已过期 ${absText}`, cls: 'at-exp-dead', title: `到期时间 ${until}，点击刷新 Token`, expired: true }
+  }
+  if (remain <= 86400) {
+    return { text: `剩余 ${absText}`, cls: 'at-exp-warn', title: `${until} 到期，即将失效，点击可刷新`, expired: false }
+  }
+  return { text: `剩余 ${absText}`, cls: 'at-exp-ok', title: `${until} 到期`, expired: false }
 }
 
 function getRowClassName({ row }) {
@@ -1338,92 +1377,7 @@ function retrySingleHealthCheck(row) {
 
 // ════════════════════════ Token 刷新与重登工作台 (Token Refresh Studio) ════════════════════════
 const refreshVisible = ref(false)
-const refreshRunning = ref(false)
-const refreshTaskId = ref('')
-const refreshEs = ref(null)
 const refreshTargetEmails = ref([])
-const refreshActiveTab = ref('network')
-const refreshConfigCollapsed = ref(true)
-
-const refreshForm = reactive({
-  proxy: '',
-  proxyCountry: 'JP',
-  workers: 5,
-  timeout: 45,
-  forceFullLogin: false,
-  smsEnabled: false,
-  smsProvider: 'smsbower',
-  smsApiKey: '',
-  smsCountry: '52',
-  smsMaxPrice: '',
-  smsMaxAttempts: 3,
-  smsTimeout: 80,
-})
-
-const refreshItems = ref({})
-const refreshLogs = ref([])
-const refreshLogModalVisible = ref(false)
-const currentRefreshLogItem = ref(null)
-const refreshLogLines = ref([])
-const refreshLogLoading = ref(false)
-const refreshModalLogBoxRef = ref(null)
-let refreshLiveTimer = null
-
-function startRefreshLiveTimer() {
-  stopRefreshLiveTimer()
-  refreshLiveTimer = setInterval(() => {
-    if (!refreshRunning.value) {
-      stopRefreshLiveTimer()
-      return
-    }
-    const now = Date.now() / 1000
-    for (const em in refreshItems.value) {
-      const it = refreshItems.value[em]
-      if (it && it.status === 'running') {
-        const start = it.started_at || (now - (it.elapsed || 0))
-        it.elapsed = Math.round((now - start) * 10) / 10
-      }
-    }
-  }, 1000)
-}
-
-function stopRefreshLiveTimer() {
-  if (refreshLiveTimer) {
-    clearInterval(refreshLiveTimer)
-    refreshLiveTimer = null
-  }
-}
-
-function scrollRefreshModalLog() {
-  nextTick(() => {
-    if (refreshModalLogBoxRef.value) {
-      refreshModalLogBoxRef.value.scrollTop = refreshModalLogBoxRef.value.scrollHeight
-    }
-  })
-}
-
-const refreshRows = computed(() =>
-  Object.values(refreshItems.value).map((item) => ({ ...item })),
-)
-
-const refreshStats = computed(() => {
-  const items = Object.values(refreshItems.value)
-  const tot = items.length || refreshTargetEmails.value.length || 0
-  const done = items.filter((i) => i.status === 'done').length
-  const running = items.filter((i) => i.status === 'running').length
-  const pending = items.filter((i) => i.status === 'pending').length
-  const rt_fast_ok = items.filter((i) => i.result && i.result.status === 'success' && i.result.method === 'rt_fast').length
-  const full_login_ok = items.filter((i) => i.result && i.result.status === 'success' && i.result.method !== 'rt_fast').length
-  const success = items.filter((i) => i.result && i.result.status === 'success').length
-  const need_phone = items.filter((i) => i.result && i.result.status === 'need_phone').length
-  const error = items.filter((i) => i.status === 'done' && (!i.result || (i.result.status !== 'success' && i.result.status !== 'need_phone'))).length
-  const percent = tot > 0 ? Math.round((done / tot) * 100) : 0
-  return {
-    total: tot, done, running, pending,
-    rt_fast_ok, full_login_ok, success, need_phone, error,
-    percent,
-  }
-})
 
 async function openTokenRefresh(scope = 'selected', customEmails = null) {
   let emails = []
@@ -1470,20 +1424,7 @@ async function openTokenRefresh(scope = 'selected', customEmails = null) {
   }
 
   refreshTargetEmails.value = emails
-
-  if (!refreshRunning.value) {
-    refreshTaskId.value = ''
-    refreshLogs.value = []
-    refreshConfigCollapsed.value = true
-    const initMap = {}
-    for (const em of emails) {
-      initMap[em] = { email: em, status: 'pending', step_text: '排队中...', result: null, elapsed: 0 }
-    }
-    refreshItems.value = initMap
-  }
-
   refreshVisible.value = true
-  loadSmsCountries()
 }
 
 function openTokenRefreshForOne(row) {
@@ -1498,196 +1439,8 @@ function handleRefreshCommand(cmd) {
   else if (cmd === 'refresh_all') openTokenRefresh('all')
 }
 
-function closeTokenRefresh() {
-  if (refreshRunning.value) {
-    ElMessage.info('Token 刷新任务在后台继续运行，可随时重新打开查看进度')
-  }
-  if (refreshEs.value && !refreshRunning.value) {
-    refreshEs.value.close()
-    refreshEs.value = null
-  }
-  refreshVisible.value = false
-}
-
-async function stopTokenRefreshTask() {
-  if (!refreshTaskId.value) {
-    refreshRunning.value = false
-    return
-  }
-  try {
-    await stopTokenRefresh(refreshTaskId.value)
-    ElMessage.success('已发送停止指令')
-  } catch (_) {
-    ElMessage.info('任务已停止')
-  } finally {
-    refreshRunning.value = false
-  }
-}
-
-async function startTokenRefreshTask() {
-  const emails = refreshTargetEmails.value
-  if (!emails.length) {
-    ElMessage.warning('没有待刷新的账号列表')
-    return
-  }
-
-  if (refreshEs.value) {
-    refreshEs.value.close()
-    refreshEs.value = null
-  }
-
-  refreshRunning.value = true
-  refreshLogs.value = []
-  refreshConfigCollapsed.value = true
-  startRefreshLiveTimer()
-
-  const initMap = {}
-  for (const em of emails) {
-    initMap[em] = { email: em, status: 'pending', step_text: '排队中...', result: null, elapsed: 0, started_at: 0 }
-  }
-  refreshItems.value = initMap
-
-  let proxiesParam = ''
-  let proxyParam = ''
-  if (refreshForm.proxy === '__POOL__') {
-    proxiesParam = proxyList.value.join('\n')
-  } else {
-    proxyParam = (refreshForm.proxy || '').trim()
-  }
-
-  try {
-    const res = await startTokenRefresh({
-      emails,
-      proxies: proxiesParam,
-      proxy: proxyParam,
-      proxy_country: refreshForm.proxyCountry || '',
-      workers: refreshForm.workers || 5,
-      timeout: refreshForm.timeout || 45,
-      force_full_login: Boolean(refreshForm.forceFullLogin),
-      sms_enabled: Boolean(refreshForm.smsEnabled),
-      sms_provider: refreshForm.smsProvider || 'smsbower',
-      sms_api_key: refreshForm.smsApiKey || '',
-      sms_country: refreshForm.smsCountry || '52',
-      sms_max_price: String(refreshForm.smsMaxPrice || ''),
-      sms_max_attempts: Number(refreshForm.smsMaxAttempts) || 3,
-      sms_timeout: Number(refreshForm.smsTimeout) || 80,
-    })
-    const taskId = res.taskId || res.task_id
-    if (!taskId) throw new Error('未获取到任务 ID')
-    refreshTaskId.value = taskId
-
-    refreshEs.value = createSSE(tokenRefreshStreamUrl(taskId), {
-      init: (ev) => {
-        try {
-          const snap = JSON.parse(ev.data)
-          if (snap.items) refreshItems.value = snap.items
-        } catch (_) {}
-      },
-      progress: (ev) => {
-        try {
-          const msg = JSON.parse(ev.data)
-          if (msg.email) {
-            if (!refreshItems.value[msg.email]) {
-              refreshItems.value[msg.email] = { email: msg.email }
-            }
-            if (msg.status !== undefined) refreshItems.value[msg.email].status = msg.status
-            if (msg.step_text !== undefined) refreshItems.value[msg.email].step_text = msg.step_text
-            if (msg.result !== undefined) refreshItems.value[msg.email].result = msg.result
-            if (msg.started_at !== undefined) refreshItems.value[msg.email].started_at = msg.started_at
-            if (msg.elapsed !== undefined) refreshItems.value[msg.email].elapsed = msg.elapsed
-          }
-        } catch (_) {}
-      },
-      log: (ev) => {
-        try {
-          const msg = JSON.parse(ev.data)
-          if (msg.line) {
-            refreshLogs.value.push(msg.line)
-            if (refreshLogs.value.length > 500) refreshLogs.value.splice(0, refreshLogs.value.length - 500)
-            nextTick(scrollRefreshLog)
-            // 实时追加到正在打开的单账号日志弹窗！
-            if (refreshLogModalVisible.value && currentRefreshLogItem.value) {
-              const targetEmail = currentRefreshLogItem.value.email
-              if (!msg.email || msg.email === targetEmail || msg.line.includes(targetEmail)) {
-                refreshLogLines.value.push(msg.line)
-                scrollRefreshModalLog()
-              }
-            }
-          }
-        } catch (_) {}
-      },
-      end: () => {
-        stopRefreshLiveTimer()
-        refreshRunning.value = false
-        if (refreshEs.value) {
-          refreshEs.value.close()
-          refreshEs.value = null
-        }
-        ElMessage.success('Token 刷新任务已全部执行完成！凭证已同步写入数据库')
-        load(false)
-      },
-    }, () => {
-      stopRefreshLiveTimer()
-      if (!refreshRunning.value && refreshEs.value) {
-        refreshEs.value.close()
-        refreshEs.value = null
-      }
-    })
-  } catch (e) {
-    stopRefreshLiveTimer()
-    refreshRunning.value = false
-    refreshConfigCollapsed.value = false
-    ElMessage.error('启动 Token 刷新失败: ' + (e.response?.data?.detail || e.message))
-  }
-}
-
-function scrollRefreshLog() {
-  const box = document.getElementById('refresh-log-box')
-  if (box) box.scrollTop = box.scrollHeight
-}
-
-async function openRefreshItemLog(row) {
-  currentRefreshLogItem.value = row
-  refreshLogLines.value = []
-  refreshLogModalVisible.value = true
-  refreshLogLoading.value = true
-
-  try {
-    if (refreshTaskId.value) {
-      const res = await getTokenRefreshLog(refreshTaskId.value, row.email)
-      refreshLogLines.value = res.lines || []
-    } else {
-      refreshLogLines.value = row.logs || ['暂无日志']
-    }
-  } catch (e) {
-    refreshLogLines.value = ['读取日志失败: ' + (e.response?.data?.detail || e.message)]
-  } finally {
-    refreshLogLoading.value = false
-  }
-}
-
-async function downloadTokenRefresh(format = 'txt') {
-  if (!refreshTaskId.value) {
-    ElMessage.warning('暂无当前任务 ID')
-    return
-  }
-  try {
-    const res = await downloadTokenRefreshExport(refreshTaskId.value, format)
-    const mime = format === 'txt' ? 'text/plain;charset=utf-8' : 'application/json'
-    const ext = format === 'txt' ? 'txt' : 'json'
-    const blob = new Blob([res.data || res], { type: mime })
-    const url = window.URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `tokens_${format}_${refreshTaskId.value}.${ext}`
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
-    window.URL.revokeObjectURL(url)
-    ElMessage.success(`已下载 ${format.toUpperCase()} 格式凭证`)
-  } catch (e) {
-    ElMessage.error('下载导出凭证失败: ' + e.message)
-  }
+function onTokenRefreshCompleted() {
+  load(false)
 }
 
 // ════════════════════════ OAICS 资格检测 ════════════════════════
@@ -2222,6 +1975,7 @@ let oauthLiveTimer = null
 const DEFAULT_COLUMN_VISIBILITY = {
   security: true,
   tokens: true,
+  atExp: true,
   status: true,
   export: true,
   time: true,
@@ -2967,7 +2721,7 @@ const focusedTotpNextCode = ref('')
 const focusedTotpRemaining = ref(30)
 const focusedTotpLoading = ref(false)
 let focusedTotpTimer = null
-const detailsCollapsed = ref(false)
+const detailsCollapsed = ref(true)
 const focusedPwdVisible = ref(false)
 const focusedSecretVisible = ref(false)
 
@@ -3108,6 +2862,18 @@ function toggleCategoryGroup(k) {
 }
 
 // ════════════════════════ 数据加载与分页 ════════════════════════
+function onTableSort({ prop, order }) {
+  if (!order) {
+    sortBy.value = 'created_at'
+    sortOrder.value = 'desc'
+  } else {
+    const mapped = prop === 'at_expires_at' ? 'at_expires_at' : 'created_at'
+    sortBy.value = mapped
+    sortOrder.value = order === 'ascending' ? 'asc' : 'desc'
+  }
+  load(true)
+}
+
 async function load(resetPage = false) {
   if (resetPage) page.value = 1
   loading.value = true
@@ -3124,6 +2890,9 @@ async function load(resetPage = false) {
       filter_domain: filterDomain.value,
       filter_country: filterCountry.value,
       filter_at_export: filterAtExport.value,
+      filter_at_exp: filterAtExp.value,
+      sort_by: sortBy.value,
+      sort_order: sortOrder.value,
       search: searchKeyword.value.trim(),
     })
     rows.value = (items || []).map(prepareRowData)
@@ -5177,6 +4946,7 @@ onUnmounted(() => {
                 <div class="col-checkbox-list">
                   <el-checkbox v-model="columnVisibility.security">安全凭据 (密码/2FA)</el-checkbox>
                   <el-checkbox v-model="columnVisibility.tokens">Token 凭据状态</el-checkbox>
+                  <el-checkbox v-model="columnVisibility.atExp">AT 有效期</el-checkbox>
                   <el-checkbox v-model="columnVisibility.status">套餐与特权订阅</el-checkbox>
                   <el-checkbox v-model="columnVisibility.export">导出留痕与备注</el-checkbox>
                   <el-checkbox v-model="columnVisibility.time">注册时间</el-checkbox>
@@ -5351,7 +5121,26 @@ onUnmounted(() => {
               </el-select>
             </div>
 
-            <!-- 7. 验活健康度筛选 -->
+            <!-- 7. Access Token 有效期筛选 -->
+            <div class="filter-item-wrap" :class="{ 'is-filtered': filterAtExp !== 'all' }">
+              <span class="filter-label">AT有效期:</span>
+              <el-select
+                v-model="filterAtExp"
+                placeholder="全部有效期"
+                size="small"
+                class="acct-select acct-select-at-exp"
+                @change="load(true)"
+              >
+                <el-option label="全部 AT 有效期" value="all" />
+                <el-option label="✅ 仍有效" value="valid" />
+                <el-option label="⏳ 24小时内到期" value="expiring" />
+                <el-option label="❌ 已过期" value="expired" />
+                <el-option label="⚪ 无 AT" value="no_at" />
+                <el-option label="❔ 无法解析到期" value="unknown" />
+              </el-select>
+            </div>
+
+            <!-- 8. 验活健康度筛选 -->
             <div class="filter-item-wrap" :class="{ 'is-filtered': filterHealth !== 'all' }">
               <span class="filter-label">验活:</span>
               <el-select
@@ -5582,6 +5371,7 @@ onUnmounted(() => {
               :class="['octopus-table-grid', `density-${tableDensity}`]"
               @row-click="setFocusedRow"
               @selection-change="(v) => (selected = v)"
+              @sort-change="onTableSort"
             >
               <!-- 1. 勾选列 (开启 reserve-selection，确保换页/导出勾选永不丢失) -->
               <el-table-column type="selection" width="38" align="center" header-align="center" fixed="left" :reserve-selection="true" />
@@ -5715,7 +5505,29 @@ onUnmounted(() => {
                 </template>
               </el-table-column>
 
-              <!-- 5. 套餐与特权订阅 (克制高信噪比设计) -->
+              <!-- 5. Access Token 剩余有效期 -->
+              <el-table-column
+                v-if="columnVisibility.atExp !== false"
+                prop="at_expires_at"
+                label="AT 有效期"
+                min-width="148"
+                align="center"
+                header-align="center"
+                sortable="custom"
+              >
+                <template #default="{ row }">
+                  <button
+                    class="at-exp-chip"
+                    :class="(row._atExp || formatAtExpiry(row)).cls"
+                    :title="(row._atExp || formatAtExpiry(row)).title"
+                    @click.stop="openTokenRefreshForOne(row)"
+                  >
+                    {{ (row._atExp || formatAtExpiry(row)).text }}
+                  </button>
+                </template>
+              </el-table-column>
+
+              <!-- 6. 套餐与特权订阅 (克制高信噪比设计) -->
               <el-table-column v-if="columnVisibility.status" label="套餐与业务特权" min-width="160" align="center" header-align="center">
                 <template #default="{ row }">
                   <div class="cell-entitlements-block">
@@ -5756,8 +5568,8 @@ onUnmounted(() => {
                 </template>
               </el-table-column>
 
-              <!-- 7. 注册时间 -->
-              <el-table-column v-if="columnVisibility.time" label="注册时间" min-width="135" align="center" header-align="center">
+              <!-- 8. 注册时间 -->
+              <el-table-column v-if="columnVisibility.time" prop="created_at" label="注册时间" min-width="135" align="center" header-align="center" sortable="custom">
                 <template #default="{ row }">
                   <div class="cell-time-block">
                     <div class="time-main-mono mono">{{ row._createdTime || fmtTime(row.created_at) }}</div>
@@ -6049,6 +5861,13 @@ onUnmounted(() => {
                   <div class="slot-value-box">
                     <span class="mono secret-text" :class="focusedRow.at_len ? 'text-emerald' : 'text-rose'">
                       {{ focusedRow.at_len ? `AT (${(focusedRow.at_len / 1024).toFixed(1)} KB)` : 'AT 缺失' }}
+                    </span>
+                    <span
+                      class="dossier-tag mono"
+                      :class="(focusedRow._atExp || formatAtExpiry(focusedRow)).cls"
+                      :title="(focusedRow._atExp || formatAtExpiry(focusedRow)).title"
+                    >
+                      {{ (focusedRow._atExp || formatAtExpiry(focusedRow)).text }}
                     </span>
                     <span v-if="focusedRow.rt_len" class="dossier-tag tag-cyan mono">RT 在库</span>
                   </div>
@@ -7877,338 +7696,11 @@ onUnmounted(() => {
       </template>
     </el-dialog>
 
-    <!-- ──────────────── Token 重新获取与刷新控制台弹窗 (Token Refresh Studio) ──────────────── -->
-    <el-dialog
-      v-model="refreshVisible" width="880px" top="3vh"
-      class="oa-custom-dialog plus-dialog health-dialog refresh-dialog"
-      :close-on-click-modal="false" @closed="closeTokenRefresh"
-    >
-      <template #header>
-        <div class="oa-header">
-          <div class="oa-header-title">
-            <span class="oa-title-badge health-badge">TOKEN</span>
-            <span class="oa-title-text">Token 智能双模刷新与重获工作台</span>
-            <el-tag size="small" type="primary" round effect="dark">RT极速置换 / Full OAuth重登</el-tag>
-            <el-tag size="small" type="info" round effect="plain">{{ refreshTargetEmails.length }} 个账号</el-tag>
-          </div>
-          <div class="oa-header-extra">
-            <el-button size="small" text @click="refreshConfigCollapsed = !refreshConfigCollapsed">
-              <el-icon><Setting /></el-icon>{{ refreshConfigCollapsed ? '展开参数配置' : '收起参数配置' }}
-            </el-button>
-          </div>
-        </div>
-      </template>
-
-      <div class="oa-dialog-container">
-        <!-- 参数配置卡片 -->
-        <el-collapse-transition>
-          <div v-show="!refreshConfigCollapsed" class="oa-config-card" style="padding: 10px 14px 12px">
-            <el-tabs v-model="refreshActiveTab" class="oa-config-tabs">
-              <!-- Tab 1: 基础与网络 -->
-              <el-tab-pane label="🌐 网络代理 & 刷新模式" name="network">
-                <el-form label-position="top" :disabled="refreshRunning" size="small" style="margin-top: 6px">
-                  <el-row :gutter="12">
-                    <el-col :xs="24" :sm="12" :md="8">
-                      <el-form-item label="检测/登录代理 (支持代理池轮询/直连)">
-                        <el-select
-                          v-model="refreshForm.proxy" filterable clearable allow-create default-first-option
-                          placeholder="选择或输入代理" style="width: 100%"
-                        >
-                          <el-option
-                            v-if="proxyList.length"
-                            label="🌐 全局代理池轮询 (自动多Worker分配)"
-                            value="__POOL__"
-                          />
-                          <el-option v-for="p in proxyList" :key="p" :label="p" :value="p" />
-                        </el-select>
-                      </el-form-item>
-                    </el-col>
-                    <el-col :xs="24" :sm="12" :md="6">
-                      <el-form-item label="代理目标国家">
-                        <el-select
-                          v-model="refreshForm.proxyCountry" filterable allow-create
-                          placeholder="国家" style="width: 100%"
-                        >
-                          <el-option
-                            v-for="c in COUNTRY_OPTIONS" :key="c.value"
-                            :label="c.label" :value="c.value"
-                          />
-                        </el-select>
-                      </el-form-item>
-                    </el-col>
-                    <el-col :xs="12" :sm="6" :md="5">
-                      <el-form-item label="并发 Worker">
-                        <el-input-number v-model="refreshForm.workers" :min="1" :max="20" style="width: 100%" />
-                      </el-form-item>
-                    </el-col>
-                    <el-col :xs="12" :sm="6" :md="5">
-                      <el-form-item label="超时(秒)">
-                        <el-input-number v-model="refreshForm.timeout" :min="10" :max="120" style="width: 100%" />
-                      </el-form-item>
-                    </el-col>
-                  </el-row>
-                  <el-row :gutter="12">
-                    <el-col :span="24">
-                      <el-checkbox v-model="refreshForm.forceFullLogin">
-                        强制走完整 OAuth 重新登录流程（跳过 RT 快速换取，直接打 OpenAI 登录端点获取全新全套凭证）
-                      </el-checkbox>
-                    </el-col>
-                  </el-row>
-                  <div style="font-size: 11.5px; color: var(--el-text-color-secondary); line-height: 1.5; margin-top: 4px">
-                    💡 <b>智能机制</b>：有历史 Refresh Token 的账号优先 <b>200ms 极速置换</b>；失效或无 RT 账号自动触发 <b>Full OAuth 登录重获</b> 并自动写回数据库。
-                  </div>
-                </el-form>
-              </el-tab-pane>
-
-              <!-- Tab 2: 短信接码设置 (针对需要手机号验证的账号) -->
-              <el-tab-pane label="📱 手机号风控接码设置 (可选)" name="sms">
-                <el-form label-position="top" :disabled="refreshRunning" size="small" style="margin-top: 6px">
-                  <el-row :gutter="12">
-                    <el-col :span="24">
-                      <el-checkbox v-model="refreshForm.smsEnabled">
-                        启用 SMS 自动接码解封（遇到 OpenAI 要求绑定手机号时自动调用接码平台）
-                      </el-checkbox>
-                    </el-col>
-                  </el-row>
-                  <el-row v-if="refreshForm.smsEnabled" :gutter="12" style="margin-top: 6px">
-                    <el-col :xs="24" :sm="8">
-                      <el-form-item label="接码平台">
-                        <el-select v-model="refreshForm.smsProvider" style="width: 100%">
-                          <el-option
-                            v-for="p in smsProviders"
-                            :key="p.kind"
-                            :label="p.display_name"
-                            :value="p.kind"
-                          />
-                        </el-select>
-                      </el-form-item>
-                    </el-col>
-                    <el-col :xs="24" :sm="10">
-                      <el-form-item label="API Key">
-                        <el-input v-model="refreshForm.smsApiKey" placeholder="平台 API 密钥" clearable />
-                      </el-form-item>
-                    </el-col>
-                    <el-col :xs="24" :sm="6">
-                      <el-form-item label="接码国家">
-                        <el-select
-                          v-model="refreshForm.smsCountry"
-                          filterable
-                          allow-create
-                          default-first-option
-                          :loading="smsCountriesLoading"
-                          placeholder="搜索国家名或输入国家ID"
-                          style="width: 100%"
-                        >
-                          <el-option v-for="sc in SMS_COUNTRY_OPTIONS" :key="sc.value" :label="sc.label" :value="sc.value" />
-                        </el-select>
-                      </el-form-item>
-                    </el-col>
-                  </el-row>
-                </el-form>
-              </el-tab-pane>
-            </el-tabs>
-          </div>
-        </el-collapse-transition>
-
-        <!-- KPI 统计看板 -->
-        <div class="plus-kpi-grid">
-          <div class="plus-kpi-card">
-            <span class="kpi-label">已处理 / 总数</span>
-            <span class="kpi-num">{{ refreshStats.done }} / {{ refreshStats.total }}</span>
-          </div>
-          <div class="plus-kpi-card hit-active">
-            <span class="kpi-label">⚡ RT极速置换成功</span>
-            <span class="kpi-num text-primary">{{ refreshStats.rt_fast_ok }}</span>
-          </div>
-          <div class="plus-kpi-card hit-promo">
-            <span class="kpi-label">🔑 Full OAuth 重登成功</span>
-            <span class="kpi-num text-success">{{ refreshStats.full_login_ok }}</span>
-          </div>
-          <div class="plus-kpi-card" :class="{ 'card-warn': refreshStats.need_phone > 0 }">
-            <span class="kpi-label">需要手机号</span>
-            <span class="kpi-num" :class="refreshStats.need_phone > 0 ? 'text-warning' : ''">{{ refreshStats.need_phone }}</span>
-          </div>
-          <div class="plus-kpi-card" :class="{ 'card-warn': refreshStats.error > 0 }">
-            <span class="kpi-label">失败 / 异常</span>
-            <span class="kpi-num text-danger">{{ refreshStats.error }}</span>
-          </div>
-          <div class="plus-progress-cell">
-            <el-progress
-              :percentage="refreshStats.percent"
-              :status="refreshStats.done === refreshStats.total && refreshStats.total > 0 ? 'success' : ''"
-              :stroke-width="8"
-              striped
-              :striped-flow="refreshRunning"
-            />
-          </div>
-        </div>
-
-        <!-- 核心表格：账号 Token 刷新监控列表 -->
-        <div class="plus-table-box health-table-box">
-          <el-table :data="refreshRows" size="small" stripe height="340" class="macos-table" :highlight-current-row="false">
-            <el-table-column prop="email" label="账号邮箱" min-width="210" show-overflow-tooltip>
-              <template #default="{ row }">
-                <button
-                  class="macos-tag-btn copy-btn"
-                  title="点击复制邮箱"
-                  @click="copyText(row.email)"
-                >
-                  <span class="mono">{{ row.email }}</span>
-                  <el-icon class="copy-ico"><CopyDocument /></el-icon>
-                </button>
-              </template>
-            </el-table-column>
-
-            <el-table-column label="刷新模式" width="130" align="center">
-              <template #default="{ row }">
-                <el-tag v-if="row.result?.method === 'rt_fast'" size="small" type="primary" effect="plain">⚡ RT 极速置换</el-tag>
-                <el-tag v-else-if="row.result?.method === 'full_oauth'" size="small" type="success" effect="plain">🔑 OAuth 重登</el-tag>
-                <span v-else-if="row.status === 'running'" class="mono text-primary text-xs">执行中...</span>
-                <span v-else class="text-muted">—</span>
-              </template>
-            </el-table-column>
-
-            <el-table-column label="当前状态 / 步骤" min-width="170" show-overflow-tooltip>
-              <template #default="{ row }">
-                <span v-if="row.status === 'running'" class="running-step">
-                  <el-icon class="is-loading" style="margin-right: 4px"><Loading /></el-icon>
-                  {{ row.step_text || '正在刷新...' }}
-                </span>
-                <el-tag v-else-if="row.status === 'pending'" size="small" type="info" effect="plain">排队中</el-tag>
-                <el-tag
-                  v-else-if="row.result"
-                  size="small"
-                  :type="row.result.status === 'success' ? 'success' : row.result.status === 'need_phone' ? 'warning' : 'danger'"
-                >
-                  {{ row.result.label || row.result.status }}
-                </el-tag>
-                <span v-else class="text-muted">—</span>
-              </template>
-            </el-table-column>
-
-            <el-table-column label="耗时" width="80" align="center">
-              <template #default="{ row }">
-                <span v-if="row.elapsed" class="mono text-muted">{{ row.elapsed }}s</span>
-                <span v-else-if="row.status === 'running'" class="mono text-primary">...</span>
-                <span v-else class="text-muted">—</span>
-              </template>
-            </el-table-column>
-
-            <el-table-column label="操作" width="85" align="center" fixed="right">
-              <template #default="{ row }">
-                <el-button size="small" text type="primary" :disabled="row.status === 'pending'" @click="openRefreshItemLog(row)">
-                  <el-icon><Document /></el-icon>日志
-                </el-button>
-              </template>
-            </el-table-column>
-          </el-table>
-        </div>
-      </div>
-
-      <template #footer>
-        <div class="oa-footer">
-          <div class="footer-left" style="display: flex; gap: 8px">
-            <el-button
-              type="primary" plain size="small"
-              :disabled="refreshStats.success === 0"
-              @click="downloadTokenRefresh('txt')"
-            >
-              <el-icon><Download /></el-icon>下载 TXT 凭证 ({{ refreshStats.success }})
-            </el-button>
-            <el-button
-              type="primary" size="small"
-              :disabled="refreshStats.success === 0"
-              @click="downloadTokenRefresh('cpa')"
-            >
-              <el-icon><Download /></el-icon>下载 CPA JSON
-            </el-button>
-            <el-button
-              type="success" size="small"
-              :disabled="refreshStats.success === 0"
-              @click="downloadTokenRefresh('sub2api')"
-            >
-              <el-icon><Download /></el-icon>下载 Sub2API JSON
-            </el-button>
-          </div>
-          <div class="footer-right">
-            <el-button size="small" @click="closeTokenRefresh">
-              {{ refreshRunning ? '后台运行' : '关闭' }}
-            </el-button>
-            <el-button
-              v-if="refreshRunning"
-              size="small" type="danger" plain
-              @click="stopTokenRefreshTask"
-            >
-              <el-icon><SwitchButton /></el-icon>停止任务
-            </el-button>
-            <el-button
-              v-else
-              type="primary" class="start-gradient-btn"
-              :loading="refreshRunning"
-              :disabled="!refreshTargetEmails.length"
-              @click="startTokenRefreshTask"
-            >
-              <el-icon><VideoPlay /></el-icon>{{ refreshTaskId ? '重新刷新' : '开始刷新/重获' }}
-            </el-button>
-          </div>
-        </div>
-      </template>
-    </el-dialog>
-
-    <!-- ──────────────── 单账号 Token 刷新详细日志终端弹窗 ──────────────── -->
-    <el-dialog
-      v-model="refreshLogModalVisible"
-      width="780px"
-      top="8vh"
-      class="macos-terminal-dialog"
-      :close-on-click-modal="false"
-    >
-      <template #header>
-        <div class="modal-header">
-          <div class="window-dots">
-            <span class="dot red"></span>
-            <span class="dot yellow"></span>
-            <span class="dot green"></span>
-          </div>
-          <div class="modal-title-info">
-            <span class="modal-email">{{ currentRefreshLogItem?.email }}</span>
-            <el-tag size="small" type="primary" effect="plain" class="modal-run-tag">
-              Token 刷新/重登日志
-            </el-tag>
-          </div>
-        </div>
-      </template>
-
-      <div class="modal-terminal-wrap">
-        <div ref="refreshModalLogBoxRef" class="modal-terminal-body">
-          <div
-            v-for="(line, idx) in refreshLogLines"
-            :key="idx"
-            class="terminal-line"
-            :class="getLogClass(line)"
-          >
-            {{ line }}
-          </div>
-          <div v-if="!refreshLogLines.length" class="terminal-empty">
-            {{ refreshLogLoading ? '正在加载日志...' : '暂无详细日志' }}
-          </div>
-        </div>
-      </div>
-
-      <template #footer>
-        <div class="modal-footer">
-          <span class="log-count-tip">共 {{ refreshLogLines.length }} 行日志</span>
-          <div class="modal-footer-btns">
-            <el-button size="small" @click="copyText(refreshLogLines.join('\n'))">
-              <el-icon><CopyDocument /></el-icon>复制全部日志
-            </el-button>
-            <el-button size="small" type="primary" @click="refreshLogModalVisible = false">
-              关闭
-            </el-button>
-          </div>
-        </div>
-      </template>
-    </el-dialog>
+    <TokenRefreshStudio
+      v-model="refreshVisible"
+      :emails="refreshTargetEmails"
+      @completed="onTokenRefreshCompleted"
+    />
 
     <!-- ──────────────── 安全加固任务控制台 (批量补密码 & 批量补2FA 任务台) ──────────────── -->
     <el-dialog
@@ -15303,6 +14795,50 @@ onUnmounted(() => {
   align-items: center;
   justify-content: center;
 }
+.at-exp-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  background: transparent;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 11.5px;
+  font-family: var(--el-font-family-monospace, ui-monospace, monospace);
+  cursor: pointer;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+.at-exp-chip.at-exp-ok {
+  color: #34d399;
+  background: rgba(52, 211, 153, 0.1);
+  border-color: rgba(52, 211, 153, 0.28);
+}
+.at-exp-chip.at-exp-warn {
+  color: #fbbf24;
+  background: rgba(251, 191, 36, 0.12);
+  border-color: rgba(251, 191, 36, 0.32);
+}
+.at-exp-chip.at-exp-dead {
+  color: #fb7185;
+  background: rgba(244, 63, 94, 0.12);
+  border-color: rgba(244, 63, 94, 0.35);
+}
+.at-exp-chip.at-exp-none,
+.at-exp-chip.at-exp-unknown {
+  color: #94a3b8;
+  background: rgba(148, 163, 184, 0.1);
+  border-color: rgba(148, 163, 184, 0.22);
+}
+.at-exp-chip:hover {
+  filter: brightness(1.12);
+}
+.dossier-tag.at-exp-ok { color: #34d399; }
+.dossier-tag.at-exp-warn { color: #fbbf24; }
+.dossier-tag.at-exp-dead { color: #fb7185; }
+.dossier-tag.at-exp-none,
+.dossier-tag.at-exp-unknown { color: #94a3b8; }
+
 .rt-active-text {
   color: #c4b5fd;
 }

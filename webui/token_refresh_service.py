@@ -48,6 +48,7 @@ from .oauth_export import (
     cpa_credential_to_sub2_account,
     execute_codex_oauth_flow,
 )
+from auth_flow import complete_chatgpt_session_json
 from mail_providers import create_mail_provider, get_provider_class
 
 logger = logging.getLogger(__name__)
@@ -141,22 +142,19 @@ def refresh_session_token_fast(
         raise RuntimeError(f"Session 响应状态码 HTTP {resp.status_code}")
 
     data = resp.json() or {}
-    new_at = data.get("accessToken") or ""
+    if not isinstance(data, dict):
+        data = {}
+    new_at = data.get("accessToken") or data.get("access_token") or ""
     if not new_at:
         raise RuntimeError("Session 响应未包含 accessToken")
 
     new_st = session.cookies.get("__Secure-next-auth.session-token", "") or st
-    return {
-        "access_token": new_at,
-        "session_token": new_st,
-        "user": data.get("user") or {},
-        "expires": data.get("expires") or "",
-    }
+    return complete_chatgpt_session_json(data, new_at, new_st)
 
 
 def execute_token_refresh_flow(
     email: str,
-    mail_provider: Any,
+    mail_provider: Any = None,
     proxy: str = "",
     target_country: str = "",
     account_info: Optional[dict] = None,
@@ -164,6 +162,7 @@ def execute_token_refresh_flow(
     step_fn: Optional[Callable[[str, str], None]] = None,
     force_full_login: bool = False,
     timeout: float = 45.0,
+    mail_provider_factory: Optional[Callable[[], Any]] = None,
 ) -> dict:
     """执行单个账号的 Token 刷新或重新获取流程。
 
@@ -201,11 +200,31 @@ def execute_token_refresh_flow(
             claims = _get_account_claims(new_at)
             _log(f"✅ [RT 极速置换成功] 耗时 {elapsed_ms}ms, access_token 长度={len(new_at)}, 有效期至={claims.get('exp_iso') or '未知'}")
 
-            # 构造 CPA 凭证
+            sess_json = None
+            new_st = existing_st
+            if existing_st or existing_cookies:
+                try:
+                    sess_json = refresh_session_token_fast(
+                        session_token=existing_st,
+                        cookie_header=existing_cookies,
+                        proxy=proxy,
+                        timeout=min(20.0, timeout),
+                    )
+                    if sess_json.get("accessToken"):
+                        new_at = sess_json.get("accessToken") or new_at
+                    if sess_json.get("sessionToken"):
+                        new_st = sess_json.get("sessionToken") or new_st
+                    _log(
+                        f"已拉取完整 /api/auth/session JSON（keys={','.join(sess_json.keys())}）"
+                    )
+                except Exception as e_sess:
+                    _log(f"RT 成功后拉取 session JSON 未成功: {e_sess}")
+
             cpa_doc = {
                 "access_token": new_at,
                 "refresh_token": new_rt,
                 "id_token": new_it,
+                "session_token": new_st,
                 "email": email,
                 "name": claims.get("name") or "",
                 "user_id": claims.get("user_id") or "",
@@ -218,21 +237,31 @@ def execute_token_refresh_flow(
             }
             sub2_doc = cpa_credential_to_sub2_account(cpa_doc)
 
-            # 写库更新
+            extra_data = {
+                "oauth_export": {
+                    "status": "success",
+                    "updated_at": time.time(),
+                    "method": "rt_fast",
+                    "claims": claims,
+                }
+            }
+            if sess_json:
+                extra_data["session_data"] = sess_json
+                extra_data["web_session"] = {
+                    "status": "success",
+                    "updated_at": time.time(),
+                    "method": "rt_fast",
+                    "claims": claims,
+                }
+
             db.update_registered_oauth(
                 email=email,
                 access_token=new_at,
                 refresh_token=new_rt,
+                session_token=new_st,
                 id_token=new_it,
                 cookie_header=account_info.get("cookie_header") or "",
-                extra_data={
-                    "oauth_export": {
-                        "status": "success",
-                        "updated_at": time.time(),
-                        "method": "rt_fast",
-                        "claims": claims,
-                    }
-                },
+                extra_data=extra_data,
             )
 
             return {
@@ -262,11 +291,16 @@ def execute_token_refresh_flow(
                 timeout=min(20.0, timeout),
             )
             elapsed_ms = int((time.time() - t0) * 1000)
-            new_at = s_data.get("access_token") or ""
-            new_st = s_data.get("session_token") or existing_st
+            s_data = complete_chatgpt_session_json(s_data)
+            new_at = s_data.get("accessToken") or ""
+            new_st = s_data.get("sessionToken") or existing_st
 
             claims = _get_account_claims(new_at)
-            _log(f"🎉 [Session 极速刷新成功] 耗时 {elapsed_ms}ms, access_token 长度={len(new_at)}, 用户={s_data.get('user', {}).get('email') or email}")
+            _log(
+                f"🎉 [Session 极速刷新成功] 耗时 {elapsed_ms}ms, access_token 长度={len(new_at)}, "
+                f"用户={(s_data.get('user') or {}).get('email') or email}, "
+                f"session JSON keys={','.join(s_data.keys())}"
+            )
 
             # 仅当原本存在有效 RT 时才构造附带 RT 的 CPA/Sub2API 结构
             cpa_doc = None
@@ -321,23 +355,38 @@ def execute_token_refresh_flow(
             _log(f"⚠️ Session Token 刷新提示: {e}，自动转入官方 Web 协议登录重获...")
 
     # ──────────────── 阶段 3: 官方 Web 协议登录重登 ────────────────
+    # RT / Session 极速路径不需要邮箱 Provider；失败后才懒加载，避免 500 号一次性初始化。
+    if mail_provider is None and callable(mail_provider_factory):
+        try:
+            mail_provider = mail_provider_factory()
+        except Exception as e:
+            _log(f"邮箱 Provider 初始化提示: {e}")
+            mail_provider = None
+
     _step("full_oauth", "[2/2] 启动官方 Web 登录流程重新获取全套凭证...")
     _log("正在启动 ChatGPT 官方 Web 认证流程重新登录 (密码 + 2FA TOTP 自动算码)...")
 
     pwd = str(account_info.get("password") or "").strip()
+    totp = str(account_info.get("totp_secret") or "").strip()
+    _log(f"重登凭据: ChatGPT密码={'有' if pwd else '无'}({len(pwd)}位), 2FA TOTP={'有' if totp else '无'}")
+    if not pwd:
+        _log("库中没有 ChatGPT 登录密码（不会拿邮箱密码去登 ChatGPT），后续走官方补设/重置")
     if not pwd and (not mail_provider or getattr(mail_provider, "exhausted", False)):
-        raise RuntimeError("该账号未设置登录密码，且号池中无可用收信凭据，无法全自动重登。建议先在列表点击【补设密码】或在号池导入该邮箱")
+        raise RuntimeError("该账号未设置 ChatGPT 登录密码，且号池中无可用收信凭据，无法全自动重登。建议先在列表点击【补设密码】或在号池导入该邮箱")
 
     from config import Config
     from auth_flow import AuthFlow
 
     cfg = Config()
     cfg.proxy = proxy or None
+    otp_timeout = max(90, int(timeout or 45))
     env_overrides = {
         "TARGET_COUNTRY": target_country,
-        "OTP_TIMEOUT": str(int(timeout)),
-        "OAUTH_CODEX_RT_EXCHANGE": "1",
-        "OAUTH_CODEX_RT_BEFORE_CALLBACK": "1",
+        "OTP_TIMEOUT": str(otp_timeout),
+        "OAUTH_CODEX_RT_EXCHANGE": "0",
+        "OAUTH_CODEX_RT_BEFORE_CALLBACK": "0",
+        "OAUTH_SECONDARY_AUTHORIZE_EXCHANGE": "0",
+        "OAUTH_EXCHANGE_BEFORE_CALLBACK": "0",
     }
 
     login_flow = AuthFlow(
@@ -349,7 +398,28 @@ def execute_token_refresh_flow(
         },
         on_password=lambda flow_inst, em, new_pwd: db.update_registered_manual(em, password=new_pwd),
     )
+    if totp:
+        login_flow.result.totp_secret = totp
 
+    class _AuthLogBridge(logging.Handler):
+        def __init__(self, emit_fn, owner_ident: int):
+            super().__init__()
+            self._emit_fn = emit_fn
+            self._owner_ident = owner_ident
+
+        def emit(self, record):
+            if threading.get_ident() != self._owner_ident:
+                return
+            try:
+                if self._emit_fn:
+                    self._emit_fn(record.getMessage())
+            except Exception:
+                pass
+
+    bridge = _AuthLogBridge(log_fn, threading.get_ident())
+    bridge.setLevel(logging.INFO)
+    af_logger = logging.getLogger("auth_flow")
+    af_logger.addHandler(bridge)
     try:
         result = login_flow.run_protocol_login(
             mail_provider=mail_provider,
@@ -365,9 +435,25 @@ def execute_token_refresh_flow(
                 "label": "❌ 账号已注销/封号",
                 "error": "账号已被 OpenAI 官方注销或封禁",
             }
+        if "invalid_username_or_password" in err_str:
+            hint = "官方拒绝了登录密码 (invalid_username_or_password)"
+            if not pwd:
+                hint += "。库里没有 ChatGPT 登录密码，不能用邮箱密码去登"
+            else:
+                hint += "。库里的 ChatGPT 密码与官方不一致，需要收信走官方重置"
+            raise RuntimeError(hint + f"：{e}")
         if "invalid_auth_step" in err_str:
-            raise RuntimeError("登录认证失败：该账号未设置登录密码或密码错误，且未能通过邮箱接收 OTP 验证码。请先补设密码")
+            hint = "登录会话状态错乱 (invalid_auth_step)"
+            if pwd and totp:
+                hint += "。库里已有密码和 2FA；请看上一步具体失败原因后重试"
+            elif pwd:
+                hint += "。库里有密码但 2FA 未带上或密码未通过校验"
+            elif not pwd:
+                hint += "。库里没有 ChatGPT 登录密码，且邮箱 OTP 未拿到"
+            raise RuntimeError(hint + f"：{e}")
         raise
+    finally:
+        af_logger.removeHandler(bridge)
 
     if not result or not (result.access_token or result.session_token or result.refresh_token):
         raise RuntimeError("登录完成，但未获取到有效 Access Token 或 Session Token")
@@ -403,7 +489,13 @@ def execute_token_refresh_flow(
 
     # 写入数据库：普通 Web 重登更新 Web 会话凭证 (ST/AT/Cookie)
     # 若无新的有效 OAuth refresh_token，则不伪造 oauth_status='success'
+    sess_json = complete_chatgpt_session_json(
+        getattr(result, "session_data", None) if isinstance(getattr(result, "session_data", None), dict) else {},
+        new_at,
+        new_st,
+    )
     extra_payload = {
+        "session_data": sess_json,
         "web_session": {
             "status": "success",
             "updated_at": time.time(),
@@ -411,8 +503,6 @@ def execute_token_refresh_flow(
             "claims": claims,
         }
     }
-    if getattr(result, "session_data", None) and isinstance(result.session_data, dict):
-        extra_payload["session_data"] = result.session_data
 
     db.update_registered_oauth(
         email=email,
@@ -424,11 +514,14 @@ def execute_token_refresh_flow(
         extra_data=extra_payload,
     )
 
-    _log(f"🎉 [Web 登录重获成功] access_token(len={len(new_at)}), session_token(len={len(new_st)}) 已自动更新落库")
+    _log(
+        f"🎉 [Web 登录重获成功] access_token(len={len(new_at)}), session_token(len={len(new_st)}) 已落库；"
+        f"完整 /api/auth/session JSON 已写入 (keys={','.join(sess_json.keys())})"
+    )
     return {
         "status": "success",
         "method": "full_login",
-        "label": "✅ Web重登成功(Web凭据)",
+        "label": "✅ Web重登成功",
         "access_token_len": len(new_at),
         "refresh_token_len": len(new_rt),
         "expires_at": claims.get("exp_iso"),
@@ -467,7 +560,8 @@ class TokenRefreshTask:
             }
             for e in emails
         }
-        self.queue: queue.Queue = queue.Queue()
+        # 进度队列：只放精简 progress/end。日志走内存，避免 500 号把 SSE 打爆。
+        self.queue: queue.Queue = queue.Queue(maxsize=4000)
         self.cancelled = False
         self.done_count = 0
         self.stats = {
@@ -478,6 +572,9 @@ class TokenRefreshTask:
             "error": 0,
         }
         self._lock = threading.Lock()
+        self.registered_cache: dict[str, dict] = {}
+        self.account_cache: dict[str, dict] = {}
+        self._last_sse_step: dict[str, float] = {}
 
     def next_proxy(self) -> str:
         if not self.proxies:
@@ -492,13 +589,42 @@ class TokenRefreshTask:
         formatted = f"{ts_str} {line}"
         with self._lock:
             if email in self.items:
-                self.items[email]["logs"].append(formatted)
-                if len(self.items[email]["logs"]) > 200:
-                    self.items[email]["logs"] = self.items[email]["logs"][-200:]
+                logs = self.items[email]["logs"]
+                logs.append(formatted)
+                if len(logs) > 120:
+                    del logs[:-120]
+        # 大批量时不把每行日志塞进 SSE；打开单账号日志弹窗走 HTTP 拉取。
+
+    @staticmethod
+    def _public_result(result: dict | None) -> dict:
+        """SSE / 前端只需要状态标签，不要把 AT/RT/CPA 整包推过去。"""
+        if not isinstance(result, dict):
+            return {}
+        err = str(result.get("error") or "")
+        return {
+            "status": result.get("status") or "",
+            "method": result.get("method") or "",
+            "label": result.get("label") or "",
+            "error": err[:240],
+            "plan_type": result.get("plan_type") or "",
+            "access_token_len": result.get("access_token_len") or 0,
+            "refresh_token_len": result.get("refresh_token_len") or 0,
+            "rt_ok": bool(result.get("rt_ok")),
+            "expires_at": result.get("expires_at") or "",
+        }
+
+    def _put_progress(self, payload: dict) -> None:
         try:
-            self.queue.put({"kind": "log", "email": email, "line": f"[{email}] {line}"})
-        except Exception:
-            pass
+            self.queue.put_nowait(payload)
+        except queue.Full:
+            try:
+                self.queue.get_nowait()
+            except Exception:
+                pass
+            try:
+                self.queue.put_nowait(payload)
+            except Exception:
+                pass
 
     def set_running(self, email: str, step_text: str = "[1/2] 正在刷新 Token...") -> None:
         now = time.time()
@@ -508,7 +634,7 @@ class TokenRefreshTask:
                 self.items[email]["step"] = "init"
                 self.items[email]["step_text"] = step_text
                 self.items[email]["started_at"] = now
-        self.queue.put({
+        self._put_progress({
             "kind": "progress",
             "email": email,
             "status": "running",
@@ -518,20 +644,33 @@ class TokenRefreshTask:
         })
 
     def set_step(self, email: str, step: str, step_text: str) -> None:
+        now = time.time()
+        should_send = False
         with self._lock:
             if email in self.items:
-                self.items[email]["step"] = step
-                self.items[email]["step_text"] = step_text
-        self.queue.put({
-            "kind": "progress",
-            "email": email,
-            "status": "running",
-            "step": step,
-            "step_text": step_text,
-        })
+                it = self.items[email]
+                if it.get("step") == step and it.get("step_text") == step_text:
+                    return
+                it["step"] = step
+                it["step_text"] = step_text
+            last = self._last_sse_step.get(email, 0.0)
+            if now - last >= 0.4:
+                self._last_sse_step[email] = now
+                should_send = True
+        if should_send:
+            self._put_progress({
+                "kind": "progress",
+                "email": email,
+                "status": "running",
+                "step": step,
+                "step_text": step_text,
+            })
 
     def mark_done(self, email: str, result: dict) -> None:
         now = time.time()
+        elapsed = 0.0
+        stats_snap = {}
+        done_count = 0
         with self._lock:
             self.done_count += 1
             st = result.get("status") or "error"
@@ -554,16 +693,20 @@ class TokenRefreshTask:
                 it["cpa"] = result.get("cpa")
                 it["sub2api"] = result.get("sub2api")
                 it["finished_at"] = now
-                it["elapsed"] = round(now - (it["started_at"] or self.started_at), 1)
+                elapsed = round(now - (it["started_at"] or self.started_at), 1)
+                it["elapsed"] = elapsed
                 it["step_text"] = result.get("label") or "完成"
-
-        self.queue.put({
+            stats_snap = dict(self.stats)
+            done_count = self.done_count
+        self._put_progress({
             "kind": "progress",
             "email": email,
             "status": "done",
-            "result": result,
-            "step_text": result.get("label") or "完成",
-            "elapsed": self.items[email]["elapsed"] if email in self.items else 0,
+            "result": self._public_result(result),
+            "step_text": (result or {}).get("label") or "完成",
+            "elapsed": elapsed,
+            "done_count": done_count,
+            "stats": stats_snap,
         })
 
 
@@ -579,45 +722,67 @@ def _prune_tasks_locked() -> None:
             _tasks.pop(k, None)
 
 
+def _prefetch_credentials(emails: list[str]) -> tuple[dict[str, dict], dict[str, dict]]:
+    """任务启动时一次性批量取号，避免每个 worker 各打两条 SQLite。"""
+    registered_map: dict[str, dict] = {}
+    for row in db.list_registered_by_emails(emails):
+        em = (row.get("email") or "").strip().lower()
+        if em:
+            registered_map[em] = row
+    account_map: dict[str, dict] = {}
+    for row in db.list_accounts_by_emails(emails):
+        em = (row.get("email") or "").strip().lower()
+        if em:
+            account_map[em] = row
+    return registered_map, account_map
+
+
 def _worker_loop(task: TokenRefreshTask, email: str):
     if task.cancelled:
-        task.mark_done(email, {"status": "cancelled", "label": "已取消", "error": "任务被取消"})
         return
 
     task.set_running(email, "正在准备刷新...")
     task.add_email_log(email, "▶ 启动 Token 刷新/重获任务")
 
-    account = db.get_account(email) or {}
-    registered_cred = db.get_registered(email) or {}
-    if not account and registered_cred.get("extra"):
-        saved_oauth = registered_cred["extra"].get("mail_oauth")
-        if isinstance(saved_oauth, dict) and (saved_oauth.get("refresh_token") or saved_oauth.get("password")):
-            account = {
-                "email": email,
-                "password": saved_oauth.get("password", ""),
-                "client_id": saved_oauth.get("client_id", ""),
-                "refresh_token": saved_oauth.get("refresh_token", ""),
-                "kind": saved_oauth.get("kind", "outlook"),
-            }
+    account = task.account_cache.get(email) or {}
+    registered_cred = task.registered_cache.get(email) or {}
+    if not registered_cred.get("password") or not registered_cred.get("totp_secret"):
+        fresh = db.get_registered(email) or {}
+        if fresh:
+            merged = dict(fresh)
+            merged.update({k: v for k, v in registered_cred.items() if v})
+            registered_cred = merged
+            task.registered_cache[email] = registered_cred
+    extra = registered_cred.get("extra") if isinstance(registered_cred.get("extra"), dict) else {}
+    saved_oauth = extra.get("mail_oauth") if isinstance(extra.get("mail_oauth"), dict) else {}
 
-    # 1. 邮箱底层提供商凭证（严格保留号池原本的邮箱密码、MS client_id、MS refresh_token）
+    if not account and (saved_oauth.get("refresh_token") or saved_oauth.get("password")):
+        account = {
+            "email": email,
+            "password": saved_oauth.get("password", ""),
+            "client_id": saved_oauth.get("client_id", ""),
+            "refresh_token": saved_oauth.get("refresh_token", ""),
+            "kind": saved_oauth.get("kind", "outlook"),
+        }
+
     mail_account_info = {
         "email": email,
         "password": account.get("password") or "",
         "client_id": account.get("client_id") or "",
         "refresh_token": account.get("refresh_token") or "",
-        "relay_url": account.get("relay_url") or "",
+        "relay_url": account.get("relay_url") or registered_cred.get("relay_url") or "",
         "kind": account.get("kind") or "outlook",
     }
 
-    # 2. GPT 认证信息（GPT 密码、OpenAI 2FA TOTP、OpenAI Refresh Token）
+    chatgpt_pwd = str(registered_cred.get("password") or "").strip()
     openai_cred_info = {
         "email": email,
-        "password": registered_cred.get("password") or account.get("password") or "",
+        "password": chatgpt_pwd,
         "totp_secret": registered_cred.get("totp_secret") or "",
         "totp_factor_id": registered_cred.get("totp_factor_id") or "",
         "access_token": registered_cred.get("access_token") or "",
         "refresh_token": registered_cred.get("refresh_token") or "",
+        "session_token": registered_cred.get("session_token") or "",
         "device_id": registered_cred.get("device_id") or "",
         "cookie_header": registered_cred.get("cookie_header") or "",
         "reg_country": registered_cred.get("reg_country") or "JP",
@@ -640,49 +805,46 @@ def _worker_loop(task: TokenRefreshTask, email: str):
     if raw_proxy and target_country:
         proxy = route_proxy_country(raw_proxy, target_country, new_proxy_session_id())
 
-    # 自动识别邮箱提供商渠道
     email_lower = (email or "").strip().lower()
-    saved_oauth = {}
-    if openai_cred_info.get("extra"):
-        saved_oauth = openai_cred_info["extra"].get("mail_oauth") or {}
-    if not isinstance(saved_oauth, dict):
-        saved_oauth = {}
+    default_mail_source = (task.config.get("_default_mail_source") or "cf_temp").strip().lower()
 
-    mail_source = ""
-    if saved_oauth.get("kind") == "remail" or saved_oauth.get("service_token") or saved_oauth.get("pickup_url"):
-        mail_source = "remail"
-        mail_account_info = {
-            "email": email_lower,
-            "service_token": saved_oauth.get("service_token", ""),
-            "pickup_url": saved_oauth.get("pickup_url", ""),
-            "order_no": saved_oauth.get("order_no", ""),
-            "project_id": saved_oauth.get("project_id", 2),
-            "email_suffix": saved_oauth.get("email_suffix", "icloud.com"),
-            "service_mode": saved_oauth.get("service_mode", "purchase"),
-            "kind": "remail",
-        }
-    elif saved_oauth.get("kind") == "icloud_relay" or saved_oauth.get("relay_url"):
-        mail_source = "icloud_relay"
-        mail_account_info = {
-            "email": email_lower,
-            "relay_url": saved_oauth.get("relay_url", ""),
-            "kind": "icloud_relay",
-        }
-    elif mail_account_info and mail_account_info.get("kind"):
-        mail_source = str(mail_account_info.get("kind")).strip().lower()
-    elif any(dom in email_lower for dom in ("@outlook.", "@hotmail.", "@live.", "@msn.")):
-        mail_source = "outlook"
-    elif any(dom in email_lower for dom in ("@icloud.", "@me.", "@mac.")):
-        def_source = (db.get_setting("mail_source", "") or "").strip().lower()
-        mail_source = "remail" if def_source == "remail" else "icloud_relay"
-    else:
-        mail_source = (db.get_setting("mail_source", "") or "cf_temp").strip().lower()
+    def _make_mail_provider():
+        mail_source = ""
+        info = dict(mail_account_info)
+        if saved_oauth.get("kind") == "remail" or saved_oauth.get("service_token") or saved_oauth.get("pickup_url"):
+            mail_source = "remail"
+            info = {
+                "email": email_lower,
+                "service_token": saved_oauth.get("service_token", ""),
+                "pickup_url": saved_oauth.get("pickup_url", ""),
+                "order_no": saved_oauth.get("order_no", ""),
+                "project_id": saved_oauth.get("project_id", 2),
+                "email_suffix": saved_oauth.get("email_suffix", "icloud.com"),
+                "service_mode": saved_oauth.get("service_mode", "purchase"),
+                "kind": "remail",
+            }
+        elif saved_oauth.get("kind") == "icloud_relay" or saved_oauth.get("relay_url") or info.get("relay_url"):
+            mail_source = "icloud_relay"
+            info = {
+                "email": email_lower,
+                "relay_url": saved_oauth.get("relay_url") or info.get("relay_url") or "",
+                "kind": "icloud_relay",
+            }
+        elif info.get("kind"):
+            mail_source = str(info.get("kind")).strip().lower()
+        elif any(dom in email_lower for dom in ("@outlook.", "@hotmail.", "@live.", "@msn.")):
+            mail_source = "outlook"
+        elif any(dom in email_lower for dom in ("@icloud.", "@me.", "@mac.")):
+            mail_source = "remail" if default_mail_source == "remail" else "icloud_relay"
+        else:
+            mail_source = default_mail_source or "cf_temp"
 
-    try:
-        mail_provider = create_mail_provider(mail_source, db.get_mail_settings(), mail_account_info)
-    except Exception as e:
-        task.add_email_log(email, f"邮箱 Provider ({mail_source}) 初始化提示: {e}")
-        mail_provider = None
+        task.add_email_log(email, f"邮箱渠道 {mail_source}（Full OAuth 才初始化）")
+        return create_mail_provider(
+            mail_source,
+            task.config.get("_mail_settings") or db.get_mail_settings(),
+            info,
+        )
 
     timeout = float(task.config.get("timeout") or 45.0)
     force_full_login = bool(task.config.get("force_full_login", False))
@@ -690,7 +852,7 @@ def _worker_loop(task: TokenRefreshTask, email: str):
     try:
         res = execute_token_refresh_flow(
             email=email,
-            mail_provider=mail_provider,
+            mail_provider=None,
             proxy=proxy,
             target_country=target_country,
             account_info=openai_cred_info,
@@ -698,6 +860,7 @@ def _worker_loop(task: TokenRefreshTask, email: str):
             step_fn=lambda k, t: task.set_step(email, k, t),
             force_full_login=force_full_login,
             timeout=timeout,
+            mail_provider_factory=_make_mail_provider,
         )
         task.mark_done(email, res)
     except Exception as e:
@@ -715,7 +878,7 @@ def start_token_refresh_task(
     proxies: str = "",
     proxy: str = "",
     proxy_country: str = "",
-    workers: int = 5,
+    workers: int = 10,
     timeout: int = 45,
     force_full_login: bool = False,
     sms_enabled: bool = False,
@@ -737,7 +900,7 @@ def start_token_refresh_task(
         "proxies": proxy_list,
         "proxy": proxy.strip(),
         "proxy_country": proxy_country.strip().upper(),
-        "workers": max(1, min(20, int(workers or 5))),
+        "workers": max(1, min(20, int(workers or 10))),
         "timeout": max(10, min(120, int(timeout or 45))),
         "force_full_login": force_full_login,
         "sms_enabled": sms_enabled,
@@ -747,24 +910,76 @@ def start_token_refresh_task(
         "sms_max_price": sms_max_price,
         "sms_max_attempts": sms_max_attempts,
         "sms_timeout": sms_timeout,
+        "_mail_settings": db.get_mail_settings(),
+        "_default_mail_source": (db.get_setting("mail_source", "") or "cf_temp").strip().lower(),
     }
 
     task_id = f"refresh_{int(time.time())}_{uuid.uuid4().hex[:6]}"
     task = TokenRefreshTask(task_id, cleaned_emails, config)
+    task.registered_cache, task.account_cache = _prefetch_credentials(cleaned_emails)
 
     with _tasks_lock:
         _prune_tasks_locked()
         _tasks[task_id] = task
 
     def _runner():
+        work_q: queue.Queue = queue.Queue()
+        for em in cleaned_emails:
+            work_q.put(em)
+
+        def _pool_worker():
+            while not task.cancelled:
+                try:
+                    em = work_q.get_nowait()
+                except queue.Empty:
+                    return
+                try:
+                    _worker_loop(task, em)
+                except Exception:
+                    logger.exception(f"[{em}] Token 刷新 worker 崩溃")
+                    task.mark_done(em, {
+                        "status": "error",
+                        "label": "刷新失败",
+                        "error": "worker 异常",
+                    })
+
         max_w = config["workers"]
         with ThreadPoolExecutor(max_workers=max_w) as executor:
-            for email in cleaned_emails:
-                if task.cancelled:
+            futs = [executor.submit(_pool_worker) for _ in range(max_w)]
+            for f in futs:
+                try:
+                    f.result()
+                except Exception:
+                    logger.exception("token refresh pool worker crashed")
+
+        if task.cancelled:
+            leftover = []
+            while True:
+                try:
+                    leftover.append(work_q.get_nowait())
+                except queue.Empty:
                     break
-                executor.submit(_worker_loop, task, email)
+            now = time.time()
+            with task._lock:
+                for em in leftover:
+                    it = task.items.get(em)
+                    if not it or it.get("status") == "done":
+                        continue
+                    it["status"] = "done"
+                    it["result"] = {"status": "cancelled", "label": "已取消", "error": "任务被取消"}
+                    it["finished_at"] = now
+                    it["step_text"] = "已取消"
+
         task.finished_at = time.time()
-        task.queue.put({"kind": "end", "task_id": task_id})
+        stats_snap = dict(task.stats)
+        done_count = task.done_count
+        task._put_progress({
+            "kind": "end",
+            "task_id": task_id,
+            "cancelled": task.cancelled,
+            "stats": stats_snap,
+            "done_count": done_count,
+        })
 
     threading.Thread(target=_runner, daemon=True, name=f"token-refresh-{task_id}").start()
     return task_id

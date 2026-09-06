@@ -581,6 +581,9 @@ def api_registered(
     filter_at_export: str = "",
     filter_export: str = "",
     filter_health: str = "",
+    filter_at_exp: str = "",
+    sort_by: str = "created_at",
+    sort_order: str = "desc",
 ):
     query_str = (q or search).strip()
     effective_export_filter = filter_export or filter_at_export
@@ -597,6 +600,9 @@ def api_registered(
         filter_country=filter_country,
         filter_at_export=effective_export_filter,
         filter_health=filter_health,
+        filter_at_exp=filter_at_exp,
+        sort_by=sort_by,
+        sort_order=sort_order,
     )
     total = db.count_registered(
         filter_rt=filter,
@@ -609,6 +615,7 @@ def api_registered(
         filter_country=filter_country,
         filter_at_export=effective_export_filter,
         filter_health=filter_health,
+        filter_at_exp=filter_at_exp,
     )
     return {"ok": True, "items": items, "total": total}
 
@@ -627,6 +634,7 @@ def api_registered_emails(
     filter_at_export: str = "",
     filter_export: str = "",
     filter_health: str = "",
+    filter_at_exp: str = "",
 ):
     query_str = (q or search).strip()
     effective_export_filter = filter_export or filter_at_export
@@ -641,6 +649,7 @@ def api_registered_emails(
         filter_country=filter_country,
         filter_at_export=effective_export_filter,
         filter_health=filter_health,
+        filter_at_exp=filter_at_exp,
     )
     return {"ok": True, "emails": emails, "count": len(emails), "total": len(emails)}
 
@@ -2787,8 +2796,8 @@ class StartTokenRefreshReq(BaseModel):
     emails: list[str] = Field(..., description="要刷新/重获Token的账号邮箱列表")
     proxies: str = Field("", description="接码代理池（每行一个）")
     proxy: str = Field("", description="单个代理")
-    proxy_country: str = Field("RANDOM_HOT", description="代理目标国家")
-    workers: int = Field(5, ge=1, le=20, description="并发 worker 数")
+    proxy_country: str = Field("US", description="代理目标国家")
+    workers: int = Field(10, ge=1, le=20, description="并发 worker 数")
     timeout: float = Field(45.0, description="单账号超时秒数")
     force_full_login: bool = Field(False, description="是否强制全流程 OAuth 重新登录（不走 RT 快速置换）")
     # SMS 接码配置扩展
@@ -2866,7 +2875,7 @@ async def api_token_refresh_stream(task_id: str, request: Request):
 
     async def event_gen():
         loop = asyncio.get_event_loop()
-        yield f"event: init\ndata: {json.dumps({'task_id': task_id, 'total': len(task.items), 'items': task.items}, ensure_ascii=False)}\n\n"
+        yield f"event: init\ndata: {json.dumps({'task_id': task_id, 'total': len(task.items), 'stats': task.stats}, ensure_ascii=False)}\n\n"
         while True:
             if await request.is_disconnected():
                 break

@@ -702,6 +702,7 @@ def apply_geo_to_fingerprint(fp: dict, country_code: str, rng: random.Random | N
     lang, lang_full, timezone = _locale_from_country(country_code, rng or random)
     out["lang"] = lang
     out["lang_full"] = lang_full
+    out["navigator_languages"] = [lang]
     out["timezone"] = timezone
     out["geo_country"] = (country_code or "").strip().upper()
     return out
@@ -749,6 +750,7 @@ def generate_fingerprint(rng: random.Random | None = None, country_code: str = "
     lang, lang_full, timezone = _locale_from_country(country_code, r)
     fp["lang"] = lang
     fp["lang_full"] = lang_full
+    fp["navigator_languages"] = [lang]
     fp["timezone"] = timezone
     fp["geo_country"] = country_code
     _apply_hardware(fp, r)

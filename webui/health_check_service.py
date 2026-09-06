@@ -321,26 +321,35 @@ def _check_token_mode(task: HealthCheckTask, email: str, cred: dict, at: str, pr
         safe_close(sess)
 
 
+def _plan_fingerprint(cred: dict):
+    extra = cred.get("extra") if isinstance(cred.get("extra"), dict) else {}
+    fp = extra.get("browser_profile") if isinstance(extra.get("browser_profile"), dict) else {}
+    return extra, fp
+
+
 def _check_plan_mode(task: HealthCheckTask, email: str, cred: dict, at: str, proxy: str, target_country: str) -> dict:
-    """模式 2：套餐/试用资格深度验活。"""
+    """模式 2：套餐/试用资格深度验活。尽量复用注册时的 UA / 设备 ID / TLS，避免一号两套环境。"""
     task.add_email_log(email, "【套餐验活】正在向 accounts/check 查询订阅与 0元 试用活动...")
 
+    extra, fp = _plan_fingerprint(cred)
     auth_claims = _get_auth(_decode_jwt_payload(at))
     account_id = str(auth_claims.get("chatgpt_account_id") or auth_claims.get("account_id") or "").strip()
-    device_id = (cred.get("device_id") or "").strip() or str(
-        uuid.uuid5(uuid.NAMESPACE_DNS, f"yhm-check-plan:{email}")
-    )
+    device_id = (cred.get("device_id") or extra.get("device_id") or fp.get("device_id") or "").strip()
+    session_id = str(extra.get("oai_session_id") or "").strip()
+    ua = (fp.get("user_agent") or "").strip() or DEFAULT_UA
+    impersonate = str(extra.get("impersonate") or fp.get("impersonate") or "chrome146").strip() or "chrome146"
+    lang_full = (fp.get("lang_full") or "").strip()
+    if not lang_full and target_country and target_country in COUNTRY_LANG_MAP:
+        lang_full = COUNTRY_LANG_MAP[target_country]
+    lang = (fp.get("lang") or "").strip() or "en-US"
 
     sess = None
     timeout = float(task.config.get("timeout") or 20.0)
     started_req = time.time()
 
     try:
-        if CurlSession is not None:
-            sess = CurlSession(impersonate="chrome136")
-        else:
-            from http_client import create_http_session
-            sess = create_http_session(proxy=proxy or None, impersonate="chrome110")
+        from http_client import create_http_session
+        sess = create_http_session(proxy=proxy or None, impersonate=impersonate, user_agent=ua)
 
         if hasattr(sess, "trust_env"):
             sess.trust_env = False
@@ -349,20 +358,45 @@ def _check_plan_mode(task: HealthCheckTask, email: str, cred: dict, at: str, pro
         headers = {
             "Authorization": f"Bearer {at}",
             "Accept": "application/json",
-            "User-Agent": DEFAULT_UA,
+            "User-Agent": ua,
             "Origin": "https://chatgpt.com",
             "Referer": "https://chatgpt.com/",
+            "oai-client-version": "prod-fb4a8a2a751dfec391053cfd7b01c52699ccf78c",
+            "oai-client-build-number": "8370486",
+            "oai-language": lang,
         }
-        if target_country and target_country in COUNTRY_LANG_MAP:
-            headers["Accept-Language"] = COUNTRY_LANG_MAP[target_country]
+        if lang_full:
+            headers["Accept-Language"] = lang_full
         if account_id:
             headers["ChatGPT-Account-ID"] = account_id
         if device_id:
-            headers["OAI-Device-Id"] = device_id
+            headers["oai-device-id"] = device_id
+        if session_id:
+            headers["oai-session-id"] = session_id
+        if fp.get("sec_ch_ua"):
+            headers["sec-ch-ua"] = fp["sec_ch_ua"]
+            headers["sec-ch-ua-mobile"] = fp.get("sec_ch_ua_mobile") or "?0"
+            if fp.get("sec_ch_ua_platform"):
+                headers["sec-ch-ua-platform"] = fp["sec_ch_ua_platform"]
 
-        tz = get_country_timezone_offset_min(target_country or cred.get("reg_country") or "JP")
+        try:
+            nav = {
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "User-Agent": ua,
+                "Accept-Language": lang_full or "en-US,en;q=0.9",
+            }
+            sess.get("https://chatgpt.com/", headers=nav, timeout=min(12.0, timeout), allow_redirects=True)
+            task.add_email_log(email, f"已用注册指纹预热 chatgpt.com (impersonate={impersonate})")
+        except Exception as e:
+            task.add_email_log(email, f"首页预热跳过: {e}")
+
+        tz_name = (fp.get("timezone") or "").strip()
+        tz = get_country_timezone_offset_min(
+            target_country or cred.get("reg_country") or "JP",
+            tz_name,
+        )
         url_with_tz = f"{CHECK_URL}?timezone_offset_min={tz}"
-        task.add_email_log(email, f"发送 GET {url_with_tz}...")
+        task.add_email_log(email, f"发送 GET {url_with_tz} (device={device_id[:8] if device_id else '-'}...)...")
         resp = sess.get(url_with_tz, headers=headers, timeout=timeout)
         req_ms = int((time.time() - started_req) * 1000)
         status_code = resp.status_code

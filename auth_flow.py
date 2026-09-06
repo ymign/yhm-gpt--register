@@ -20,7 +20,7 @@ import time
 import uuid
 from datetime import datetime
 from typing import Optional, Any
-from urllib.parse import urlparse, parse_qs, parse_qsl, urljoin, urlencode, urlunparse
+from urllib.parse import urlparse, parse_qs, parse_qsl, urljoin, urlencode, urlunparse, quote
 
 from config import Config
 from fingerprint import (
@@ -33,6 +33,38 @@ from mail_providers import MailProvider
 from http_client import create_http_session, USER_AGENT
 
 logger = logging.getLogger(__name__)
+
+SESSION_WARNING_BANNER = (
+    "!!!!!!!!!!!!!!!!!!!! DO NOT SHARE ANY PART OF THE INFORMATION YOU SEE HERE. "
+    "THIS INFORMATION IS SENSITIVE AND CAN GRANT ACCESS TO YOUR ACCOUNT. "
+    "SHARING THIS INFORMATION IS LIKE SHARING YOUR PASSWORD. !!!!!!!!!!!!!!!!!!!!"
+)
+
+
+def complete_chatgpt_session_json(
+    raw: Optional[dict] = None,
+    access_token: str = "",
+    session_token: str = "",
+) -> dict:
+    """把 chatgpt.com/api/auth/session 的原始 JSON 整理成落库结构。
+
+    官方字段（user / account / expires / rumViewTags 等）原样保留，
+    只补 accessToken、sessionToken、WARNING_BANNER、authProvider。
+    """
+    data = dict(raw) if isinstance(raw, dict) else {}
+    at = (access_token or data.get("accessToken") or data.get("access_token") or "").strip()
+    st = (session_token or data.get("sessionToken") or data.get("session_token") or "").strip()
+    if at:
+        data["accessToken"] = at
+    if st:
+        data["sessionToken"] = st
+    data.pop("access_token", None)
+    data.pop("session_token", None)
+    if not data.get("WARNING_BANNER"):
+        data["WARNING_BANNER"] = SESSION_WARNING_BANNER
+    if not data.get("authProvider"):
+        data["authProvider"] = "openai"
+    return data
 
 
 # ── RFC 6238 TOTP 实现（用于 mfa-challenge 计算动态码）────────────
@@ -66,6 +98,7 @@ class AuthResult:
         self.cookie_header: str = ""
         self.totp_secret: str = ""
         self.session_data: dict = {}
+        self.plan_info: dict = {}
 
     def is_valid(self) -> bool:
         return bool(self.session_token and self.access_token)
@@ -971,6 +1004,205 @@ class AuthFlow:
         cu = (continue_url or "").strip().lower()
         return (pt == "mfa_challenge") or ("/mfa-challenge/" in cu)
 
+    @staticmethod
+    def _is_wrong_password_error(exc: BaseException) -> bool:
+        s = str(exc or "").lower()
+        return (
+            "invalid_username_or_password" in s
+            or "password登录失败" in s
+            or "密码登录失败" in s
+        )
+
+    @staticmethod
+    def _is_post_login_continue(continue_url: str = "") -> bool:
+        cu = (continue_url or "").lower()
+        return any(
+            x in cu
+            for x in (
+                "/api/auth/callback",
+                "/auth/callback",
+                "/workspace",
+                "chatgpt.com/",
+            )
+        )
+
+    def _can_receive_mail(self, mail_provider) -> bool:
+        return bool(mail_provider) and not getattr(mail_provider, "exhausted", False)
+
+    def _goto_login_password_page(self, email: str = "") -> None:
+        """打开 /log-in/password（带 email 查询参数，与 2FA 绑定 / OAuth 导出一致）。"""
+        em = (email or getattr(self.result, "email", "") or "").strip()
+        url = "https://auth.openai.com/log-in/password"
+        if em:
+            url = f"{url}?email={quote(em)}"
+        headers = self._common_headers("https://auth.openai.com/log-in")
+        headers["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+        try:
+            resp = self.session.get(
+                url,
+                headers=headers,
+                timeout=30,
+                allow_redirects=True,
+            )
+            self._trace_http("goto_login_password", resp)
+        except Exception as e:
+            logger.warning(f"打开 /log-in/password 失败: {e}")
+
+    def _complete_password_and_mfa(self, login_password: str, email: str = "") -> tuple[str, str]:
+        """密码校验 + 如需则提交 TOTP。返回 (page_type, continue_url)。"""
+        em = (email or getattr(self.result, "email", "") or "").strip()
+        self._goto_login_password_page(em)
+        login_resp = self.login_password_verify(login_password)
+        page_type = (self._extract_page_type(login_resp) or "").lower()
+        continue_url = self._normalize_continue_url(self._extract_continue_url_from_step(login_resp))
+        logger.info(
+            f"密码校验后: page_type={page_type or '(empty)'} "
+            f"continue={(continue_url or '')[:180] or '(empty)'}"
+        )
+        if not self._is_mfa_challenge_state(page_type, continue_url):
+            return page_type, continue_url
+
+        totp_secret = (self.result.totp_secret or "").strip()
+        if not totp_secret and self._account_callback:
+            try:
+                cred = self._account_callback(em) or {}
+                totp_secret = str(cred.get("totp_secret") or "").strip()
+                if totp_secret:
+                    self.result.totp_secret = totp_secret
+                    logger.info("已从 account_callback 加载 totp_secret")
+            except Exception as e:
+                logger.warning(f"account_callback 异常: {e}")
+        if not totp_secret:
+            raise RuntimeError(f"密码已通过，但 OpenAI 要求 2FA，库里没有 totp_secret: {em}")
+        challenge_id = continue_url.split("/")[-1] if "/mfa-challenge/" in (continue_url or "") else ""
+        if not challenge_id:
+            raise RuntimeError(f"进入 2FA 但无法提取 challenge_id: {continue_url}")
+        totp_code = _totp_now(totp_secret)
+        logger.info(f"提交 TOTP 码进行 2FA 验证（challenge_id={challenge_id[:16]}...）")
+        mfa_resp = self.submit_mfa_totp(totp_code, challenge_id)
+        page_type = (self._extract_page_type(mfa_resp) or "").lower()
+        continue_url = self._normalize_continue_url(self._extract_continue_url_from_step(mfa_resp))
+        logger.info(
+            f"2FA 后: page_type={page_type or '(empty)'} "
+            f"continue={(continue_url or '')[:180] or '(empty)'}"
+        )
+        return page_type, continue_url
+
+    def _recover_via_official_reset(
+        self,
+        mail_provider,
+        email: str,
+        otp_timeout: int,
+        referer: str = "",
+    ) -> tuple[str, str]:
+        """在 /log-in/password 上走官方 password/send-otp 补设/重置 ChatGPT 密码，再完成登录。
+
+        这不是 create-account 的邮箱登录 OTP。库里没有 ChatGPT 密码、或 password/verify
+        被官方判定 invalid_username_or_password 时用这条。邮箱密码绝不能拿去登 ChatGPT。
+        """
+        if not self._can_receive_mail(mail_provider):
+            raise RuntimeError(
+                "库中没有可用的 ChatGPT 登录密码（邮箱密码不能用来登 ChatGPT），"
+                "且当前没有可用收信渠道做官方重置"
+            )
+        em = (email or getattr(self.result, "email", "") or "").strip()
+        self._goto_login_password_page(em)
+        t_sent = time.time()
+        logger.info("走官方 password/send-otp 重置/补设 ChatGPT 登录密码（不是邮箱登录 OTP）")
+        try:
+            self.send_password_reset_otp(
+                referer=referer or "https://auth.openai.com/log-in/password"
+            )
+        except Exception as e_send:
+            logger.warning(f"password/send-otp 首次失败 ({e_send})，重新 authorize login 后再发")
+            sentinel = self._last_sentinel_token
+            try:
+                if self.result.device_id:
+                    sentinel = self.get_sentinel_token(self.result.device_id)
+            except Exception:
+                pass
+            self.authorize_continue(
+                email=em,
+                sentinel_token=sentinel,
+                screen_hint="login",
+                referer="https://auth.openai.com/log-in",
+                trace_step="authorize_continue_reset_retry",
+            )
+            self._goto_login_password_page(em)
+            t_sent = time.time()
+            self.send_password_reset_otp(referer="https://auth.openai.com/log-in/password")
+        logger.info(f"重置验证码已发送，正在收信 (timeout={otp_timeout}s)")
+        otp_code = mail_provider.wait_for_otp(
+            em,
+            timeout=otp_timeout,
+            issued_after=t_sent - 10,
+        )
+        logger.info("已收到重置验证码，正在核验")
+        otp_resp = self.verify_otp(otp_code)
+        page_type = (self._extract_page_type(otp_resp) or "").lower()
+        continue_url = self._normalize_continue_url(self._extract_continue_url_from_step(otp_resp))
+        if self._is_mfa_challenge_state(page_type, continue_url):
+            totp_secret = (self.result.totp_secret or "").strip()
+            if not totp_secret and self._account_callback:
+                try:
+                    cred = self._account_callback(em) or {}
+                    totp_secret = str(cred.get("totp_secret") or "").strip()
+                    if totp_secret:
+                        self.result.totp_secret = totp_secret
+                except Exception:
+                    pass
+            if not totp_secret:
+                raise RuntimeError(f"重置密码过程遇到 2FA，但库里没有 totp_secret: {em}")
+            challenge_id = continue_url.split("/")[-1] if "/mfa-challenge/" in (continue_url or "") else ""
+            if not challenge_id:
+                raise RuntimeError(f"重置密码 2FA 无法提取 challenge_id: {continue_url}")
+            logger.info(f"重置过程提交 TOTP（challenge_id={challenge_id[:16]}...）")
+            mfa_resp = self.submit_mfa_totp(_totp_now(totp_secret), challenge_id)
+            page_type = (self._extract_page_type(mfa_resp) or "").lower()
+            continue_url = self._normalize_continue_url(self._extract_continue_url_from_step(mfa_resp))
+
+        new_password = self._random_password(16)
+        logger.info("正在向官方提交新 ChatGPT 登录密码")
+        reset_resp = self.reset_password_submit(new_password)
+        self.result.password = new_password
+        if self._on_password:
+            try:
+                self._on_password(self, em, new_password)
+            except Exception:
+                pass
+        page_type = (self._extract_page_type(reset_resp) or "").lower()
+        continue_url = self._normalize_continue_url(self._extract_continue_url_from_step(reset_resp))
+        if continue_url and self._is_post_login_continue(continue_url):
+            logger.info("官方改密后已给出 callback，直接继续登录链")
+            return page_type, continue_url
+        logger.info("官方新密码已生效，使用新密码完成登录")
+        try:
+            return self._complete_password_and_mfa(new_password, em)
+        except Exception as e:
+            logger.warning(f"改密后同会话密码登录未成功 ({e})，重新 authorize login")
+            sentinel = self._last_sentinel_token
+            try:
+                if self.result.device_id:
+                    sentinel = self.get_sentinel_token(self.result.device_id)
+            except Exception:
+                pass
+            login_step = self.authorize_continue(
+                email=em,
+                sentinel_token=sentinel,
+                screen_hint="login",
+                referer="https://auth.openai.com/log-in",
+                trace_step="authorize_continue_after_reset",
+            )
+            page_type = (self._extract_page_type(login_step) or "").lower()
+            continue_url = self._normalize_continue_url(
+                self._extract_continue_url_from_step(login_step)
+            )
+            logger.info(
+                f"改密后重探: page_type={page_type or '(empty)'} "
+                f"continue={(continue_url or '')[:180] or '(empty)'}"
+            )
+            return self._complete_password_and_mfa(new_password, em)
+
     def _phone_headers(self, referer: str) -> dict:
         headers = self._common_headers(referer)
         headers["Accept"] = "application/json"
@@ -1372,6 +1604,8 @@ class AuthFlow:
         self._codex_rt_attempted = True
 
         logger.info("尝试 Codex OAuth 直连换取 refresh_token ...")
+        prev_client = self._oauth_client_id
+        prev_redirect = self._oauth_redirect_uri
         try:
             auth_url, state, verifier, redirect_uri, client_id = self._build_codex_authorize()
             self._oauth_auth_url = auth_url
@@ -1423,7 +1657,9 @@ class AuthFlow:
             if (not callback_url) and self._is_add_phone_state(page_type="", continue_url=final_url or ""):
                 if self._env_flag("SKIP_SMS_ON_OAUTH", "0") or self._sms_callback is None:
                     self._need_phone_aborted = True
-                    logger.info("Codex 授权命中 /add-phone 手机号验证，已按 SKIP_SMS_ON_OAUTH 要求跳过接码")
+                    logger.warning(
+                        "Codex 授权命中 /add-phone 手机号验证，已跳过接码，本次拿不到 Codex refresh_token"
+                    )
                     return False
                 logger.info("Codex 授权直接落到 /add-phone，尝试 SMS 接码绑号 ...")
                 try:
@@ -1466,6 +1702,10 @@ class AuthFlow:
         except Exception as e:
             logger.warning(f"Codex OAuth 交换异常: {e}")
             return False
+        finally:
+            if not (self.result.refresh_token or "").strip():
+                self._oauth_client_id = prev_client
+                self._oauth_redirect_uri = prev_redirect
 
     def _inject_pkce_into_auth_url(self, auth_url: str) -> str:
         """为 authorize URL 注入 PKCE 参数（可选）。"""
@@ -1944,12 +2184,177 @@ class AuthFlow:
             return offsets[cc]
         return -540 if cc == "JP" else -480
 
+    def _ces_prefetch(self) -> None:
+        """拉取 ChatGPT 前端 Statsig/实验配置。HAR 首屏在 accounts/check 之前会打 CES settings，
+        试用资格是实验分桶，缺这一步时 accounts/check 经常直接 chatgptfreeplan。"""
+        key = "client-nb0qtYlZuy2tCMN5s5ncnuIBCJncjRViT0IzFm7GqST"
+        url = f"https://chatgpt.com/ces/v1/projects/oai/settings?k={key}"
+        headers = self._chatgpt_headers()
+        headers.pop("Content-Type", None)
+        headers["Accept"] = "*/*"
+        try:
+            self.session.get(url, headers=headers, timeout=8)
+        except Exception as e:
+            logger.debug(f"[Bootstrap] CES settings 跳过: {e}")
+
+    def _store_plan_info(self, data: dict, body: str = "") -> dict:
+        try:
+            from webui.plus_check import parse_account_plan
+            plan_info = parse_account_plan(data, body or "")
+        except Exception as e:
+            logger.debug(f"[Bootstrap] 套餐解析失败: {e}")
+            return {}
+        slim = {k: v for k, v in plan_info.items() if k != "log_lines"}
+        self.result.plan_info = slim
+        logger.info(
+            f"[Bootstrap] 账号计划状态识别: {plan_info.get('label', 'Free')} "
+            f"(status={plan_info.get('status')})"
+        )
+        return slim
+
+    def _accounts_check(self, api_base: str, headers: dict, tz: int):
+        return self.session.get(
+            f"{api_base}/accounts/check/v4-2023-04-27?timezone_offset_min={tz}",
+            headers=headers,
+            timeout=12,
+        )
+
+    def _js_date_string(self) -> str:
+        """尽量贴近 Chrome Date.toString()，供 chat-requirements 的 Sentinel p[1]。"""
+        tz_name = (self._fingerprint or {}).get("timezone") or "UTC"
+        js_off = self._get_tz_offset_min()
+        utc_min = -int(js_off)
+        sign = "+" if utc_min >= 0 else "-"
+        abs_m = abs(utc_min)
+        gmt = f"GMT{sign}{abs_m // 60:02d}{abs_m % 60:02d}"
+        labels = {
+            "Asia/Tokyo": "Japan Standard Time",
+            "Asia/Shanghai": "China Standard Time",
+            "America/New_York": "Eastern Daylight Time",
+            "America/Los_Angeles": "Pacific Daylight Time",
+            "America/Chicago": "Central Daylight Time",
+            "America/Denver": "Mountain Daylight Time",
+            "Europe/London": "British Summer Time",
+            "Europe/Berlin": "Central European Summer Time",
+            "America/Sao_Paulo": "Brasilia Standard Time",
+        }
+        label = labels.get(tz_name, tz_name.replace("_", " "))
+        try:
+            from zoneinfo import ZoneInfo
+            now = datetime.now(ZoneInfo(tz_name))
+        except Exception:
+            now = datetime.now()
+        wd = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][now.weekday()]
+        mo = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][now.month - 1]
+        return f"{wd} {mo} {now.day:02d} {now.year} {now.strftime('%H:%M:%S')} {gmt} ({label})"
+
+    def _chatgpt_requirements_p(self) -> str:
+        """HAR 中 chat-requirements/prepare 的 p：指纹数组编码 + ~S，不做 PoW。"""
+        fp = self._fingerprint or {}
+        screen = str(fp.get("screen") or "1440x900")
+        try:
+            w, h = screen.lower().split("x", 1)
+            wh = int(w) + int(h)
+        except Exception:
+            wh = 1440 + 900
+        lang = str(fp.get("lang") or "en-US")
+        hw = int(fp.get("hardware_concurrency") or 8)
+        heap = int(fp.get("js_heap_size_limit") or 4294967296)
+        ua = self._ua
+        build = "prod-fb4a8a2a751dfec391053cfd7b01c52699ccf78c"
+        sid = getattr(self, "_oai_session_id", "") or str(uuid.uuid4())
+        scripts = [
+            "https://accounts.google.com/gsi/client",
+            "https://chatgpt.com/cdn-cgi/challenge-platform/scripts/jsd/api.js?onload=jsdOnload",
+            "https://sentinel.openai.com/sentinel/20260219f9f6/sdk.js",
+        ]
+        nav_props = [
+            "createAuctionNonce−function createAuctionNonce() { [native code] }",
+            "gpu−[object GPU]",
+            "login−[object NavigatorLogin]",
+        ]
+        doc_keys = ["_reactListening" + uuid.uuid4().hex[:11], "__reactContainer$" + uuid.uuid4().hex[:11]]
+        win_keys = ["locationbar", "scrollX", "ondevicemotion", "chrome"]
+        perf_now = random.uniform(1000, 8000)
+        time_origin = time.time() * 1000 - perf_now
+        config = [
+            wh,
+            self._js_date_string(),
+            heap,
+            1,
+            ua,
+            random.choice(scripts),
+            build,
+            lang,
+            lang,
+            random.randint(1, 4),
+            random.choice(nav_props),
+            random.choice(doc_keys),
+            random.choice(win_keys),
+            round(perf_now, 10),
+            sid,
+            "",
+            hw,
+            round(time_origin, 1),
+            0, 0, 0, 0, 0, 0, 0,
+        ]
+        raw = json.dumps(config, ensure_ascii=False, separators=(",", ":"))
+        encoded = base64.b64encode(raw.encode("utf-8")).decode("ascii")
+        return "gAAAAAC" + encoded + "~S"
+
+    def _chat_requirements_prepare(self, base: str, headers: dict, stage: str) -> dict | None:
+        h = dict(headers)
+        h["Content-Type"] = "application/json"
+        try:
+            p = self._chatgpt_requirements_p()
+            resp = self.session.post(
+                f"{base}/sentinel/chat-requirements/prepare",
+                headers=h,
+                json={"p": p},
+                timeout=10,
+            )
+            if resp.status_code >= 400:
+                return None
+            prepare = resp.json() if resp.text else {}
+        except Exception as e:
+            logger.debug(f"[Bootstrap] chat-requirements prepare({stage}) 跳过: {e}")
+            self._last_chat_req = None
+            return None
+        self._last_chat_req = prepare if isinstance(prepare, dict) else None
+        return self._last_chat_req
+
+    def _chat_requirements_finalize(self, base: str, headers: dict, stage: str) -> None:
+        prepare = getattr(self, "_last_chat_req", None)
+        if not isinstance(prepare, dict):
+            return
+        token = prepare.get("prepare_token") or prepare.get("token") or prepare.get("c")
+        if not token:
+            return
+        h = dict(headers)
+        h["Content-Type"] = "application/json"
+        payload = {"prepare_token": token}
+        for key in ("proofofwork", "turnstile"):
+            if prepare.get(key):
+                payload[key] = prepare[key]
+        try:
+            self.session.post(
+                f"{base}/sentinel/chat-requirements/finalize",
+                headers=h,
+                json=payload,
+                timeout=10,
+            )
+        except Exception as e:
+            logger.debug(f"[Bootstrap] chat-requirements finalize({stage}) 跳过: {e}")
+        self._last_chat_req = None
+
     def anonymous_bootstrap(self) -> None:
         """注册前匿名态 ChatGPT 首页/模型预热链路（模拟真实指纹浏览器首屏访问轨迹）。"""
         logger.info("[Bootstrap] 执行匿名态 ChatGPT 首屏预热...")
         referer = "https://chatgpt.com/"
         tz = self._get_tz_offset_min()
         anon_base = "https://chatgpt.com/backend-anon"
+
+        self._ces_prefetch()
 
         # 1. 匿名 accounts/check
         try:
@@ -1966,6 +2371,8 @@ class AuthFlow:
             self.session.get(f"{anon_base}/me", headers=self._chatgpt_headers(referer=referer), timeout=10)
         except Exception:
             pass
+
+        self._chat_requirements_prepare(anon_base, self._chatgpt_headers(referer=referer), "anon")
 
         # 3. 匿名 system_hints
         for mode in ("custom_agents", "connectors", "basic"):
@@ -2003,6 +2410,7 @@ class AuthFlow:
             )
         except Exception:
             pass
+        self._chat_requirements_finalize(anon_base, self._chatgpt_headers(referer=referer), "anon")
         logger.info("[Bootstrap] 匿名态首屏预热完成")
 
     def authenticated_bootstrap(self, access_token: str) -> None:
@@ -2035,17 +2443,10 @@ class AuthFlow:
 
         # 4. accounts/check (携带 timezone_offset_min)
         try:
-            resp = self.session.get(
-                f"{api_base}/accounts/check/v4-2023-04-27?timezone_offset_min={tz}",
-                headers=headers,
-                timeout=10,
-            )
+            resp = self._accounts_check(api_base, headers, tz)
             if resp.status_code == 200:
                 try:
-                    data = resp.json() or {}
-                    from webui.plus_check import parse_account_plan
-                    plan_info = parse_account_plan(data, resp.text or "")
-                    logger.info(f"[Bootstrap] 账号计划状态识别: {plan_info.get('label', 'Free')} (status={plan_info.get('status')})")
+                    self._store_plan_info(resp.json() or {}, resp.text or "")
                 except Exception:
                     pass
         except Exception:
@@ -2056,6 +2457,8 @@ class AuthFlow:
             self.session.get(f"{api_base}/settings/user", headers=headers, timeout=10)
         except Exception:
             pass
+
+        self._chat_requirements_prepare(api_base, headers, "auth")
 
         # 6. system_hints
         for mode in ("custom_agents", "connectors", "basic"):
@@ -2093,6 +2496,7 @@ class AuthFlow:
             )
         except Exception:
             pass
+        self._chat_requirements_finalize(api_base, headers, "auth")
 
         # 9. conversations
         try:
@@ -2109,6 +2513,26 @@ class AuthFlow:
             self.session.get(f"{api_base}/client/strings", headers=headers, timeout=10)
         except Exception:
             pass
+
+        # 姐妹项目 registration_auto：首屏跑完后在同一出口冷却再查套餐（默认 90s）。
+        # 立刻查经常还是 Free；冷却后同会话再打一次，才有机会把试用活动写进账号。
+        try:
+            retry_sec = float(self._get_env("PLUS_CHECK_RETRY_SEC", "60") or 60)
+        except Exception:
+            retry_sec = 60.0
+        st = (self.result.plan_info or {}).get("status") or ""
+        if retry_sec > 0 and st not in ("plus_eligible", "plus_active", "pro_eligible", "pro_active", "pro_20x", "pro_5x"):
+            logger.info(
+                f"[Bootstrap] 首屏套餐={st or '未知'}，同会话冷却 {retry_sec:.0f}s 后复检 "
+                f"（对齐 yhm-gpt-free-register 注册后查套餐冷却）"
+            )
+            time.sleep(max(1.0, min(180.0, retry_sec)))
+            try:
+                resp2 = self._accounts_check(api_base, headers, tz)
+                if resp2.status_code == 200:
+                    self._store_plan_info(resp2.json() or {}, resp2.text or "")
+            except Exception as e:
+                logger.debug(f"[Bootstrap] 套餐复检跳过: {e}")
 
         logger.info("[Bootstrap] 登录态 ChatGPT 激活与实验曝光完成")
 
@@ -3349,16 +3773,17 @@ class AuthFlow:
             self.result.session_token = session_token
         if access_token:
             self.result.access_token = access_token
-        if sess_json:
-            if session_token and "sessionToken" not in sess_json:
-                sess_json["sessionToken"] = session_token
-            if access_token and "accessToken" not in sess_json:
-                sess_json["accessToken"] = access_token
-            self.result.session_data = sess_json
+        self.result.session_data = complete_chatgpt_session_json(
+            sess_json, access_token, session_token
+        )
         self.result.cookie_header = self._build_chatgpt_cookie_header()
 
         _log = logger.info if first_call else logger.debug
-        _log(f"session: st={'有' if session_token else '无'} at={'有' if access_token else '无'}")
+        keys = ",".join(self.result.session_data.keys()) if self.result.session_data else ""
+        _log(
+            f"session: st={'有' if session_token else '无'} at={'有' if access_token else '无'} "
+            f"json_keys={keys or '(empty)'}"
+        )
         return session_token, access_token
 
     def _consume_callback_for_session(self, callback_url: str) -> bool:
@@ -3418,6 +3843,14 @@ class AuthFlow:
 
         if not auth_code:
             logger.info("缺少 auth_code，跳过 token 交换")
+            return False
+
+        blob = f"{callback_url or ''} {continue_url or ''}"
+        if "chatgpt.com/api/auth/callback" in blob:
+            logger.info(
+                "callback 是 ChatGPT Web NextAuth（code 给 chatgpt.com 用，不是 /oauth/token），"
+                "跳过无效 Token 交换，避免刷一串 400"
+            )
             return False
 
         verifier_candidates = self._collect_code_verifier_candidates(callback_url, continue_url)
@@ -4142,14 +4575,43 @@ class AuthFlow:
         email = email.strip()
         self.result.email = email
         login_password = (password or "").strip()
+        pw_is_real = False
         if login_password:
             self.result.password = login_password
+            pw_is_real = True
         else:
-            login_password, pw_is_real = self._resolve_login_password(email)
-            if pw_is_real:
+            resolved, is_real = self._resolve_login_password(email)
+            if is_real:
+                login_password = resolved
                 self.result.password = login_password
+                pw_is_real = True
             else:
-                logger.info("协议登录：调用方没给密码、库里也没有，用默认规则猜一个试试")
+                login_password = ""
+                logger.info(
+                    "协议登录：库中无 ChatGPT 登录密码，不猜测邮箱规则密码，后续走官方重置或邮箱 OTP"
+                )
+
+        if self._account_callback and (
+            not (self.result.totp_secret or "").strip() or not pw_is_real
+        ):
+            try:
+                cred = self._account_callback(email) or {}
+                if cred.get("totp_secret") and not (self.result.totp_secret or "").strip():
+                    self.result.totp_secret = str(cred.get("totp_secret") or "").strip()
+                    logger.info("协议登录：已预加载 totp_secret")
+                if not pw_is_real and cred.get("password"):
+                    login_password = str(cred.get("password") or "").strip()
+                    if login_password:
+                        self.result.password = login_password
+                        pw_is_real = True
+                        logger.info("协议登录：已从 account_callback 补到登录密码")
+            except Exception as e:
+                logger.warning(f"协议登录预加载账号凭证失败: {e}")
+        logger.info(
+            f"协议登录凭据: password={'有' if pw_is_real else '无'}"
+            f"({len(login_password) if pw_is_real else 0}位), "
+            f"totp={'有' if (self.result.totp_secret or '').strip() else '无'}"
+        )
 
         csrf_token = self.get_csrf_token()
         auth_url = self.get_auth_url(csrf_token, email=email)
@@ -4167,6 +4629,33 @@ class AuthFlow:
         prefer_login_screen_first = str(
             os.getenv("LOCALAUTH_EXISTING_LOGIN_USE_LOGIN_HINT", "1")
         ).lower() in ("1", "true", "yes", "on")
+
+        password_done = False
+        has_password = bool(pw_is_real and login_password)
+        has_totp = bool((self.result.totp_secret or "").strip())
+        can_mail = self._can_receive_mail(mail_provider)
+
+        def _raise_if_dead(exc: BaseException) -> None:
+            err_s = str(exc).lower()
+            if "deactivated" in err_s or "deleted" in err_s or "封禁" in err_s:
+                raise exc
+
+        def _do_password_login() -> None:
+            nonlocal page_type, continue_url, password_done, login_password, has_password
+            page_type, continue_url = self._complete_password_and_mfa(login_password, email)
+            password_done = True
+
+        def _do_official_reset() -> None:
+            nonlocal page_type, continue_url, password_done, login_password, has_password
+            page_type, continue_url = self._recover_via_official_reset(
+                mail_provider,
+                email,
+                otp_timeout,
+                referer=continue_url or "https://auth.openai.com/log-in/password",
+            )
+            login_password = (self.result.password or login_password or "").strip()
+            has_password = bool(login_password)
+            password_done = True
 
         if prefer_login_screen_first:
             try:
@@ -4187,147 +4676,118 @@ class AuthFlow:
                 mode = (payload.get("email_verification_mode", "") or "").lower()
                 self._existing_page_type = page_type
                 self._existing_email_verification_mode = mode
-
-                if page_type == "login_password" or "/log-in/password" in (continue_url or ""):
-                    logger.info("登录分支: login_password -> password/verify")
-                    # 命中已有账号 password 路径：标记之，让 kickoff_otp_delivery 走 resend
-                    # 分支（避免 send_passwordless_otp 把 state 弄坏 → wrong_email_otp_code）
-                    self._is_existing_account = True
-                    try:
-                        login_resp = self.login_password_verify(login_password)
-                    except Exception as e_pwd:
-                        err_s = str(e_pwd).lower()
-                        if "deactivated" in err_s or "deleted" in err_s or "403" in err_s or "封禁" in err_s:
-                            raise
-                        if mail_provider and not getattr(mail_provider, "exhausted", False):
-                            logger.warning(f"已知密码登录失败 ({e_pwd})，正在自动切换为官方重置密码自愈流程...")
-                            t_sent = time.time()
-                            self.send_password_reset_otp(referer=continue_url or "https://auth.openai.com/log-in/password")
-                            logger.info(f"📨 重置验证码已发送至邮箱，正在收取 OTP (timeout={otp_timeout}s)...")
-                            otp_code = mail_provider.wait_for_otp(
-                                email,
-                                timeout=otp_timeout,
-                                issued_after=t_sent - 10,
-                            )
-                            logger.info(f"✅ 成功获取重置验证码: {otp_code}，正在进行官方核验...")
-                            otp_resp = self.verify_otp(otp_code)
-                            otp_page_type = (self._extract_page_type(otp_resp) or "").lower()
-                            otp_continue = self._normalize_continue_url(
-                                self._extract_continue_url_from_step(otp_resp)
-                            )
-                            if self._is_mfa_challenge_state(otp_page_type, otp_continue):
-                                totp_secret = (self.result.totp_secret or "").strip()
-                                if not totp_secret and self._account_callback:
-                                    try:
-                                        cred = self._account_callback(email)
-                                        if cred and cred.get("totp_secret"):
-                                            totp_secret = cred["totp_secret"]
-                                            self.result.totp_secret = totp_secret
-                                    except Exception as e_cred:
-                                        logger.warning(f"account_callback 加载 2FA 凭证异常: {e_cred}")
-                                if not totp_secret:
-                                    raise RuntimeError(f"原号主已开启 2FA 两步验证 (mfa-challenge)，缺少 TOTP 密钥无法登录: {email}")
-                                challenge_id = otp_continue.split("/")[-1] if "/mfa-challenge/" in otp_continue else ""
-                                totp_code = _totp_now(totp_secret)
-                                logger.info(f"提交 TOTP 码进行 2FA 验证（challenge_id={challenge_id[:16]}...）")
-                                self.submit_mfa_totp(totp_code, challenge_id)
-
-                            new_password = self._random_password(16)
-                            logger.info(f"🔑 正在为账号向官方提交新密码...")
-                            self.reset_password_submit(new_password)
-                            self.result.password = new_password
-                            if self._on_password:
-                                try:
-                                    self._on_password(self, email, new_password)
-                                except Exception:
-                                    pass
-                            logger.info(f"🎉 官方新密码设置成功 ({new_password})，正在使用新密码自动完成登录...")
-                            login_resp = self.login_password_verify(new_password)
-                        else:
-                            raise e_pwd
-
-                    page_type = (self._extract_page_type(login_resp) or "").lower()
-                    continue_url = self._normalize_continue_url(
-                        self._extract_continue_url_from_step(login_resp)
-                    )
-
-                    # mfa-challenge 分支（密码验证后需要 TOTP 2FA）
-                    if self._is_mfa_challenge_state(page_type, continue_url):
-                        totp_secret = (self.result.totp_secret or "").strip()
-                        if not totp_secret and self._account_callback:
-                            # 从数据库加载凭证
-                            try:
-                                cred = self._account_callback(email)
-                                if cred and cred.get("totp_secret"):
-                                    totp_secret = cred["totp_secret"]
-                                    self.result.totp_secret = totp_secret
-                                    logger.info("已从数据库加载 totp_secret")
-                            except Exception as e:
-                                logger.warning(f"account_callback 异常: {e}")
-                        if not totp_secret:
-                            logger.warning("进入 mfa-challenge 但没有 totp_secret，无法继续")
-                        else:
-                            challenge_id = continue_url.split("/")[-1] if "/mfa-challenge/" in continue_url else ""
-                            if challenge_id:
-                                totp_code = _totp_now(totp_secret)
-                                logger.info(f"提交 TOTP 码进行 2FA 验证（challenge_id={challenge_id[:16]}...）")
-                                mfa_resp = self.submit_mfa_totp(totp_code, challenge_id)
-                                page_type = (self._extract_page_type(mfa_resp) or "").lower()
-                                continue_url = self._normalize_continue_url(
-                                    self._extract_continue_url_from_step(mfa_resp)
-                                )
-                            else:
-                                logger.warning("无法从 continue_url 提取 challenge_id")
-
-                elif page_type == "email_otp_verification" or "/email-verification" in (continue_url or ""):
-                    logger.info("登录分支: email_otp_verification")
-                    # 同上：authorize/continue 已 trigger 发码，kickoff_otp_delivery 必须只 resend。
-                    self._is_existing_account = True
-                else:
-                    logger.info(
-                        "login screen_hint 未直接命中已有账号完成态: page_type=%s continue_url=%s",
-                        page_type or "(empty)",
-                        (continue_url or "")[:180] or "(empty)",
-                    )
+                logger.info(
+                    f"login 探测: page_type={page_type or '(empty)'} mode={mode or '(empty)'} "
+                    f"continue={(continue_url or '')[:180] or '(empty)'}"
+                )
             except Exception as e:
-                logger.warning(f"login screen_hint 探测失败，回退 signup 探测: {e}")
-                continue_url = ""
+                logger.warning(f"login screen_hint 探测失败: {e}")
                 page_type = ""
+                continue_url = ""
                 mode = ""
 
-        if not continue_url and page_type not in ("login_password", "email_otp_verification"):
-            is_new = self.signup(email, sentinel)
-            if is_new:
-                logger.warning("目标邮箱未命中已有账号分支，回退到注册链路")
-                self.register_password(email)
-                otp_sent_at = time.time()
-                self.send_otp()
-                otp_code = mail_provider.wait_for_otp(
-                    email,
-                    timeout=otp_timeout,
-                    issued_after=otp_sent_at,
-                )
-                self.verify_otp(otp_code)
+        on_pwd = page_type == "login_password" or "/log-in/password" in (continue_url or "")
+        on_otp = page_type == "email_otp_verification" or "/email-verification" in (continue_url or "")
+
+        if has_password and not password_done:
+            self._is_existing_account = True
+            if not on_pwd and not on_otp:
+                logger.info("库里有 ChatGPT 密码，当前不在密码页，打开 /log-in/password")
+                self._goto_login_password_page(email)
+                on_pwd = True
+            if on_pwd or not on_otp:
                 try:
-                    continue_url = self.create_account()
-                except Exception as e:
-                    if self._is_registration_disallowed_error(e) or self._is_user_already_exists_error(e):
-                        continue_url = self._reauthorize_for_session(auth_url) or ""
+                    _do_password_login()
+                except Exception as e_pwd:
+                    _raise_if_dead(e_pwd)
+                    if can_mail and self._is_wrong_password_error(e_pwd):
+                        logger.warning(
+                            f"ChatGPT 密码登录失败，改走官方 password/send-otp 重置: {e_pwd}"
+                        )
+                        _do_official_reset()
+                    elif self._is_wrong_password_error(e_pwd):
+                        raise RuntimeError(
+                            f"ChatGPT 登录密码校验失败，且没有收信渠道可做官方重置: {e_pwd}"
+                        ) from e_pwd
                     else:
                         raise
+        elif (not has_password) and on_pwd and can_mail and not password_done:
+            logger.info("库中无 ChatGPT 登录密码，官方停在密码页，走 password/send-otp 补设")
+            self._is_existing_account = True
+            _do_official_reset()
+        elif on_otp:
+            logger.info("登录分支: email_otp_verification（无 ChatGPT 密码或官方要求邮箱 OTP）")
+            self._is_existing_account = True
+        elif not password_done:
+            logger.info(
+                "login screen_hint 未直接命中已有账号完成态: page_type=%s continue_url=%s",
+                page_type or "(empty)",
+                (continue_url or "")[:180] or "(empty)",
+            )
+
+        if not password_done and not continue_url and page_type not in ("login_password", "email_otp_verification"):
+            if has_password:
+                logger.info("signup 回退前再试一次密码登录")
+                try:
+                    _do_password_login()
+                except Exception as e_pwd:
+                    _raise_if_dead(e_pwd)
+                    if can_mail and self._is_wrong_password_error(e_pwd):
+                        logger.warning(f"密码登录失败，改走官方重置: {e_pwd}")
+                        _do_official_reset()
+                    else:
+                        raise
+            elif can_mail:
+                logger.info("无 ChatGPT 密码且未停在 OTP 页，打开密码页做官方补设")
+                self._goto_login_password_page(email)
+                _do_official_reset()
+            elif has_totp:
+                raise RuntimeError(
+                    "该账号已绑 2FA，但库里没有 ChatGPT 登录密码，也没有收信渠道做官方重置"
+                )
             else:
-                page_type = (self._existing_page_type or "").lower()
-                mode = (self._existing_email_verification_mode or "").lower()
+                is_new = self.signup(email, sentinel)
+                if is_new:
+                    logger.warning("目标邮箱未命中已有账号分支，回退到注册链路")
+                    self.register_password(email)
+                    otp_sent_at = time.time()
+                    self.send_otp()
+                    otp_code = mail_provider.wait_for_otp(
+                        email,
+                        timeout=otp_timeout,
+                        issued_after=otp_sent_at,
+                    )
+                    self.verify_otp(otp_code)
+                    try:
+                        continue_url = self.create_account()
+                    except Exception as e:
+                        if self._is_registration_disallowed_error(e) or self._is_user_already_exists_error(e):
+                            continue_url = self._reauthorize_for_session(auth_url) or ""
+                        else:
+                            raise
+                else:
+                    page_type = (self._existing_page_type or "").lower()
+                    mode = (self._existing_email_verification_mode or "").lower()
         else:
             page_type = (page_type or self._existing_page_type or "").lower()
             mode = (mode or self._existing_email_verification_mode or "").lower()
 
-        if not continue_url or "/email-verification" in continue_url:
-            # 仍需 OTP：优先 resend 获取新码
+        if password_done:
+            if not continue_url and auth_url:
+                logger.info("密码/2FA 完成后无 continue_url，尝试 reauthorize 提取 callback")
+                continue_url = self._reauthorize_for_session(auth_url) or ""
+        elif on_pwd or "/log-in/password" in (continue_url or ""):
+            raise RuntimeError(
+                "仍停在 ChatGPT 密码页，不能发邮箱登录 OTP（会把授权步骤打乱）。"
+                "需要库里的 ChatGPT 登录密码，或可用收信渠道走官方重置。"
+            )
+        elif not continue_url or "/email-verification" in (continue_url or "") or on_otp:
+            if not can_mail:
+                raise RuntimeError("需要邮箱 OTP 登录，但没有可用收信渠道")
             otp_sent_at = time.time()
             resend_ok = self.kickoff_otp_delivery("protocol_need_otp")
-            if not resend_ok and mode not in ("passwordless_signup", "passwordless_login"):
-                self.send_otp()
+            if not resend_ok:
+                self.send_otp(referer="https://auth.openai.com/email-verification")
                 otp_sent_at = time.time()
 
             otp_code = mail_provider.wait_for_otp(
@@ -4343,7 +4803,7 @@ class AuthFlow:
                     logger.warning(f"OTP 首次验证失败，重发重试: {e}")
                     otp_sent_at = time.time()
                     if not self.kickoff_otp_delivery("protocol_verify_retry"):
-                        self.send_otp()
+                        self.send_otp(referer="https://auth.openai.com/email-verification")
                     otp_code = mail_provider.wait_for_otp(
                         email,
                         timeout=otp_timeout,
@@ -4355,6 +4815,18 @@ class AuthFlow:
                     raise
             continue_url = self._extract_continue_url_from_step(otp_resp)
             continue_url = self._normalize_continue_url(continue_url)
+            if self._is_mfa_challenge_state(self._extract_page_type(otp_resp), continue_url):
+                totp_secret = (self.result.totp_secret or "").strip()
+                if not totp_secret:
+                    raise RuntimeError(f"邮箱 OTP 后遇到 2FA，但库里没有 totp_secret: {email}")
+                challenge_id = continue_url.split("/")[-1] if "/mfa-challenge/" in (continue_url or "") else ""
+                if not challenge_id:
+                    raise RuntimeError(f"邮箱 OTP 后 2FA 无法提取 challenge_id: {continue_url}")
+                logger.info(f"邮箱 OTP 后提交 TOTP（challenge_id={challenge_id[:16]}...）")
+                mfa_resp = self.submit_mfa_totp(_totp_now(totp_secret), challenge_id)
+                continue_url = self._normalize_continue_url(
+                    self._extract_continue_url_from_step(mfa_resp)
+                )
             if self._is_add_phone_state(page_type=self._extract_page_type(otp_resp), continue_url=continue_url):
                 continue_url = self._normalize_continue_url(
                     self._handle_add_phone_verification(continue_url=continue_url)

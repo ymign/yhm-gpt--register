@@ -122,13 +122,26 @@ def parse_account_plan(data: dict, body: str = "") -> dict:
             "log_lines": ["【响应解析】返回 JSON 格式异常，缺少 accounts 字段"],
         }
 
-    info = next(iter(accts.values()))
-    acct = info.get("account", {})
-    ent = info.get("entitlement", {})
-    promo = info.get("eligible_promo_campaigns") or {}
+    info = None
+    if isinstance(accts.get("default"), dict) and len(accts) > 1:
+        for k, v in accts.items():
+            if k != "default" and isinstance(v, dict):
+                info = v
+                break
+    if not isinstance(info, dict):
+        info = next(iter(accts.values()))
+    acct = info.get("account", {}) if isinstance(info, dict) else {}
+    ent = info.get("entitlement", {}) if isinstance(info, dict) else {}
+    promo = (info.get("eligible_promo_campaigns") or {}) if isinstance(info, dict) else {}
     if not isinstance(promo, dict):
         promo = {}
-    offers = info.get("eligible_offers") or []
+    raw_offers = (info.get("eligible_offers") or {}) if isinstance(info, dict) else {}
+    if isinstance(raw_offers, dict):
+        offers = raw_offers.get("offers") or []
+    elif isinstance(raw_offers, list):
+        offers = raw_offers
+    else:
+        offers = []
     if not isinstance(offers, list):
         offers = []
 
@@ -162,6 +175,14 @@ def parse_account_plan(data: dict, body: str = "") -> dict:
         log_lines.append(f"【活动探测】eligible_promo_campaigns 命中: [{promo_info_str}]")
     else:
         log_lines.append("【活动探测】eligible_promo_campaigns: 无 0元试用活动")
+
+    offer_ids = [str(o.get("id") or "") for o in offers if isinstance(o, dict) and o.get("id")]
+    if offer_ids:
+        log_lines.append(
+            f"【活动探测】eligible_offers（可购套餐目录，不是试用活动）: [{', '.join(offer_ids[:8])}]"
+        )
+    else:
+        log_lines.append("【活动探测】eligible_offers: 无")
 
     if acct.get("is_deactivated", False):
         reason = "账号已被 OpenAI 标记禁用 (is_deactivated=True)"
@@ -278,6 +299,9 @@ def parse_account_plan(data: dict, body: str = "") -> dict:
             "reason": reason,
             "log_lines": log_lines,
         }
+
+    # eligible_offers 里的 chatgptplusplan / chatgptpro 只是「可以买哪些套餐」，
+    # 每个 Free 号都有，不能当成 0 元试用。试用只看 eligible_promo_campaigns。
 
     # 4. 判定 Plus 订阅生效
     if plan == "plus" or "plusplan" in sub_plan or has_sub:

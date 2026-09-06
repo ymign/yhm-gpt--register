@@ -52,6 +52,46 @@ def invalidate_registered_caches() -> None:
     _countries_cache["data"] = None
 
 
+def jwt_exp_unix(token: str) -> float:
+    """从 JWT access_token 解析 exp（unix 秒）。解不出返回 0。"""
+    raw = (token or "").strip()
+    if not raw or raw.count(".") < 2:
+        return 0.0
+    try:
+        payload = raw.split(".")[1]
+        payload += "=" * ((4 - len(payload) % 4) % 4)
+        data = json.loads(base64.urlsafe_b64decode(payload.encode("ascii")).decode("utf-8", errors="replace"))
+        exp = data.get("exp") if isinstance(data, dict) else None
+        return float(exp) if exp else 0.0
+    except Exception:
+        return 0.0
+
+
+def _backfill_at_expires_at(con: sqlite3.Connection) -> None:
+    """给尚未写入 at_expires_at 的存量 AT 补到期时间，便于筛选/排序。"""
+    try:
+        cur = con.execute(
+            "SELECT email, access_token FROM registered "
+            "WHERE (at_expires_at IS NULL OR at_expires_at = 0) "
+            "AND access_token IS NOT NULL AND trim(access_token) != ''"
+        )
+        rows = cur.fetchall()
+    except Exception:
+        return
+    if not rows:
+        return
+    n = 0
+    for r in rows:
+        exp = jwt_exp_unix(r["access_token"])
+        if exp <= 0:
+            continue
+        con.execute("UPDATE registered SET at_expires_at=? WHERE email=?", (exp, r["email"]))
+        n += 1
+    if n:
+        con.commit()
+        logging.getLogger("db").info(f"[at_expires_at] 已回填 {n} 条 Access Token 到期时间")
+
+
 def _conn() -> sqlite3.Connection:
     con = sqlite3.connect(str(DB_PATH), check_same_thread=False, timeout=30)
     con.row_factory = sqlite3.Row
@@ -233,6 +273,9 @@ def init_db():
     if "warm_status" not in reg_cols:
         con.execute("ALTER TABLE registered ADD COLUMN warm_status TEXT DEFAULT ''")
         con.commit()
+    if "at_expires_at" not in reg_cols:
+        con.execute("ALTER TABLE registered ADD COLUMN at_expires_at REAL")
+        con.commit()
 
     # 高频覆盖索引（保证十万级数据秒开）
     con.execute("CREATE INDEX IF NOT EXISTS idx_reg_created ON registered(created_at DESC)")
@@ -240,8 +283,10 @@ def init_db():
     con.execute("CREATE INDEX IF NOT EXISTS idx_reg_export_created ON registered(exported_at, created_at DESC)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_reg_at_export ON registered(at_exported_at)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_reg_oauth_status ON registered(oauth_status)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_reg_at_expires ON registered(at_expires_at)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_pool_status_kind ON outlook_accounts(status, kind)")
     con.commit()
+    _backfill_at_expires_at(con)
 
     # 自动清理历史中没有任何凭证（AT/ST/RT 全为空）的未完成半成品脏数据
     con.execute("""
@@ -865,6 +910,25 @@ def get_account(email: str) -> Optional[dict]:
     return dict(row) if row else None
 
 
+def list_accounts_by_emails(emails: list[str]) -> list[dict]:
+    """按 email 列表批量取号池行，避免 Token 刷新 500 号时逐条 SELECT。"""
+    cleaned = [e.strip().lower() for e in (emails or []) if e and e.strip()]
+    if not cleaned:
+        return []
+    con = _conn()
+    out: list[dict] = []
+    chunk = 500
+    for i in range(0, len(cleaned), chunk):
+        part = cleaned[i:i + chunk]
+        placeholders = ",".join("?" * len(part))
+        cur = con.execute(
+            f"SELECT * FROM outlook_accounts WHERE lower(email) IN ({placeholders})",
+            part,
+        )
+        out.extend(dict(row) for row in cur.fetchall())
+    return out
+
+
 def claim_account(email: str) -> Optional[dict]:
     """原子 claim 指定邮箱（available / failed -> in_use）。
 
@@ -1376,16 +1440,17 @@ def save_registered(d: dict) -> None:
                 except Exception:
                     pass
 
+        at_val = d.get("access_token", "") or ""
         con.execute(
             "INSERT OR REPLACE INTO registered "
             "(email, password, access_token, session_token, refresh_token, "
             "id_token, device_id, csrf_token, cookie_header, "
-            "totp_secret, totp_factor_id, reg_country, reg_city, reg_ip, extra_json, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "totp_secret, totp_factor_id, reg_country, reg_city, reg_ip, extra_json, created_at, at_expires_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 email,
                 password,
-                d.get("access_token", ""),
+                at_val,
                 d.get("session_token", ""),
                 d.get("refresh_token", ""),
                 d.get("id_token", ""),
@@ -1399,6 +1464,7 @@ def save_registered(d: dict) -> None:
                 reg_ip,
                 json.dumps(extra, ensure_ascii=False) if extra else None,
                 time.time(),
+                jwt_exp_unix(at_val),
             ),
         )
         con.commit()
@@ -1478,8 +1544,8 @@ def update_registered_oauth(
 
         con.execute(
             "UPDATE registered SET access_token=?, refresh_token=?, id_token=?, session_token=?, "
-            "cookie_header=?, oauth_status=?, oauth_updated_at=?, extra_json=? WHERE lower(email)=?",
-            (new_at, new_rt, new_it, new_st, new_cookie, final_oauth_status, time.time(), json.dumps(extra, ensure_ascii=False), email),
+            "cookie_header=?, oauth_status=?, oauth_updated_at=?, extra_json=?, at_expires_at=? WHERE lower(email)=?",
+            (new_at, new_rt, new_it, new_st, new_cookie, final_oauth_status, time.time(), json.dumps(extra, ensure_ascii=False), jwt_exp_unix(new_at), email),
         )
         con.commit()
         return True
@@ -1641,9 +1707,10 @@ def recover_oauth_credentials(emails: Optional[list[str]] = None) -> dict:
                         extra["oauth_export"]["auth_method"] = "phone_verified"
                     extra["oauth_export"]["recovered_from_file"] = True
                     extra["oauth_export"]["updated_at"] = time.time()
+                    recovered_at = file_at or at
                     con.execute(
-                        "UPDATE registered SET access_token=?, refresh_token=?, id_token=?, oauth_status=?, extra_json=? WHERE lower(email)=?",
-                        (file_at or at, file_rt, file_it or it, new_st, json.dumps(extra, ensure_ascii=False), em),
+                        "UPDATE registered SET access_token=?, refresh_token=?, id_token=?, oauth_status=?, extra_json=?, at_expires_at=? WHERE lower(email)=?",
+                        (recovered_at, file_rt, file_it or it, new_st, json.dumps(extra, ensure_ascii=False), jwt_exp_unix(recovered_at), em),
                     )
                     recovered_from_files += 1
 
@@ -2579,6 +2646,7 @@ def _registered_where(
     filter_country: str = "",
     filter_at_export: str = "",
     filter_health: str = "",
+    filter_at_exp: str = "",
 ) -> tuple[str, list]:
     conditions = []
     args = []
@@ -2651,6 +2719,25 @@ def _registered_where(
             "(export_fmt LIKE '%session%' OR export_fmt_label LIKE '%Session%')"
         )
 
+    at_exp = (filter_at_exp or "").strip().lower()
+    if at_exp and at_exp != "all":
+        now = time.time()
+        if at_exp in ("expired", "at_expired"):
+            conditions.append("(at_expires_at IS NOT NULL AND at_expires_at > 0 AND at_expires_at <= ?)")
+            args.append(now)
+        elif at_exp in ("expiring", "expiring_24h", "at_expiring"):
+            conditions.append("(at_expires_at IS NOT NULL AND at_expires_at > ? AND at_expires_at <= ?)")
+            args.extend([now, now + 86400])
+        elif at_exp in ("valid", "at_valid"):
+            conditions.append("(at_expires_at IS NOT NULL AND at_expires_at > ?)")
+            args.append(now)
+        elif at_exp in ("no_at", "missing_at"):
+            conditions.append("(access_token IS NULL OR trim(access_token) = '')")
+        elif at_exp in ("unknown", "at_unknown"):
+            conditions.append(
+                "(access_token IS NOT NULL AND trim(access_token) != '' AND (at_expires_at IS NULL OR at_expires_at = 0))"
+            )
+
     search_cleaned = (search or "").strip().lower()
     if search_cleaned:
         conditions.append(
@@ -2661,6 +2748,22 @@ def _registered_where(
     if conditions:
         return "WHERE " + " AND ".join(conditions), args
     return "", args
+
+
+def _registered_order_sql(sort_by: str = "", sort_order: str = "") -> str:
+    col_map = {
+        "created_at": "created_at",
+        "at_expires_at": "at_expires_at",
+        "email": "email",
+    }
+    col = col_map.get((sort_by or "").strip().lower(), "created_at")
+    ordr = "ASC" if str(sort_order or "").strip().lower() == "asc" else "DESC"
+    if col == "at_expires_at":
+        return (
+            "ORDER BY CASE WHEN at_expires_at IS NULL OR at_expires_at <= 0 THEN 1 ELSE 0 END, "
+            f"at_expires_at {ordr}"
+        )
+    return f"ORDER BY {col} {ordr}"
 
 
 def count_registered(
@@ -2674,6 +2777,7 @@ def count_registered(
     filter_country: str = "",
     filter_at_export: str = "",
     filter_health: str = "",
+    filter_at_exp: str = "",
 ) -> int:
     con = _conn()
     where, args = _registered_where(
@@ -2684,6 +2788,7 @@ def count_registered(
         filter_country=filter_country,
         filter_at_export=filter_at_export,
         filter_health=filter_health,
+        filter_at_exp=filter_at_exp,
     )
     cur = con.execute(f"SELECT COUNT(*) FROM registered {where}", args)
     return cur.fetchone()[0]
@@ -2701,6 +2806,7 @@ def list_registered_emails(
     filter_country: str = "",
     filter_at_export: str = "",
     filter_health: str = "",
+    filter_at_exp: str = "",
 ) -> list[str]:
     """返回符合过滤条件的所有注册邮箱列表。"""
     con = _conn()
@@ -2712,6 +2818,7 @@ def list_registered_emails(
         filter_country=filter_country,
         filter_at_export=filter_at_export,
         filter_health=filter_health,
+        filter_at_exp=filter_at_exp,
     )
     cur = con.execute(
         f"SELECT email FROM registered {where} ORDER BY created_at DESC LIMIT ?",
@@ -2733,6 +2840,9 @@ def list_registered(
     filter_country: str = "",
     filter_at_export: str = "",
     filter_health: str = "",
+    filter_at_exp: str = "",
+    sort_by: str = "created_at",
+    sort_order: str = "desc",
 ) -> list[dict]:
     con = _conn()
     where, args = _registered_where(
@@ -2743,15 +2853,17 @@ def list_registered(
         filter_country=filter_country,
         filter_at_export=filter_at_export,
         filter_health=filter_health,
+        filter_at_exp=filter_at_exp,
     )
+    order_sql = _registered_order_sql(sort_by, sort_order)
     cur = con.execute(
         f"SELECT email, password, totp_secret, reg_country, reg_city, reg_ip, "
         f"length(access_token) AS at_len, length(session_token) AS st_len, "
         f"length(refresh_token) AS rt_len, oauth_status, oauth_updated_at, "
         f"exported_at, export_fmt, export_fmt_label, export_note, "
-        f"at_exported_at, at_export_note, "
+        f"at_exported_at, at_export_note, at_expires_at, "
         f"extra_json, oa_check, created_at "
-        f"FROM registered {where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
+        f"FROM registered {where} {order_sql} LIMIT ? OFFSET ?",
         args + [limit, offset],
     )
     rows = []
@@ -2851,7 +2963,7 @@ def list_registered_by_emails(emails: list[str]) -> list[dict]:
         cur = con.execute(
             f"SELECT r.*, a.relay_url AS relay_url "
             f"FROM registered r LEFT JOIN outlook_accounts a ON a.email = r.email "
-            f"WHERE r.email IN ({placeholders})",
+            f"WHERE lower(r.email) IN ({placeholders})",
             part,
         )
         for row in cur.fetchall():
