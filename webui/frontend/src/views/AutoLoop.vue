@@ -674,10 +674,10 @@ onUnmounted(() => {
                       <el-radio-button value="icloud_relay">✉️ iCloud 邮箱 (中转)</el-radio-button>
                     </el-radio-group>
                     <span class="mail-source-badge-tip">
-                      <span v-if="form.autoMailSource === 'remail'" class="text-remail" style="color: #10b981">🍎 Remail 自动购号：每次并发注册按需购买全新邮箱，支持微软/iCloud等多后缀</span>
-                      <span v-else-if="form.autoMailSource === 'cf_temp'" class="text-cf">⚡ 无需号池：Worker 动态无限生成地址并发注册，推荐</span>
-                      <span v-else-if="form.autoMailSource === 'outlook'" class="text-outlook">📦 微软号池并发：自动从号池领取可用账号，池空自动等待</span>
-                      <span v-else-if="form.autoMailSource === 'icloud_relay'" class="text-ic">✉️ iCloud 号池并发：自动从号池领取带中转链接的账号</span>
+                      <span v-if="form.autoMailSource === 'remail'" class="text-remail" style="color: #28646e; font-weight: 500;">🍎 Remail 自动购号：每次并发注册按需购买全新邮箱，支持微软/iCloud等多后缀</span>
+                      <span v-else-if="form.autoMailSource === 'cf_temp'" class="text-cf" style="color: #28646e; font-weight: 500;">⚡ 无需号池：Worker 动态无限生成地址并发注册，推荐</span>
+                      <span v-else-if="form.autoMailSource === 'outlook'" class="text-outlook" style="color: #28646e; font-weight: 500;">📦 微软号池并发：自动从号池领取可用账号，池空自动等待</span>
+                      <span v-else-if="form.autoMailSource === 'icloud_relay'" class="text-ic" style="color: #28646e; font-weight: 500;">✉️ iCloud 号池并发：自动从号池领取带中转链接的账号</span>
                     </span>
                   </div>
                 </el-form-item>
@@ -1173,20 +1173,22 @@ onUnmounted(() => {
 }
 
 .kpi-card {
-  background: var(--app-window-bg);
-  border: 1px solid var(--app-border);
+  background: #ffffff;
+  border: 1px solid rgba(93, 164, 177, 0.16);
   border-radius: 10px;
-  padding: 8px 12px;
+  padding: 10px 14px;
+  min-height: 64px;
   display: flex;
   align-items: center;
-  gap: 8px;
-  box-shadow: var(--app-shadow-sm);
+  gap: 10px;
+  box-shadow: 0 1px 3px rgba(35, 75, 82, 0.04);
   transition: all 0.2s ease;
 }
 
 .kpi-card:hover {
   transform: translateY(-1px);
-  box-shadow: var(--app-shadow);
+  border-color: #5da4b1;
+  box-shadow: 0 4px 12px rgba(93, 164, 177, 0.12);
 }
 
 .kpi-info {
@@ -1204,23 +1206,23 @@ onUnmounted(() => {
 }
 
 .cpm-icon {
-  color: #10b981;
-  font-size: 12px;
+  color: #5da4b1;
+  font-size: 13px;
 }
 
 .kpi-title {
-  font-size: 10.5px;
-  color: var(--app-text-secondary);
+  font-size: 11.5px;
+  color: #5a767b;
   font-weight: 500;
   white-space: nowrap;
 }
 
 .kpi-num {
-  font-size: 16px;
+  font-size: 18px;
   font-weight: 700;
-  color: var(--app-title);
-  font-family: var(--font-mono, monospace);
-  line-height: 1.1;
+  color: #1a3c42;
+  font-family: "JetBrains Mono", monospace;
+  line-height: 1.2;
 }
 
 .kpi-num-row {
@@ -1230,8 +1232,8 @@ onUnmounted(() => {
 }
 
 .kpi-sub {
-  font-size: 10.5px;
-  color: var(--app-text-secondary);
+  font-size: 11px;
+  color: #7b9498;
   white-space: nowrap;
 }
 
@@ -1249,41 +1251,41 @@ onUnmounted(() => {
 }
 
 .state-running .live-pulse {
-  background: #10b981;
-  box-shadow: 0 0 10px #10b981;
+  background: #5da4b1;
+  box-shadow: 0 0 10px #5da4b1;
   animation: pulse-ring 1.5s infinite;
 }
 
 .state-running .status-text {
-  color: #10b981;
+  color: #28646e;
 }
 
 .state-paused .live-pulse {
-  background: #f59e0b;
-  box-shadow: 0 0 8px #f59e0b;
+  background: #d49432;
+  box-shadow: 0 0 8px #d49432;
 }
 
 .state-paused .status-text {
-  color: #f59e0b;
+  color: #8c5c16;
 }
 
 .state-stopped .status-text {
-  color: var(--app-text-secondary);
+  color: #7b9498;
 }
 
 .hit-card {
-  border-color: rgba(16, 185, 129, 0.35);
-  background: rgba(16, 185, 129, 0.05);
+  border-color: rgba(93, 164, 177, 0.22);
+  background: #ffffff;
 }
 
 .err-card {
-  border-color: rgba(239, 68, 68, 0.3);
-  background: rgba(239, 68, 68, 0.04);
+  border-color: rgba(199, 86, 77, 0.22);
+  background: #ffffff;
 }
 
 .timing-card-running {
-  border-color: rgba(0, 122, 255, 0.35);
-  background: rgba(0, 122, 255, 0.04);
+  border-color: rgba(93, 164, 177, 0.35);
+  background: #ffffff;
 }
 
 .timing-kpi-header {
@@ -1293,24 +1295,24 @@ onUnmounted(() => {
 }
 
 .pulse-dot-live {
-  width: 5px;
-  height: 5px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
-  background: #007aff;
-  box-shadow: 0 0 6px #007aff;
+  background: #5da4b1;
+  box-shadow: 0 0 6px #5da4b1;
 }
 
 .timing-sub-row {
   display: flex;
   align-items: center;
   gap: 4px;
-  font-size: 9px;
-  color: var(--app-text-secondary);
-  margin-top: 1px;
+  font-size: 10.5px;
+  color: #7b9498;
+  margin-top: 2px;
 }
 
 .timing-sub-time {
-  font-family: var(--font-mono, monospace);
+  font-family: "JetBrains Mono", monospace;
 }
 
 .timing-sub-arrow {
@@ -1318,7 +1320,7 @@ onUnmounted(() => {
 }
 
 .text-running-sub {
-  color: #10b981;
+  color: #28646e;
   font-weight: 600;
 }
 
@@ -1994,5 +1996,73 @@ onUnmounted(() => {
   0% { transform: scale(0.85); opacity: 0.6; }
   50% { transform: scale(1.15); opacity: 1; }
   100% { transform: scale(0.85); opacity: 0.6; }
+}
+
+/* ──────────── 全自动批量参数与排版系统性调优 ──────────── */
+:deep(.macos-radio-group .el-radio-button__inner) {
+  border-color: rgba(93, 164, 177, 0.22) !important;
+  color: #38595f !important;
+  font-size: 12px !important;
+  font-weight: 500 !important;
+  padding: 6px 13px !important;
+  background: #ffffff !important;
+  transition: all 0.16s ease !important;
+}
+:deep(.macos-radio-group .el-radio-button__original-radio:checked + .el-radio-button__inner) {
+  background: #5da4b1 !important;
+  border-color: #5da4b1 !important;
+  color: #ffffff !important;
+  font-weight: 600 !important;
+  box-shadow: -1px 0 0 0 #5da4b1 !important;
+}
+
+:deep(.macos-num-input) {
+  width: 100% !important;
+}
+:deep(.macos-num-input .el-input__wrapper) {
+  background: #ffffff !important;
+  border: 1px solid rgba(93, 164, 177, 0.22) !important;
+  box-shadow: none !important;
+  border-radius: 6px !important;
+  padding-left: 30px !important;
+  padding-right: 30px !important;
+  height: 30px !important;
+}
+:deep(.macos-num-input.is-focus .el-input__wrapper),
+:deep(.macos-num-input .el-input__wrapper.is-focus) {
+  border-color: #5da4b1 !important;
+  box-shadow: 0 0 0 2px rgba(93, 164, 177, 0.2) !important;
+}
+:deep(.macos-num-input .el-input-number__decrease),
+:deep(.macos-num-input .el-input-number__increase) {
+  background: #f4f8f8 !important;
+  border-color: rgba(93, 164, 177, 0.18) !important;
+  color: #4b666a !important;
+  width: 26px !important;
+  height: 28px !important;
+  transition: all 0.15s ease !important;
+}
+:deep(.macos-num-input .el-input-number__decrease:hover),
+:deep(.macos-num-input .el-input-number__increase:hover) {
+  background: #edf6f8 !important;
+  color: #28646e !important;
+}
+:deep(.macos-num-input .el-input__inner) {
+  font-family: "JetBrains Mono", monospace !important;
+  font-size: 13px !important;
+  font-weight: 600 !important;
+  color: #1a3c42 !important;
+  text-align: center !important;
+}
+
+:deep(.el-form-item__label) {
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  color: #38595f !important;
+  margin-bottom: 4px !important;
+  line-height: 1.3 !important;
+}
+:deep(.el-form-item) {
+  margin-bottom: 8px !important;
 }
 </style>

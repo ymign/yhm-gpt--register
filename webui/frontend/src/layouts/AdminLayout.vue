@@ -245,12 +245,10 @@ onMounted(() => {
   background: var(--app-canvas-bg);
 }
 
-/* ──────────── 左侧 macOS 原生边栏 ──────────── */
+/* ──────────── 左侧中国传统色「天水碧」沉静边栏 ──────────── */
 .macos-sidebar {
-  background: var(--app-sidebar-bg);
-  backdrop-filter: blur(24px) saturate(180%);
-  -webkit-backdrop-filter: blur(24px) saturate(180%);
-  border-right: 1px solid var(--app-border);
+  background: #5da4b1;
+  border-right: 1px solid rgba(0, 0, 0, 0.08);
   display: flex;
   flex-direction: column;
   transition: width 0.22s cubic-bezier(0.4, 0, 0.2, 1);
@@ -273,19 +271,20 @@ onMounted(() => {
   gap: 6px;
 }
 .brand-badge {
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 700;
-  background: #007aff;
-  color: #fff;
-  padding: 1px 6px;
-  border-radius: 5px;
+  background: #ffffff;
+  color: #1a454d;
+  padding: 2px 7px;
+  border-radius: 6px;
   letter-spacing: 0.5px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
 }
 .brand-title {
-  font-size: 13px;
+  font-size: 13.5px;
   font-weight: 600;
-  color: var(--app-title);
-  letter-spacing: -0.02em;
+  color: #ffffff;
+  letter-spacing: -0.01em;
 }
 
 .sidebar-scroll {
@@ -301,50 +300,50 @@ onMounted(() => {
 
 /* 分组标题 */
 :deep(.macos-menu-group .el-menu-item-group__title) {
-  padding: 10px 12px 4px !important;
-  font-size: 10.5px !important;
-  font-weight: 700 !important;
-  color: var(--app-text-secondary) !important;
-  letter-spacing: 0.6px !important;
+  padding: 12px 12px 6px !important;
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  color: rgba(255, 255, 255, 0.65) !important;
+  letter-spacing: 0.8px !important;
   text-transform: uppercase !important;
 }
 
-/* 导航项：macOS 胶囊按钮 */
+/* 导航项 */
 .macos-menu-item {
-  height: 34px !important;
-  line-height: 34px !important;
-  margin-bottom: 2px !important;
+  height: 36px !important;
+  line-height: 36px !important;
+  margin-bottom: 3px !important;
   border-radius: 8px !important;
-  color: var(--app-text-regular) !important;
-  font-size: 12.5px !important;
+  color: rgba(255, 255, 255, 0.92) !important;
+  font-size: 13px !important;
   font-weight: 500 !important;
-  padding: 0 10px !important;
+  padding: 0 12px !important;
   transition: all 0.16s cubic-bezier(0.4, 0, 0.2, 1) !important;
 }
 
 .macos-menu-item:hover {
-  background: rgba(0, 0, 0, 0.05) !important;
-  color: var(--app-title) !important;
+  background: rgba(255, 255, 255, 0.18) !important;
+  color: #ffffff !important;
 }
 html.dark .macos-menu-item:hover {
-  background: rgba(255, 255, 255, 0.08) !important;
+  background: rgba(255, 255, 255, 0.18) !important;
 }
 
-/* 选中激活态：Apple SF Blue 拟态胶囊 */
+/* 选中激活态：纯白玉润胶囊 (无瑕白玉配天水碧青翠) */
 .macos-menu-item.is-active {
-  background: #007aff !important;
-  color: #ffffff !important;
+  background: #ffffff !important;
+  color: #1a454d !important;
   font-weight: 600 !important;
-  box-shadow: none !important;
+  box-shadow: 0 3px 10px rgba(18, 56, 62, 0.2) !important;
 }
 .macos-menu-item.is-active .menu-icon {
-  color: #ffffff !important;
+  color: #1a454d !important;
 }
 
 .menu-icon {
-  font-size: 15px !important;
-  margin-right: 8px !important;
-  color: var(--app-text-secondary);
+  font-size: 16px !important;
+  margin-right: 10px !important;
+  color: rgba(255, 255, 255, 0.85);
 }
 
 .menu-label {
@@ -354,7 +353,7 @@ html.dark .macos-menu-item:hover {
 /* 边栏底部 */
 .sidebar-bottom {
   padding: 10px 12px;
-  border-top: 1px solid var(--app-border);
+  border-top: 1px solid rgba(248, 243, 233, 0.18);
   flex-shrink: 0;
 }
 .collapse-btn {
@@ -367,18 +366,18 @@ html.dark .macos-menu-item:hover {
   background: transparent;
   border: 1px solid transparent;
   border-radius: 6px;
-  color: var(--app-text-secondary);
+  color: rgba(248, 243, 233, 0.85);
   font-size: 11.5px;
   cursor: pointer;
   outline: none;
   transition: all 0.15s ease;
 }
 .collapse-btn:hover {
-  background: rgba(0, 0, 0, 0.05);
-  color: var(--app-title);
+  background: rgba(248, 243, 233, 0.15);
+  color: #ffffff;
 }
 html.dark .collapse-btn:hover {
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(248, 243, 233, 0.15);
 }
 
 /* ──────────── 右侧主体外壳与毛玻璃顶栏 ──────────── */
@@ -465,34 +464,35 @@ html.dark .collapse-btn:hover {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 2px 7px;
+  padding: 2px 8px;
   border-radius: 12px;
   font-size: 11px;
-  background: var(--el-fill-color-light);
-  border: 1px solid var(--app-border);
+  background: #ffffff;
+  border: 1px solid rgba(93, 164, 177, 0.22);
 }
 .stat-pill .pill-dot {
   width: 5px;
   height: 5px;
   border-radius: 50%;
-  background: #8e8e93;
+  background: #5da4b1;
 }
 .stat-pill .pill-label {
-  color: var(--app-text-secondary);
+  color: #65777a;
 }
 .stat-pill .pill-val {
   font-weight: 700;
   font-family: "SFMono-Regular", Consolas, monospace;
+  color: #234e55;
 }
 
-.stat-pill.pill-success .pill-dot { background: var(--apple-green); }
-.stat-pill.pill-success .pill-val { color: var(--apple-green); }
-.stat-pill.pill-warning .pill-dot { background: var(--apple-orange); }
-.stat-pill.pill-warning .pill-val { color: var(--apple-orange); }
-.stat-pill.pill-primary .pill-dot { background: var(--apple-blue); }
-.stat-pill.pill-primary .pill-val { color: var(--apple-blue); }
-.stat-pill.pill-danger .pill-dot { background: var(--apple-red); }
-.stat-pill.pill-danger .pill-val { color: var(--apple-red); }
+.stat-pill.pill-success .pill-dot { background: #5da4b1; }
+.stat-pill.pill-success .pill-val { color: #234e55; }
+.stat-pill.pill-warning .pill-dot { background: #5da4b1; }
+.stat-pill.pill-warning .pill-val { color: #234e55; }
+.stat-pill.pill-primary .pill-dot { background: #5da4b1; }
+.stat-pill.pill-primary .pill-val { color: #234e55; }
+.stat-pill.pill-danger .pill-dot { background: #c7564d; }
+.stat-pill.pill-danger .pill-val { color: #9b3730; }
 
 /* 主题切换开关 */
 .macos-theme-toggle {
@@ -533,7 +533,7 @@ html.dark .collapse-btn:hover {
   width: 20px;
   height: 20px;
   border-radius: 50%;
-  background: #007aff;
+  background: var(--el-color-primary);
   color: #fff;
   display: flex;
   align-items: center;

@@ -48,6 +48,8 @@ ENV/
 
 # ──────────────── 测试 / 临时 ────────────────
 /tmp/
+*日志*.txt
+临时*.txt
 .pytest_cache/
 .coverage
 htmlcov/

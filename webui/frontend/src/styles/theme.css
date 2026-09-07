@@ -4,93 +4,96 @@
    ═════════════════════════════════════════════════════════════════════ */
 
 :root {
-  /* Apple System Accent Colors */
-  --el-color-primary: #0071e3;
-  --el-color-primary-light-3: #409eff;
-  --el-color-primary-light-5: #79bbff;
-  --el-color-primary-light-7: #a0cfff;
-  --el-color-primary-light-8: #c6e2ff;
-  --el-color-primary-light-9: #ecf5ff;
-  --el-color-primary-dark-2: #0056b3;
+  /* ═════════════════════════════════════════════════════════════════════
+     中国传统色·护眼配色规范 (天水碧 & 凝脂)
+     天水碧: #5DA4B1 (主色 / 灵动青翠 / 澄澈舒缓)
+     凝脂:   #F8F3E9 (底色 / 暖白如玉 / 柔和护眼过滤蓝光)
+     ═════════════════════════════════════════════════════════════════════ */
+  --c-tianshuibi: #5da4b1;
+  --c-ningzhi: #f8f3e9;
+  --c-tianshuibi-hover: #488793;
+  --c-tianshuibi-active: #396e78;
+  --c-tianshuibi-soft: rgba(93, 164, 177, 0.12);
+  --c-tianshuibi-border: rgba(93, 164, 177, 0.28);
 
-  --el-color-success: #34c759;
-  --el-color-warning: #ff9500;
-  --el-color-danger: #ff3b30;
-  --el-color-info: #8e8e93;
+  /* Element Plus 全局主色对齐天水碧 */
+  --el-color-primary: #5da4b1;
+  --el-color-primary-light-3: #7ebbc5;
+  --el-color-primary-light-5: #9ed1d9;
+  --el-color-primary-light-7: #bfe3e8;
+  --el-color-primary-light-8: #d5edf1;
+  --el-color-primary-light-9: #edf6f8;
+  --el-color-primary-dark-2: #488793;
 
-  /* Apple Palette Variables */
-  --apple-blue: #007aff;
-  --apple-blue-dark: #0062cc;
-  --apple-green: #34c759;
-  --apple-indigo: #5856d6;
-  --apple-orange: #ff9500;
-  --apple-pink: #ff2d55;
-  --apple-purple: #af52de;
-  --apple-red: #ff3b30;
-  --apple-teal: #5ac8fa;
-  --apple-yellow: #ffcc00;
+  /* 雅致传统状态色（摒弃刺眼高饱和霓虹色） */
+  --el-color-success: #5da4b1;
+  --el-color-warning: #d49432;
+  --el-color-danger: #c7564d;
+  --el-color-info: #7c8f92;
 
-  --brand: #0071e3;
-  --brand-dark: #0056b3;
+  --brand: #5da4b1;
+  --brand-dark: #488793;
 
-  /* Light Surface & Glassmorphism Tokens */
-  --app-canvas-bg: #f5f5f7;
+  /* 天水碧与凝脂护眼雅致基底 (清润如玉、彻底消除大面积蜡黄) */
+  --app-canvas-bg: #f4f7f6;
   --app-window-bg: #ffffff;
-  --app-sidebar-bg: rgba(246, 246, 248, 0.86);
-  --app-header-bg: rgba(255, 255, 255, 0.82);
-  --app-content-bg: #f5f5f7;
+  --app-sidebar-bg: #5da4b1;
+  --app-header-bg: rgba(255, 255, 255, 0.92);
+  --app-content-bg: #f4f7f6;
   --app-card-bg: #ffffff;
-  --app-border: rgba(0, 0, 0, 0.08);
-  --app-card-border: rgba(0, 0, 0, 0.06);
-  --app-title: #1d1d1f;
-  --app-text-regular: #424245;
-  --app-text-secondary: #86868b;
+  --app-border: rgba(93, 164, 177, 0.16);
+  --app-card-border: rgba(93, 164, 177, 0.14);
 
-  /* macOS Layered Shadows */
-  --app-shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.02);
-  --app-shadow-md: 0 4px 16px -2px rgba(0, 0, 0, 0.06), 0 2px 6px -1px rgba(0, 0, 0, 0.03);
-  --app-shadow-lg: 0 12px 32px -4px rgba(0, 0, 0, 0.08), 0 4px 12px -2px rgba(0, 0, 0, 0.04);
-  --app-shadow-glass: 0 8px 32px 0 rgba(31, 38, 135, 0.06);
+  /* 沉静青黛护眼文字层级 */
+  --app-title: #1a3c42;
+  --app-text-regular: #324e53;
+  --app-text-secondary: #657e82;
 
-  /* Terminal & Log Surfaces */
-  --app-log-bg: #141418;
-  --app-log-text: #e2e8f0;
-  --app-log-border: #242430;
+  /* 柔和阴影与通透青雾光感 */
+  --app-shadow-sm: 0 1px 3px rgba(35, 75, 82, 0.05), 0 1px 2px rgba(35, 75, 82, 0.03);
+  --app-shadow-md: 0 4px 16px -2px rgba(35, 75, 82, 0.07), 0 2px 6px -1px rgba(35, 75, 82, 0.03);
+  --app-shadow-lg: 0 12px 32px -4px rgba(35, 75, 82, 0.09), 0 4px 12px -2px rgba(35, 75, 82, 0.04);
+  --app-shadow-glass: 0 8px 32px 0 rgba(93, 164, 177, 0.08);
+
+  /* 终端 & 调试板 */
+  --app-log-bg: #1e282a;
+  --app-log-text: #eaf1f2;
+  --app-log-border: #2c3c3e;
 }
 
 html.dark {
-  --el-color-primary: #0a84ff;
-  --el-color-primary-light-3: #409eff;
-  --el-color-primary-dark-2: #0066cc;
-  --el-color-success: #30d158;
-  --el-color-warning: #ffd60a;
-  --el-color-danger: #ff453a;
-  --el-color-info: #98989d;
+  --el-color-primary: #5da4b1;
+  --el-color-primary-light-3: #7ebbc5;
+  --el-color-primary-dark-2: #488793;
+  --el-color-success: #5da4b1;
+  --el-color-warning: #d49432;
+  --el-color-danger: #c7564d;
+  --el-color-info: #809295;
 
-  --brand: #0a84ff;
-  --brand-dark: #0066cc;
+  --brand: #5da4b1;
+  --brand-dark: #488793;
 
-  /* Dark Surface & Materials */
-  --app-canvas-bg: #000000;
-  --app-window-bg: #1c1c1e;
-  --app-sidebar-bg: rgba(28, 28, 30, 0.85);
-  --app-header-bg: rgba(28, 28, 30, 0.82);
-  --app-content-bg: #121214;
-  --app-card-bg: #1c1c1e;
-  --app-border: rgba(255, 255, 255, 0.1);
-  --app-card-border: rgba(255, 255, 255, 0.08);
-  --app-title: #f5f5f7;
-  --app-text-regular: #d1d1d6;
-  --app-text-secondary: #8e8e93;
+  /* 暗调黛青护眼底色 (避免纯黑高对比刺眼) */
+  --app-canvas-bg: #13181a;
+  --app-window-bg: #182022;
+  --app-sidebar-bg: rgba(22, 29, 31, 0.88);
+  --app-header-bg: rgba(22, 29, 31, 0.85);
+  --app-content-bg: #13181a;
+  --app-card-bg: #182022;
+  --app-border: rgba(93, 164, 177, 0.16);
+  --app-card-border: rgba(93, 164, 177, 0.12);
+  --app-title: #f4f8f8;
+  --app-text-regular: #cbd8da;
+  --app-text-secondary: #8c9ea0;
 
-  --app-shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.5);
-  --app-shadow-md: 0 4px 20px -2px rgba(0, 0, 0, 0.55), 0 2px 6px -1px rgba(0, 0, 0, 0.35);
-  --app-shadow-lg: 0 16px 36px -4px rgba(0, 0, 0, 0.7);
-  --app-shadow-glass: 0 8px 32px 0 rgba(0, 0, 0, 0.4);
+  --app-shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.4);
+  --app-shadow-md: 0 4px 20px -2px rgba(0, 0, 0, 0.45);
+  --app-shadow-lg: 0 16px 36px -4px rgba(0, 0, 0, 0.55);
+  --app-shadow-glass: 0 8px 32px 0 rgba(0, 0, 0, 0.35);
 
-  --app-log-bg: #0d0d10;
-  --app-log-text: #f1f5f9;
-  --app-log-border: #262630;
+  --app-log-bg: #101516;
+  --app-log-text: #eaf1f2;
+  --app-log-border: #1f2b2d;
 }
 
 * {
@@ -100,10 +103,18 @@ html.dark {
 html, body, #app {
   margin: 0;
   height: 100%;
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Helvetica Neue", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "WenQuanYi Micro Hei", sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  font-size: 13px;
+  line-height: 1.5;
   letter-spacing: -0.01em;
+}
+
+.mono, code, kbd, samp {
+  font-family: "JetBrains Mono", "SF Mono", Consolas, "Liberation Mono", Menlo, Courier, monospace !important;
+  font-feature-settings: "tnum" 1;
 }
 
 body {
@@ -189,7 +200,7 @@ body {
 .el-input__wrapper.is-focus,
 .el-select__wrapper.is-focused,
 .el-textarea__inner:focus {
-  box-shadow: 0 0 0 1px var(--el-color-primary) inset, 0 0 0 3px rgba(0, 113, 227, 0.2) !important;
+  box-shadow: 0 0 0 1px var(--el-color-primary) inset, 0 0 0 3px rgba(93, 164, 177, 0.25) !important;
 }
 
 /* 表格 */
