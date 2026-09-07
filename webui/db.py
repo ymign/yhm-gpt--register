@@ -2848,6 +2848,8 @@ def list_registered(
     sort_by: str = "created_at",
     sort_order: str = "desc",
 ) -> list[dict]:
+    limit = max(1, min(int(limit or 20), 2000))
+    offset = max(0, int(offset or 0))
     con = _conn()
     where, args = _registered_where(
         filter_rt, search,

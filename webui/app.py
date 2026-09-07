@@ -18,7 +18,7 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, JSONResponse, Response as PlainResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -567,8 +567,8 @@ def api_registered_summary():
 
 @app.get("/api/registered")
 def api_registered(
-    limit: int = 20,
-    offset: int = 0,
+    limit: int = Query(20, ge=1, le=2000),
+    offset: int = Query(0, ge=0),
     filter: str = "all",
     q: str = "",
     search: str = "",

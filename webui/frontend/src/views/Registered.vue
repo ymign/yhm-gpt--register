@@ -162,7 +162,32 @@ async function openExtractChannel(channelKey) {
 const rows = ref([])
 const total = ref(0)
 const page = ref(1)
-const pageSize = ref(20)
+const PAGE_SIZE_KEY = 'reg_page_size'
+const PAGE_SIZE_PRESETS = [10, 20, 30, 50, 100, 200, 500, 1000]
+const PAGE_SIZE_MIN = 1
+const PAGE_SIZE_MAX = 2000
+
+function clampPageSize(val) {
+  const n = parseInt(val, 10)
+  if (!Number.isFinite(n)) return 20
+  return Math.min(PAGE_SIZE_MAX, Math.max(PAGE_SIZE_MIN, n))
+}
+
+function readSavedPageSize() {
+  try {
+    return clampPageSize(localStorage.getItem(PAGE_SIZE_KEY) || '20')
+  } catch (_) {
+    return 20
+  }
+}
+
+const pageSize = ref(readSavedPageSize())
+const customPageSize = ref(pageSize.value)
+const pageSizeOptions = computed(() => {
+  const set = new Set(PAGE_SIZE_PRESETS)
+  if (pageSize.value) set.add(pageSize.value)
+  return [...set].sort((a, b) => a - b)
+})
 const filterHealth = ref('all') // 验活/存活状态筛选: all / token_invalid / banned / dead / alive / ...
 const filterPlan = ref('all')
 const filterSec = ref('all')
@@ -3187,8 +3212,23 @@ async function refreshAll() {
   ])
 }
 
+function persistPageSize(n) {
+  const size = clampPageSize(n)
+  pageSize.value = size
+  customPageSize.value = size
+  try {
+    localStorage.setItem(PAGE_SIZE_KEY, String(size))
+  } catch (_) {}
+  return size
+}
+
 function handleSizeChange(val) {
-  pageSize.value = val
+  persistPageSize(val)
+  load(true)
+}
+
+function applyCustomPageSize() {
+  persistPageSize(customPageSize.value)
   load(true)
 }
 
@@ -5935,10 +5975,25 @@ onUnmounted(() => {
             </div>
 
             <div class="footer-pagination-right">
+              <span class="page-size-custom">
+                <span class="page-size-custom-label">自定义</span>
+                <el-input-number
+                  v-model="customPageSize"
+                  :min="PAGE_SIZE_MIN"
+                  :max="PAGE_SIZE_MAX"
+                  :step="10"
+                  size="small"
+                  controls-position="right"
+                  class="page-size-custom-input"
+                  @change="applyCustomPageSize"
+                  @keyup.enter="applyCustomPageSize"
+                />
+                <span class="page-size-custom-unit">条/页</span>
+              </span>
               <el-pagination
                 v-model:current-page="page"
                 v-model:page-size="pageSize"
-                :page-sizes="[10, 20, 30, 50, 100, 200, 500]"
+                :page-sizes="pageSizeOptions"
                 :total="total"
                 layout="total, sizes, prev, pager, next, jumper"
                 size="small"
@@ -10956,8 +11011,8 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  height: 42px;
-  min-height: 42px;
+  height: 46px;
+  min-height: 46px;
   padding: 0 16px;
   border-top: 1px solid rgba(93, 164, 177, 0.16);
   background: #ffffff;
@@ -10985,6 +11040,43 @@ onUnmounted(() => {
 .footer-pagination-right {
   display: flex;
   align-items: center;
+  gap: 10px;
+}
+
+.page-size-custom {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: #65777a;
+  white-space: nowrap;
+}
+.page-size-custom-label {
+  font-weight: 600;
+  color: #4b5e61;
+}
+.page-size-custom-unit {
+  color: #65777a;
+}
+.page-size-custom-input {
+  width: 108px;
+}
+.page-size-custom-input :deep(.el-input-number__decrease),
+.page-size-custom-input :deep(.el-input-number__increase) {
+  width: 18px;
+}
+.page-size-custom-input :deep(.el-input__wrapper) {
+  padding-left: 6px;
+  padding-right: 22px;
+  height: 24px;
+  background: #ffffff !important;
+  border: 1px solid #ded5c6 !important;
+  box-shadow: none !important;
+}
+.page-size-custom-input :deep(.el-input__inner) {
+  font-size: 11px;
+  height: 22px;
+  text-align: center;
 }
 
 /* 考公工作台凝脂与天水碧雅致分页 */
