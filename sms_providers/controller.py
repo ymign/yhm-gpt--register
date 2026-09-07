@@ -210,13 +210,16 @@ class PhoneCallbackController:
     def mark_send_failed(self, reason: str = "") -> None:
         if self.activation and self.provider:
             is_cdk = bool(getattr(self.provider, "uses_cdk_pool", False))
-            cdk = (self.activation.metadata or {}).get("cdk") or self.activation.activation_id
+            aid = self.activation.activation_id
+            cdk = (self.activation.metadata or {}).get("cdk") or aid
             if is_cdk:
                 self.log(f"🔄 手机号已被 OpenAI 拒绝 ({reason})，正在为 CDK [{cdk}] 申请更换新号码...")
             try:
-                self.provider.mark_send_failed(self.activation.activation_id, reason=reason)
-            except Exception:
-                pass
+                self.provider.mark_send_failed(aid, reason=reason)
+                self.log(f"🗑️ 已向接码平台申请取消退款: activation_id={aid} reason={reason or '-'}")
+                self._released_id = aid
+            except Exception as e:
+                self.log(f"⚠️ 取消退款失败: activation_id={aid} err={e}")
 
     def set_resend_callback(self, callback: Optional[Callable[[], None]]) -> None:
         try:
@@ -226,11 +229,16 @@ class PhoneCallbackController:
 
     def cleanup(self) -> None:
         if self.activation and not self.completed and self.provider:
+            aid = self.activation.activation_id
+            if getattr(self, "_released_id", None) == aid:
+                self._release_lock()
+                return
             try:
-                self.provider.cancel(self.activation.activation_id)
-                self.log(f"🗑️ 已释放未使用号码: activation_id={self.activation.activation_id}")
-            except Exception:
-                pass
+                self.provider.cancel(aid)
+                self.log(f"🗑️ 已释放未使用号码: activation_id={aid}")
+                self._released_id = aid
+            except Exception as e:
+                self.log(f"⚠️ 释放未使用号码失败: activation_id={aid} err={e}")
         self._release_lock()
 
     def _release_lock(self) -> None:

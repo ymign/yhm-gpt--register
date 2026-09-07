@@ -3237,53 +3237,162 @@ def get_cf_admin_token() -> str:
 # ──────────────────────── SMS 接码配置 ────────────────────────
 
 
-def get_sms_config() -> dict:
-    """返回 SMS 接码配置（api_key 隐藏明文）。
+_SMS_PROFILE_FIELDS = (
+    "sms_country", "sms_max_price",
+    "sms_provider_ids", "sms_except_provider_ids",
+    "sms_allowed_countries", "sms_auto_country",
+    "sms_auto_min_stock", "sms_auto_max_price",
+    "sms_phone_success_max", "sms_reuse_phone",
+)
 
-    sms_enabled:        '0'/'1' 是否启用接码（命中 add-phone 时才会用）
-    sms_provider:       smsbower
-    sms_country:        国家代码或 ID（推荐 '52' = Thailand，OpenAI 走 SMS 的唯一稳定国家）
-    sms_service:        服务代码（OpenAI = 'dr'）
-    sms_max_price:      号码最高单价（SmsBower / SmsBower 用，单位平台货币；空 / -1 = 不限）
-    sms_reuse_phone:    '0'/'1' 同号复用（SmsBower / SmsBower 支持，省钱）
-    sms_phone_success_max: 同号最多复用几次（默认 3）
-    sms_auto_country:   '0'/'1' 自动选最优国家（按价格 + 库存）
-    sms_auto_min_stock: 自动选国家最低库存（默认 20）
-    sms_auto_max_price: 自动选国家最高单价（默认 0 = 不限）
-    """
+_SMS_BOOL_FIELDS = ("sms_enabled", "sms_reuse_phone", "sms_auto_country", "sms_strict_whitelist")
+
+
+def _json_dict_setting(key: str) -> dict:
+    raw = get_setting(key, "")
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _canon_sms_kind(raw: str) -> str:
+    kind = str(raw or "").strip() or "smsbower"
+    try:
+        from sms_providers import canonicalize_kind
+        return canonicalize_kind(kind) or kind
+    except Exception:
+        return kind.lower()
+
+
+def _sms_provider_cls(kind: str):
+    try:
+        from sms_providers import get_provider_class
+        return get_provider_class(_canon_sms_kind(kind))
+    except Exception:
+        return None
+
+
+def _load_sms_api_keys() -> dict:
+    """各平台独立密钥。旧的单一 sms_api_key 只归到当前平台，绝不复制给其它平台。"""
+    keys = {str(k): str(v or "") for k, v in _json_dict_setting("sms_api_keys").items()}
+    current_p = _canon_sms_kind(get_setting("sms_provider", "smsbower"))
+    current_k = get_setting("sms_api_key", "")
+    if current_k and not str(keys.get(current_p) or "").strip():
+        keys[current_p] = current_k
+    return keys
+
+
+def _coerce_sms_country(country: str, cls) -> str:
+    s = str(country or "").strip()
+    scheme = str(getattr(cls, "country_scheme", "activate") or "activate") if cls else "activate"
+    default = str(getattr(cls, "default_country", "") or "") if cls else ""
+    if not default:
+        default = "th" if scheme == "iso2" else "52"
+    if not s:
+        return default
+    if s.upper() == "AUTO":
+        return s
+    if scheme == "iso2":
+        if len(s) == 2 and s.isalpha():
+            return s.lower()
+        # 切到 Vak-SMS 时不要把 SmsBower 的 53/沙特原样带过去
+        return default
+    if s.isdigit():
+        return s
+    return default
+
+
+def _bool01(value, default: str = "0") -> str:
+    if value is None or value == "":
+        return default
+    if isinstance(value, bool):
+        return "1" if value else "0"
+    s = str(value).strip().lower()
+    return "1" if s in ("1", "true", "yes", "on") else "0"
+
+
+def _compose_sms_config(provider: Optional[str] = None) -> dict:
+    stored_p = _canon_sms_kind(get_setting("sms_provider", "smsbower"))
+    p = _canon_sms_kind(provider) if provider else stored_p
+    cls = _sms_provider_cls(p)
+    profiles = _json_dict_setting("sms_provider_profiles")
+    keys = _load_sms_api_keys()
+    raw_prof = profiles.get(p)
+    prof = raw_prof if isinstance(raw_prof, dict) else None
+    same_as_stored = p == stored_p
+
+    def pick(field: str, default: str = "") -> str:
+        if prof is not None and field in prof:
+            return str(prof.get(field) if prof.get(field) is not None else default)
+        if not same_as_stored:
+            if field == "sms_country":
+                return str(getattr(cls, "default_country", "") or default) if cls else default
+            if field in (
+                "sms_provider_ids", "sms_except_provider_ids",
+                "sms_allowed_countries", "sms_max_price",
+            ):
+                return ""
+            if field in ("sms_auto_country", "sms_reuse_phone"):
+                return "0"
+        if field == "sms_provider_ids":
+            return get_setting(field, get_setting("sms_operator", default))
+        return get_setting(field, default)
+
+    country = _coerce_sms_country(pick("sms_country", "52"), cls)
+    provider_ids = pick("sms_provider_ids", "")
+    except_ids = pick("sms_except_provider_ids", "")
+    if cls is not None and not getattr(cls, "uses_provider_ids", False):
+        if prof is None or str(provider_ids).isdigit():
+            provider_ids = ""
+        if prof is None:
+            except_ids = ""
+
+    api_key = str(keys.get(p) or "").strip()
+    if not api_key and same_as_stored:
+        api_key = get_setting("sms_api_key", "")
+
     return {
         "sms_enabled":             get_setting("sms_enabled", "0"),
-        "sms_provider":            get_setting("sms_provider", "smsbower"),
-        "sms_api_key":             "***" if get_setting("sms_api_key") else "",
-        "sms_country":             get_setting("sms_country", "52"),
+        "sms_provider":            p,
+        "sms_api_key":             api_key,
+        "sms_api_keys":            keys,
+        "sms_profiles":            profiles,
+        "sms_country":             country,
         "sms_service":             get_setting("sms_service", "dr"),
-        "sms_max_price":           get_setting("sms_max_price", ""),
-        "sms_provider_ids":        get_setting("sms_provider_ids", get_setting("sms_operator", "")),
-        "sms_except_provider_ids": get_setting("sms_except_provider_ids", ""),
-        "sms_operator":            get_setting("sms_operator", ""),
-        "sms_reuse_phone":         get_setting("sms_reuse_phone", "0"),
-        "sms_phone_success_max":   get_setting("sms_phone_success_max", "3"),
-        "sms_auto_country":        get_setting("sms_auto_country", "0"),
+        "sms_max_price":           pick("sms_max_price", ""),
+        "sms_provider_ids":        provider_ids,
+        "sms_except_provider_ids": except_ids,
+        "sms_operator":            provider_ids,
+        "sms_reuse_phone":         pick("sms_reuse_phone", "0"),
+        "sms_phone_success_max":   pick("sms_phone_success_max", "3") or "3",
+        "sms_auto_country":        pick("sms_auto_country", "0"),
         "sms_strict_whitelist":    get_setting("sms_strict_whitelist", "0"),
-        "sms_allowed_countries":   get_setting("sms_allowed_countries", ""),
-        "sms_auto_min_stock":      get_setting("sms_auto_min_stock", "20"),
-        "sms_auto_max_price":      get_setting("sms_auto_max_price", ""),
+        "sms_allowed_countries":   pick("sms_allowed_countries", ""),
+        "sms_auto_min_stock":      pick("sms_auto_min_stock", "20") or "20",
+        "sms_auto_max_price":      pick("sms_auto_max_price", ""),
         "sms_max_phone_attempts":  get_setting("sms_max_phone_attempts", ""),
         "sms_per_phone_timeout":   get_setting("sms_per_phone_timeout", "80"),
         "sms_cdk_url":             get_setting("sms_cdk_url", "https://ndk.cc.cd"),
     }
 
 
+def get_sms_config() -> dict:
+    """返回 SMS 接码配置。密钥按平台分开，并回发明文方便本机核对是否已保存。"""
+    return _compose_sms_config()
+
+
 def save_sms_config(data: dict) -> None:
-    """保存 SMS 配置。sms_api_key 传 '***' 表示不修改。"""
+    """保存 SMS 配置。sms_api_key 传 '***' 表示不修改；空字符串表示清空当前平台密钥。"""
     if "sms_provider" in data:
-        try:
-            from sms_providers import canonicalize_kind
-            p = canonicalize_kind(str(data["sms_provider"])) or "smsbower"
-        except Exception:
-            p = str(data["sms_provider"] or "smsbower").strip().lower() or "smsbower"
+        p = _canon_sms_kind(str(data["sms_provider"]))
         set_setting("sms_provider", p)
-    # 字符串字段直接落
+    else:
+        p = _canon_sms_kind(get_setting("sms_provider", "smsbower"))
+
     for key in (
         "sms_country", "sms_service", "sms_max_price",
         "sms_provider_ids", "sms_except_provider_ids",
@@ -3293,18 +3402,33 @@ def save_sms_config(data: dict) -> None:
     ):
         if key in data:
             set_setting(key, str(data[key]).strip())
-    # 布尔字段（前端传 '0'/'1' 或 bool）
-    for key in ("sms_enabled", "sms_reuse_phone", "sms_auto_country", "sms_strict_whitelist"):
+    for key in _SMS_BOOL_FIELDS:
         if key in data:
-            v = data[key]
-            if isinstance(v, bool):
-                set_setting(key, "1" if v else "0")
+            set_setting(key, _bool01(data[key]))
+
+    if "sms_api_key" in data:
+        incoming = str(data.get("sms_api_key") or "").strip()
+        if incoming != "***":
+            set_setting("sms_api_key", incoming)
+            keys = _load_sms_api_keys()
+            keys[p] = incoming
+            set_setting("sms_api_keys", json.dumps(keys, ensure_ascii=False))
+
+    profiles = _json_dict_setting("sms_provider_profiles")
+    prof = dict(profiles.get(p) or {})
+    for key in _SMS_PROFILE_FIELDS:
+        if key in data:
+            if key in _SMS_BOOL_FIELDS:
+                prof[key] = _bool01(data[key])
             else:
-                s = str(v).strip().lower()
-                set_setting(key, "1" if s in ("1", "true", "yes", "on") else "0")
-    # API key（'***' 不修改）
-    if data.get("sms_api_key") and data["sms_api_key"] != "***":
-        set_setting("sms_api_key", str(data["sms_api_key"]).strip())
+                prof[key] = str(data[key]).strip()
+        elif key not in prof:
+            if key == "sms_provider_ids":
+                prof[key] = get_setting(key, get_setting("sms_operator", ""))
+            else:
+                prof[key] = get_setting(key, "")
+    profiles[p] = prof
+    set_setting("sms_provider_profiles", json.dumps(profiles, ensure_ascii=False))
 
 
 # ──────────────────────── Remail 已购未用邮箱智能复用池 ────────────────────────
@@ -3541,28 +3665,29 @@ def list_remail_recycled(limit: int = 50) -> list[dict]:
     return out
 
 
-def get_sms_internal_config() -> dict:
-    """内部用：拿明文 sms_api_key,供 sms_provider 实例化使用。"""
+def get_sms_internal_config(provider: Optional[str] = None) -> dict:
+    """内部用：拿当前（或指定）平台的明文密钥与国家，供 sms_provider 实例化。"""
+    cfg = _compose_sms_config(provider=provider)
     return {
-        "sms_enabled":             get_setting("sms_enabled", "0") in ("1", "true"),
-        "sms_provider":            get_setting("sms_provider", "smsbower"),
-        "sms_api_key":             get_setting("sms_api_key", ""),
-        "sms_country":             get_setting("sms_country", "52"),
-        "sms_service":             get_setting("sms_service", "dr"),
-        "sms_max_price":           get_setting("sms_max_price", ""),
-        "sms_provider_ids":        get_setting("sms_provider_ids", get_setting("sms_operator", "")),
-        "sms_except_provider_ids": get_setting("sms_except_provider_ids", ""),
-        "sms_operator":            get_setting("sms_operator", ""),
-        "sms_reuse_phone":         get_setting("sms_reuse_phone", "0") in ("1", "true"),
-        "sms_phone_success_max":   get_setting("sms_phone_success_max", "3"),
-        "sms_auto_country":        get_setting("sms_auto_country", "0") in ("1", "true"),
-        "sms_strict_whitelist":    get_setting("sms_strict_whitelist", "0") in ("1", "true"),
-        "sms_allowed_countries":   get_setting("sms_allowed_countries", ""),
-        "sms_auto_min_stock":      get_setting("sms_auto_min_stock", "20"),
-        "sms_auto_max_price":      get_setting("sms_auto_max_price", ""),
-        "sms_max_phone_attempts":  get_setting("sms_max_phone_attempts", ""),
-        "sms_per_phone_timeout":   get_setting("sms_per_phone_timeout", "80"),
-        "sms_cdk_url":             get_setting("sms_cdk_url", "https://ndk.cc.cd"),
+        "sms_enabled":             str(cfg.get("sms_enabled") or "") in ("1", "true"),
+        "sms_provider":            cfg.get("sms_provider") or "smsbower",
+        "sms_api_key":             cfg.get("sms_api_key") or "",
+        "sms_country":             cfg.get("sms_country") or "52",
+        "sms_service":             cfg.get("sms_service") or "dr",
+        "sms_max_price":           cfg.get("sms_max_price") or "",
+        "sms_provider_ids":        cfg.get("sms_provider_ids") or "",
+        "sms_except_provider_ids": cfg.get("sms_except_provider_ids") or "",
+        "sms_operator":            cfg.get("sms_operator") or "",
+        "sms_reuse_phone":         str(cfg.get("sms_reuse_phone") or "") in ("1", "true"),
+        "sms_phone_success_max":   cfg.get("sms_phone_success_max") or "3",
+        "sms_auto_country":        str(cfg.get("sms_auto_country") or "") in ("1", "true"),
+        "sms_strict_whitelist":    str(cfg.get("sms_strict_whitelist") or "") in ("1", "true"),
+        "sms_allowed_countries":   cfg.get("sms_allowed_countries") or "",
+        "sms_auto_min_stock":      cfg.get("sms_auto_min_stock") or "20",
+        "sms_auto_max_price":      cfg.get("sms_auto_max_price") or "",
+        "sms_max_phone_attempts":  cfg.get("sms_max_phone_attempts") or "",
+        "sms_per_phone_timeout":   cfg.get("sms_per_phone_timeout") or "80",
+        "sms_cdk_url":             cfg.get("sms_cdk_url") or "https://ndk.cc.cd",
     }
 
 

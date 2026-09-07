@@ -49,10 +49,12 @@ from .util import (  # noqa: F401
 from . import smsbower  # noqa: F401,E402  kind="smsbower"
 from . import herosms   # noqa: F401,E402  kind="herosms"
 from . import cdk_sms   # noqa: F401,E402  kind="cdk_sms"
+from . import vaksms    # noqa: F401,E402  kind="vaksms"
 
 from .smsbower import SmsBowerProvider  # noqa: F401,E402
 from .herosms import HeroSmsProvider  # noqa: F401,E402
 from .cdk_sms import CdkSmsProvider  # noqa: F401,E402
+from .vaksms import VakSmsProvider  # noqa: F401,E402
 
 __all__ = [
     "BaseSmsProvider",
@@ -61,6 +63,7 @@ __all__ = [
     "SmsBowerProvider",
     "HeroSmsProvider",
     "CdkSmsProvider",
+    "VakSmsProvider",
     "PhoneCallbackController",
     "register",
     "get_provider_class",

@@ -1418,6 +1418,14 @@ def execute_codex_oauth_flow(
         rec_timeout = int(getattr(p_cls, "recommended_timeout", 0) or (35 if is_cdk else 80))
         max_timeout = int(getattr(p_cls, "max_timeout", 0) or (60 if is_cdk else 90))
         country = str(sms_cfg.get("sms_country") or default_country).strip()
+        scheme = str(getattr(p_cls, "country_scheme", "activate") or "activate") if p_cls else "activate"
+        if scheme == "iso2":
+            if not (len(country) == 2 and country.isalpha()):
+                country = str(default_country)
+            else:
+                country = country.lower()
+        elif country and not country.isdigit() and country.upper() != "AUTO":
+            country = str(default_country)
         max_price_raw = sms_cfg.get("sms_max_price") or sms_cfg.get("sms_price")
         min_p, max_p, exact_p = parse_price_spec(max_price_raw)
         max_attempts = max(1, min(10, int(sms_cfg.get("sms_max_attempts") or 3)))
@@ -1444,7 +1452,14 @@ def execute_codex_oauth_flow(
             primary_country = country
 
         price_desc = "不限"
-        if exact_p > 0:
+        if scheme == "iso2":
+            if exact_p > 0:
+                price_desc = f"锁定档位 {exact_p}（fixedPrice）"
+            elif max_p > 0:
+                price_desc = f"最高限价 {max_p}"
+            else:
+                price_desc = "不限"
+        elif exact_p > 0:
             price_desc = f"锁定指定金额 {exact_p}"
         elif min_p > 0 and max_p > 0:
             price_desc = f"金额区间 {min_p}~{max_p}"

@@ -1237,28 +1237,40 @@ def api_sms_all_countries(provider: str = ""):
     ROOT_DIR = Path(__file__).resolve().parents[1]
     if str(ROOT_DIR) not in _sys.path:
         _sys.path.insert(0, str(ROOT_DIR))
-    from sms_providers import SMS_COUNTRY_NAMES_CN, OPENAI_SMS_COUNTRIES, create_sms_provider
+    from sms_providers import SMS_COUNTRY_NAMES_CN, OPENAI_SMS_COUNTRIES, create_sms_provider, get_provider_class
 
-    cfg = db.get_sms_internal_config()
-    if provider:
-        cfg["sms_provider"] = provider
+    p_key = (provider or "").strip()
+    cfg = db.get_sms_internal_config(provider=p_key or None)
+    scheme = "activate"
+    try:
+        cls = get_provider_class(cfg.get("sms_provider") or p_key or "smsbower")
+        scheme = str(getattr(cls, "country_scheme", "activate") or "activate")
+    except Exception:
+        pass
+
+    def _is_scheme_id(cid: str) -> bool:
+        s = str(cid or "").strip()
+        if scheme == "iso2":
+            return len(s) == 2 and s.isalpha()
+        return s.isdigit()
 
     live_map: dict = {}
-    if cfg.get("sms_api_key"):
-        try:
-            p = create_sms_provider(cfg["sms_provider"], cfg)
-            if hasattr(p, "get_top_countries"):
-                for r in p.get_top_countries(service=cfg.get("sms_service") or "dr") or []:
-                    cid = str(r.get("country") or "").strip()
-                    if cid:
-                        live_map[cid] = r
-        except Exception as e:
-            logger.warning(f"拉取接码国家实时库存失败: {e}")
-            live_map = {}
+    try:
+        p = create_sms_provider(cfg["sms_provider"], cfg)
+        if hasattr(p, "get_top_countries"):
+            for r in p.get_top_countries(service=cfg.get("sms_service") or "dr") or []:
+                cid = str(r.get("country") or "").strip()
+                if cid and _is_scheme_id(cid):
+                    live_map[cid] = r
+    except Exception as e:
+        logger.warning(f"拉取接码国家实时库存失败: {e}")
+        live_map = {}
 
     seen = set()
     countries = []
     for cid, name in SMS_COUNTRY_NAMES_CN.items():
+        if not _is_scheme_id(cid):
+            continue
         live = live_map.get(cid) or {}
         seen.add(cid)
         countries.append({
@@ -1271,6 +1283,8 @@ def api_sms_all_countries(provider: str = ""):
     for cid, live in live_map.items():
         if cid in seen:
             continue
+        if not _is_scheme_id(cid):
+            continue
         countries.append({
             "id": cid,
             "name_cn": SMS_COUNTRY_NAMES_CN.get(cid, f"国家{cid}"),
@@ -1281,20 +1295,16 @@ def api_sms_all_countries(provider: str = ""):
 
     def _sort_key(c):
         cid = str(c.get("id") or "")
-        try:
-            nid = int(cid)
-        except (TypeError, ValueError):
-            nid = 9999
         count = 0
         try:
             count = int(c.get("count") or 0)
         except (TypeError, ValueError):
             count = 0
-        if cid == "52":
-            return (0, 0, nid)
+        if cid in ("52", "th"):
+            return (0, 0, cid)
         if count > 0:
-            return (1, -count, nid)
-        return (2, 0, nid)
+            return (1, -count, cid)
+        return (2, 0, cid)
 
     countries.sort(key=_sort_key)
     return {
@@ -1302,6 +1312,7 @@ def api_sms_all_countries(provider: str = ""):
         "countries": countries,
         "openai_sms_safe": list(OPENAI_SMS_COUNTRIES),
         "source": "merged" if live_map else "static",
+        "scheme": scheme,
     }
 
 
@@ -1314,13 +1325,14 @@ def api_sms_country_price_tiers(country: str = "6", service: str = "dr", provide
         _sys.path.insert(0, str(ROOT_DIR))
     from sms_providers import create_sms_provider, get_provider_class
 
-    cfg = db.get_sms_internal_config()
-    p_key = (provider or cfg.get("sms_provider") or "smsbower").strip().lower()
+    p_key = (provider or "").strip()
+    cfg = db.get_sms_internal_config(provider=p_key or None)
+    p_key = (p_key or cfg.get("sms_provider") or "smsbower").strip().lower()
     try:
         cls = get_provider_class(p_key)
     except Exception:
         return {"ok": True, "tiers": []}
-    if not cls.uses_price_tiers or not cfg.get("sms_api_key"):
+    if not cls.uses_price_tiers:
         return {"ok": True, "tiers": []}
 
     try:
@@ -2540,15 +2552,15 @@ def api_oauth_export_start(req: StartOAuthExportReq):
         if p:
             proxies.append(p)
 
-    # 接码配置组装
+    # 接码配置组装（密钥/国家按所选平台读取，避免把 SmsBower 的 key 和国家套到 Vak-SMS 上）
     sms_api_key = (req.sms_api_key or "").strip()
-    global_sms = db.get_sms_internal_config()
     import sys as _sys
     ROOT_DIR = Path(__file__).resolve().parents[1]
     if str(ROOT_DIR) not in _sys.path:
         _sys.path.insert(0, str(ROOT_DIR))
-    from sms_providers import canonicalize_kind, uses_cdk_pool
+    from sms_providers import canonicalize_kind, get_provider_class, uses_cdk_pool
     sms_provider_kind = canonicalize_kind(req.sms_provider or "smsbower") or "smsbower"
+    global_sms = db.get_sms_internal_config(provider=sms_provider_kind)
     is_cdk_mode = uses_cdk_pool(sms_provider_kind)
     if is_cdk_mode:
         # CDK 模式下，若未单独指定卡密，则置空以严格走数据库 CDK 号池自动调度，切勿混用普通接码平台的 API Key！
@@ -2558,16 +2570,38 @@ def api_oauth_export_start(req: StartOAuthExportReq):
         if not sms_api_key or sms_api_key == "***":
             sms_api_key = global_sms.get("sms_api_key") or ""
     sms_cdk_url = (req.sms_cdk_url or "").strip() or global_sms.get("sms_cdk_url") or "https://ndk.cc.cd"
+    sms_country = (req.sms_country or "").strip() or (global_sms.get("sms_country") or "")
+    try:
+        p_cls = get_provider_class(sms_provider_kind)
+        scheme = str(getattr(p_cls, "country_scheme", "activate") or "activate")
+        default_c = str(getattr(p_cls, "default_country", "") or ("th" if scheme == "iso2" else "52"))
+        if scheme == "iso2":
+            if not (len(sms_country) == 2 and sms_country.isalpha()):
+                sms_country = default_c
+            else:
+                sms_country = sms_country.lower()
+        elif sms_country and not sms_country.isdigit() and sms_country.upper() != "AUTO":
+            sms_country = default_c
+        if not getattr(p_cls, "uses_provider_ids", False):
+            req_provider_ids = ""
+            req_except_ids = ""
+        else:
+            req_provider_ids = (req.sms_provider_ids or "").strip()
+            req_except_ids = (req.sms_except_provider_ids or "").strip()
+    except Exception:
+        sms_country = sms_country or "52"
+        req_provider_ids = (req.sms_provider_ids or "").strip()
+        req_except_ids = (req.sms_except_provider_ids or "").strip()
 
     sms_config = {
         "sms_enabled": req.sms_enabled,
         "sms_provider": sms_provider_kind,
         "sms_api_key": sms_api_key,
         "sms_cdk_url": sms_cdk_url,
-        "sms_country": (req.sms_country or "52").strip(),
+        "sms_country": sms_country or "52",
         "sms_max_price": (req.sms_max_price or "").strip(),
-        "sms_provider_ids": (req.sms_provider_ids or "").strip(),
-        "sms_except_provider_ids": (req.sms_except_provider_ids or "").strip(),
+        "sms_provider_ids": req_provider_ids,
+        "sms_except_provider_ids": req_except_ids,
         "sms_max_attempts": max(1, min(10, req.sms_max_attempts)),
         "sms_timeout": max(20, min(300, req.sms_timeout)),
     }
@@ -2830,7 +2864,7 @@ def api_token_refresh_start(req: StartTokenRefreshReq):
 
     sms_api_key = (req.sms_api_key or "").strip()
     if not sms_api_key or sms_api_key == "***":
-        global_sms = db.get_sms_internal_config()
+        global_sms = db.get_sms_internal_config(provider=req.sms_provider)
         sms_api_key = global_sms.get("sms_api_key") or ""
 
     try:

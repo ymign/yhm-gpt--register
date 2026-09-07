@@ -79,6 +79,8 @@ class BaseSmsProvider(ABC):
     uses_provider_ids: bool = False
     uses_reuse_phone: bool = False
     uses_auto_country: bool = False
+    # activate = SmsBower/HeroSMS 数字国家 ID；iso2 = Vak-SMS 的 th/us
+    country_scheme: str = "activate"
 
     # ── 默认运行参数 ──
     default_country: str = "52"
@@ -114,6 +116,7 @@ class BaseSmsProvider(ABC):
             "uses_provider_ids": bool(cls.uses_provider_ids),
             "uses_reuse_phone": bool(cls.uses_reuse_phone),
             "uses_auto_country": bool(cls.uses_auto_country),
+            "country_scheme": cls.country_scheme or "activate",
             "default_country": cls.default_country,
             "default_service": cls.default_service,
             "default_timeout": int(cls.default_timeout or 80),

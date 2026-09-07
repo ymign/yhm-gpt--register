@@ -105,6 +105,7 @@ class SmsBowerProvider(BaseSmsProvider):
     uses_provider_ids = True
     uses_reuse_phone = True
     uses_auto_country = True
+    country_scheme = "activate"
     default_country = "52"
     default_service = "dr"
     default_timeout = 80

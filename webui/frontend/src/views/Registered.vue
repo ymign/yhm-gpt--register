@@ -1775,7 +1775,10 @@ const DEFAULT_SMS_PROVIDERS = [
     uses_cdk_pool: false,
     uses_country: true,
     uses_price_tiers: true,
+    uses_provider_ids: true,
     uses_auto_country: true,
+    country_scheme: 'activate',
+    default_country: '52',
     recommended_timeout: 80,
     max_timeout: 90,
     timeout_hint: '推荐 60~85 秒。超过 90 秒容易导致 OpenAI 授权会话过期。',
@@ -1788,7 +1791,10 @@ const DEFAULT_SMS_PROVIDERS = [
     uses_cdk_pool: false,
     uses_country: true,
     uses_price_tiers: true,
+    uses_provider_ids: true,
     uses_auto_country: true,
+    country_scheme: 'activate',
+    default_country: '52',
     recommended_timeout: 80,
     max_timeout: 90,
     timeout_hint: '推荐 60~85 秒。超过 90 秒容易导致 OpenAI 授权会话过期。',
@@ -1802,10 +1808,30 @@ const DEFAULT_SMS_PROVIDERS = [
     uses_cdk_pool: true,
     uses_country: false,
     uses_price_tiers: false,
+    uses_provider_ids: false,
     uses_auto_country: false,
+    country_scheme: 'activate',
+    default_country: '44',
     recommended_timeout: 35,
     max_timeout: 60,
     timeout_hint: 'CDK 推荐 30~35 秒。超过 45 秒容易导致 OpenAI 授权会话过期。',
+  },
+  {
+    kind: 'vaksms',
+    aliases: ['vak-sms', 'vak_sms', 'vak'],
+    display_name: 'Vak-SMS',
+    short_label: 'vak-sms.com',
+    description: 'vak-sms.com 官方 JSON 接码，国家用 ISO2（th 泰国），OpenAI 业务码 dr',
+    uses_cdk_pool: false,
+    uses_country: true,
+    uses_price_tiers: true,
+    uses_provider_ids: false,
+    uses_auto_country: true,
+    country_scheme: 'iso2',
+    default_country: 'th',
+    recommended_timeout: 80,
+    max_timeout: 90,
+    timeout_hint: '推荐 60~85 秒。超过 90 秒容易导致 OpenAI 授权会话过期。',
   },
 ]
 const smsProviders = ref(DEFAULT_SMS_PROVIDERS)
@@ -1868,6 +1894,27 @@ const oauthSmsMeta = computed(() =>
   oauthForm.smsStrategy === 'skip' ? null : findSmsProviderMeta(oauthForm.smsStrategy),
 )
 
+function oauthCountryFits(cid, meta) {
+  const s = String(cid || '').trim()
+  if (!s || s.toUpperCase() === 'AUTO') return true
+  if (meta?.country_scheme === 'iso2' || /^[a-z]{2}$/i.test(String(meta?.default_country || ''))) {
+    return /^[a-z]{2}$/i.test(s)
+  }
+  return /^\d+$/.test(s)
+}
+
+function coerceOAuthSmsCountry() {
+  const meta = oauthSmsMeta.value
+  if (!meta?.uses_country) return
+  if (!oauthCountryFits(oauthForm.smsCountry, meta)) {
+    oauthForm.smsCountry = meta.default_country || (meta.country_scheme === 'iso2' ? 'th' : '52')
+    if (!meta.uses_provider_ids) {
+      oauthForm.smsProviderIds = ''
+      oauthForm.smsExceptProviderIds = []
+    }
+  }
+}
+
 function onOAuthStrategyChange(val) {
   if (val === 'skip') {
     oauthForm.smsEnabled = false
@@ -1879,6 +1926,7 @@ function onOAuthStrategyChange(val) {
   if (meta?.recommended_timeout) {
     oauthForm.smsTimeout = meta.recommended_timeout
   }
+  coerceOAuthSmsCountry()
   oauthActiveTab.value = 'sms'
   loadSmsCountries()
   loadOAuthPriceTiers()
@@ -2167,20 +2215,40 @@ function saveOAuthFormDefault() {
 const smsAllCountries = ref([])
 const smsCountriesLoading = ref(false)
 
+function formatStockCount(raw) {
+  const n = Number(raw)
+  if (!Number.isFinite(n) || n <= 0) return '暂无库存'
+  if (n >= 10000) {
+    const w = n / 10000
+    const s = w >= 10 ? String(Math.round(w * 10) / 10) : w.toFixed(2).replace(/0+$/, '').replace(/\.$/, '')
+    return `余${s}万`
+  }
+  return `余${n}`
+}
+
 function formatSmsCountryOption(c) {
-  const bits = [`${c.id} · ${c.name_cn}`]
-  if (c.openai_sms_safe) bits.push('免WhatsApp')
+  const id = String(c.id || '')
+  const iso2 = /^[a-z]{2}$/i.test(id)
+  if (iso2) {
+    const bits = [`${c.name_cn} ${id.toLowerCase()}`]
+    if (c.price != null && c.price !== '') bits.push(`起${c.price}$`)
+    if (c.count != null && c.count !== '') bits.push(formatStockCount(c.count))
+    else bits.push('暂无库存')
+    return { value: id, label: bits.join(' · '), safe: !!c.openai_sms_safe }
+  }
+  const bits = [`${id} · ${c.name_cn}`]
   if (c.count != null && c.count !== '') {
     const n = Number(c.count)
     bits.push(Number.isFinite(n) && n > 0 ? `余${c.count}` : '暂无库存')
   }
   if (c.price != null && c.price !== '') bits.push(`${c.price}`)
-  return { value: String(c.id), label: bits.join(' · '), safe: !!c.openai_sms_safe }
+  return { value: id, label: bits.join(' · '), safe: !!c.openai_sms_safe }
 }
 
 const SMS_COUNTRY_OPTIONS = computed(() => {
-  const auto = { value: 'AUTO', label: '🌐 智能多国自动轮换', safe: false }
   const rest = (smsAllCountries.value || []).map(formatSmsCountryOption)
+  if (oauthSmsMeta.value?.country_scheme === 'iso2') return rest
+  const auto = { value: 'AUTO', label: '🌐 智能多国自动轮换', safe: false }
   return [auto, ...rest]
 })
 
@@ -2193,7 +2261,7 @@ async function loadSmsCountries() {
   }
   smsCountriesLoading.value = true
   try {
-    const r = await getSmsAllCountries(oauthForm.smsProvider || 'smsbower')
+    const r = await getSmsAllCountries(kind || oauthForm.smsProvider || 'smsbower')
     smsAllCountries.value = r.countries || []
   } catch (e) {
     if (!smsAllCountries.value.length) {
@@ -2346,6 +2414,7 @@ async function openOAuthExport(target = 'selected') {
   oauthVisible.value = true
   loadSmsProviderCatalog()
   loadSmsCountries()
+  loadOAuthPriceTiers()
   loadOAuthSmsMeta()
 }
 
@@ -2367,6 +2436,7 @@ async function loadOAuthSmsMeta() {
       if (cfg.sms_cdk_url) {
         oauthForm.smsCdkUrl = cfg.sms_cdk_url
       }
+      coerceOAuthSmsCountry()
     }
     if (statsRes.status === 'fulfilled' && statsRes.value?.stats) {
       oauthCdkStats.value = statsRes.value.stats
@@ -6912,11 +6982,16 @@ onUnmounted(() => {
                         </el-form-item>
                       </el-col>
                       <el-col :xs="12" :sm="6" :md="5">
-                        <el-form-item label="接码金额要求 (如 0.008 或区间)">
-                          <el-input v-model="oauthForm.smsMaxPrice" placeholder="如 0.008 或 0.007-0.01" clearable :prefix-icon="Money" />
+                        <el-form-item :label="oauthSmsMeta?.country_scheme === 'iso2' ? '最高限价 / 点选档位即锁定' : '接码金额要求 (如 0.008 或区间)'">
+                          <el-input
+                            v-model="oauthForm.smsMaxPrice"
+                            :placeholder="oauthSmsMeta?.country_scheme === 'iso2' ? '点下方档位，或手填上限如 0.05' : '如 0.008 或 0.007-0.01'"
+                            clearable
+                            :prefix-icon="Money"
+                          />
                         </el-form-item>
                       </el-col>
-                      <el-col :xs="12" :sm="6" :md="5">
+                      <el-col v-if="oauthSmsMeta?.uses_provider_ids" :xs="12" :sm="6" :md="5">
                         <el-form-item label="指定供应商 ID (下拉直选)">
                           <el-select
                             v-model="oauthForm.smsProviderIds"
@@ -6940,12 +7015,12 @@ onUnmounted(() => {
                         </el-form-item>
                       </el-col>
 
-                      <!-- 号池实时档位直选区：选中国家后始终展示，避免空数组把整块藏掉 -->
-                      <el-col :span="24">
+                      <!-- 号池实时档位直选区：仅 SmsBower / HeroSMS 有供应商线路 -->
+                      <el-col v-if="oauthSmsMeta?.uses_price_tiers" :span="24">
                         <div class="oa-tier-chips-block">
                           <span class="oa-tier-title">
                             <el-icon><Discount /></el-icon>
-                            OpenAI 接码档位 dr（{{ oauthForm.smsCountry || '未选国家' }} · 点击锁定）
+                            {{ oauthSmsMeta?.country_scheme === 'iso2' ? '官网同款价格档位（点选锁定，和 vak-sms 网页一致）' : 'OpenAI 接码档位 dr' }}（{{ oauthForm.smsCountry || '未选国家' }} · 点击锁定）
                             <el-button
                               link
                               type="primary"
@@ -6961,7 +7036,7 @@ onUnmounted(() => {
                               :key="t.id || t.price_str"
                               class="oa-tier-pill"
                               :class="{ 'is-active': oauthForm.smsProviderIds === t.id || oauthForm.smsMaxPrice === t.price_str }"
-                              @click="() => { oauthForm.smsMaxPrice = t.price_str; if (t.id) oauthForm.smsProviderIds = t.id; }"
+                              @click="() => { oauthForm.smsMaxPrice = t.price_str; if (oauthSmsMeta?.uses_provider_ids && t.id) oauthForm.smsProviderIds = t.id }"
                             >
                               <span>{{ t.label }}</span>
                               <el-icon v-if="oauthForm.smsProviderIds === t.id || oauthForm.smsMaxPrice === t.price_str" class="oa-check-icon">
@@ -6970,12 +7045,12 @@ onUnmounted(() => {
                             </div>
                           </div>
                           <div v-else class="oa-tier-empty">
-                            该国暂无 OpenAI（dr）库存。不会展示其它业务号源。可点刷新或换国家。
+                            {{ oauthSmsMeta?.country_scheme === 'iso2' ? '该国暂无 openai.com 多档报价，可手填最高限价或换国家。' : '该国暂无 OpenAI（dr）库存。不会展示其它业务号源。可点刷新或换国家。' }}
                           </div>
                         </div>
                       </el-col>
 
-                      <el-col :xs="24" :sm="12" :md="8">
+                      <el-col v-if="oauthSmsMeta?.uses_provider_ids" :xs="24" :sm="12" :md="8">
                         <el-form-item label="排除供应商 ID (多选拉黑)">
                           <el-select
                             v-model="oauthForm.smsExceptProviderIds"
@@ -7030,7 +7105,12 @@ onUnmounted(() => {
                           <div class="sms-guide-title">
                             <el-icon><InfoFilled /></el-icon> 怎么填才和网页点选一样（规则速查）
                           </div>
-                          <div class="sms-guide-chips">
+                          <div v-if="oauthSmsMeta?.country_scheme === 'iso2'" class="sms-guide-chips">
+                            <span class="sms-rule-chip"><b>点档位</b> = 锁定该档（maxPrice+fixedPrice，不会拿到更便宜的）</span>
+                            <span class="sms-rule-chip"><b>手填 &lt;=0.05</b> = 只限制最高价，仍可能出更便宜的号</span>
+                            <span class="sms-rule-chip"><b>留空</b> = 不限价，平台按默认价出号</span>
+                          </div>
+                          <div v-else class="sms-guide-chips">
                             <span class="sms-rule-chip"><b>选 0.008</b> = 锁定该档，绝不拿更便宜的 0.007</span>
                             <span class="sms-rule-chip"><b>填 0.007-0.008</b> = 允许两档区间</span>
                             <span class="sms-rule-chip"><b>坏线自动剔除</b> = 线路 BANNED 自动去参数继续按金额租号</span>
@@ -7052,7 +7132,8 @@ onUnmounted(() => {
             </el-tabs>
 
             <div class="oa-config-footer-row">
-              <span v-if="oauthSmsMeta?.uses_price_tiers" class="oa-config-hint">💡 提示：点选档位即锁定该价格（选 <code>0.008</code> 绝不拿 0.007）。若该档位无货会报 NO_NUMBERS，不会擅自换号。</span>
+              <span v-if="oauthSmsMeta?.country_scheme === 'iso2'" class="oa-config-hint">💡 提示：点档位会按官网方式锁定该价（maxPrice + fixedPrice=true）。手填数字默认也是锁档；只要上限请填 &lt;=0.05。</span>
+              <span v-else-if="oauthSmsMeta?.uses_price_tiers" class="oa-config-hint">💡 提示：点选档位即锁定该价格（选 <code>0.008</code> 绝不拿 0.007）。若该档位无货会报 NO_NUMBERS，不会擅自换号。</span>
               <span v-else-if="oauthSmsMeta?.uses_cdk_pool" class="oa-config-hint">💡 提示：卡密留空则自动从 CDK 号池调度。被拒会自动换号，多次卡不会提前作废。</span>
               <span v-else class="oa-config-hint">💡 提示：跳过接码不会产生费用。需要自动推进时，在上方切换到任一接码渠道即可。</span>
               <el-button size="small" class="oa-save-default-btn" @click="saveOAuthFormDefault">
