@@ -108,6 +108,21 @@ def refresh_token_fast(
     return data
 
 
+def persist_token_refresh_ban(email: str, error: str = "") -> None:
+    """Token 刷新确认官方注销/封禁后，回写账号表 plus_check，供列表筛选「封号」。"""
+    em = (email or "").strip().lower()
+    if not em:
+        return
+    db.update_plus_check(em, {
+        "status": "banned",
+        "label": "封号",
+        "plus_type": "banned",
+        "error": (error or "账号已被 OpenAI 官方注销或封禁")[:240],
+        "source": "token_refresh",
+        "checked_at": time.time(),
+    })
+
+
 def refresh_session_token_fast(
     session_token: str = "",
     cookie_header: str = "",
@@ -429,7 +444,8 @@ def execute_token_refresh_flow(
     except Exception as e:
         err_str = str(e).lower()
         if "deactivated" in err_str or "deleted" in err_str or "封禁" in err_str:
-            _log(f"❌ 账号已废：已被 OpenAI 官方注销/封禁 (deleted/deactivated)")
+            _log(f"❌ 账号已废：已被 OpenAI 官方注销/封禁 (deleted/deactivated)，已回写账号表封号状态")
+            persist_token_refresh_ban(email, str(e))
             return {
                 "status": "deactivated",
                 "label": "❌ 账号已注销/封号",
@@ -865,6 +881,16 @@ def _worker_loop(task: TokenRefreshTask, email: str):
         task.mark_done(email, res)
     except Exception as e:
         logger.exception(f"[{email}] Token 刷新异常: {e}")
+        err_s = str(e).lower()
+        if "deactivated" in err_s or "deleted" in err_s or "封禁" in err_s:
+            persist_token_refresh_ban(email, str(e))
+            task.add_email_log(email, "❌ 账号已废：已被 OpenAI 官方注销/封禁，已回写账号表封号状态")
+            task.mark_done(email, {
+                "status": "deactivated",
+                "label": "❌ 账号已注销/封号",
+                "error": "账号已被 OpenAI 官方注销或封禁",
+            })
+            return
         task.add_email_log(email, f"❌ 任务失败: {e}")
         task.mark_done(email, {
             "status": "error",

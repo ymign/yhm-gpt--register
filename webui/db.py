@@ -2028,7 +2028,7 @@ def update_plus_check(email: str, plus_info: dict) -> None:
     email = email.lower()
     con = _conn()
     cur = con.execute(
-        "SELECT extra_json, reg_country FROM registered WHERE email=?", (email,)
+        "SELECT extra_json, reg_country FROM registered WHERE lower(email)=?", (email,)
     )
     row = cur.fetchone()
     if not row:
@@ -2043,14 +2043,15 @@ def update_plus_check(email: str, plus_info: dict) -> None:
     extra["plus_check"] = plus_info
     with _lock:
         con.execute(
-            "UPDATE registered SET extra_json=? WHERE email=?",
+            "UPDATE registered SET extra_json=? WHERE lower(email)=?",
             (json.dumps(extra, ensure_ascii=False), email),
         )
         con.commit()
+        invalidate_registered_caches()
 
     def _is_dead(pc: dict) -> bool:
         st = str((pc or {}).get("plus_type") or (pc or {}).get("status") or "").lower()
-        return st in ("banned", "token_invalid")
+        return st in ("banned", "token_invalid", "deactivated", "account_deactivated")
 
     # 非死 → 死 的翻转才计数，避免反复验活重复累计
     if _is_dead(plus_info) and not _is_dead(old_pc):

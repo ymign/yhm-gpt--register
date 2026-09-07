@@ -2514,17 +2514,16 @@ class AuthFlow:
         except Exception:
             pass
 
-        # 姐妹项目 registration_auto：首屏跑完后在同一出口冷却再查套餐（默认 90s）。
-        # 立刻查经常还是 Free；冷却后同会话再打一次，才有机会把试用活动写进账号。
+        # 注册链路默认不等待套餐复检：首屏 accounts/check 已经打过，
+        # 试用资格由用户事后自己验活。需要同会话冷却再查时再设 PLUS_CHECK_RETRY_SEC。
         try:
-            retry_sec = float(self._get_env("PLUS_CHECK_RETRY_SEC", "60") or 60)
+            retry_sec = float(self._get_env("PLUS_CHECK_RETRY_SEC", "0") or 0)
         except Exception:
-            retry_sec = 60.0
+            retry_sec = 0.0
         st = (self.result.plan_info or {}).get("status") or ""
         if retry_sec > 0 and st not in ("plus_eligible", "plus_active", "pro_eligible", "pro_active", "pro_20x", "pro_5x"):
             logger.info(
-                f"[Bootstrap] 首屏套餐={st or '未知'}，同会话冷却 {retry_sec:.0f}s 后复检 "
-                f"（对齐 yhm-gpt-free-register 注册后查套餐冷却）"
+                f"[Bootstrap] 首屏套餐={st or '未知'}，同会话冷却 {retry_sec:.0f}s 后复检"
             )
             time.sleep(max(1.0, min(180.0, retry_sec)))
             try:

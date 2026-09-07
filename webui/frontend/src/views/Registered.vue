@@ -454,11 +454,12 @@ function getStatusBadges(row) {
 
   // 1. 坏号状态（最优先高亮）
   const hl = (row.plus_check?.status || '').toLowerCase()
-  if (hl === 'banned' || hl === 'token_invalid') {
+  if (hl === 'banned' || hl === 'deactivated' || hl === 'account_deactivated' || hl === 'token_invalid') {
+    const banned = hl !== 'token_invalid'
     badges.push({
       type: 'danger',
-      label: hl === 'banned' ? '🚫 官方封禁' : '❌ 凭证失效',
-      desc: 'Access Token 失效或已被官方封禁',
+      label: banned ? '🚫 官方封禁' : '❌ 凭证失效',
+      desc: banned ? '账号已被 OpenAI 注销或封禁' : 'Access Token 失效或被吊销',
       effect: 'dark',
     })
     return badges
@@ -636,6 +637,8 @@ const PLUS_TYPE = {
   free: 'info',
   token_invalid: 'danger',
   banned: 'danger',
+  deactivated: 'danger',
+  account_deactivated: 'danger',
   error: 'danger',
 }
 function plusOf(row) {
@@ -986,13 +989,63 @@ const healthConfigCollapsed = ref(true)
 const healthTargetEmails = ref([])
 const healthItems = ref({})
 const healthLogs = ref([])
-const healthForm = reactive({
-  mode: 'token', // 'token' (Token 状态验活) | 'plan' (套餐与试用资格探测)
+const HEALTH_FORM_KEY = 'gpt_health_check_form_v1'
+const HEALTH_FORM_DEFAULTS = {
+  mode: 'plan',
   proxy: '__POOL__',
-  proxyCountry: 'BR',
-  workers: 5,
+  proxyCountry: 'US',
+  workers: 10,
   timeout: 20,
-})
+}
+
+function loadHealthForm() {
+  let saved = {}
+  try {
+    saved = JSON.parse(localStorage.getItem(HEALTH_FORM_KEY) || '{}')
+  } catch (_) {
+    saved = {}
+  }
+  if (!saved || typeof saved !== 'object') saved = {}
+  const workers = Number(saved.workers)
+  const timeout = Number(saved.timeout)
+  const mode = saved.mode === 'token' || saved.mode === 'plan' ? saved.mode : HEALTH_FORM_DEFAULTS.mode
+  return {
+    ...HEALTH_FORM_DEFAULTS,
+    ...saved,
+    mode,
+    proxy: saved.proxy == null ? HEALTH_FORM_DEFAULTS.proxy : String(saved.proxy),
+    proxyCountry: Object.prototype.hasOwnProperty.call(saved, 'proxyCountry')
+      ? String(saved.proxyCountry ?? '')
+      : HEALTH_FORM_DEFAULTS.proxyCountry,
+    workers: Number.isFinite(workers) && workers >= 1 ? Math.min(20, Math.round(workers)) : HEALTH_FORM_DEFAULTS.workers,
+    timeout: Number.isFinite(timeout) && timeout >= 5 ? Math.min(60, Math.round(timeout)) : HEALTH_FORM_DEFAULTS.timeout,
+  }
+}
+
+const healthForm = reactive(loadHealthForm())
+
+function persistHealthForm() {
+  try {
+    localStorage.setItem(HEALTH_FORM_KEY, JSON.stringify({ ...healthForm }))
+  } catch (_) {}
+}
+
+watch(healthForm, persistHealthForm, { deep: true })
+watch(
+  () => healthForm.mode,
+  (m) => {
+    if (healthRunning.value) return
+    const copy = { ...healthItems.value }
+    let changed = false
+    for (const em of Object.keys(copy)) {
+      if (copy[em]?.mode !== m) {
+        copy[em] = { ...copy[em], mode: m }
+        changed = true
+      }
+    }
+    if (changed) healthItems.value = copy
+  },
+)
 
 // 弹窗内单账号日志终端
 const healthLogModalVisible = ref(false)
@@ -1091,7 +1144,7 @@ const healthStats = computed(() => {
   }
 })
 
-async function openHealthCheck(scope = 'selected', mode = 'token') {
+async function openHealthCheck(scope = 'selected', mode = '') {
   let emails = []
   if (scope === 'selected') {
     if (!selected.value.length) {
@@ -1132,7 +1185,9 @@ async function openHealthCheck(scope = 'selected', mode = 'token') {
   }
 
   healthTargetEmails.value = emails
-  healthForm.mode = mode
+  if (mode === 'token' || mode === 'plan') {
+    healthForm.mode = mode
+  }
   healthPage.value = 1
   healthFilter.value = 'all'
   healthSearch.value = ''
@@ -1142,8 +1197,9 @@ async function openHealthCheck(scope = 'selected', mode = 'token') {
     healthLogs.value = []
     healthConfigCollapsed.value = true
     const initMap = Object.create(null)
+    const rowMode = healthForm.mode || 'plan'
     for (const em of emails) {
-      initMap[em] = { email: em, mode, status: 'pending', step_text: '排队中...', result: null, elapsed: 0 }
+      initMap[em] = { email: em, mode: rowMode, status: 'pending', step_text: '排队中...', result: null, elapsed: 0 }
     }
     healthItems.value = initMap
   }
@@ -1229,7 +1285,7 @@ async function startHealthCheckTask() {
       proxies: proxiesParam,
       proxy: proxyParam,
       proxy_country: healthForm.proxyCountry || '',
-      workers: healthForm.workers || 5,
+      workers: healthForm.workers || 10,
       timeout: healthForm.timeout || 20,
     })
     const taskId = res.taskId || res.task_id
@@ -3376,21 +3432,21 @@ const credRows = computed(() => {
 })
 
 const CRED_META_DICT = {
-  pickup_url:     { badge: '取件链接', bg: 'rgba(16, 185, 129, 0.25)', color: '#10b981' },
-  service_token:  { badge: 'RemailToken', bg: 'rgba(59, 130, 246, 0.2)', color: '#38bdf8' },
-  order_no:       { badge: 'Remail订单', bg: 'rgba(168, 85, 247, 0.2)', color: '#c084fc' },
-  session_data:   { badge: 'SessionJSON', bg: 'rgba(59, 130, 246, 0.25)', color: '#38bdf8' },
-  extract_link:   { badge: 'Extract', bg: 'rgba(16, 185, 129, 0.2)', color: '#34d399' },
-  totp_secret:    { badge: '2FA', bg: 'rgba(16, 185, 129, 0.2)', color: '#34d399' },
-  totp_factor_id: { badge: '2FA', bg: 'rgba(16, 185, 129, 0.15)', color: '#6ee7b7' },
-  access_token:   { badge: 'OAuth', bg: 'rgba(59, 130, 246, 0.2)', color: '#60a5fa' },
-  session_token:  { badge: 'Session', bg: 'rgba(168, 85, 247, 0.2)', color: '#c084fc' },
-  refresh_token:  { badge: 'OAuth', bg: 'rgba(236, 72, 153, 0.2)', color: '#f472b6' },
-  id_token:       { badge: 'Token', bg: 'rgba(100, 116, 139, 0.2)', color: '#94a3b8' },
-  device_id:      { badge: 'Device', bg: 'rgba(100, 116, 139, 0.2)', color: '#94a3b8' },
-  csrf_token:     { badge: 'Security', bg: 'rgba(100, 116, 139, 0.2)', color: '#94a3b8' },
-  cookie_header:  { badge: 'Cookie', bg: 'rgba(245, 158, 11, 0.2)', color: '#fbbf24' },
-  password:       { badge: 'Auth', bg: 'rgba(6, 182, 212, 0.2)', color: '#22d3ee' },
+  pickup_url:     { badge: '取件链接', bg: 'rgba(93, 164, 177, 0.22)', color: '#5da4b1' },
+  service_token:  { badge: 'RemailToken', bg: 'rgba(93, 164, 177, 0.16)', color: '#7bb8c2' },
+  order_no:       { badge: 'Remail订单', bg: 'rgba(93, 164, 177, 0.14)', color: '#7bb8c2' },
+  session_data:   { badge: 'SessionJSON', bg: 'rgba(93, 164, 177, 0.22)', color: '#5da4b1' },
+  extract_link:   { badge: 'Extract', bg: 'rgba(93, 164, 177, 0.18)', color: '#5da4b1' },
+  totp_secret:    { badge: '2FA', bg: 'rgba(93, 164, 177, 0.18)', color: '#5da4b1' },
+  totp_factor_id: { badge: '2FA', bg: 'rgba(93, 164, 177, 0.14)', color: '#7bb8c2' },
+  access_token:   { badge: 'OAuth', bg: 'rgba(93, 164, 177, 0.18)', color: '#7bb8c2' },
+  session_token:  { badge: 'Session', bg: 'rgba(248, 243, 233, 0.1)', color: '#f8f3e9' },
+  refresh_token:  { badge: 'OAuth', bg: 'rgba(93, 164, 177, 0.16)', color: '#7bb8c2' },
+  id_token:       { badge: 'Token', bg: 'rgba(168, 159, 144, 0.16)', color: '#a89f90' },
+  device_id:      { badge: 'Device', bg: 'rgba(168, 159, 144, 0.16)', color: '#a89f90' },
+  csrf_token:     { badge: 'Security', bg: 'rgba(168, 159, 144, 0.16)', color: '#a89f90' },
+  cookie_header:  { badge: 'Cookie', bg: 'rgba(196, 165, 116, 0.16)', color: '#c4a574' },
+  password:       { badge: 'Auth', bg: 'rgba(93, 164, 177, 0.18)', color: '#5da4b1' },
 }
 
 function getCredMeta(key) {
@@ -3549,7 +3605,7 @@ let mailPollingTimer = null
 function getSenderAvatar(fromStr) {
   const s = String(fromStr || '').toLowerCase()
   if (s.includes('openai') || s.includes('chatgpt')) {
-    return { text: 'OAI', color: '#34d399', bg: 'rgba(16, 185, 129, 0.15)' }
+    return { text: 'OAI', color: '#5da4b1', bg: 'rgba(93, 164, 177, 0.15)' }
   }
   if (s.includes('microsoft') || s.includes('outlook') || s.includes('live')) {
     return { text: 'MS', color: '#38bdf8', bg: 'rgba(56, 189, 248, 0.15)' }
@@ -6045,8 +6101,8 @@ onUnmounted(() => {
 
             <button
               class="dock-btn"
-              @click="handleHealthCheckCommand('token_selected')"
-              title="并发校验选中账号 Access Token 有效性"
+              @click="openHealthCheck('selected')"
+              title="套餐与试用探测（默认美国出口、10 并发）"
             >
               <el-icon class="ico-blue"><Timer /></el-icon>
               <span>验活</span>
@@ -7440,7 +7496,7 @@ onUnmounted(() => {
                 </el-col>
                 <el-col :xs="12" :sm="6" :md="3">
                   <el-form-item label="并发 Worker">
-                    <el-input-number v-model="healthForm.workers" :min="1" :max="10" style="width: 100%" />
+                    <el-input-number v-model="healthForm.workers" :min="1" :max="20" style="width: 100%" />
                   </el-form-item>
                 </el-col>
                 <el-col :xs="12" :sm="6" :md="3">
@@ -8796,7 +8852,7 @@ onUnmounted(() => {
               :width="20"
               :stroke-width="3"
               :show-text="false"
-              :color="totpRemaining <= 5 ? '#f87171' : '#34d399'"
+              :color="totpRemaining <= 5 ? '#f87171' : '#5da4b1'"
             />
             <span>动态码 <b>{{ totpRemaining }}</b> 秒后自动刷新</span>
             <el-button size="small" text type="primary" :icon="Refresh" @click="fetchTotpCode">刷新</el-button>
@@ -9203,6 +9259,14 @@ onUnmounted(() => {
   flex-direction: column;
   overflow: hidden;
   background: transparent;
+  --acc-bi: #5da4b1;
+  --acc-bi-soft: rgba(93, 164, 177, 0.16);
+  --acc-bi-line: rgba(93, 164, 177, 0.38);
+  --acc-zhi: #f8f3e9;
+  --el-color-primary: #5da4b1;
+  --el-color-success: #5da4b1;
+  --el-color-warning: #c4a574;
+  --el-color-danger: #c17b74;
 }
 
 .macos-window-panel {
@@ -9302,10 +9366,10 @@ onUnmounted(() => {
 }
 
 .segmented-tab.tab-emerald.is-active {
-  background: rgba(16, 185, 129, 0.15);
-  color: #34d399;
-  border-color: rgba(16, 185, 129, 0.45);
-  box-shadow: 0 0 10px rgba(16, 185, 129, 0.2);
+  background: rgba(93, 164, 177, 0.15);
+  color: #5da4b1;
+  border-color: rgba(93, 164, 177, 0.45);
+  box-shadow: 0 0 10px rgba(93, 164, 177, 0.2);
 }
 
 .segmented-tab.tab-rose.is-active {
@@ -9343,7 +9407,7 @@ onUnmounted(() => {
   border-radius: 50%;
   flex-shrink: 0;
 }
-.dot-emerald { background: #10b981; box-shadow: 0 0 6px rgba(16, 185, 129, 0.5); }
+.dot-emerald { background: #5da4b1; box-shadow: 0 0 6px rgba(93, 164, 177, 0.5); }
 .dot-cyan { background: #06b6d4; box-shadow: 0 0 6px rgba(6, 182, 212, 0.5); }
 .dot-amber { background: #f59e0b; box-shadow: 0 0 6px rgba(245, 158, 11, 0.5); }
 .dot-rose { background: #ef4444; box-shadow: 0 0 6px rgba(239, 68, 68, 0.5); }
@@ -9367,8 +9431,8 @@ onUnmounted(() => {
   color: #fbbf24;
 }
 .tab-count-badge.count-emerald {
-  background: rgba(16, 185, 129, 0.18);
-  color: #34d399;
+  background: rgba(93, 164, 177, 0.18);
+  color: #5da4b1;
 }
 .tab-count-badge.count-rose {
   background: rgba(239, 68, 68, 0.18);
@@ -9382,10 +9446,10 @@ onUnmounted(() => {
   gap: 5px;
   padding: 2px 7px;
   border-radius: 5px;
-  background: rgba(16, 185, 129, 0.1);
-  border: 1px dashed rgba(16, 185, 129, 0.35);
+  background: rgba(93, 164, 177, 0.1);
+  border: 1px dashed rgba(93, 164, 177, 0.35);
   font-size: 10.5px;
-  color: #34d399;
+  color: #5da4b1;
   margin-left: 4px;
   white-space: nowrap;
   flex-shrink: 0;
@@ -9453,9 +9517,9 @@ onUnmounted(() => {
   color: var(--app-title);
 }
 .ghost-tool-btn.is-active {
-  background: rgba(35, 226, 160, 0.15);
-  border-color: rgba(35, 226, 160, 0.4);
-  color: #23e2a0;
+  background: rgba(93, 164, 177, 0.15);
+  border-color: rgba(93, 164, 177, 0.4);
+  color: #5da4b1;
 }
 .is-spinning {
   animation: spin 1s linear infinite;
@@ -9507,11 +9571,11 @@ onUnmounted(() => {
   background: rgba(255, 255, 255, 0.05);
 }
 .filter-item-wrap.is-filtered {
-  border-color: rgba(16, 185, 129, 0.45);
-  background: rgba(16, 185, 129, 0.09);
+  border-color: rgba(93, 164, 177, 0.45);
+  background: rgba(93, 164, 177, 0.09);
 }
 .filter-item-wrap.is-filtered .filter-label {
-  color: #34d399;
+  color: #5da4b1;
 }
 
 .filter-label {
@@ -9655,7 +9719,7 @@ onUnmounted(() => {
   height: 28px;
   border-radius: 6px;
   border: none;
-  background: #10b981;
+  background: #5da4b1;
   color: #064e3b;
   font-size: 12px;
   font-weight: 700;
@@ -9663,8 +9727,8 @@ onUnmounted(() => {
   transition: all 0.15s ease;
 }
 .primary-export-btn:hover:not(:disabled) {
-  background: #34d399;
-  box-shadow: 0 0 12px rgba(16, 185, 129, 0.35);
+  background: #5da4b1;
+  box-shadow: 0 0 12px rgba(93, 164, 177, 0.35);
 }
 
 /* ════════════════ 核心工作区 (Workspace Body) ════════════════ */
@@ -9755,8 +9819,8 @@ onUnmounted(() => {
   width: 7px;
   height: 7px;
   border-radius: 999px;
-  background: #10b981;
-  box-shadow: 0 0 10px #10b981;
+  background: #5da4b1;
+  box-shadow: 0 0 10px #5da4b1;
   animation: beaconPulse 2s ease-in-out infinite;
 }
 @keyframes beaconPulse {
@@ -9897,7 +9961,7 @@ onUnmounted(() => {
   transition: color 0.15s ease;
 }
 .profile-email-row:hover .profile-email {
-  color: #34d399;
+  color: #5da4b1;
 }
 .copy-hint-icon {
   font-size: 12px;
@@ -9907,7 +9971,7 @@ onUnmounted(() => {
 }
 .profile-email-row:hover .copy-hint-icon {
   opacity: 1;
-  color: #34d399;
+  color: #5da4b1;
 }
 .profile-tags-row {
   display: flex;
@@ -9933,9 +9997,9 @@ onUnmounted(() => {
   border: 1px solid rgba(255, 255, 255, 0.06);
 }
 .tag-emerald {
-  background: rgba(16, 185, 129, 0.12);
-  color: #34d399;
-  border: 1px solid rgba(16, 185, 129, 0.28);
+  background: rgba(93, 164, 177, 0.12);
+  color: #5da4b1;
+  border: 1px solid rgba(93, 164, 177, 0.28);
 }
 .tag-cyan {
   background: rgba(6, 182, 212, 0.12);
@@ -9984,26 +10048,26 @@ onUnmounted(() => {
   color: #38bdf8;
 }
 .shield-icon {
-  background: rgba(16, 185, 129, 0.12);
-  color: #34d399;
+  background: rgba(93, 164, 177, 0.12);
+  color: #5da4b1;
 }
 
 /* 2. 实时 2FA 动态口令认证器 (Live TOTP) */
 .totp-auth-card {
-  background: linear-gradient(180deg, rgba(16, 185, 129, 0.09) 0%, rgba(10, 14, 20, 0.8) 100%);
-  border-color: rgba(16, 185, 129, 0.28);
-  box-shadow: inset 0 1px 0 rgba(16, 185, 129, 0.2), 0 4px 14px rgba(0, 0, 0, 0.3);
+  background: linear-gradient(180deg, rgba(93, 164, 177, 0.09) 0%, rgba(10, 14, 20, 0.8) 100%);
+  border-color: rgba(93, 164, 177, 0.28);
+  box-shadow: inset 0 1px 0 rgba(93, 164, 177, 0.2), 0 4px 14px rgba(0, 0, 0, 0.3);
 }
 .live-dot-radar {
   width: 6px;
   height: 6px;
   border-radius: 999px;
-  background: #10b981;
-  box-shadow: 0 0 8px #10b981;
+  background: #5da4b1;
+  box-shadow: 0 0 8px #5da4b1;
   animation: beaconPulse 1.5s ease-in-out infinite;
 }
 .totp-auth-card .title-text {
-  color: #34d399;
+  color: #5da4b1;
 }
 .totp-timer-chip {
   padding: 1px 7px;
@@ -10015,9 +10079,9 @@ onUnmounted(() => {
   transition: all 0.2s ease;
 }
 .totp-timer-chip.urgency-normal {
-  background: rgba(16, 185, 129, 0.15);
-  color: #34d399;
-  border: 1px solid rgba(16, 185, 129, 0.3);
+  background: rgba(93, 164, 177, 0.15);
+  color: #5da4b1;
+  border: 1px solid rgba(93, 164, 177, 0.3);
 }
 .totp-timer-chip.urgency-warning {
   background: rgba(245, 158, 11, 0.18);
@@ -10034,7 +10098,7 @@ onUnmounted(() => {
 /* 动态码内嵌屏幕显示槽 */
 .totp-display-screen {
   background: #05070a;
-  border: 1px solid rgba(16, 185, 129, 0.25);
+  border: 1px solid rgba(93, 164, 177, 0.25);
   box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.7);
   border-radius: 7px;
   padding: 8px 12px;
@@ -10046,7 +10110,7 @@ onUnmounted(() => {
   user-select: none;
 }
 .totp-display-screen:hover {
-  border-color: rgba(16, 185, 129, 0.55);
+  border-color: rgba(93, 164, 177, 0.55);
   background: #080b10;
 }
 .totp-code-val {
@@ -10058,14 +10122,14 @@ onUnmounted(() => {
   font-size: 24px;
   font-weight: 800;
   letter-spacing: 2px;
-  color: #10b981;
-  text-shadow: 0 0 14px rgba(16, 185, 129, 0.45);
+  color: #5da4b1;
+  text-shadow: 0 0 14px rgba(93, 164, 177, 0.45);
   line-height: 1;
 }
 .code-dot {
   font-size: 22px;
   line-height: 1;
-  color: rgba(16, 185, 129, 0.5);
+  color: rgba(93, 164, 177, 0.5);
   font-weight: 700;
   user-select: none;
   margin: 0 2px;
@@ -10075,9 +10139,9 @@ onUnmounted(() => {
   align-items: center;
   gap: 4px;
   font-size: 11px;
-  color: #34d399;
-  background: rgba(16, 185, 129, 0.12);
-  border: 1px solid rgba(16, 185, 129, 0.25);
+  color: #5da4b1;
+  background: rgba(93, 164, 177, 0.12);
+  border: 1px solid rgba(93, 164, 177, 0.25);
   padding: 2px 8px;
   border-radius: 4px;
   opacity: 0.85;
@@ -10085,7 +10149,7 @@ onUnmounted(() => {
 }
 .totp-display-screen:hover .totp-action-hover {
   opacity: 1;
-  background: rgba(16, 185, 129, 0.22);
+  background: rgba(93, 164, 177, 0.22);
 }
 
 .totp-progress-track {
@@ -10100,7 +10164,7 @@ onUnmounted(() => {
   transition: width 1s linear;
 }
 .totp-progress-bar.urgency-normal {
-  background: linear-gradient(90deg, #10b981, #34d399);
+  background: linear-gradient(90deg, #5da4b1, #5da4b1);
 }
 .totp-progress-bar.urgency-warning {
   background: linear-gradient(90deg, #f59e0b, #fbbf24);
@@ -10118,7 +10182,7 @@ onUnmounted(() => {
   padding-top: 1px;
 }
 .totp-next-hint .next-val {
-  color: #34d399;
+  color: #5da4b1;
   font-weight: 600;
 }
 
@@ -10211,9 +10275,9 @@ onUnmounted(() => {
   line-height: 1.2;
 }
 .slot-badge.badge-success {
-  background: rgba(16, 185, 129, 0.12);
-  color: #34d399;
-  border: 1px solid rgba(16, 185, 129, 0.28);
+  background: rgba(93, 164, 177, 0.12);
+  color: #5da4b1;
+  border: 1px solid rgba(93, 164, 177, 0.28);
 }
 .slot-badge.badge-warn {
   background: rgba(245, 158, 11, 0.12);
@@ -10333,9 +10397,9 @@ onUnmounted(() => {
   font-weight: 700;
 }
 .health-grade-chip.grade-success {
-  background: rgba(16, 185, 129, 0.12);
-  color: #34d399;
-  border: 1px solid rgba(16, 185, 129, 0.3);
+  background: rgba(93, 164, 177, 0.12);
+  color: #5da4b1;
+  border: 1px solid rgba(93, 164, 177, 0.3);
 }
 .health-grade-chip.grade-info {
   background: rgba(14, 165, 233, 0.12);
@@ -10370,11 +10434,11 @@ onUnmounted(() => {
   letter-spacing: 0.5px;
 }
 .meter-bar.is-active {
-  background: rgba(16, 185, 129, 0.14);
-  border-color: rgba(16, 185, 129, 0.35);
+  background: rgba(93, 164, 177, 0.14);
+  border-color: rgba(93, 164, 177, 0.35);
 }
 .meter-bar.is-active .meter-label {
-  color: #34d399;
+  color: #5da4b1;
 }
 
 .health-tips-list {
@@ -10398,11 +10462,11 @@ onUnmounted(() => {
   flex-shrink: 0;
 }
 .health-tip-item.tip-success {
-  background: rgba(16, 185, 129, 0.08);
-  color: #34d399;
+  background: rgba(93, 164, 177, 0.08);
+  color: #5da4b1;
 }
 .health-tip-item.tip-success .tip-dot {
-  background: #34d399;
+  background: #5da4b1;
 }
 .health-tip-item.tip-info {
   background: rgba(14, 165, 233, 0.08);
@@ -10441,14 +10505,14 @@ onUnmounted(() => {
 .radar-circle {
   position: absolute;
   border-radius: 999px;
-  border: 1px solid rgba(16, 185, 129, 0.15);
+  border: 1px solid rgba(93, 164, 177, 0.15);
 }
 .radar-circle.circle-1 { width: 32px; height: 32px; }
-.radar-circle.circle-2 { width: 52px; height: 52px; border-color: rgba(16, 185, 129, 0.1); }
-.radar-circle.circle-3 { width: 72px; height: 72px; border-color: rgba(16, 185, 129, 0.05); }
+.radar-circle.circle-2 { width: 52px; height: 52px; border-color: rgba(93, 164, 177, 0.1); }
+.radar-circle.circle-3 { width: 72px; height: 72px; border-color: rgba(93, 164, 177, 0.05); }
 .empty-radar-icon {
   font-size: 24px;
-  color: #10b981;
+  color: #5da4b1;
   opacity: 0.65;
 }
 .details-empty-state .empty-title {
@@ -10488,14 +10552,14 @@ onUnmounted(() => {
   user-select: none;
 }
 .footer-btn.btn-primary {
-  background: linear-gradient(180deg, #10b981 0%, #059669 100%);
+  background: linear-gradient(180deg, #5da4b1 0%, #059669 100%);
   color: #ffffff;
-  border: 1px solid #10b981;
-  box-shadow: 0 2px 8px rgba(16, 185, 129, 0.35);
+  border: 1px solid #5da4b1;
+  box-shadow: 0 2px 8px rgba(93, 164, 177, 0.35);
 }
 .footer-btn.btn-primary:hover {
-  background: linear-gradient(180deg, #34d399 0%, #10b981 100%);
-  box-shadow: 0 4px 14px rgba(16, 185, 129, 0.5);
+  background: linear-gradient(180deg, #5da4b1 0%, #5da4b1 100%);
+  box-shadow: 0 4px 14px rgba(93, 164, 177, 0.5);
   transform: translateY(-1px);
 }
 .footer-sub-grid {
@@ -10549,7 +10613,7 @@ onUnmounted(() => {
   background: #181c2c !important;
 }
 .linear-modern-table :deep(.is-focused-row > td.el-table__cell) {
-  background: rgba(35, 226, 160, 0.09) !important;
+  background: rgba(93, 164, 177, 0.09) !important;
 }
 
 .table-footer-bar {
@@ -10616,8 +10680,8 @@ onUnmounted(() => {
   margin: 0 2px;
 }
 .octopus-pagination :deep(.el-pager li.is-active) {
-  background: #10b981 !important;
-  border-color: #10b981 !important;
+  background: #5da4b1 !important;
+  border-color: #5da4b1 !important;
   color: #042f24 !important;
   font-weight: 700;
 }
@@ -10851,9 +10915,9 @@ onUnmounted(() => {
 }
 
 .status-micro-pill.success {
-  background: rgba(16, 185, 129, 0.12);
-  color: #34d399;
-  border: 1px solid rgba(16, 185, 129, 0.25);
+  background: rgba(93, 164, 177, 0.12);
+  color: #5da4b1;
+  border: 1px solid rgba(93, 164, 177, 0.25);
 }
 .status-micro-pill.primary {
   background: rgba(0, 122, 255, 0.12);
@@ -10967,15 +11031,15 @@ onUnmounted(() => {
   border-radius: 4px;
   font-size: 10px;
   font-weight: 500;
-  background: rgba(16, 185, 129, 0.1);
-  color: #34d399;
-  border: 1px solid rgba(16, 185, 129, 0.22);
+  background: rgba(93, 164, 177, 0.1);
+  color: #5da4b1;
+  border: 1px solid rgba(93, 164, 177, 0.22);
   cursor: pointer;
   transition: all 0.15s ease;
 }
 .export-mark-chip:hover {
-  background: rgba(16, 185, 129, 0.2);
-  border-color: #34d399;
+  background: rgba(93, 164, 177, 0.2);
+  border-color: #5da4b1;
 }
 
 .fresh-pure-chip {
@@ -11020,11 +11084,11 @@ onUnmounted(() => {
   gap: 4px;
   padding: 2px 8px;
   border-radius: 5px;
-  background: rgba(16, 185, 129, 0.08);
-  border: 1px solid rgba(16, 185, 129, 0.2);
+  background: rgba(93, 164, 177, 0.08);
+  border: 1px solid rgba(93, 164, 177, 0.2);
   font-size: 11.5px;
   font-weight: 500;
-  color: #34d399;
+  color: #5da4b1;
 }
 .geo-badge-modern.is-hot {
   background: rgba(6, 182, 212, 0.1);
@@ -11064,11 +11128,11 @@ onUnmounted(() => {
   border-radius: 50%;
 }
 .sec-pwd-ok {
-  background: rgba(16, 185, 129, 0.1);
-  color: #34d399;
-  border: 1px solid rgba(16, 185, 129, 0.25);
+  background: rgba(93, 164, 177, 0.1);
+  color: #5da4b1;
+  border: 1px solid rgba(93, 164, 177, 0.25);
 }
-.sec-pwd-ok .sec-dot { background: #34d399; }
+.sec-pwd-ok .sec-dot { background: #5da4b1; }
 .sec-pwd-no {
   background: rgba(245, 158, 11, 0.1);
   color: #fbbf24;
@@ -11076,11 +11140,11 @@ onUnmounted(() => {
 }
 .sec-pwd-no .sec-dot { background: #fbbf24; }
 .sec-2fa-ok {
-  background: rgba(16, 185, 129, 0.1);
-  color: #34d399;
-  border: 1px solid rgba(16, 185, 129, 0.25);
+  background: rgba(93, 164, 177, 0.1);
+  color: #5da4b1;
+  border: 1px solid rgba(93, 164, 177, 0.25);
 }
-.sec-2fa-ok .sec-dot { background: #34d399; }
+.sec-2fa-ok .sec-dot { background: #5da4b1; }
 .sec-2fa-no {
   background: rgba(245, 158, 11, 0.1);
   color: #fbbf24;
@@ -11126,13 +11190,13 @@ onUnmounted(() => {
   border-color: rgba(255, 255, 255, 0.16);
 }
 .row-act-btn.btn-totp-act {
-  color: #34d399;
-  border-color: rgba(16, 185, 129, 0.25);
-  background: rgba(16, 185, 129, 0.06);
+  color: #5da4b1;
+  border-color: rgba(93, 164, 177, 0.25);
+  background: rgba(93, 164, 177, 0.06);
 }
 .row-act-btn.btn-totp-act:hover {
-  background: rgba(16, 185, 129, 0.16);
-  border-color: #34d399;
+  background: rgba(93, 164, 177, 0.16);
+  border-color: #5da4b1;
 }
 .row-act-btn.btn-otp-act {
   color: #38bdf8;
@@ -11374,11 +11438,11 @@ onUnmounted(() => {
   font-size: 11px;
 }
 .geo-badge.geo-hot {
-  border-color: rgba(16, 185, 129, 0.4);
-  background: rgba(16, 185, 129, 0.08);
+  border-color: rgba(93, 164, 177, 0.4);
+  background: rgba(93, 164, 177, 0.08);
 }
 .geo-badge.geo-hot .geo-country {
-  color: #10b981;
+  color: #5da4b1;
 }
 .geo-country { font-weight: 600; color: var(--el-color-primary); }
 .geo-city { color: var(--el-text-color-regular); }
@@ -11617,8 +11681,8 @@ onUnmounted(() => {
   font-weight: 700;
 }
 .plus-kpi-card.hit-promo {
-  border-color: rgba(16, 185, 129, 0.4);
-  background: rgba(16, 185, 129, 0.08);
+  border-color: rgba(93, 164, 177, 0.4);
+  background: rgba(93, 164, 177, 0.08);
 }
 .plus-kpi-card.card-warn {
   border-color: rgba(239, 68, 68, 0.4);
@@ -11654,10 +11718,10 @@ onUnmounted(() => {
   font-family: var(--el-font-family-monospace, monospace);
 }
 .oa-kpi-item.kpi-hit {
-  border-color: rgba(16, 185, 129, 0.4);
-  background: rgba(16, 185, 129, 0.08);
+  border-color: rgba(93, 164, 177, 0.4);
+  background: rgba(93, 164, 177, 0.08);
 }
-.oa-kpi-item.kpi-hit .highlight { color: #10b981; }
+.oa-kpi-item.kpi-hit .highlight { color: #5da4b1; }
 .oa-kpi-item.kpi-warn {
   border-color: rgba(239, 68, 68, 0.4);
   background: rgba(239, 68, 68, 0.08);
@@ -11769,7 +11833,7 @@ onUnmounted(() => {
   font-weight: 500;
 }
 .finished-indicator {
-  color: #10b981;
+  color: #5da4b1;
 }
 
 .start-gradient-btn {
@@ -12084,12 +12148,12 @@ onUnmounted(() => {
 /* 密码 - 已设置：柔和 Apple Green 暗调半透绿 */
 .sec-pwd-ok {
   background: rgba(52, 199, 89, 0.12);
-  color: #34d399;
-  border: 1px solid rgba(52, 211, 153, 0.3);
+  color: #5da4b1;
+  border: 1px solid rgba(93, 164, 177, 0.3);
 }
 .sec-pwd-ok:hover {
   background: rgba(52, 199, 89, 0.22);
-  border-color: rgba(52, 211, 153, 0.5);
+  border-color: rgba(93, 164, 177, 0.5);
 }
 
 /* 密码 - 未设置：中性低对比度半透灰 */
@@ -12106,14 +12170,14 @@ onUnmounted(() => {
 
 /* 2FA - 已绑定：质感 Teal/Cyan 蓝绿半透明 */
 .sec-2fa-ok {
-  background: rgba(16, 185, 129, 0.15);
-  color: #10b981;
-  border: 1px solid rgba(16, 185, 129, 0.35);
+  background: rgba(93, 164, 177, 0.15);
+  color: #5da4b1;
+  border: 1px solid rgba(93, 164, 177, 0.35);
   font-weight: 700;
 }
 .sec-2fa-ok:hover {
-  background: rgba(16, 185, 129, 0.25);
-  border-color: rgba(16, 185, 129, 0.55);
+  background: rgba(93, 164, 177, 0.25);
+  border-color: rgba(93, 164, 177, 0.55);
 }
 
 /* 2FA - 未绑定：中性半透灰 */
@@ -12130,12 +12194,12 @@ onUnmounted(() => {
 
 .sec-action-btn {
   background: rgba(52, 199, 89, 0.12) !important;
-  border-color: rgba(52, 211, 153, 0.3) !important;
-  color: #34d399 !important;
+  border-color: rgba(93, 164, 177, 0.3) !important;
+  color: #5da4b1 !important;
 }
 .sec-action-btn:hover {
   background: rgba(52, 199, 89, 0.22) !important;
-  border-color: rgba(52, 211, 153, 0.5) !important;
+  border-color: rgba(93, 164, 177, 0.5) !important;
 }
 
 /* ──────────── 2FA 实时动态码弹窗样式 ──────────── */
@@ -12166,7 +12230,7 @@ onUnmounted(() => {
   font-size: 36px;
   font-weight: 800;
   letter-spacing: 5px;
-  color: #34d399;
+  color: #5da4b1;
   margin-bottom: 8px;
   cursor: pointer;
   transition: transform 0.15s ease;
@@ -12311,9 +12375,9 @@ onUnmounted(() => {
 }
 
 .pill-remail {
-  background: rgba(16, 185, 129, 0.15);
-  color: #10b981;
-  border: 1px solid rgba(16, 185, 129, 0.35);
+  background: rgba(93, 164, 177, 0.15);
+  color: #5da4b1;
+  border: 1px solid rgba(93, 164, 177, 0.35);
 }
 
 .pill-other {
@@ -12323,9 +12387,9 @@ onUnmounted(() => {
 }
 
 .pill-graph {
-  background: rgba(16, 185, 129, 0.12);
-  color: #34d399;
-  border: 1px solid rgba(16, 185, 129, 0.3);
+  background: rgba(93, 164, 177, 0.12);
+  color: #5da4b1;
+  border: 1px solid rgba(93, 164, 177, 0.3);
 }
 
 .pill-remail-pickup {
@@ -12341,9 +12405,9 @@ onUnmounted(() => {
 }
 
 .mb-elapsed-pill {
-  color: #10b981;
-  background: rgba(16, 185, 129, 0.08);
-  border: 1px solid rgba(16, 185, 129, 0.2);
+  color: #5da4b1;
+  background: rgba(93, 164, 177, 0.08);
+  border: 1px solid rgba(93, 164, 177, 0.2);
 }
 
 .mb-time-pill {
@@ -12369,8 +12433,8 @@ onUnmounted(() => {
 }
 
 .mb-polling-toggle.is-active {
-  background: rgba(16, 185, 129, 0.08);
-  border-color: rgba(16, 185, 129, 0.35);
+  background: rgba(93, 164, 177, 0.08);
+  border-color: rgba(93, 164, 177, 0.35);
 }
 
 .polling-label {
@@ -12384,8 +12448,8 @@ onUnmounted(() => {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #34d399;
-  box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.7);
+  background: #5da4b1;
+  box-shadow: 0 0 0 0 rgba(93, 164, 177, 0.7);
   animation: pulse-ring 1.6s infinite;
 }
 
@@ -12423,9 +12487,9 @@ onUnmounted(() => {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  background: linear-gradient(135deg, rgba(16, 185, 129, 0.1) 0%, rgba(6, 78, 59, 0.16) 100%);
-  border: 1px solid rgba(16, 185, 129, 0.38);
-  box-shadow: 0 4px 18px rgba(16, 185, 129, 0.06);
+  background: linear-gradient(135deg, rgba(93, 164, 177, 0.1) 0%, rgba(6, 78, 59, 0.16) 100%);
+  border: 1px solid rgba(93, 164, 177, 0.38);
+  box-shadow: 0 4px 18px rgba(93, 164, 177, 0.06);
   border-radius: 12px;
   padding: 14px 18px;
   gap: 16px;
@@ -12443,15 +12507,15 @@ onUnmounted(() => {
   gap: 6px;
   font-size: 11.5px;
   font-weight: 600;
-  color: #34d399;
+  color: #5da4b1;
 }
 
 .pulse-emerald-dot {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #34d399;
-  box-shadow: 0 0 8px #34d399;
+  background: #5da4b1;
+  box-shadow: 0 0 8px #5da4b1;
 }
 
 .otp-huge-number-row {
@@ -12479,18 +12543,18 @@ onUnmounted(() => {
   justify-content: center;
   width: 38px;
   height: 44px;
-  background: rgba(16, 185, 129, 0.12);
-  border: 1px solid rgba(52, 211, 153, 0.35);
+  background: rgba(93, 164, 177, 0.12);
+  border: 1px solid rgba(93, 164, 177, 0.35);
   border-radius: 6px;
   font-size: 28px;
   font-weight: 800;
-  color: #34d399;
+  color: #5da4b1;
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
 }
 
 .otp-copy-icon-hover {
   font-size: 16px;
-  color: #34d399;
+  color: #5da4b1;
   opacity: 0.7;
 }
 
@@ -12507,14 +12571,14 @@ onUnmounted(() => {
   font-weight: 700;
   font-size: 13.5px;
   padding: 10px 18px;
-  background: linear-gradient(135deg, #10b981 0%, #059669 100%) !important;
+  background: linear-gradient(135deg, #5da4b1 0%, #059669 100%) !important;
   border: none !important;
-  box-shadow: 0 4px 12px rgba(16, 185, 129, 0.3);
+  box-shadow: 0 4px 12px rgba(93, 164, 177, 0.3);
 }
 
 .otp-copy-hero-btn:hover {
-  background: linear-gradient(135deg, #34d399 0%, #10b981 100%) !important;
-  box-shadow: 0 4px 16px rgba(16, 185, 129, 0.45);
+  background: linear-gradient(135deg, #5da4b1 0%, #5da4b1 100%) !important;
+  box-shadow: 0 4px 16px rgba(93, 164, 177, 0.45);
 }
 
 /* 未检索到验证码空状态卡片 */
@@ -12622,7 +12686,7 @@ onUnmounted(() => {
 }
 
 .mb-mail-card.has-otp {
-  border-left: 3.5px solid #10b981;
+  border-left: 3.5px solid #5da4b1;
 }
 
 .mb-mail-card.is-expanded {
@@ -12727,9 +12791,9 @@ onUnmounted(() => {
   gap: 4px;
   font-size: 11.5px;
   font-weight: 800;
-  color: #34d399;
-  background: rgba(16, 185, 129, 0.15);
-  border: 1px solid rgba(52, 211, 153, 0.4);
+  color: #5da4b1;
+  background: rgba(93, 164, 177, 0.15);
+  border: 1px solid rgba(93, 164, 177, 0.4);
   padding: 2px 8px;
   border-radius: 4px;
   cursor: pointer;
@@ -12737,8 +12801,8 @@ onUnmounted(() => {
 }
 
 .mb-otp-badge:hover {
-  background: rgba(16, 185, 129, 0.28);
-  border-color: rgba(52, 211, 153, 0.7);
+  background: rgba(93, 164, 177, 0.28);
+  border-color: rgba(93, 164, 177, 0.7);
   transform: scale(1.04);
 }
 
@@ -12832,8 +12896,8 @@ onUnmounted(() => {
 }
 
 .oa-strategy-hero-card.is-skip-mode {
-  background: rgba(16, 185, 129, 0.05);
-  border-color: rgba(16, 185, 129, 0.25);
+  background: rgba(93, 164, 177, 0.05);
+  border-color: rgba(93, 164, 177, 0.25);
 }
 
 .oa-strategy-hero-card.is-cdk-mode,
@@ -12884,11 +12948,11 @@ onUnmounted(() => {
   height: 7px;
   border-radius: 50%;
 }
-.strategy-dot.emerald { background: #10b981; }
+.strategy-dot.emerald { background: #5da4b1; }
 .strategy-dot.amber { background: #f59e0b; }
 .strategy-dot.blue { background: #007aff; }
 
-.text-emerald { color: #10b981; }
+.text-emerald { color: #5da4b1; }
 .text-amber { color: #f59e0b; }
 .text-blue { color: #007aff; }
 
@@ -12992,8 +13056,8 @@ onUnmounted(() => {
   align-items: center;
   gap: 10px;
   padding: 14px 16px;
-  background: rgba(16, 185, 129, 0.06);
-  border: 1px solid rgba(16, 185, 129, 0.2);
+  background: rgba(93, 164, 177, 0.06);
+  border: 1px solid rgba(93, 164, 177, 0.2);
   border-radius: 6px;
   color: var(--el-text-color-regular);
   font-size: 12px;
@@ -13001,7 +13065,7 @@ onUnmounted(() => {
 }
 .skip-icon {
   font-size: 20px;
-  color: #10b981;
+  color: #5da4b1;
   flex-shrink: 0;
 }
 .skip-text {
@@ -13179,8 +13243,8 @@ onUnmounted(() => {
   min-width: 0;
 }
 .feat-kpi.tone-ok {
-  background: rgba(16, 185, 129, 0.1);
-  border-color: rgba(16, 185, 129, 0.28);
+  background: rgba(93, 164, 177, 0.1);
+  border-color: rgba(93, 164, 177, 0.28);
 }
 .feat-kpi.tone-bad {
   background: rgba(239, 68, 68, 0.1);
@@ -13307,7 +13371,7 @@ onUnmounted(() => {
   font-size: 11px;
   font-weight: 700;
 }
-.feat-chip.tone-ok { color: #059669; background: rgba(16, 185, 129, 0.14); }
+.feat-chip.tone-ok { color: #059669; background: rgba(93, 164, 177, 0.14); }
 .feat-chip.tone-bad { color: #dc2626; background: rgba(239, 68, 68, 0.14); }
 .feat-chip.tone-warn { color: #d97706; background: rgba(245, 158, 11, 0.16); }
 .feat-chip.tone-mute { color: var(--el-text-color-secondary); background: var(--el-fill-color); }
@@ -13344,9 +13408,9 @@ onUnmounted(() => {
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
 }
 .export-mark-badge.badge-at {
-  color: #10b981;
-  background: rgba(16, 185, 129, 0.12);
-  border: 1px solid rgba(16, 185, 129, 0.35);
+  color: #5da4b1;
+  background: rgba(93, 164, 177, 0.12);
+  border: 1px solid rgba(93, 164, 177, 0.35);
 }
 .export-mark-badge.badge-sub2 {
   color: #06b6d4;
@@ -13460,8 +13524,8 @@ onUnmounted(() => {
 .field-count-badge {
   font-size: 11px;
   font-weight: 600;
-  color: #10b981;
-  background: rgba(16, 185, 129, 0.1);
+  color: #5da4b1;
+  background: rgba(93, 164, 177, 0.1);
   padding: 1px 8px;
   border-radius: 10px;
 }
@@ -13690,8 +13754,8 @@ onUnmounted(() => {
   gap: 8px;
   padding: 8px 12px;
   border-radius: 7px;
-  background: rgba(16, 185, 129, 0.12);
-  border: 1px solid rgba(16, 185, 129, 0.35);
+  background: rgba(93, 164, 177, 0.12);
+  border: 1px solid rgba(93, 164, 177, 0.35);
   margin-bottom: 2px;
 }
 .export-last-success-banner .banner-left {
@@ -13699,14 +13763,14 @@ onUnmounted(() => {
   align-items: center;
   gap: 6px;
   font-size: 11.5px;
-  color: #34d399;
+  color: #5da4b1;
 }
 .export-last-success-banner .success-indicator-dot {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: #10b981;
-  box-shadow: 0 0 8px #10b981;
+  background: #5da4b1;
+  box-shadow: 0 0 8px #5da4b1;
   flex-shrink: 0;
 }
 .export-last-success-banner .banner-hint {
@@ -13812,8 +13876,8 @@ onUnmounted(() => {
   transition: all 0.15s ease !important;
 }
 .density-menu-popover .el-dropdown-menu__item.is-density-active {
-  color: #34d399 !important;
-  background: rgba(16, 185, 129, 0.12) !important;
+  color: #5da4b1 !important;
+  background: rgba(93, 164, 177, 0.12) !important;
   font-weight: 600 !important;
 }
 .density-menu-popover .density-item-content {
@@ -13822,7 +13886,7 @@ onUnmounted(() => {
   gap: 6px;
 }
 .density-menu-popover .density-check-mark {
-  color: #10b981;
+  color: #5da4b1;
   font-weight: 700;
   font-size: 13px;
   margin-left: auto;
@@ -13956,7 +14020,7 @@ onUnmounted(() => {
   transform: translateY(-1px);
 }
 .dock-btn .ico-blue { color: #60a5fa; }
-.dock-btn .ico-emerald { color: #34d399; }
+.dock-btn .ico-emerald { color: #5da4b1; }
 .dock-btn .ico-amber { color: #fbbf24; }
 .dock-btn .ico-purple { color: #c084fc; }
 .dock-btn .ico-warm { color: #f59e0b; }
@@ -14005,7 +14069,7 @@ onUnmounted(() => {
   height: 6px;
   border-radius: 50%;
   margin-right: 4px;
-  background: #10b981;
+  background: #5da4b1;
 }
 .warm-dot.failed {
   background: #ef4444;
@@ -14075,22 +14139,22 @@ onUnmounted(() => {
 
 /* ════════════════ 张鱼烧脑 Octopus 考公级暗黑工作台视觉规范 ════════════════ */
 :root {
-  --oct-bg: #050706;
-  --oct-panel: #0c1210;
-  --oct-panel-2: #101714;
-  --oct-line: rgba(187, 210, 200, 0.14);
-  --oct-line-bright: rgba(194, 217, 205, 0.22);
-  --oct-text: #f5f7f6;
-  --oct-muted: #8e9994;
-  --oct-green: #23e2a0;
-  --oct-ocean: #2aa9e8;
+  --oct-bg: #0b0d0e;
+  --oct-panel: #121618;
+  --oct-panel-2: #161b1d;
+  --oct-line: rgba(93, 164, 177, 0.16);
+  --oct-line-bright: rgba(93, 164, 177, 0.28);
+  --oct-text: #f8f3e9;
+  --oct-muted: #a89f90;
+  --oct-green: #5da4b1;
+  --oct-ocean: #5da4b1;
 }
 
 .octopus-workbench-deck {
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  background: linear-gradient(180deg, #0e1613 0%, #080c0a 100%);
+  background: linear-gradient(180deg, #151a1c 0%, #0d1012 100%);
   border-bottom: 1px solid var(--oct-line);
 }
 
@@ -14116,8 +14180,8 @@ onUnmounted(() => {
   gap: 8px;
   padding: 4px 10px;
   border-radius: 9999px;
-  background: linear-gradient(145deg, #141f1a 0%, #0b120f 100%);
-  border: 1px solid rgba(35, 226, 160, 0.28);
+  background: linear-gradient(145deg, #1a2224 0%, #121618 100%);
+  border: 1px solid rgba(93, 164, 177, 0.32);
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
   user-select: none;
 }
@@ -14173,9 +14237,9 @@ onUnmounted(() => {
   background: rgba(255, 255, 255, 0.05);
 }
 .rail-btn.is-active {
-  background: linear-gradient(145deg, rgba(35, 226, 160, 0.2) 0%, rgba(16, 23, 20, 0.9) 100%);
+  background: linear-gradient(145deg, rgba(93, 164, 177, 0.2) 0%, rgba(16, 23, 20, 0.9) 100%);
   color: #ffffff;
-  border: 1px solid rgba(35, 226, 160, 0.35);
+  border: 1px solid rgba(93, 164, 177, 0.35);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
 }
 
@@ -14188,8 +14252,8 @@ onUnmounted(() => {
   color: var(--oct-muted);
 }
 .rail-count.count-emerald {
-  background: rgba(35, 226, 160, 0.18);
-  color: #34d399;
+  background: rgba(93, 164, 177, 0.18);
+  color: #5da4b1;
 }
 .rail-count.count-cyan {
   background: rgba(42, 169, 232, 0.18);
@@ -14213,7 +14277,7 @@ onUnmounted(() => {
 }
 .octopus-search-input .el-input__wrapper.is-focus {
   border-color: var(--oct-green);
-  box-shadow: 0 0 10px rgba(35, 226, 160, 0.25) !important;
+  box-shadow: 0 0 10px rgba(93, 164, 177, 0.25) !important;
 }
 
 .octopus-kbd {
@@ -14240,7 +14304,7 @@ onUnmounted(() => {
   box-shadow: inset 0 1px rgba(255, 255, 255, 0.03);
 }
 .octopus-circle-btn:hover {
-  border-color: rgba(35, 226, 160, 0.4);
+  border-color: rgba(93, 164, 177, 0.4);
   color: #ffffff;
   transform: translateY(-1px);
 }
@@ -14267,8 +14331,8 @@ onUnmounted(() => {
   gap: 6px;
   padding: 3px 10px;
   border-radius: 9999px;
-  background: rgba(35, 226, 160, 0.15);
-  border: 1px solid rgba(35, 226, 160, 0.35);
+  background: rgba(93, 164, 177, 0.15);
+  border: 1px solid rgba(93, 164, 177, 0.35);
   font-size: 11.5px;
   color: var(--oct-green);
 }
@@ -14304,13 +14368,13 @@ onUnmounted(() => {
   box-shadow: inset 0 1px rgba(255, 255, 255, 0.03);
 }
 .octopus-action-btn:hover {
-  border-color: rgba(35, 226, 160, 0.35);
+  border-color: rgba(93, 164, 177, 0.35);
   color: #ffffff;
   transform: translateY(-1px);
 }
 .octopus-action-btn.is-selected {
   background: linear-gradient(145deg, #182b23, #0d1713);
-  border-color: rgba(35, 226, 160, 0.45);
+  border-color: rgba(93, 164, 177, 0.45);
   color: var(--oct-green);
 }
 .octopus-action-btn.is-filtered {
@@ -14347,18 +14411,18 @@ onUnmounted(() => {
   padding: 0 16px;
   height: 30px;
   border-radius: 15px;
-  border: 1px solid rgba(35, 226, 160, 0.4);
+  border: 1px solid rgba(93, 164, 177, 0.4);
   background: linear-gradient(145deg, #136f54 0%, #0a3a2c 100%);
   color: #f4fff9;
   font-size: 12px;
   font-weight: 700;
   cursor: pointer;
   transition: all 0.2s ease;
-  box-shadow: 0 2px 10px rgba(35, 226, 160, 0.25);
+  box-shadow: 0 2px 10px rgba(93, 164, 177, 0.25);
 }
 .octopus-scan-export-btn:hover {
   filter: brightness(1.15);
-  box-shadow: 0 4px 15px rgba(35, 226, 160, 0.4);
+  box-shadow: 0 4px 15px rgba(93, 164, 177, 0.4);
   transform: translateY(-1px);
 }
 .octopus-scan-export-btn:disabled {
@@ -14389,7 +14453,7 @@ onUnmounted(() => {
   min-height: 0;
   position: relative;
   background:
-    radial-gradient(circle at 50% -20%, rgba(35, 226, 160, 0.08), transparent 45%),
+    radial-gradient(circle at 50% -20%, rgba(93, 164, 177, 0.08), transparent 45%),
     linear-gradient(180deg, #070e0b 0%, #030504 100%);
 }
 
@@ -14535,7 +14599,7 @@ onUnmounted(() => {
 }
 
 .octopus-table-grid .el-table__row:hover > td.el-table__cell {
-  background: linear-gradient(90deg, rgba(35, 226, 160, 0.08) 0%, rgba(13, 19, 16, 0.95) 100%) !important;
+  background: linear-gradient(90deg, rgba(93, 164, 177, 0.08) 0%, rgba(13, 19, 16, 0.95) 100%) !important;
 }
 .octopus-table-grid .el-table__row:hover > td.el-table__cell:first-child {
   box-shadow: inset 3px 0 0 var(--oct-green) !important;
@@ -14575,7 +14639,7 @@ onUnmounted(() => {
   display: inline-block;
   flex-shrink: 0;
 }
-.dot-emerald { background: #23e2a0; box-shadow: 0 0 6px #23e2a0; }
+.dot-emerald { background: #5da4b1; box-shadow: 0 0 6px #5da4b1; }
 .dot-cyan { background: #2aa9e8; box-shadow: 0 0 6px #2aa9e8; }
 .dot-amber { background: #e69d23; box-shadow: 0 0 6px #e69d23; }
 .dot-rose { background: #ff6c70; box-shadow: 0 0 6px #ff6c70; }
@@ -14618,7 +14682,7 @@ onUnmounted(() => {
   transition: color 0.15s ease;
 }
 .email-text:hover {
-  color: #10b981;
+  color: #5da4b1;
   text-decoration: underline;
 }
 .email-copy-btn {
@@ -14667,8 +14731,8 @@ onUnmounted(() => {
   cursor: pointer;
 }
 .ip-pill:hover {
-  color: #10b981;
-  border-color: rgba(16, 185, 129, 0.3);
+  color: #5da4b1;
+  border-color: rgba(93, 164, 177, 0.3);
 }
 .pickup-pill {
   color: #38bdf8;
@@ -14709,14 +14773,14 @@ onUnmounted(() => {
 
 /* 密码✓ */
 .sec-pwd-ok {
-  background: rgba(16, 185, 129, 0.12);
-  color: #34d399;
-  border: 1px solid rgba(16, 185, 129, 0.3);
+  background: rgba(93, 164, 177, 0.12);
+  color: #5da4b1;
+  border: 1px solid rgba(93, 164, 177, 0.3);
 }
 .sec-pwd-ok:hover {
-  background: rgba(16, 185, 129, 0.22);
-  border-color: rgba(16, 185, 129, 0.5);
-  box-shadow: 0 0 6px rgba(16, 185, 129, 0.25);
+  background: rgba(93, 164, 177, 0.22);
+  border-color: rgba(93, 164, 177, 0.5);
+  box-shadow: 0 0 6px rgba(93, 164, 177, 0.25);
 }
 
 /* 密码× */
@@ -14733,15 +14797,15 @@ onUnmounted(() => {
 
 /* 2FA✓ */
 .sec-2fa-ok {
-  background: rgba(16, 185, 129, 0.15);
-  color: #10b981;
-  border: 1px solid rgba(16, 185, 129, 0.35);
+  background: rgba(93, 164, 177, 0.15);
+  color: #5da4b1;
+  border: 1px solid rgba(93, 164, 177, 0.35);
   font-weight: 700;
 }
 .sec-2fa-ok:hover {
-  background: rgba(16, 185, 129, 0.25);
-  border-color: rgba(16, 185, 129, 0.55);
-  box-shadow: 0 0 8px rgba(16, 185, 129, 0.3);
+  background: rgba(93, 164, 177, 0.25);
+  border-color: rgba(93, 164, 177, 0.55);
+  box-shadow: 0 0 8px rgba(93, 164, 177, 0.3);
 }
 
 /* 2FA× */
@@ -14810,9 +14874,9 @@ onUnmounted(() => {
   white-space: nowrap;
 }
 .at-exp-chip.at-exp-ok {
-  color: #34d399;
-  background: rgba(52, 211, 153, 0.1);
-  border-color: rgba(52, 211, 153, 0.28);
+  color: #5da4b1;
+  background: rgba(93, 164, 177, 0.1);
+  border-color: rgba(93, 164, 177, 0.28);
 }
 .at-exp-chip.at-exp-warn {
   color: #fbbf24;
@@ -14833,7 +14897,7 @@ onUnmounted(() => {
 .at-exp-chip:hover {
   filter: brightness(1.12);
 }
-.dossier-tag.at-exp-ok { color: #34d399; }
+.dossier-tag.at-exp-ok { color: #5da4b1; }
 .dossier-tag.at-exp-warn { color: #fbbf24; }
 .dossier-tag.at-exp-dead { color: #fb7185; }
 .dossier-tag.at-exp-none,
@@ -14877,9 +14941,9 @@ onUnmounted(() => {
   cursor: pointer;
 }
 .entitlement-badge.success {
-  background: rgba(35, 226, 160, 0.12);
-  color: #34d399;
-  border: 1px solid rgba(35, 226, 160, 0.25);
+  background: rgba(93, 164, 177, 0.12);
+  color: #5da4b1;
+  border: 1px solid rgba(93, 164, 177, 0.25);
 }
 .entitlement-badge.primary {
   background: rgba(42, 169, 232, 0.12);
@@ -15007,16 +15071,16 @@ onUnmounted(() => {
   color: #ffffff;
 }
 .octopus-row-btn.btn-2fa {
-  background: rgba(16, 185, 129, 0.12);
-  border-color: rgba(16, 185, 129, 0.28);
-  color: #34d399;
+  background: rgba(93, 164, 177, 0.12);
+  border-color: rgba(93, 164, 177, 0.28);
+  color: #5da4b1;
   font-weight: 600;
 }
 .octopus-row-btn.btn-2fa:hover {
-  background: rgba(16, 185, 129, 0.24);
-  border-color: #10b981;
+  background: rgba(93, 164, 177, 0.24);
+  border-color: #5da4b1;
   color: #6ee7b7;
-  box-shadow: 0 0 8px rgba(16, 185, 129, 0.3);
+  box-shadow: 0 0 8px rgba(93, 164, 177, 0.3);
 }
 .octopus-row-btn.btn-refresh {
   background: rgba(245, 158, 11, 0.12);
@@ -15046,6 +15110,158 @@ onUnmounted(() => {
   padding: 0 6px;
   font-weight: 700;
   letter-spacing: 1px;
+}
+
+/* 账号界面：天水碧 #5DA4B1 × 凝脂 #F8F3E9，去掉霓虹绿/青/玫红发光 */
+.registered-page {
+  --acc-bi: #5da4b1;
+  --acc-zhi: #f8f3e9;
+}
+.registered-page .dot-emerald,
+.registered-page .pulse-indicator-dot.dot-emerald,
+.dot-emerald {
+  background: #5da4b1 !important;
+  box-shadow: none !important;
+}
+.registered-page .dot-cyan,
+.dot-cyan {
+  background: #7bb8c2 !important;
+  box-shadow: none !important;
+}
+.registered-page .dot-rose,
+.dot-rose {
+  background: #c17b74 !important;
+  box-shadow: none !important;
+}
+.registered-page .dot-amber,
+.dot-amber {
+  background: #c4a574 !important;
+  box-shadow: none !important;
+}
+.registered-page .segmented-tab.tab-emerald.is-active,
+.segmented-tab.tab-emerald.is-active {
+  background: rgba(93, 164, 177, 0.16) !important;
+  color: #f8f3e9 !important;
+  border-color: rgba(93, 164, 177, 0.4) !important;
+  box-shadow: none !important;
+}
+.registered-page .segmented-tab.tab-cyan.is-active,
+.segmented-tab.tab-cyan.is-active {
+  background: rgba(93, 164, 177, 0.14) !important;
+  color: #f8f3e9 !important;
+  border-color: rgba(93, 164, 177, 0.36) !important;
+  box-shadow: none !important;
+}
+.registered-page .segmented-tab.tab-rose.is-active,
+.segmented-tab.tab-rose.is-active {
+  background: rgba(193, 123, 116, 0.14) !important;
+  color: #e8c9c4 !important;
+  border-color: rgba(193, 123, 116, 0.36) !important;
+  box-shadow: none !important;
+}
+.registered-page .segmented-tab.tab-amber.is-active,
+.segmented-tab.tab-amber.is-active {
+  background: rgba(196, 165, 116, 0.14) !important;
+  color: #e6d3b0 !important;
+  border-color: rgba(196, 165, 116, 0.36) !important;
+  box-shadow: none !important;
+}
+.tab-count-badge.count-emerald,
+.tab-count-badge.count-cyan {
+  background: rgba(93, 164, 177, 0.18) !important;
+  color: #5da4b1 !important;
+}
+.tab-count-badge.count-rose {
+  background: rgba(193, 123, 116, 0.16) !important;
+  color: #c17b74 !important;
+}
+.tab-count-badge.count-amber {
+  background: rgba(196, 165, 116, 0.16) !important;
+  color: #c4a574 !important;
+}
+.sec-pwd-ok,
+.sec-2fa-ok {
+  background: rgba(93, 164, 177, 0.14) !important;
+  color: #5da4b1 !important;
+  border-color: rgba(93, 164, 177, 0.32) !important;
+  box-shadow: none !important;
+}
+.sec-pwd-ok:hover,
+.sec-2fa-ok:hover {
+  background: rgba(93, 164, 177, 0.22) !important;
+  border-color: rgba(93, 164, 177, 0.5) !important;
+  box-shadow: none !important;
+}
+.sec-pwd-ok .sec-dot,
+.sec-2fa-ok .sec-dot {
+  background: #5da4b1 !important;
+}
+.at-exp-chip.at-exp-ok,
+.dossier-tag.at-exp-ok {
+  color: #5da4b1 !important;
+  background: rgba(93, 164, 177, 0.12) !important;
+  border-color: rgba(93, 164, 177, 0.3) !important;
+}
+.at-exp-chip.at-exp-warn,
+.dossier-tag.at-exp-warn {
+  color: #c4a574 !important;
+  background: rgba(196, 165, 116, 0.12) !important;
+  border-color: rgba(196, 165, 116, 0.3) !important;
+}
+.at-exp-chip.at-exp-dead,
+.dossier-tag.at-exp-dead {
+  color: #c17b74 !important;
+  background: rgba(193, 123, 116, 0.12) !important;
+  border-color: rgba(193, 123, 116, 0.32) !important;
+}
+.token-main-text.is-ok {
+  color: #f8f3e9 !important;
+}
+.token-main-text.is-refreshable {
+  color: #c17b74 !important;
+}
+.primary-export-btn {
+  background: #5da4b1 !important;
+  color: #f8f3e9 !important;
+}
+.primary-export-btn:hover:not(:disabled) {
+  background: #4c8f9b !important;
+  box-shadow: none !important;
+}
+.dock-btn-primary {
+  border-color: rgba(93, 164, 177, 0.45) !important;
+  background: linear-gradient(180deg, #6aafbb 0%, #4e8f9b 100%) !important;
+  color: #f8f3e9 !important;
+  box-shadow: none !important;
+}
+.dock-btn .ico-emerald,
+.dock-btn .ico-blue {
+  color: #5da4b1 !important;
+}
+.dock-btn-danger {
+  color: #c17b74 !important;
+  border-color: rgba(193, 123, 116, 0.28) !important;
+  background: rgba(193, 123, 116, 0.08) !important;
+}
+.linear-modern-table :deep(.is-focused-row > td.el-table__cell),
+.linear-modern-table .is-focused-row > td.el-table__cell {
+  background: rgba(93, 164, 177, 0.1) !important;
+}
+.dossier-pulse-beacon {
+  background: #5da4b1 !important;
+  box-shadow: 0 0 8px rgba(93, 164, 177, 0.35) !important;
+}
+.tag-emerald,
+.tag-cyan,
+.text-emerald {
+  color: #5da4b1 !important;
+}
+.selected-badge,
+.selected-badge b {
+  color: #5da4b1 !important;
+}
+.linear-modern-table :deep(.el-table__row td.el-table__cell) {
+  color: #f8f3e9;
 }
 
 </style>

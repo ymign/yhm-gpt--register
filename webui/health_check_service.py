@@ -512,7 +512,7 @@ def start_health_check(emails: list[str], config: dict) -> str:
         _prune_tasks_locked()
         _tasks[task_id] = task
 
-    workers = max(1, min(10, int(config.get("workers") or 5)))
+    workers = max(1, min(20, int(config.get("workers") or 10)))
 
     def _runner():
         q: queue.Queue = queue.Queue()
