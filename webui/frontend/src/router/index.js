@@ -19,6 +19,12 @@ const routes = [
     meta: { title: '账号管理', icon: 'UserFilled', group: '账号' },
   },
   {
+    path: '/import-dump',
+    name: 'import_dump',
+    component: () => import('@/views/ShipmentImport.vue'),
+    meta: { title: '发货导入', icon: 'Box', group: '账号' },
+  },
+  {
     path: '/pool',
     name: 'pool',
     component: () => import('@/views/Pool.vue'),

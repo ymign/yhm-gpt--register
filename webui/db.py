@@ -288,12 +288,15 @@ def init_db():
     con.commit()
     _backfill_at_expires_at(con)
 
-    # 自动清理历史中没有任何凭证（AT/ST/RT 全为空）的未完成半成品脏数据
+    # 自动清理历史中没有任何凭证的未完成半成品脏数据。
+    # 发货导入可能只有账密+2FA、Token 稍后刷新，这类成品号必须保留。
     con.execute("""
         DELETE FROM registered
         WHERE (access_token IS NULL OR access_token = '')
           AND (session_token IS NULL OR session_token = '')
           AND (refresh_token IS NULL OR refresh_token = '')
+          AND (password IS NULL OR password = '')
+          AND (totp_secret IS NULL OR totp_secret = '')
     """)
     con.commit()
 

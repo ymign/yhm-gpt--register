@@ -26,7 +26,7 @@ from pydantic import BaseModel, Field
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from . import db, export_formats, registrar  # noqa: E402
+from . import credential_dump, db, export_formats, registrar  # noqa: E402
 from .auto_loop import CONTROLLER as AUTO_LOOP  # noqa: E402
 from .exporter import _decode_jwt_payload, _get_auth  # noqa: E402
 from mail_providers import (  # noqa: E402
@@ -831,6 +831,53 @@ def api_update_export_note(req: UpdateExportNoteReq):
         raise HTTPException(400, "请提供至少一个邮箱")
     updated = db.update_export_note(targets, req.note)
     return {"ok": True, "updated": updated, "note": req.note}
+
+
+class DumpAnalyzeReq(BaseModel):
+    text: str = Field(..., description="发货原文：NDJSON / JSON 数组 / 账号----密码----2FA")
+
+
+class DumpImportReq(BaseModel):
+    text: str = Field(..., description="发货原文")
+    strategy: str = Field(
+        "smart_merge",
+        description="smart_merge(新号入库/老号合并) / skip_duplicates(跳过库内已有) / overwrite(覆盖凭证)",
+    )
+
+
+class DumpExportReq(BaseModel):
+    text: str = Field(..., description="发货原文")
+    format: str = Field("sub2api_json", description="sub2api_json / email_pw_2fa / email_pw_2fa_relay")
+    delimiter: Optional[str] = Field("----", description="文本格式分隔符，默认 ----")
+
+
+@app.post("/api/registered/import_dump/analyze")
+def api_import_dump_analyze(req: DumpAnalyzeReq):
+    """解析接码成品发货文本，返回透视预览（不含完整 Token）。"""
+    try:
+        return credential_dump.analyze_credential_dump(req.text)
+    except Exception as e:
+        raise HTTPException(400, f"发货解析失败: {e}")
+
+
+@app.post("/api/registered/import_dump")
+def api_import_dump(req: DumpImportReq):
+    """把接码成品发货账号写入账号管理（registered），取件链接写入 mail_oauth。"""
+    try:
+        return credential_dump.import_credential_dump(req.text, strategy=req.strategy)
+    except Exception as e:
+        raise HTTPException(400, f"发货入库失败: {e}")
+
+
+@app.post("/api/registered/import_dump/export")
+def api_import_dump_export(req: DumpExportReq):
+    """从发货原文直接导出 Sub2 JSON 或 账号----密码----2FA，无需先入库。"""
+    try:
+        return credential_dump.export_credential_dump(
+            req.text, req.format, delimiter=req.delimiter or "----",
+        )
+    except Exception as e:
+        raise HTTPException(400, f"发货导出失败: {e}")
 
 
 class ConvertSessionReq(BaseModel):
