@@ -1761,6 +1761,56 @@ const oauthConfigCollapsed = ref(true)
 const oauthTargetEmails = ref([])
 const oauthItems = ref({})
 const oauthLogs = ref([])
+const oauthPage = ref(1)
+const oauthPageSize = ref(50)
+const oauthFilter = ref('all')
+const oauthSearch = ref('')
+
+let oauthUpdateTimer = null
+let oauthPendingUpdates = Object.create(null)
+let oauthPendingLogs = []
+
+function flushOAuthUpdates() {
+  if (oauthUpdateTimer) {
+    clearTimeout(oauthUpdateTimer)
+    oauthUpdateTimer = null
+  }
+  const patches = oauthPendingUpdates
+  oauthPendingUpdates = Object.create(null)
+  const emails = Object.keys(patches)
+  if (emails.length) {
+    const copy = { ...oauthItems.value }
+    for (const em of emails) {
+      const up = patches[em]
+      const cur = copy[em]
+      if (!cur) copy[em] = { email: em, status: 'pending', result: null, elapsed: 0, ...up }
+      else Object.assign(cur, up)
+    }
+    oauthItems.value = copy
+  }
+  if (oauthPendingLogs.length) {
+    oauthLogs.value.push(...oauthPendingLogs)
+    if (oauthLogs.value.length > 400) {
+      oauthLogs.value = oauthLogs.value.slice(-400)
+    }
+    oauthPendingLogs = []
+    nextTick(scrollOAuthLog)
+  }
+}
+
+function scheduleOAuthUpdate() {
+  if (oauthUpdateTimer) return
+  oauthUpdateTimer = window.setTimeout(() => {
+    oauthUpdateTimer = null
+    flushOAuthUpdates()
+  }, 50)
+}
+
+function resetOAuthListView() {
+  oauthPage.value = 1
+  oauthFilter.value = 'all'
+  oauthSearch.value = ''
+}
 
 const OAUTH_FORM_KEY = 'gpt_oauth_export_form_v2'
 let savedOAuth = {}
@@ -2156,6 +2206,25 @@ function handleGlobalKeydown(e) {
   }
 }
 
+function syncOAuthLiveTimer() {
+  const need = oauthVisible.value && oauthRunning.value
+  if (need) {
+    if (!oauthLiveTimer) {
+      oauthNowTime.value = Date.now()
+      oauthLiveTimer = setInterval(() => {
+        oauthNowTime.value = Date.now()
+      }, 1000)
+    }
+    return
+  }
+  if (oauthLiveTimer) {
+    clearInterval(oauthLiveTimer)
+    oauthLiveTimer = null
+  }
+}
+
+watch([oauthVisible, oauthRunning], syncOAuthLiveTimer)
+
 onMounted(() => {
   load()
   loadDomains()
@@ -2163,14 +2232,12 @@ onMounted(() => {
   loadSmsProviderCatalog()
   loadSmsCountries()
   loadRegSummary()
-  oauthLiveTimer = setInterval(() => {
-    oauthNowTime.value = Date.now()
-  }, 1000)
   window.addEventListener('keydown', handleGlobalKeydown)
 })
 
 onUnmounted(() => {
   if (oauthLiveTimer) clearInterval(oauthLiveTimer)
+  flushOAuthUpdates()
   window.removeEventListener('keydown', handleGlobalKeydown)
 })
 
@@ -2327,32 +2394,96 @@ const currentOAuthLogItem = ref(null)
 const oauthLogLines = ref([])
 const oauthLogLoading = ref(false)
 
-const oauthRows = computed(() =>
-  Object.values(oauthItems.value).map((item) => ({ ...item })),
-)
-
 const oauthStats = computed(() => {
-  const items = Object.values(oauthItems.value)
-  const tot = items.length || oauthTargetEmails.value.length || 0
-  const done = items.filter((i) => i.status === 'done').length
-  const running = items.filter((i) => i.status === 'running').length
-  const pending = items.filter((i) => i.status === 'pending').length
-  const success = items.filter((i) => i.result && i.result.status === 'success').length
-  const need_phone = items.filter((i) => i.result && i.result.status === 'need_phone').length
-  const error = items.filter((i) => i.result && i.result.status !== 'success' && i.result.status !== 'need_phone').length
-  const percent = tot > 0 ? Math.round((done / tot) * 100) : 0
+  const map = oauthItems.value
+  const tot = oauthTargetEmails.value.length || Object.keys(map).length
+  let done = 0
+  let running = 0
+  let pending = 0
+  let success = 0
+  let need_phone = 0
+  let error = 0
+  for (const em in map) {
+    const i = map[em]
+    const st = i.status
+    const rs = i.result && i.result.status
+    if (st === 'running') running++
+    else if (st === 'pending') pending++
+    else if (st === 'done') {
+      done++
+      if (rs === 'success') success++
+      else if (rs === 'need_phone') need_phone++
+      else error++
+    }
+  }
   return {
-    total: tot, done, running, pending,
-    success, need_phone, error, percent,
+    total: tot,
+    done,
+    running,
+    pending,
+    success,
+    need_phone,
+    error,
+    percent: tot > 0 ? Math.round((done / tot) * 100) : 0,
   }
 })
 
+const oauthFilteredRows = computed(() => {
+  const map = oauthItems.value
+  const kw = oauthSearch.value.trim().toLowerCase()
+  const f = oauthFilter.value
+  const source = oauthTargetEmails.value.length ? oauthTargetEmails.value : Object.keys(map)
+  const out = []
+  for (const em of source) {
+    const item = map[em]
+    if (!item) continue
+    if (kw && !em.toLowerCase().includes(kw)) continue
+    const st = item.status
+    const rs = item.result && item.result.status
+    if (f === 'running' && st !== 'running') continue
+    else if (f === 'pending' && st !== 'pending') continue
+    else if (f === 'success' && rs !== 'success') continue
+    else if (f === 'phone' && rs !== 'need_phone') continue
+    else if (f === 'fail' && !(st === 'done' && rs && rs !== 'success' && rs !== 'need_phone')) continue
+    out.push(item)
+  }
+  return out
+})
+
+const oauthDisplayRows = computed(() => {
+  const rows = oauthFilteredRows.value
+  const start = (oauthPage.value - 1) * oauthPageSize.value
+  return rows.slice(start, start + oauthPageSize.value)
+})
+
+watch(
+  () => [oauthFilteredRows.value.length, oauthPageSize.value],
+  ([len, size]) => {
+    const maxPage = Math.max(1, Math.ceil((len || 0) / (size || 50)))
+    if (oauthPage.value > maxPage) oauthPage.value = maxPage
+  },
+)
+
+const oauthBatchHint = computed(() => {
+  const n = oauthStats.value.total
+  if (n < 80) return ''
+  return `已选 ${n} 个账号：表格按页显示（每页 ${oauthPageSize.value} 条），可用上方筛选只看进行中 / 失败。关闭弹窗不会中断任务。`
+})
+
+function setOAuthFilter(f) {
+  oauthFilter.value = f
+  oauthPage.value = 1
+}
+
 // 失败或未成功的账号邮箱列表 (用于批量重新授权)
 const failedOAuthEmails = computed(() => {
-  const items = Object.values(oauthItems.value)
-  return items
-    .filter((i) => i.status === 'done' && i.result && i.result.status !== 'success')
-    .map((i) => i.email)
+  const map = oauthItems.value
+  const out = []
+  for (const em in map) {
+    const i = map[em]
+    if (i.status === 'done' && i.result && i.result.status !== 'success') out.push(i.email)
+  }
+  return out
 })
 
 function handleOAuthCommand(cmd) {
@@ -2391,6 +2522,7 @@ async function openOAuthExport(target = 'selected') {
     oauthTaskId.value = ''
     oauthLogs.value = []
     oauthConfigCollapsed.value = true
+    resetOAuthListView()
     const initMap = {}
     const rowMap = new Map(rows.value.map((r) => [r.email, r]))
     for (const em of emails) {
@@ -2452,6 +2584,7 @@ function closeOAuthExport() {
     oauthEs.value.close()
     oauthEs.value = null
   }
+  flushOAuthUpdates()
   oauthVisible.value = false
 }
 
@@ -2466,6 +2599,7 @@ async function stopOAuthExportTask() {
   } catch (_) {
     ElMessage.info('任务已结束')
   } finally {
+    flushOAuthUpdates()
     oauthRunning.value = false
   }
 }
@@ -2482,9 +2616,12 @@ async function startOAuthExportTask() {
     oauthEs.value = null
   }
 
+  flushOAuthUpdates()
   oauthRunning.value = true
   oauthLogs.value = []
   oauthConfigCollapsed.value = true
+  oauthPage.value = 1
+  oauthSearch.value = ''
 
   const initMap = {}
   for (const em of emails) {
@@ -2553,32 +2690,28 @@ function connectOAuthStream(taskId) {
     progress: (ev) => {
       try {
         const msg = JSON.parse(ev.data)
-        if (msg.email) {
-          if (!oauthItems.value[msg.email]) {
-            oauthItems.value[msg.email] = { email: msg.email }
+        if (!msg.email) return
+        const up = oauthPendingUpdates[msg.email] || (oauthPendingUpdates[msg.email] = {})
+        if (msg.status !== undefined) {
+          up.status = msg.status
+          if (msg.status === 'running' && !up.started_at) {
+            up.started_at = msg.started_at || (Date.now() / 1000)
           }
-          const it = oauthItems.value[msg.email]
-          if (msg.status !== undefined) {
-            it.status = msg.status
-            if (msg.status === 'running' && !it.started_at) {
-              it.started_at = msg.started_at || (Date.now() / 1000)
-            }
-          }
-          if (msg.started_at) it.started_at = msg.started_at
-          if (msg.step !== undefined) it.step = msg.step
-          if (msg.step_text !== undefined) it.step_text = msg.step_text
-          if (msg.result !== undefined) it.result = msg.result
-          if (msg.elapsed !== undefined) it.elapsed = msg.elapsed
         }
+        if (msg.started_at) up.started_at = msg.started_at
+        if (msg.step !== undefined) up.step = msg.step
+        if (msg.step_text !== undefined) up.step_text = msg.step_text
+        if (msg.result !== undefined) up.result = msg.result
+        if (msg.elapsed !== undefined) up.elapsed = msg.elapsed
+        scheduleOAuthUpdate()
       } catch (_) {}
     },
     log: (ev) => {
       try {
         const msg = JSON.parse(ev.data)
         if (msg.line) {
-          oauthLogs.value.push(msg.line)
-          if (oauthLogs.value.length > 500) oauthLogs.value.splice(0, oauthLogs.value.length - 500)
-          nextTick(scrollOAuthLog)
+          oauthPendingLogs.push(msg.line)
+          scheduleOAuthUpdate()
           if (oauthLogModalVisible.value && currentOAuthLogItem.value) {
             const targetEmail = currentOAuthLogItem.value.email
             if (!msg.email || msg.email === targetEmail || msg.line.includes(targetEmail)) {
@@ -2590,6 +2723,7 @@ function connectOAuthStream(taskId) {
       } catch (_) {}
     },
     end: () => {
+      flushOAuthUpdates()
       oauthRunning.value = false
       if (oauthEs.value) {
         oauthEs.value.close()
@@ -2659,14 +2793,21 @@ async function retryOAuthExportRunner(targetEmails = null) {
       sms_timeout: Number(oauthForm.smsTimeout) || 80,
     })
 
+    flushOAuthUpdates()
+    const copy = { ...oauthItems.value }
     for (const em of emails) {
-      if (oauthItems.value[em]) {
-        oauthItems.value[em].status = 'pending'
-        oauthItems.value[em].step_text = '排队重新授权中...'
-        oauthItems.value[em].result = null
-        oauthItems.value[em].elapsed = 0
+      if (copy[em]) {
+        copy[em] = {
+          ...copy[em],
+          status: 'pending',
+          step_text: '排队重新授权中...',
+          result: null,
+          elapsed: 0,
+        }
       }
     }
+    oauthItems.value = copy
+    oauthPage.value = 1
 
     oauthRunning.value = true
     ElMessage.success(`已开始重新授权 ${res.retrying_count || emails.length} 个账号`)
@@ -7143,29 +7284,53 @@ onUnmounted(() => {
           </div>
         </el-collapse-transition>
 
+        <div v-if="oauthBatchHint" class="oauth-batch-hint">{{ oauthBatchHint }}</div>
+
         <!-- KPI 统计看板 -->
         <div class="plus-kpi-grid oa-kpi-grid">
-          <div class="plus-kpi-card">
+          <div
+            class="plus-kpi-card clickable-card"
+            :class="{ 'is-filter-active': oauthFilter === 'all' }"
+            title="查看全部账号"
+            @click="setOAuthFilter('all')"
+          >
             <span class="kpi-label">已处理 / 总数</span>
             <span class="kpi-num">{{ oauthStats.done }} / {{ oauthStats.total }}</span>
           </div>
-          <div class="plus-kpi-card hit-active">
+          <div
+            class="plus-kpi-card hit-active clickable-card"
+            :class="{ 'is-filter-active': oauthFilter === 'success' }"
+            title="只看授权成功"
+            @click="setOAuthFilter('success')"
+          >
             <span class="kpi-label">✅ OAuth 成功</span>
             <span class="kpi-num text-success">{{ oauthStats.success }}</span>
           </div>
-          <div class="plus-kpi-card card-warn" :class="{ 'card-warn': oauthStats.need_phone > 0 }">
+          <div
+            class="plus-kpi-card clickable-card"
+            :class="{ 'card-warn': oauthStats.need_phone > 0, 'is-filter-active': oauthFilter === 'phone' }"
+            title="只看需接码"
+            @click="setOAuthFilter('phone')"
+          >
             <span class="kpi-label">📱 需手机接码 (已跳过)</span>
             <span class="kpi-num text-warning">{{ oauthStats.need_phone }}</span>
           </div>
           <div
-            class="plus-kpi-card"
-            :class="{ 'card-danger': oauthStats.error > 0, 'clickable-card': failedOAuthEmails.length > 0 }"
-            :title="failedOAuthEmails.length > 0 ? `点击立即批量重新授权 ${failedOAuthEmails.length} 个未成功账号` : ''"
-            @click="failedOAuthEmails.length > 0 && !oauthRunning && retryOAuthExportRunner()"
+            class="plus-kpi-card clickable-card"
+            :class="{ 'card-danger': oauthStats.error > 0, 'is-filter-active': oauthFilter === 'fail' }"
+            :title="failedOAuthEmails.length > 0 ? `点击筛选失败账号，可再点「批量重新授权」` : '只看失败'"
+            @click="setOAuthFilter('fail')"
           >
             <div style="display: flex; justify-content: space-between; align-items: center">
               <span class="kpi-label">❌ 失败 / 异常</span>
-              <el-tag v-if="failedOAuthEmails.length > 0 && !oauthRunning" size="small" type="danger" effect="dark" style="cursor: pointer">
+              <el-tag
+                v-if="failedOAuthEmails.length > 0 && !oauthRunning"
+                size="small"
+                type="danger"
+                effect="dark"
+                style="cursor: pointer"
+                @click.stop="retryOAuthExportRunner()"
+              >
                 重试全部
               </el-tag>
             </div>
@@ -7183,14 +7348,40 @@ onUnmounted(() => {
           />
         </div>
 
-        <!-- 核心表格：每个账号一行实时状态 -->
-        <div class="plus-table-wrap">
+        <!-- 核心表格：分页 + 状态筛选，避免几百行一起渲染卡顿 -->
+        <div class="health-table-filter-bar oauth-table-filter-bar">
+          <el-radio-group v-model="oauthFilter" size="small" class="health-filter-radio" @change="oauthPage = 1">
+            <el-radio-button value="all">全部 ({{ oauthStats.total }})</el-radio-button>
+            <el-radio-button value="running">进行中 ({{ oauthStats.running }})</el-radio-button>
+            <el-radio-button value="pending">排队 ({{ oauthStats.pending }})</el-radio-button>
+            <el-radio-button value="success">成功 ({{ oauthStats.success }})</el-radio-button>
+            <el-radio-button value="fail">
+              <span :class="{ 'text-danger': oauthStats.error > 0 }">失败 ({{ oauthStats.error }})</span>
+            </el-radio-button>
+            <el-radio-button value="phone">需接码 ({{ oauthStats.need_phone }})</el-radio-button>
+          </el-radio-group>
+          <div class="health-filter-right">
+            <el-input
+              v-model="oauthSearch"
+              placeholder="过滤邮箱..."
+              clearable
+              size="small"
+              class="health-search-input"
+              :prefix-icon="Search"
+              @input="oauthPage = 1"
+            />
+          </div>
+        </div>
+
+        <div class="plus-table-wrap oauth-table-wrap">
           <el-table
-            :data="oauthRows"
+            :data="oauthDisplayRows"
+            row-key="email"
             size="small"
             stripe
-            :height="oauthConfigCollapsed ? '280px' : '170px'"
+            :height="oauthConfigCollapsed ? '320px' : '200px'"
             class="plus-table"
+            :highlight-current-row="false"
           >
             <el-table-column prop="email" label="账号" min-width="190" show-overflow-tooltip>
               <template #default="{ row }">
@@ -7273,7 +7464,28 @@ onUnmounted(() => {
                 </div>
               </template>
             </el-table-column>
+            <template #empty>
+              <div class="oauth-table-empty">
+                {{ oauthStats.total ? '当前筛选没有账号，可切回「全部」或清空搜索' : '还没有待导出账号' }}
+              </div>
+            </template>
           </el-table>
+        </div>
+
+        <div class="health-pagination-bar">
+          <span class="health-page-count-tip text-muted text-xs">
+            显示第 {{ oauthFilteredRows.length > 0 ? (oauthPage - 1) * oauthPageSize + 1 : 0 }}
+            - {{ Math.min(oauthPage * oauthPageSize, oauthFilteredRows.length) }} 条
+            · 过滤 <b>{{ oauthFilteredRows.length }}</b> / 共 {{ oauthStats.total }}
+          </span>
+          <el-pagination
+            v-model:current-page="oauthPage"
+            v-model:page-size="oauthPageSize"
+            :page-sizes="[30, 50, 100, 200]"
+            :total="oauthFilteredRows.length"
+            layout="sizes, prev, pager, next"
+            size="small"
+          />
         </div>
       </div>
 
@@ -12241,6 +12453,43 @@ onUnmounted(() => {
   background: var(--el-fill-color-light);
   border: 1px solid var(--el-border-color-lighter);
   border-radius: 6px;
+}
+
+.oauth-batch-hint {
+  font-size: 12px;
+  color: var(--app-text-secondary);
+  background: var(--c-tianshuibi-soft);
+  border: 1px solid var(--c-tianshuibi-border);
+  border-radius: 8px;
+  padding: 6px 10px;
+  line-height: 1.45;
+}
+
+.plus-kpi-card.clickable-card {
+  cursor: pointer;
+}
+.plus-kpi-card.clickable-card:hover {
+  box-shadow: 0 0 0 1px var(--c-tianshuibi-border);
+}
+.plus-kpi-card.is-filter-active {
+  box-shadow: 0 0 0 1px var(--brand);
+  background: var(--c-tianshuibi-soft);
+}
+
+.oauth-table-filter-bar {
+  margin-top: 2px;
+}
+
+.health-filter-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.oauth-table-empty {
+  padding: 18px 8px;
+  font-size: 12px;
+  color: var(--app-text-secondary);
 }
 
 /* ──────────── 密码 / 2FA 药丸徽章 (Apple HIG 磨砂半透明质感) ──────────── */
