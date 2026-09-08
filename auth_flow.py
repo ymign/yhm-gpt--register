@@ -34,6 +34,33 @@ from http_client import create_http_session, USER_AGENT
 
 logger = logging.getLogger(__name__)
 
+# 只有官方明确说账号作废才算封号。禁止用 HTTP 403 或单词 deleted 误判：
+# Token 刷新里 Session 403、Cloudflare 403、TOTP 403 都很常见，不是封号。
+_OFFICIAL_ACCOUNT_DEAD_MARKERS = (
+    "account_deactivated",
+    "accountdeactivated",
+    "user_deactivated",
+    "deleted or deactivated",
+    "has been deleted or deactivated",
+    "has been deactivated",
+    "this account has been deactivated",
+    "this account has been deleted",
+    "account has been deactivated",
+    "account has been deleted",
+    "your account has been disabled",
+    "account has been blocked",
+    "user is banned",
+)
+
+
+def is_official_account_dead(text: str) -> bool:
+    """响应体/异常文本是否明确表示 OpenAI 已注销或封禁该账号。"""
+    s = (text or "").lower()
+    if not s:
+        return False
+    return any(m in s for m in _OFFICIAL_ACCOUNT_DEAD_MARKERS)
+
+
 SESSION_WARNING_BANNER = (
     "!!!!!!!!!!!!!!!!!!!! DO NOT SHARE ANY PART OF THE INFORMATION YOU SEE HERE. "
     "THIS INFORMATION IS SENSITIVE AND CAN GRANT ACCESS TO YOUR ACCOUNT. "
@@ -3134,10 +3161,13 @@ class AuthFlow:
         )
         self._trace_http("login_password_verify", resp)
         if resp.status_code != 200:
-            body = (resp.text or "")[:260]
-            if "account_deactivated" in body or "deleted or deactivated" in body or resp.status_code == 403:
-                raise RuntimeError(f"账号已被官方封禁/注销 (account_deactivated): {resp.status_code} - {body}")
-            raise RuntimeError(f"密码登录失败: {resp.status_code} - {body}")
+            body = (resp.text or "")
+            logger.warning("password/verify 失败 HTTP %s: %s", resp.status_code, body[:1500])
+            if is_official_account_dead(body):
+                raise RuntimeError(
+                    f"账号已被官方封禁/注销 (account_deactivated): {resp.status_code} - {body[:400]}"
+                )
+            raise RuntimeError(f"密码登录失败: {resp.status_code} - {body[:400]}")
         try:
             return resp.json()
         except Exception:
@@ -3240,8 +3270,13 @@ class AuthFlow:
         )
         self._trace_http("submit_mfa_totp", resp)
         if resp.status_code != 200:
-            body = (resp.text or "")[:260]
-            raise RuntimeError(f"TOTP 验证失败: {resp.status_code} - {body}")
+            body = (resp.text or "")
+            logger.warning("TOTP 验证失败 HTTP %s: %s", resp.status_code, body[:1500])
+            if is_official_account_dead(body):
+                raise RuntimeError(
+                    f"账号已被官方封禁/注销 (account_deactivated): {resp.status_code} - {body[:400]}"
+                )
+            raise RuntimeError(f"TOTP 验证失败: {resp.status_code} - {body[:400]}")
         try:
             return resp.json()
         except Exception:
@@ -3279,9 +3314,11 @@ class AuthFlow:
                     get_proxy_health_manager().record_failure(self.config.proxy, reason="409 invalid_state (代理会话失效)")
                 except Exception:
                     pass
-            if "account_deactivated" in body or "deleted or deactivated" in body or resp.status_code == 403:
-                raise RuntimeError(f"账号已被官方封禁/注销 (account_deactivated): {resp.status_code} - {body[:260]}")
-            raise RuntimeError(f"OTP 验证失败: {resp.status_code} - {body[:260]}")
+            if is_official_account_dead(body):
+                raise RuntimeError(
+                    f"账号已被官方封禁/注销 (account_deactivated): {resp.status_code} - {body[:400]}"
+                )
+            raise RuntimeError(f"OTP 验证失败: {resp.status_code} - {body[:400]}")
         logger.info("OTP 验证成功")
         try:
             return resp.json()
@@ -4276,7 +4313,7 @@ class AuthFlow:
                         logger.info("✅ 新密码登录成功，已获取官方授权会话")
                     except Exception as e:
                         err_s = str(e).lower()
-                        if "account_deactivated" in err_s or "deleted or deactivated" in err_s or "403" in err_s or "已被官方封禁" in err_s:
+                        if is_official_account_dead(err_s):
                             logger.error(f"❌ 账号 {email} 已被 OpenAI 官方永久封禁/注销 (account_deactivated)，直接终止后续尝试")
                             raise
                         logger.warning(f"新密码自动登录异常 ({e})，尝试以 reset 响应继续: {reset_resp}")
@@ -4635,8 +4672,7 @@ class AuthFlow:
         can_mail = self._can_receive_mail(mail_provider)
 
         def _raise_if_dead(exc: BaseException) -> None:
-            err_s = str(exc).lower()
-            if "deactivated" in err_s or "deleted" in err_s or "封禁" in err_s:
+            if is_official_account_dead(str(exc)):
                 raise exc
 
         def _do_password_login() -> None:

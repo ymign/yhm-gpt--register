@@ -820,6 +820,7 @@ onUnmounted(() => {
                   'status-phone': row.result.status === 'need_phone',
                   'status-fail': row.result.status !== 'success' && row.result.status !== 'need_phone',
                 }"
+                :title="row.result.error || row.result.label || row.result.status"
               >
                 {{ row.result.label || row.result.status }}
               </span>

@@ -442,23 +442,25 @@ def execute_token_refresh_flow(
             password=pwd,
         )
     except Exception as e:
-        err_str = str(e).lower()
-        if "deactivated" in err_str or "deleted" in err_str or "封禁" in err_str:
-            _log(f"❌ 账号已废：已被 OpenAI 官方注销/封禁 (deleted/deactivated)，已回写账号表封号状态")
-            persist_token_refresh_ban(email, str(e))
+        from auth_flow import is_official_account_dead
+        err_str = str(e)
+        err_low = err_str.lower()
+        if is_official_account_dead(err_str):
+            _log(f"❌ 官方响应判定账号已注销/封禁。原文: {err_str[:800]}")
+            persist_token_refresh_ban(email, err_str)
             return {
                 "status": "deactivated",
                 "label": "❌ 账号已注销/封号",
-                "error": "账号已被 OpenAI 官方注销或封禁",
+                "error": err_str[:500],
             }
-        if "invalid_username_or_password" in err_str:
+        if "invalid_username_or_password" in err_low:
             hint = "官方拒绝了登录密码 (invalid_username_or_password)"
             if not pwd:
                 hint += "。库里没有 ChatGPT 登录密码，不能用邮箱密码去登"
             else:
                 hint += "。库里的 ChatGPT 密码与官方不一致，需要收信走官方重置"
             raise RuntimeError(hint + f"：{e}")
-        if "invalid_auth_step" in err_str:
+        if "invalid_auth_step" in err_low:
             hint = "登录会话状态错乱 (invalid_auth_step)"
             if pwd and totp:
                 hint += "。库里已有密码和 2FA；请看上一步具体失败原因后重试"
@@ -881,14 +883,15 @@ def _worker_loop(task: TokenRefreshTask, email: str):
         task.mark_done(email, res)
     except Exception as e:
         logger.exception(f"[{email}] Token 刷新异常: {e}")
-        err_s = str(e).lower()
-        if "deactivated" in err_s or "deleted" in err_s or "封禁" in err_s:
-            persist_token_refresh_ban(email, str(e))
-            task.add_email_log(email, "❌ 账号已废：已被 OpenAI 官方注销/封禁，已回写账号表封号状态")
+        from auth_flow import is_official_account_dead
+        err_s = str(e)
+        if is_official_account_dead(err_s):
+            persist_token_refresh_ban(email, err_s)
+            task.add_email_log(email, f"❌ 官方响应判定账号已注销/封禁。原文: {err_s[:800]}")
             task.mark_done(email, {
                 "status": "deactivated",
                 "label": "❌ 账号已注销/封号",
-                "error": "账号已被 OpenAI 官方注销或封禁",
+                "error": err_s[:500],
             })
             return
         task.add_email_log(email, f"❌ 任务失败: {e}")
