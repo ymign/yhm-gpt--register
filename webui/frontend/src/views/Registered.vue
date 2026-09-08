@@ -5119,6 +5119,37 @@ function cleanupResources() {
   stopFocusedTotpTicker()
 }
 
+// 全局弹窗状态监测：任意弹窗激活时自动收起底部悬浮操作栏，避免遮挡与视觉穿透冲突
+const hasAnyModalOpen = computed(() => {
+  return (
+    plusVisible.value ||
+    plusLogModalVisible.value ||
+    oaVisible.value ||
+    oaLogModalVisible.value ||
+    oauthVisible.value ||
+    featVisible.value ||
+    oauthLogModalVisible.value ||
+    healthVisible.value ||
+    healthLogModalVisible.value ||
+    refreshVisible.value ||
+    securityVisible.value ||
+    securityLogModalVisible.value ||
+    warmingVisible.value ||
+    warmingLogModalVisible.value ||
+    exportConfigModalVisible.value ||
+    exportVisible.value ||
+    credVisible.value ||
+    editVisible.value ||
+    totpModalVisible.value ||
+    mailOtpModalVisible.value ||
+    repairPwVisible.value ||
+    repair2faVisible.value ||
+    extractModalVisible.value ||
+    focusedPwdVisible.value ||
+    focusedSecretVisible.value
+  )
+})
+
 onDeactivated(() => {
   cleanupResources()
 })
@@ -6375,7 +6406,7 @@ onUnmounted(() => {
 
     <!-- ──────────────── 底部毛玻璃极客悬浮批量操作栏 (Floating Action Bar) ──────────────── -->
     <transition name="floating-bar-slide">
-      <div v-if="selectedCount" class="floating-action-bar">
+      <div v-if="selectedCount && !hasAnyModalOpen" class="floating-action-bar">
         <div class="floating-bar-pill">
           <!-- 选中计数 -->
           <div class="floating-counter-chip">
@@ -7004,9 +7035,10 @@ onUnmounted(() => {
             <span class="oa-target-pill">{{ oauthTargetEmails.length }} 个账号</span>
           </div>
           <div class="oa-header-extra">
-            <el-button size="small" class="oa-config-toggle-btn" @click="oauthConfigCollapsed = !oauthConfigCollapsed">
-              <el-icon><Setting /></el-icon>{{ oauthConfigCollapsed ? '展开参数配置' : '收起配置' }}
-            </el-button>
+            <button class="oa-config-toggle-btn" @click="oauthConfigCollapsed = !oauthConfigCollapsed">
+              <el-icon><Setting /></el-icon>
+              <span>{{ oauthConfigCollapsed ? '展开参数配置' : '收起配置' }}</span>
+            </button>
           </div>
         </div>
       </template>
@@ -7370,10 +7402,10 @@ onUnmounted(() => {
 
         <div v-if="oauthBatchHint" class="oauth-batch-hint">{{ oauthBatchHint }}</div>
 
-        <!-- KPI 统计看板 -->
+        <!-- KPI 统计看板 (4列等宽均匀排布，顶栏完美对齐) -->
         <div class="plus-kpi-grid oa-kpi-grid">
           <div
-            class="plus-kpi-card clickable-card"
+            class="plus-kpi-card oa-kpi-card clickable-card"
             :class="{ 'is-filter-active': oauthFilter === 'all' }"
             title="查看全部账号"
             @click="setOAuthFilter('all')"
@@ -7382,7 +7414,7 @@ onUnmounted(() => {
             <span class="kpi-num">{{ oauthStats.done }} / {{ oauthStats.total }}</span>
           </div>
           <div
-            class="plus-kpi-card hit-active clickable-card"
+            class="plus-kpi-card oa-kpi-card hit-active clickable-card"
             :class="{ 'is-filter-active': oauthFilter === 'success' }"
             title="只看授权成功"
             @click="setOAuthFilter('success')"
@@ -7391,32 +7423,30 @@ onUnmounted(() => {
             <span class="kpi-num text-success">{{ oauthStats.success }}</span>
           </div>
           <div
-            class="plus-kpi-card clickable-card"
+            class="plus-kpi-card oa-kpi-card clickable-card"
             :class="{ 'card-warn': oauthStats.need_phone > 0, 'is-filter-active': oauthFilter === 'phone' }"
             title="只看需接码"
             @click="setOAuthFilter('phone')"
           >
-            <span class="kpi-label">📱 需手机接码 (已跳过)</span>
+            <span class="kpi-label">📱 需手机接码</span>
             <span class="kpi-num text-warning">{{ oauthStats.need_phone }}</span>
           </div>
           <div
-            class="plus-kpi-card clickable-card"
+            class="plus-kpi-card oa-kpi-card clickable-card"
             :class="{ 'card-danger': oauthStats.error > 0, 'is-filter-active': oauthFilter === 'fail' }"
             :title="failedOAuthEmails.length > 0 ? `点击筛选失败账号，可再点「批量重新授权」` : '只看失败'"
             @click="setOAuthFilter('fail')"
           >
             <div style="display: flex; justify-content: space-between; align-items: center">
               <span class="kpi-label">❌ 失败 / 异常</span>
-              <el-tag
+              <span
                 v-if="failedOAuthEmails.length > 0 && !oauthRunning"
-                size="small"
-                type="danger"
-                effect="dark"
+                class="oa-retry-tag"
                 style="cursor: pointer"
                 @click.stop="retryOAuthExportRunner()"
               >
                 重试全部
-              </el-tag>
+              </span>
             </div>
             <span class="kpi-num text-danger">{{ oauthStats.error }}</span>
           </div>
@@ -7434,7 +7464,7 @@ onUnmounted(() => {
 
         <!-- 核心表格：分页 + 状态筛选，避免几百行一起渲染卡顿 -->
         <div class="health-table-filter-bar oauth-table-filter-bar">
-          <el-radio-group v-model="oauthFilter" size="small" class="health-filter-radio" @change="oauthPage = 1">
+          <el-radio-group v-model="oauthFilter" size="small" class="health-filter-radio oa-filter-radio" @change="oauthPage = 1">
             <el-radio-button value="all">全部 ({{ oauthStats.total }})</el-radio-button>
             <el-radio-button value="running">进行中 ({{ oauthStats.running }})</el-radio-button>
             <el-radio-button value="pending">排队 ({{ oauthStats.pending }})</el-radio-button>
@@ -7450,7 +7480,7 @@ onUnmounted(() => {
               placeholder="过滤邮箱..."
               clearable
               size="small"
-              class="health-search-input"
+              class="health-search-input oa-search-input"
               :prefix-icon="Search"
               @input="oauthPage = 1"
             />
@@ -7463,41 +7493,39 @@ onUnmounted(() => {
             row-key="email"
             size="small"
             stripe
-            :height="oauthConfigCollapsed ? '320px' : '200px'"
+            :height="oauthConfigCollapsed ? '340px' : '220px'"
             class="plus-table"
             :highlight-current-row="false"
           >
-            <el-table-column prop="email" label="账号" min-width="190" show-overflow-tooltip>
+            <el-table-column prop="email" label="账号" min-width="200" show-overflow-tooltip>
               <template #default="{ row }">
-                <button
-                  type="button"
-                  class="macos-tag-btn copy-btn"
-                  title="点击复制邮箱"
-                  @click="copyText(row.email)"
-                >
-                  <span class="mono">{{ row.email }}</span>
-                  <el-icon class="copy-ico"><CopyDocument /></el-icon>
-                </button>
+                <div class="oa-email-line" title="点击复制邮箱" @click="copyText(row.email)">
+                  <span class="provider-avatar-badge" :style="{ background: (row._providerMeta || getEmailProviderMeta(row.email)).bg, color: (row._providerMeta || getEmailProviderMeta(row.email)).color }">
+                    {{ (row._providerMeta || getEmailProviderMeta(row.email)).icon }}
+                  </span>
+                  <span class="oa-email-text mono">{{ row.email }}</span>
+                  <el-icon class="oa-copy-ico"><CopyDocument /></el-icon>
+                </div>
               </template>
             </el-table-column>
 
             <el-table-column label="实时进度 / 状态" min-width="210" align="left">
               <template #default="{ row }">
-                <el-tag v-if="row.status === 'running'" size="small" type="primary" effect="light">
+                <span v-if="row.status === 'running'" class="oa-status-badge is-running">
                   <span class="spin-dot"></span> {{ row.step_text || '[1/6] 建立会话...' }}
-                </el-tag>
-                <el-tag v-else-if="row.status === 'pending'" size="small" type="info" effect="plain">
+                </span>
+                <span v-else-if="row.status === 'pending'" class="oa-status-badge is-pending">
                   {{ row.step_text || '待处理' }}
-                </el-tag>
-                <el-tag v-else-if="row.result?.status === 'success'" size="small" type="success" effect="light">
+                </span>
+                <span v-else-if="row.result?.status === 'success'" class="oa-status-badge is-success">
                   ✅ {{ row.result?.label || '成功' }}
-                </el-tag>
-                <el-tag v-else-if="row.result?.status === 'need_phone'" size="small" type="warning" effect="light">
-                  📱 需接码(已跳过)
-                </el-tag>
-                <el-tag v-else size="small" type="danger" effect="light" :title="row.result?.error || ''">
+                </span>
+                <span v-else-if="row.result?.status === 'need_phone'" class="oa-status-badge is-warning">
+                  📱 需接码 (已跳过)
+                </span>
+                <span v-else class="oa-status-badge is-danger" :title="row.result?.error || ''">
                   ❌ {{ row.result?.label || '失败' }}
-                </el-tag>
+                </span>
               </template>
             </el-table-column>
 
@@ -7519,32 +7547,28 @@ onUnmounted(() => {
               </template>
             </el-table-column>
 
-            <el-table-column label="操作" width="190" align="center" fixed="right">
+            <el-table-column label="操作" width="180" align="center" fixed="right">
               <template #default="{ row }">
-                <div style="display: flex; gap: 4px; justify-content: center; align-items: center">
-                  <el-button size="small" text type="primary" @click="openOAuthItemLog(row)">
+                <div class="oa-row-actions">
+                  <button class="oa-micro-btn" @click="openOAuthItemLog(row)">
                     日志
-                  </el-button>
-                  <el-button
+                  </button>
+                  <button
                     v-if="row.result && row.result.status !== 'success'"
-                    size="small"
-                    text
-                    type="warning"
-                    :loading="row.status === 'running'"
+                    class="oa-micro-btn btn-retry"
+                    :disabled="row.status === 'running'"
                     @click="retryOAuthExportRunner([row.email])"
                     title="对此失败账号重新发起授权"
                   >
-                    <el-icon><Refresh /></el-icon>重试授权
-                  </el-button>
-                  <el-button
+                    <el-icon><Refresh /></el-icon>重试
+                  </button>
+                  <button
                     v-if="row.result?.status === 'success' || row.result?.refresh_token_len"
-                    size="small"
-                    text
-                    type="success"
+                    class="oa-micro-btn btn-dl"
                     @click="downloadSingleOAuthJson(row.email)"
                   >
-                    <el-icon><Download /></el-icon>下载JSON
-                  </el-button>
+                    <el-icon><Download /></el-icon>JSON
+                  </button>
                 </div>
               </template>
             </el-table-column>
@@ -7576,49 +7600,47 @@ onUnmounted(() => {
       <template #footer>
         <div class="oa-footer">
           <div class="footer-left">
-            <el-button
-              type="primary" plain size="small"
+            <button
+              class="oa-footer-btn btn-export-cpa"
               :disabled="oauthStats.success === 0 && !oauthTargetEmails.length"
               @click="downloadCpaJson"
             >
               <el-icon><Download /></el-icon>下载 CPA JSON ({{ oauthStats.success || oauthTargetEmails.length }})
-            </el-button>
-            <el-button
-              type="success" size="small"
+            </button>
+            <button
+              class="oa-footer-btn btn-export-sub2"
               :disabled="oauthStats.success === 0 && !oauthTargetEmails.length"
               @click="downloadSub2Json"
             >
               <el-icon><Download /></el-icon>下载 SUB2 JSON ({{ oauthStats.success || oauthTargetEmails.length }})
-            </el-button>
+            </button>
           </div>
           <div class="footer-right">
-            <el-button
+            <button
               v-if="failedOAuthEmails.length > 0"
-              size="small"
-              type="warning"
-              plain
-              :loading="oauthRunning"
+              class="oa-footer-btn btn-warn"
+              :disabled="oauthRunning"
               @click="retryOAuthExportRunner()"
               title="一键将所有失败/需接码账号重新加入队列执行授权"
             >
-              <el-icon><Refresh /></el-icon>批量重新授权失败账号 ({{ failedOAuthEmails.length }})
-            </el-button>
-            <el-button size="small" @click="closeOAuthExport">关闭</el-button>
-            <el-button
+              <el-icon><Refresh /></el-icon>批量重试失败 ({{ failedOAuthEmails.length }})
+            </button>
+            <button class="oa-footer-btn btn-close" @click="closeOAuthExport">关闭</button>
+            <button
               v-if="oauthRunning"
-              size="small" type="danger" plain
+              class="oa-footer-btn btn-stop"
               @click="stopOAuthExportTask"
             >
               <el-icon><SwitchButton /></el-icon>停止任务
-            </el-button>
-            <el-button
+            </button>
+            <button
               v-else
-              type="primary" class="start-gradient-btn"
-              :loading="oauthRunning"
+              class="oa-footer-btn btn-primary"
+              :disabled="oauthRunning"
               @click="startOAuthExportTask"
             >
               <el-icon><VideoPlay /></el-icon>{{ oauthTaskId ? '重新执行' : '开始导出' }}
-            </el-button>
+            </button>
           </div>
         </div>
       </template>
@@ -11999,30 +12021,34 @@ onUnmounted(() => {
   font-weight: 500;
 }
 
-/* ──────────── OAICS / Plus 控制台弹窗样式 ──────────── */
+/* ──────────── OAICS / Plus 控制台弹窗样式 (天水碧与冷白高雅体系) ──────────── */
 :deep(.oa-custom-dialog) {
-  border-radius: 12px;
-  overflow: hidden;
+  border-radius: 14px !important;
+  overflow: hidden !important;
+  border: 1px solid rgba(93, 164, 177, 0.22) !important;
+  box-shadow: 0 16px 48px -4px rgba(35, 75, 82, 0.16) !important;
 }
 :deep(.oa-custom-dialog .el-dialog__header) {
-  padding: 12px 18px;
-  margin-right: 0;
-  border-bottom: 1px solid var(--el-border-color-lighter);
-  background: var(--el-fill-color-light);
+  padding: 14px 20px 12px !important;
+  margin-right: 0 !important;
+  border-bottom: 1px solid rgba(93, 164, 177, 0.14) !important;
+  background: #ffffff !important;
 }
 :deep(.oa-custom-dialog .el-dialog__body) {
-  padding: 14px 18px;
+  padding: 16px 20px !important;
+  background: #ffffff !important;
 }
 :deep(.oa-custom-dialog .el-dialog__footer) {
-  padding: 10px 18px;
-  border-top: 1px solid var(--el-border-color-lighter);
-  background: var(--el-fill-color-light);
+  padding: 12px 20px !important;
+  border-top: 1px solid rgba(93, 164, 177, 0.14) !important;
+  background: #fbfdfd !important;
 }
 
 .oa-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  width: 100%;
 }
 .oa-header-title {
   display: flex;
@@ -12030,41 +12056,74 @@ onUnmounted(() => {
   gap: 8px;
 }
 .oa-title-badge {
-  background: #059669;
+  background: #5da4b1;
   color: #fff;
   font-size: 11px;
   font-weight: 700;
-  padding: 1px 7px;
+  padding: 2px 7px;
   border-radius: 4px;
   letter-spacing: 0.5px;
 }
 .oa-title-badge.plus-badge {
-  background: #2563eb;
+  background: #5da4b1;
 }
 .oa-title-badge.health-badge {
-  background: #0284c7;
+  background: #5da4b1;
 }
 .oa-title-badge.sec-badge {
-  background: #059669;
+  background: #5da4b1;
 }
 .health-action-btn {
-  background: #0284c7 !important;
+  background: #5da4b1 !important;
   border: none !important;
   color: #fff !important;
   font-weight: 600;
 }
 .feat-action-btn {
-  background: #5856d6 !important;
+  background: #5da4b1 !important;
   border: none !important;
   color: #fff !important;
   font-weight: 600;
 }
 .oa-title-badge.feat-badge {
-  background: #5856d6;
+  background: #5da4b1;
 }
 .oa-title-text {
   font-size: 14px;
   font-weight: 600;
+  color: #1a3c42;
+}
+.oa-target-pill {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 11px;
+  font-size: 11px;
+  font-weight: 600;
+  background: #edf6f8;
+  color: #28646e;
+  border: 1px solid rgba(93, 164, 177, 0.25);
+}
+.oa-config-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  font-weight: 500;
+  border: 1px solid rgba(93, 164, 177, 0.25);
+  background: #ffffff;
+  color: #35474a;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.oa-config-toggle-btn:hover {
+  background: #edf6f8;
+  border-color: #5da4b1;
+  color: #1a454d;
 }
 
 .oa-dialog-container {
@@ -12597,14 +12656,330 @@ onUnmounted(() => {
   background: var(--c-tianshuibi-soft);
 }
 
-.oauth-table-filter-bar {
-  margin-top: 2px;
+/* ──────────── OAuth 控制台专用样式规范 (天水碧 × 凝脂高质感) ──────────── */
+.oa-kpi-grid {
+  display: grid !important;
+  grid-template-columns: repeat(4, 1fr) !important;
+  gap: 10px !important;
+  width: 100% !important;
+  margin-bottom: 6px !important;
+}
+.oa-kpi-card {
+  background: #ffffff !important;
+  border: 1px solid rgba(93, 164, 177, 0.22) !important;
+  border-radius: 8px !important;
+  padding: 8px 14px !important;
+  display: flex !important;
+  flex-direction: column !important;
+  justify-content: center !important;
+  height: 62px !important;
+  box-sizing: border-box !important;
+  transition: all 0.16s ease !important;
+  cursor: pointer !important;
+  box-shadow: 0 1px 3px rgba(35, 75, 82, 0.04) !important;
+}
+.oa-kpi-card:hover {
+  border-color: #5da4b1 !important;
+  transform: translateY(-1px);
+  box-shadow: 0 3px 10px rgba(93, 164, 177, 0.12) !important;
+}
+.oa-kpi-card.is-filter-active {
+  border-color: #5da4b1 !important;
+  background: #edf6f8 !important;
+  box-shadow: 0 0 0 1px #5da4b1 !important;
+}
+.oa-kpi-card .kpi-label {
+  font-size: 11px !important;
+  color: #5f7a7e !important;
+  font-weight: 500 !important;
+  margin-bottom: 3px !important;
+  white-space: nowrap !important;
+}
+.oa-kpi-card .kpi-num {
+  font-size: 18px !important;
+  font-weight: 700 !important;
+  font-family: 'JetBrains Mono', monospace !important;
+  color: #1a3c42 !important;
+  line-height: 1.1 !important;
+}
+.oa-kpi-card .text-success {
+  color: #28646e !important;
+}
+.oa-kpi-card .text-warning {
+  color: #d49432 !important;
+}
+.oa-kpi-card .text-danger {
+  color: #c7564d !important;
+}
+.oa-retry-tag {
+  font-size: 10.5px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: #fdf2f1;
+  color: #c7564d;
+  border: 1px solid rgba(199, 86, 77, 0.3);
+  font-weight: 600;
+  cursor: pointer;
+  line-height: 1.2;
+  transition: all 0.15s ease;
+}
+.oa-retry-tag:hover {
+  background: #fae4e2;
+  border-color: #c7564d;
+  color: #9b3730;
 }
 
-.health-filter-right {
-  display: flex;
+.oauth-table-filter-bar {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 8px !important;
+  margin: 6px 0 8px !important;
+}
+:deep(.oa-filter-radio .el-radio-button__inner) {
+  height: 28px !important;
+  line-height: 26px !important;
+  padding: 0 10px !important;
+  font-size: 11.5px !important;
+  font-weight: 500 !important;
+  border: 1px solid rgba(93, 164, 177, 0.22) !important;
+  background: #ffffff !important;
+  color: #4b666a !important;
+  transition: all 0.15s ease !important;
+}
+:deep(.oa-filter-radio .el-radio-button__original-radio:checked + .el-radio-button__inner) {
+  background: #5da4b1 !important;
+  border-color: #5da4b1 !important;
+  color: #ffffff !important;
+  font-weight: 600 !important;
+  box-shadow: -1px 0 0 0 #5da4b1 !important;
+}
+
+.oa-search-input {
+  width: 190px !important;
+}
+:deep(.oa-search-input .el-input__wrapper) {
+  height: 28px !important;
+  border-radius: 6px !important;
+  background: #ffffff !important;
+  border: 1px solid rgba(93, 164, 177, 0.22) !important;
+  box-shadow: none !important;
+}
+:deep(.oa-search-input .el-input__wrapper.is-focus) {
+  border-color: #5da4b1 !important;
+  box-shadow: 0 0 0 2px rgba(93, 164, 177, 0.2) !important;
+}
+
+.oauth-table-wrap {
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid rgba(93, 164, 177, 0.18);
+}
+.oauth-table-wrap :deep(.el-table) {
+  background: #ffffff !important;
+}
+.oauth-table-wrap :deep(.el-table__header th.el-table__cell) {
+  background: #eef5f6 !important;
+  color: #21474e !important;
+  font-size: 11.5px !important;
+  font-weight: 600 !important;
+  padding: 7px 8px !important;
+  border-bottom: 1px solid rgba(93, 164, 177, 0.22) !important;
+}
+.oauth-table-wrap :deep(.el-table__row td.el-table__cell) {
+  padding: 6px 8px !important;
+  border-bottom: 1px solid rgba(93, 164, 177, 0.08) !important;
+  color: #283a3d !important;
+}
+.oauth-table-wrap :deep(.el-table__row:hover > td.el-table__cell) {
+  background: #edf6f8 !important;
+}
+.oauth-table-wrap :deep(.el-table__row--striped td.el-table__cell) {
+  background: #fafcfc !important;
+}
+
+.oa-email-line {
+  display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+  cursor: pointer;
+  max-width: 100%;
+}
+.oa-email-text {
+  font-size: 12px;
+  font-weight: 500;
+  color: #1a3c42;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 165px;
+  transition: color 0.15s ease;
+}
+.oa-email-line:hover .oa-email-text {
+  color: #5da4b1;
+  text-decoration: underline;
+}
+.oa-copy-ico {
+  font-size: 11px;
+  color: #76888b;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.oa-email-line:hover .oa-copy-ico {
+  opacity: 1;
+}
+
+.oa-status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.3;
+}
+.oa-status-badge.is-pending {
+  background: #f4f8f8;
+  color: #6a8286;
+  border: 1px solid rgba(93, 164, 177, 0.2);
+}
+.oa-status-badge.is-running {
+  background: #edf6f8;
+  color: #28646e;
+  border: 1px solid rgba(93, 164, 177, 0.3);
+  font-weight: 600;
+}
+.oa-status-badge.is-success {
+  background: #edf6f8;
+  color: #28646e;
+  border: 1px solid rgba(93, 164, 177, 0.3);
+}
+.oa-status-badge.is-warning {
+  background: #fcf4e6;
+  color: #8c5c16;
+  border: 1px solid rgba(212, 148, 50, 0.3);
+}
+.oa-status-badge.is-danger {
+  background: #fdf2f1;
+  color: #9b3730;
+  border: 1px solid rgba(199, 86, 77, 0.3);
+}
+
+.oa-row-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  width: 100%;
+}
+.oa-micro-btn {
+  height: 22px;
+  padding: 0 7px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  border: 1px solid rgba(93, 164, 177, 0.25);
+  background: #ffffff;
+  color: #28646e;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.oa-micro-btn:hover {
+  background: #edf6f8;
+  border-color: #5da4b1;
+  color: #1a454d;
+}
+.oa-micro-btn.btn-retry {
+  color: #d49432;
+  border-color: rgba(212, 148, 50, 0.3);
+}
+.oa-micro-btn.btn-retry:hover {
+  background: #fcf4e6;
+  border-color: #d49432;
+  color: #8c5c16;
+}
+.oa-micro-btn.btn-dl {
+  color: #28646e;
+  border-color: rgba(93, 164, 177, 0.3);
+}
+.oa-micro-btn.btn-dl:hover {
+  background: #edf6f8;
+  border-color: #5da4b1;
+}
+
+.oa-footer-btn {
+  height: 30px;
+  padding: 0 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  box-sizing: border-box;
+}
+.oa-footer-btn.btn-export-cpa,
+.oa-footer-btn.btn-export-sub2 {
+  background: #edf6f8;
+  border: 1px solid rgba(93, 164, 177, 0.35);
+  color: #21474e;
+}
+.oa-footer-btn.btn-export-cpa:hover:not(:disabled),
+.oa-footer-btn.btn-export-sub2:hover:not(:disabled) {
+  background: #dbeef2;
+  border-color: #5da4b1;
+  color: #1a454d;
+}
+.oa-footer-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.oa-footer-btn.btn-close {
+  background: #ffffff;
+  border: 1px solid rgba(93, 164, 177, 0.25);
+  color: #35474a;
+}
+.oa-footer-btn.btn-close:hover {
+  background: #edf6f8;
+  border-color: #5da4b1;
+  color: #1a454d;
+}
+.oa-footer-btn.btn-warn {
+  background: #fcf4e6;
+  border: 1px solid rgba(212, 148, 50, 0.35);
+  color: #8c5c16;
+}
+.oa-footer-btn.btn-warn:hover:not(:disabled) {
+  background: #faedd6;
+  border-color: #d49432;
+  color: #724709;
+}
+.oa-footer-btn.btn-stop {
+  background: #fdf2f1;
+  border: 1px solid rgba(199, 86, 77, 0.3);
+  color: #c7564d;
+}
+.oa-footer-btn.btn-stop:hover {
+  background: #fae4e2;
+  border-color: #c7564d;
+  color: #9b3730;
+}
+.oa-footer-btn.btn-primary {
+  background: #5da4b1;
+  border: 1px solid #488793;
+  color: #ffffff;
+  font-weight: 600;
+  box-shadow: 0 2px 6px rgba(93, 164, 177, 0.25);
+}
+.oa-footer-btn.btn-primary:hover:not(:disabled) {
+  background: #488793;
+  box-shadow: 0 3px 10px rgba(93, 164, 177, 0.35);
 }
 
 .oauth-table-empty {
@@ -14398,7 +14773,7 @@ onUnmounted(() => {
   bottom: 24px;
   left: 50%;
   transform: translateX(-50%);
-  z-index: 2500;
+  z-index: 1500;
   pointer-events: none;
   max-width: 95vw;
 }

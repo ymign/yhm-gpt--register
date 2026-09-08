@@ -3,14 +3,18 @@ import { computed, nextTick, onUnmounted, reactive, ref, shallowRef, watch } fro
 import { storeToRefs } from 'pinia'
 import { ElMessage } from 'element-plus'
 import {
+  Check,
+  CircleCheckFilled,
   CopyDocument,
   Document,
   Download,
   Loading,
+  Refresh,
   Search,
   Setting,
   SwitchButton,
   VideoPlay,
+  WarningFilled,
 } from '@element-plus/icons-vue'
 import {
   startTokenRefresh,
@@ -293,6 +297,11 @@ const displayRows = computed(() => {
   const start = (page.value - 1) * pageSize.value
   return rows.slice(start, start + pageSize.value)
 })
+
+function setFilter(val) {
+  filter.value = val
+  page.value = 1
+}
 
 const emptyHint = computed(() => {
   if (!stats.value.total) return '还没有待刷新账号'
@@ -581,9 +590,9 @@ onUnmounted(() => {
 <template>
   <el-dialog
     :model-value="modelValue"
-    width="980px"
+    width="960px"
     top="3vh"
-    class="oa-custom-dialog plus-dialog health-dialog refresh-dialog"
+    class="oa-custom-dialog plus-dialog health-dialog refresh-dialog token-studio-modern-modal"
     :close-on-click-modal="false"
     @update:model-value="emit('update:modelValue', $event)"
     @closed="onDialogClosed"
@@ -591,34 +600,41 @@ onUnmounted(() => {
     <template #header>
       <div class="oa-header">
         <div class="oa-header-title">
-          <span class="oa-title-badge health-badge">TOKEN</span>
-          <span class="oa-title-text">Token 智能双模刷新与重获工作台</span>
-          <el-tag size="small" type="primary" round effect="dark">RT极速置换 / Full OAuth重登</el-tag>
-          <el-tag size="small" type="info" round effect="plain">{{ targetEmails.length }} 个账号</el-tag>
-          <el-tag v-if="running" size="small" type="warning" round effect="plain">
-            进行中 {{ stats.running }} · 排队 {{ stats.pending }}
-          </el-tag>
+          <span class="token-title-badge">TOKEN REFRESH</span>
+          <span class="token-title-text">Token 智能双模刷新与重获工作台</span>
+          <span class="token-mode-pill">⚡ RT 极速置换 / 🔑 Full OAuth 重登</span>
+          <span class="token-count-pill">{{ targetEmails.length }} 个账号</span>
+          <span v-if="running" class="token-running-pill">
+            <span class="spin-dot"></span> 进行中 {{ stats.running }} · 排队 {{ stats.pending }}
+          </span>
         </div>
         <div class="oa-header-extra">
-          <el-button size="small" text @click="configCollapsed = !configCollapsed">
-            <el-icon><Setting /></el-icon>{{ configCollapsed ? '展开参数配置' : '收起参数配置' }}
-          </el-button>
+          <button class="token-config-toggle-btn" @click="configCollapsed = !configCollapsed">
+            <el-icon><Setting /></el-icon>
+            <span>{{ configCollapsed ? '展开参数配置' : '收起配置' }}</span>
+          </button>
         </div>
       </div>
     </template>
 
     <div class="oa-dialog-container">
+      <!-- 参数配置卡片 -->
       <el-collapse-transition>
-        <div v-show="!configCollapsed" class="oa-config-card" style="padding: 10px 14px 12px">
-          <el-tabs v-model="activeTab" class="oa-config-tabs">
+        <div v-show="!configCollapsed" class="token-config-card">
+          <el-tabs v-model="activeTab" class="token-config-tabs">
             <el-tab-pane label="🌐 网络代理 & 刷新模式" name="network">
-              <el-form label-position="top" :disabled="running" size="small" style="margin-top: 6px">
+              <el-form label-position="top" :disabled="running" size="small" style="margin-top: 4px">
                 <el-row :gutter="12">
                   <el-col :xs="24" :sm="12" :md="8">
                     <el-form-item label="检测/登录代理 (支持代理池轮询/直连)">
                       <el-select
-                        v-model="form.proxy" filterable clearable allow-create default-first-option
-                        placeholder="选择或输入代理" style="width: 100%"
+                        v-model="form.proxy"
+                        filterable
+                        clearable
+                        allow-create
+                        default-first-option
+                        placeholder="选择或输入代理"
+                        style="width: 100%"
                       >
                         <el-option
                           v-if="proxyList.length"
@@ -642,7 +658,7 @@ onUnmounted(() => {
                     </el-form-item>
                   </el-col>
                   <el-col :xs="12" :sm="6" :md="5">
-                    <el-form-item label="超时(秒)">
+                    <el-form-item label="超时 (秒)">
                       <el-input-number v-model="form.timeout" :min="10" :max="120" style="width: 100%" />
                     </el-form-item>
                   </el-col>
@@ -650,26 +666,27 @@ onUnmounted(() => {
                 <el-row :gutter="12">
                   <el-col :span="24">
                     <el-checkbox v-model="form.forceFullLogin">
-                      强制走完整 OAuth 重新登录流程（跳过 RT 快速换取，直接打 OpenAI 登录端点获取全新全套凭证）
+                      强制走完整 OAuth 重新登录流程（跳过 RT 快速换取，直接请求 OpenAI 登录端点获取全新全套凭证）
                     </el-checkbox>
                   </el-col>
                 </el-row>
-                <div class="refresh-config-actions">
-                  <el-button size="small" type="primary" plain :disabled="running" @click="saveFormAsDefault">
-                    保存当前设置
-                  </el-button>
-                  <span class="plus-config-desc" style="margin: 0">
-                    改完会自动记住；也可点保存。下次打开沿用并发、国家和代理。
+                <div class="token-config-actions-row">
+                  <button class="token-save-btn" :disabled="running" @click="saveFormAsDefault">
+                    <el-icon><Check /></el-icon>
+                    <span>保存当前设置</span>
+                  </button>
+                  <span class="token-config-hint">
+                    改动会自动记住；也可点保存。下次打开沿用并发、国家和代理。
                   </span>
                 </div>
-                <div class="plus-config-desc">
+                <div class="token-mechanism-tip">
                   💡 <b>智能机制</b>：有历史 Refresh Token 的账号优先 <b>200ms 极速置换</b>；失效或无 RT 账号自动触发 <b>Full OAuth 登录重获</b> 并自动写回数据库。
                 </div>
               </el-form>
             </el-tab-pane>
 
             <el-tab-pane label="📱 手机号风控接码设置 (可选)" name="sms">
-              <el-form label-position="top" :disabled="running" size="small" style="margin-top: 6px">
+              <el-form label-position="top" :disabled="running" size="small" style="margin-top: 4px">
                 <el-row :gutter="12">
                   <el-col :span="24">
                     <el-checkbox v-model="form.smsEnabled">
@@ -677,7 +694,7 @@ onUnmounted(() => {
                     </el-checkbox>
                   </el-col>
                 </el-row>
-                <el-row v-if="form.smsEnabled" :gutter="12" style="margin-top: 6px">
+                <el-row v-if="form.smsEnabled" :gutter="12" style="margin-top: 8px">
                   <el-col :xs="24" :sm="8">
                     <el-form-item label="接码平台">
                       <el-select v-model="form.smsProvider" style="width: 100%">
@@ -703,7 +720,7 @@ onUnmounted(() => {
                         allow-create
                         default-first-option
                         :loading="smsCountriesLoading"
-                        placeholder="搜索国家名或输入国家ID"
+                        placeholder="搜索国家或输入国家ID"
                         style="width: 100%"
                       >
                         <el-option v-for="sc in smsCountryOptions" :key="sc.value" :label="sc.label" :value="sc.value" />
@@ -717,108 +734,143 @@ onUnmounted(() => {
         </div>
       </el-collapse-transition>
 
-      <div v-if="batchHint" class="refresh-batch-hint">{{ batchHint }}</div>
+      <div v-if="batchHint" class="token-batch-hint">{{ batchHint }}</div>
 
-      <div class="plus-kpi-grid">
-        <div class="plus-kpi-card">
+      <!-- KPI 统计看板 (5 列等宽均匀矩阵，中轴严谨对齐) -->
+      <div class="token-kpi-grid">
+        <div
+          class="token-kpi-card"
+          :class="{ 'is-filter-active': filter === 'all' }"
+          title="点击筛选全部账号"
+          @click="setFilter('all')"
+        >
           <span class="kpi-label">已处理 / 总数</span>
           <span class="kpi-num">{{ stats.done }} / {{ stats.total }}</span>
         </div>
-        <div class="plus-kpi-card hit-active">
+
+        <div
+          class="token-kpi-card hit-active"
+          :class="{ 'is-filter-active': filter === 'success' }"
+          title="点击查看成功置换"
+          @click="setFilter('success')"
+        >
           <span class="kpi-label">⚡ RT极速置换成功</span>
           <span class="kpi-num text-primary">{{ stats.rt_fast_ok }}</span>
         </div>
-        <div class="plus-kpi-card hit-promo">
+
+        <div
+          class="token-kpi-card hit-promo"
+          :class="{ 'is-filter-active': filter === 'success' }"
+          title="点击查看重登成功"
+          @click="setFilter('success')"
+        >
           <span class="kpi-label">🔑 Full OAuth 重登成功</span>
           <span class="kpi-num text-success">{{ stats.full_login_ok }}</span>
         </div>
-        <div class="plus-kpi-card" :class="{ 'card-warn': stats.need_phone > 0 }">
-          <span class="kpi-label">需要手机号</span>
+
+        <div
+          class="token-kpi-card"
+          :class="{ 'card-warn': stats.need_phone > 0, 'is-filter-active': filter === 'phone' }"
+          title="点击筛选需手机号账号"
+          @click="setFilter('phone')"
+        >
+          <span class="kpi-label">📱 需手机号</span>
           <span class="kpi-num" :class="stats.need_phone > 0 ? 'text-warning' : ''">{{ stats.need_phone }}</span>
         </div>
-        <div class="plus-kpi-card" :class="{ 'card-warn': stats.error > 0 }">
-          <span class="kpi-label">失败 / 异常</span>
+
+        <div
+          class="token-kpi-card"
+          :class="{ 'card-danger': stats.error > 0, 'is-filter-active': filter === 'fail' }"
+          title="点击筛选失败账号"
+          @click="setFilter('fail')"
+        >
+          <span class="kpi-label">❌ 失败 / 异常</span>
           <span class="kpi-num text-danger">{{ stats.error }}</span>
-        </div>
-        <div class="plus-progress-cell">
-          <el-progress
-            :percentage="stats.percent"
-            :status="stats.done === stats.total && stats.total > 0 ? 'success' : ''"
-            :stroke-width="8"
-            striped
-            :striped-flow="running"
-          />
         </div>
       </div>
 
-      <div class="health-table-filter-bar">
-        <el-radio-group v-model="filter" size="small" class="health-filter-radio" @change="page = 1">
-          <el-radio-button label="all">全部 ({{ stats.total }})</el-radio-button>
-          <el-radio-button label="running">进行中 ({{ stats.running }})</el-radio-button>
-          <el-radio-button label="pending">排队 ({{ stats.pending }})</el-radio-button>
-          <el-radio-button label="success">成功 ({{ stats.success }})</el-radio-button>
-          <el-radio-button label="fail">
+      <!-- 独立进度条 -->
+      <div class="token-progress-wrap">
+        <el-progress
+          :percentage="stats.percent"
+          :status="stats.done === stats.total && stats.total > 0 ? 'success' : ''"
+          :stroke-width="5"
+          :show-text="false"
+          striped
+          :striped-flow="running"
+        />
+      </div>
+
+      <!-- 筛选与搜索工具栏 -->
+      <div class="health-table-filter-bar token-table-filter-bar">
+        <el-radio-group v-model="filter" size="small" class="health-filter-radio token-filter-radio" @change="page = 1">
+          <el-radio-button value="all">全部 ({{ stats.total }})</el-radio-button>
+          <el-radio-button value="running">进行中 ({{ stats.running }})</el-radio-button>
+          <el-radio-button value="pending">排队 ({{ stats.pending }})</el-radio-button>
+          <el-radio-button value="success">成功 ({{ stats.success }})</el-radio-button>
+          <el-radio-button value="fail">
             <span :class="{ 'text-danger': stats.error > 0 }">失败 ({{ stats.error }})</span>
           </el-radio-button>
-          <el-radio-button label="phone">需手机 ({{ stats.need_phone }})</el-radio-button>
+          <el-radio-button value="phone">需手机 ({{ stats.need_phone }})</el-radio-button>
         </el-radio-group>
         <div class="health-filter-right">
           <el-input
             v-model="search"
-            placeholder="快速过滤邮箱..."
+            placeholder="过滤邮箱..."
             clearable
             size="small"
-            class="health-search-input"
+            class="health-search-input token-search-input"
             :prefix-icon="Search"
             @input="page = 1"
           />
         </div>
       </div>
 
-      <div class="plus-table-box health-table-box">
+      <!-- 核心表格 -->
+      <div class="token-table-box">
         <el-table
           :data="displayRows"
           size="small"
           stripe
-          height="300"
-          class="macos-table"
+          :height="configCollapsed ? '320px' : '220px'"
+          class="plus-table token-table"
           row-key="email"
           :row-class-name="rowClassName"
           :highlight-current-row="false"
         >
-          <el-table-column prop="email" label="账号邮箱" min-width="210" show-overflow-tooltip>
+          <el-table-column prop="email" label="账号邮箱" min-width="220" show-overflow-tooltip>
             <template #default="{ row }">
-              <button class="macos-tag-btn copy-btn" title="点击复制邮箱" @click="copyText(row.email)">
-                <span class="mono">{{ row.email }}</span>
-                <el-icon class="copy-ico"><CopyDocument /></el-icon>
-              </button>
+              <div class="token-email-cell" title="点击复制邮箱" @click="copyText(row.email)">
+                <span class="token-email-dot"></span>
+                <span class="token-email-text mono">{{ row.email }}</span>
+                <el-icon class="token-copy-ico"><CopyDocument /></el-icon>
+              </div>
             </template>
           </el-table-column>
 
           <el-table-column label="刷新模式" width="130" align="center">
             <template #default="{ row }">
-              <span v-if="row.result?.method === 'rt_fast'" class="mode-pill mode-rt">⚡ RT 极速</span>
-              <span v-else-if="row.result?.method === 'st_fast'" class="mode-pill mode-st">⚡ Session</span>
-              <span v-else-if="row.result?.method === 'full_login' || row.result?.method === 'full_oauth'" class="mode-pill mode-oauth">🔑 OAuth</span>
+              <span v-if="row.result?.method === 'rt_fast'" class="mode-chip chip-rt">⚡ RT 极速</span>
+              <span v-else-if="row.result?.method === 'st_fast'" class="mode-chip chip-st">⚡ Session</span>
+              <span v-else-if="row.result?.method === 'full_login' || row.result?.method === 'full_oauth'" class="mode-chip chip-oauth">🔑 OAuth</span>
               <span v-else-if="row.status === 'running'" class="mono text-primary text-xs">执行中...</span>
               <span v-else class="text-muted">—</span>
             </template>
           </el-table-column>
 
-          <el-table-column label="当前状态 / 步骤" min-width="170" show-overflow-tooltip>
+          <el-table-column label="当前状态 / 步骤" min-width="190" show-overflow-tooltip>
             <template #default="{ row }">
-              <span v-if="row.status === 'running'" class="running-step">
-                <el-icon class="is-loading" style="margin-right: 4px"><Loading /></el-icon>
-                {{ row.step_text || '正在刷新...' }}
+              <span v-if="row.status === 'running'" class="token-status-badge is-running">
+                <span class="spin-dot"></span> {{ row.step_text || '正在刷新...' }}
               </span>
-              <span v-else-if="row.status === 'pending'" class="status-pill status-pending">排队中</span>
+              <span v-else-if="row.status === 'pending'" class="token-status-badge is-pending">排队中</span>
               <span
                 v-else-if="row.result"
-                class="status-pill"
+                class="token-status-badge"
                 :class="{
-                  'status-ok': row.result.status === 'success',
-                  'status-phone': row.result.status === 'need_phone',
-                  'status-fail': row.result.status !== 'success' && row.result.status !== 'need_phone',
+                  'is-success': row.result.status === 'success',
+                  'is-warning': row.result.status === 'need_phone',
+                  'is-danger': row.result.status !== 'success' && row.result.status !== 'need_phone',
                 }"
                 :title="row.result.error || row.result.label || row.result.status"
               >
@@ -828,7 +880,7 @@ onUnmounted(() => {
             </template>
           </el-table-column>
 
-          <el-table-column label="耗时" width="80" align="center">
+          <el-table-column label="耗时" width="85" align="right">
             <template #default="{ row }">
               <span v-if="displayElapsed(row)" class="mono text-muted">{{ displayElapsed(row) }}s</span>
               <span v-else-if="row.status === 'running'" class="mono text-primary">...</span>
@@ -836,21 +888,26 @@ onUnmounted(() => {
             </template>
           </el-table-column>
 
-          <el-table-column label="操作" width="85" align="center" fixed="right">
+          <el-table-column label="操作" width="90" align="center" fixed="right">
             <template #default="{ row }">
-              <el-button size="small" text type="primary" :disabled="row.status === 'pending'" @click="openItemLog(row)">
+              <button
+                class="token-micro-btn"
+                :disabled="row.status === 'pending'"
+                @click="openItemLog(row)"
+              >
                 <el-icon><Document /></el-icon>日志
-              </el-button>
+              </button>
             </template>
           </el-table-column>
 
           <template #empty>
-            <div class="refresh-empty">{{ emptyHint }}</div>
+            <div class="token-empty">{{ emptyHint }}</div>
           </template>
         </el-table>
       </div>
 
-      <div class="health-pagination-bar">
+      <!-- 分页底栏 -->
+      <div class="health-pagination-bar token-pagination-bar">
         <span class="health-page-count-tip text-muted text-xs">
           显示第 {{ filteredRows.length > 0 ? (page - 1) * pageSize + 1 : 0 }}
           - {{ Math.min(page * pageSize, filteredRows.length) }} 条
@@ -870,42 +927,58 @@ onUnmounted(() => {
     <template #footer>
       <div class="oa-footer">
         <div class="footer-left">
-          <el-button type="primary" plain size="small" :disabled="stats.success === 0" @click="downloadExport('txt')">
+          <button
+            class="token-footer-btn btn-export"
+            :disabled="stats.success === 0"
+            @click="downloadExport('txt')"
+          >
             <el-icon><Download /></el-icon>下载 TXT 凭证 ({{ stats.success }})
-          </el-button>
-          <el-button type="primary" size="small" :disabled="stats.success === 0" @click="downloadExport('cpa')">
+          </button>
+          <button
+            class="token-footer-btn btn-export"
+            :disabled="stats.success === 0"
+            @click="downloadExport('cpa')"
+          >
             <el-icon><Download /></el-icon>下载 CPA JSON
-          </el-button>
-          <el-button type="success" size="small" :disabled="stats.success === 0" @click="downloadExport('sub2api')">
+          </button>
+          <button
+            class="token-footer-btn btn-export"
+            :disabled="stats.success === 0"
+            @click="downloadExport('sub2api')"
+          >
             <el-icon><Download /></el-icon>下载 Sub2API JSON
-          </el-button>
+          </button>
         </div>
         <div class="footer-right">
-          <el-button size="small" @click="closeStudio">
+          <button class="token-footer-btn btn-close" @click="closeStudio">
             {{ running ? '后台运行' : '关闭' }}
-          </el-button>
-          <el-button v-if="running" size="small" type="danger" plain @click="stopTask">
+          </button>
+          <button
+            v-if="running"
+            class="token-footer-btn btn-stop"
+            @click="stopTask"
+          >
             <el-icon><SwitchButton /></el-icon>停止任务
-          </el-button>
-          <el-button
+          </button>
+          <button
             v-else
-            type="primary"
-            class="start-gradient-btn"
+            class="token-footer-btn btn-primary"
             :disabled="!targetEmails.length"
             @click="startTask"
           >
             <el-icon><VideoPlay /></el-icon>{{ taskId ? '重新刷新' : '开始刷新/重获' }}
-          </el-button>
+          </button>
         </div>
       </div>
     </template>
   </el-dialog>
 
+  <!-- 终端日志弹窗 -->
   <el-dialog
     v-model="logModalVisible"
     width="780px"
     top="8vh"
-    class="macos-terminal-dialog"
+    class="macos-terminal-dialog token-terminal-dialog"
     :close-on-click-modal="false"
   >
     <template #header>
@@ -917,9 +990,7 @@ onUnmounted(() => {
         </div>
         <div class="modal-title-info">
           <span class="modal-email">{{ currentLogItem?.email }}</span>
-          <el-tag size="small" type="primary" effect="plain" class="modal-run-tag">
-            Token 刷新/重登日志
-          </el-tag>
+          <span class="terminal-badge">Token 刷新/重登日志</span>
         </div>
       </div>
     </template>
@@ -939,10 +1010,10 @@ onUnmounted(() => {
       <div class="modal-footer">
         <span class="log-count-tip">共 {{ logLines.length }} 行日志</span>
         <div class="modal-footer-btns">
-          <el-button size="small" @click="copyText(logLines.join('\n'))">
+          <button class="token-footer-btn btn-terminal-copy" @click="copyText(logLines.join('\n'))">
             <el-icon><CopyDocument /></el-icon>复制全部日志
-          </el-button>
-          <el-button size="small" type="primary" @click="logModalVisible = false">关闭</el-button>
+          </button>
+          <button class="token-footer-btn btn-primary" @click="logModalVisible = false">关闭</button>
         </div>
       </div>
     </template>
@@ -950,10 +1021,12 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+/* ──────────── 弹窗顶栏样式 ──────────── */
 .oa-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  width: 100%;
 }
 .oa-header-title {
   display: flex;
@@ -961,109 +1034,424 @@ onUnmounted(() => {
   gap: 8px;
   flex-wrap: wrap;
 }
-.oa-title-badge {
-  background: #0284c7;
-  color: #fff;
+.token-title-badge {
+  background: #5da4b1;
+  color: #ffffff;
   font-size: 11px;
   font-weight: 700;
-  padding: 1px 7px;
+  padding: 2px 8px;
   border-radius: 4px;
   letter-spacing: 0.5px;
+  font-family: var(--el-font-family-monospace, monospace);
 }
-.oa-title-text {
-  font-size: 14px;
+.token-title-text {
+  font-size: 14.5px;
   font-weight: 600;
+  color: #1a3c42;
+  letter-spacing: -0.01em;
 }
+.token-mode-pill {
+  display: inline-flex;
+  align-items: center;
+  font-size: 11px;
+  font-weight: 500;
+  color: #21474e;
+  background: #edf6f8;
+  border: 1px solid rgba(93, 164, 177, 0.35);
+  padding: 1.5px 8px;
+  border-radius: 999px;
+}
+.token-count-pill {
+  display: inline-flex;
+  align-items: center;
+  font-size: 11px;
+  font-weight: 500;
+  color: #657e82;
+  background: #f4f7f6;
+  border: 1px solid rgba(93, 164, 177, 0.2);
+  padding: 1.5px 8px;
+  border-radius: 999px;
+}
+.token-running-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #d49432;
+  background: rgba(212, 148, 50, 0.1);
+  border: 1px solid rgba(212, 148, 50, 0.28);
+  padding: 1.5px 8px;
+  border-radius: 999px;
+}
+.oa-header-extra {
+  display: flex;
+  align-items: center;
+}
+.token-config-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  background: #ffffff;
+  border: 1px solid rgba(93, 164, 177, 0.28);
+  border-radius: 6px;
+  color: #21474e;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.16s ease;
+}
+.token-config-toggle-btn:hover {
+  background: #edf6f8;
+  border-color: #5da4b1;
+  color: #1a3c42;
+}
+
+/* ──────────── 弹窗内容容器 ──────────── */
 .oa-dialog-container {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 10px;
 }
-.oa-config-card {
-  background: var(--el-fill-color-light);
-  border: 1px solid var(--el-border-color-lighter);
-  border-radius: 8px;
-  padding: 12px;
+
+/* ──────────── 配置卡片 ──────────── */
+.token-config-card {
+  background: #ffffff;
+  border: 1px solid rgba(93, 164, 177, 0.22);
+  border-radius: 10px;
+  padding: 10px 14px 12px;
+  box-shadow: 0 4px 16px -2px rgba(35, 75, 82, 0.04);
 }
-.plus-config-desc {
-  font-size: 11.5px;
-  color: var(--el-text-color-secondary);
-  line-height: 1.5;
-  margin-top: 4px;
+.token-config-tabs :deep(.el-tabs__header) {
+  margin-bottom: 8px;
 }
-.refresh-config-actions {
+.token-config-tabs :deep(.el-tabs__item) {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: #657e82;
+}
+.token-config-tabs :deep(.el-tabs__item.is-active) {
+  color: #5da4b1;
+  font-weight: 600;
+}
+.token-config-tabs :deep(.el-tabs__active-bar) {
+  background-color: #5da4b1;
+  height: 2px;
+}
+.token-config-actions-row {
   display: flex;
   align-items: center;
   gap: 10px;
-  flex-wrap: wrap;
-  margin: 8px 0 4px;
+  margin-top: 10px;
 }
-.plus-kpi-grid {
-  display: grid;
-  grid-template-columns: repeat(5, 1fr) 2fr;
-  gap: 8px;
+.token-save-btn {
+  display: inline-flex;
   align-items: center;
-}
-.plus-kpi-card {
-  background: var(--el-fill-color-light);
-  border: 1px solid var(--el-border-color-lighter);
+  gap: 4px;
+  padding: 4px 12px;
+  background: #edf6f8;
+  border: 1px solid rgba(93, 164, 177, 0.35);
   border-radius: 6px;
+  color: #1a3c42;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.token-save-btn:hover:not(:disabled) {
+  background: #5da4b1;
+  color: #ffffff;
+}
+.token-save-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.token-config-hint {
+  font-size: 11.5px;
+  color: #657e82;
+}
+.token-mechanism-tip {
+  font-size: 11.5px;
+  color: #324e53;
+  line-height: 1.5;
+  margin-top: 8px;
   padding: 6px 10px;
+  background: #f4f7f6;
+  border-radius: 6px;
+  border-left: 3px solid #5da4b1;
+}
+
+/* ──────────── 批量提示条 ──────────── */
+.token-batch-hint {
+  font-size: 12px;
+  color: #21474e;
+  background: #edf6f8;
+  border: 1px solid rgba(93, 164, 177, 0.35);
+  border-radius: 6px;
+  padding: 6px 12px;
+  line-height: 1.45;
+}
+
+/* ──────────── 5列等宽琴键 KPI 卡片 ──────────── */
+.token-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
+.token-kpi-card {
+  background: #ffffff;
+  border: 1px solid rgba(93, 164, 177, 0.22);
+  border-radius: 8px;
+  padding: 8px 12px;
   display: flex;
   flex-direction: column;
+  cursor: pointer;
+  transition: all 0.16s ease;
+  user-select: none;
 }
-.plus-kpi-card .kpi-label {
-  font-size: 10.5px;
-  color: var(--el-text-color-secondary);
-  margin-bottom: 2px;
+.token-kpi-card:hover {
+  transform: translateY(-1px);
+  border-color: rgba(93, 164, 177, 0.45);
+  box-shadow: 0 4px 12px rgba(35, 75, 82, 0.06);
 }
-.plus-kpi-card .kpi-num {
-  font-size: 15px;
+.token-kpi-card.is-filter-active {
+  border-color: #5da4b1;
+  background: #edf6f8;
+  box-shadow: 0 0 0 1px #5da4b1;
+}
+.token-kpi-card .kpi-label {
+  font-size: 11px;
+  color: #657e82;
+  margin-bottom: 3px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.token-kpi-card .kpi-num {
+  font-size: 17px;
   font-weight: 700;
   font-family: var(--el-font-family-monospace, monospace);
-  line-height: 1.1;
+  line-height: 1.2;
+  color: #1a3c42;
 }
-.plus-kpi-card.hit-active {
-  border-color: var(--el-color-primary-light-5);
-  background: var(--el-color-primary-light-9);
+.token-kpi-card.hit-active .kpi-num {
+  color: #5da4b1;
 }
-.plus-kpi-card.hit-promo {
-  border-color: rgba(16, 185, 129, 0.4);
-  background: rgba(16, 185, 129, 0.08);
+.token-kpi-card.hit-promo .kpi-num {
+  color: #3b8e7e;
 }
-.plus-kpi-card.card-warn {
-  border-color: rgba(239, 68, 68, 0.4);
-  background: rgba(239, 68, 68, 0.08);
+.token-kpi-card.card-warn .kpi-num {
+  color: #d49432;
 }
-.plus-progress-cell { padding-left: 6px; }
-.health-table-filter-bar {
+.token-kpi-card.card-danger .kpi-num {
+  color: #c7564d;
+}
+
+/* ──────────── 独立轻量进度条 ──────────── */
+.token-progress-wrap {
+  padding: 0 2px;
+}
+
+/* ──────────── 筛选过滤工具条 ──────────── */
+.token-table-filter-bar {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
   flex-wrap: wrap;
+  padding: 4px 0;
 }
-.health-search-input { width: 180px; }
-.health-pagination-bar {
+.token-filter-radio :deep(.el-radio-button__inner) {
+  border-radius: 6px !important;
+  font-size: 12px;
+  padding: 5px 11px;
+}
+.token-search-input {
+  width: 190px;
+}
+
+/* ──────────── 表格区域 ──────────── */
+.token-table-box {
+  border: 1px solid rgba(93, 164, 177, 0.22);
+  border-radius: 8px;
+  overflow: hidden;
+  background: #ffffff;
+}
+.token-table :deep(th.el-table__cell) {
+  background: #f4f7f6 !important;
+  color: #324e53 !important;
+  font-weight: 600;
+  font-size: 12px;
+  border-bottom: 1px solid rgba(93, 164, 177, 0.16) !important;
+}
+.token-table :deep(td.el-table__cell) {
+  border-bottom: 1px solid rgba(93, 164, 177, 0.08) !important;
+}
+
+/* 邮箱单元格 */
+.token-email-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: all 0.12s ease;
+}
+.token-email-cell:hover {
+  background: #edf6f8;
+}
+.token-email-cell:hover .token-copy-ico {
+  opacity: 1;
+  color: #5da4b1;
+}
+.token-email-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #5da4b1;
+  flex-shrink: 0;
+}
+.token-email-text {
+  font-size: 12.5px;
+  color: #1a3c42;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.token-copy-ico {
+  font-size: 12px;
+  opacity: 0.25;
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+}
+
+/* 模式微芯片 */
+.mode-chip {
+  display: inline-flex;
+  align-items: center;
+  font-size: 11px;
+  line-height: 1;
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-weight: 600;
+  font-family: var(--el-font-family-monospace, monospace);
+}
+.chip-rt {
+  background: #edf6f8;
+  color: #21474e;
+  border: 1px solid rgba(93, 164, 177, 0.35);
+}
+.chip-st {
+  background: rgba(14, 165, 233, 0.1);
+  color: #0284c7;
+  border: 1px solid rgba(14, 165, 233, 0.25);
+}
+.chip-oauth {
+  background: rgba(93, 164, 177, 0.12);
+  color: #26555d;
+  border: 1px solid rgba(93, 164, 177, 0.35);
+}
+
+/* 状态标签徽章 */
+.token-status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: #f4f7f6;
+  color: #657e82;
+}
+.token-status-badge.is-running {
+  background: #edf6f8;
+  color: #1a454d;
+  border: 1px solid rgba(93, 164, 177, 0.3);
+}
+.token-status-badge.is-pending {
+  background: #f4f7f6;
+  color: #7c8f92;
+}
+.token-status-badge.is-success {
+  background: rgba(93, 164, 177, 0.14);
+  color: #1e4f57;
+  font-weight: 600;
+  border: 1px solid rgba(93, 164, 177, 0.32);
+}
+.token-status-badge.is-warning {
+  background: rgba(212, 148, 50, 0.12);
+  color: #946317;
+  border: 1px solid rgba(212, 148, 50, 0.28);
+}
+.token-status-badge.is-danger {
+  background: rgba(199, 86, 77, 0.12);
+  color: #a1362e;
+  border: 1px solid rgba(199, 86, 77, 0.28);
+}
+
+/* 旋转微圆点 */
+.spin-dot {
+  width: 6px;
+  height: 6px;
+  border: 1.5px solid #5da4b1;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin-anim 0.8s linear infinite;
+  display: inline-block;
+}
+@keyframes spin-anim {
+  to { transform: rotate(360deg); }
+}
+
+/* 操作按钮 */
+.token-micro-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid rgba(93, 164, 177, 0.28);
+  background: #ffffff;
+  color: #21474e;
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.token-micro-btn:hover:not(:disabled) {
+  background: #edf6f8;
+  border-color: #5da4b1;
+  color: #1a3c42;
+}
+.token-micro-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* 空状态 */
+.token-empty {
+  padding: 30px 12px;
+  color: #7c8f92;
+  font-size: 13px;
+}
+
+/* ──────────── 分页底栏 ──────────── */
+.token-pagination-bar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 4px 6px;
-  background: var(--el-fill-color-light);
-  border: 1px solid var(--el-border-color-lighter);
+  padding: 4px 8px;
+  background: #ffffff;
+  border: 1px solid rgba(93, 164, 177, 0.18);
   border-radius: 6px;
 }
-.plus-table-box {
-  border: 1px solid var(--el-border-color-lighter);
-  border-radius: 8px;
-  overflow: hidden;
-  height: 300px;
-}
-.start-gradient-btn {
-  background: #059669;
-  border: none;
-}
-.start-gradient-btn:hover:not(:disabled) { background: #047857; }
+
+/* ──────────── 弹窗底部操作条 (Footer) ──────────── */
 .oa-footer {
   display: flex !important;
   align-items: center !important;
@@ -1078,127 +1466,177 @@ onUnmounted(() => {
   gap: 8px;
   flex-wrap: wrap;
 }
-.macos-tag-btn.copy-btn {
+
+.token-footer-btn {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  background: var(--el-fill-color-light);
-  border: 1px solid var(--el-border-color-lighter);
-  padding: 1px 6px;
-  border-radius: 4px;
-  color: var(--el-text-color-primary);
-  cursor: pointer;
-  outline: none;
-  font-size: 12px;
-  max-width: 100%;
-}
-.macos-tag-btn.copy-btn:hover {
-  background: var(--el-color-primary-light-9);
-  border-color: var(--el-color-primary-light-7);
-  color: var(--el-color-primary);
-}
-.copy-btn .copy-ico { font-size: 11px; opacity: 0.5; }
-.running-step {
-  display: inline-flex;
-  align-items: center;
-  color: var(--el-color-primary);
-  font-size: 12px;
-}
-.mode-pill, .status-pill {
-  display: inline-flex;
-  align-items: center;
-  font-size: 11px;
-  line-height: 1.2;
-  padding: 2px 7px;
-  border-radius: 999px;
-  font-weight: 600;
-}
-.mode-rt { background: rgba(37, 99, 235, 0.12); color: #3b82f6; }
-.mode-st { background: rgba(14, 165, 233, 0.12); color: #0ea5e9; }
-.mode-oauth { background: rgba(16, 185, 129, 0.12); color: #10b981; }
-.status-pending { background: var(--el-fill-color); color: var(--el-text-color-secondary); }
-.status-ok { background: rgba(16, 185, 129, 0.12); color: #10b981; }
-.status-warn { background: rgba(245, 158, 11, 0.14); color: #d97706; }
-.status-phone { background: rgba(245, 158, 11, 0.14); color: #d97706; }
-.status-fail { background: rgba(239, 68, 68, 0.12); color: #ef4444; }
-.refresh-batch-hint {
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
-  background: var(--el-color-primary-light-9);
-  border: 1px solid var(--el-color-primary-light-7);
+  gap: 5px;
+  height: 30px;
+  padding: 0 12px;
   border-radius: 6px;
-  padding: 6px 10px;
-  line-height: 1.45;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.16s ease;
+  user-select: none;
+  outline: none;
 }
-.refresh-empty {
-  padding: 24px 12px;
-  color: var(--el-text-color-secondary);
-  font-size: 13px;
+.token-footer-btn.btn-export {
+  background: #ffffff;
+  border: 1px solid rgba(93, 164, 177, 0.32);
+  color: #21474e;
 }
-:deep(.refresh-row-running) { background: var(--el-color-primary-light-9) !important; }
-:deep(.refresh-row-warn) { background: rgba(245, 158, 11, 0.08) !important; }
-:deep(.oa-custom-dialog) { border-radius: 12px; overflow: hidden; }
-:deep(.oa-custom-dialog .el-dialog__header) {
-  padding: 12px 18px;
-  margin-right: 0;
-  border-bottom: 1px solid var(--el-border-color-lighter);
-  background: var(--el-fill-color-light);
+.token-footer-btn.btn-export:hover:not(:disabled) {
+  background: #edf6f8;
+  border-color: #5da4b1;
+  color: #1a3c42;
 }
-:deep(.oa-custom-dialog .el-dialog__body) { padding: 14px 18px; }
-:deep(.oa-custom-dialog .el-dialog__footer) {
-  padding: 10px 18px;
-  border-top: 1px solid var(--el-border-color-lighter);
-  background: var(--el-fill-color-light);
+.token-footer-btn.btn-export:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  border-color: rgba(93, 164, 177, 0.18);
 }
-:deep(.macos-terminal-dialog) {
+
+.token-footer-btn.btn-close {
+  background: #ffffff;
+  border: 1px solid rgba(93, 164, 177, 0.28);
+  color: #657e82;
+}
+.token-footer-btn.btn-close:hover {
+  background: #f4f7f6;
+  color: #324e53;
+}
+
+.token-footer-btn.btn-stop {
+  background: rgba(199, 86, 77, 0.1);
+  border: 1px solid rgba(199, 86, 77, 0.3);
+  color: #c7564d;
+}
+.token-footer-btn.btn-stop:hover {
+  background: #c7564d;
+  color: #ffffff;
+}
+
+.token-footer-btn.btn-primary {
+  background: #5da4b1;
+  border: 1px solid #5da4b1;
+  color: #ffffff;
+  font-weight: 600;
+  box-shadow: 0 2px 6px rgba(93, 164, 177, 0.25);
+}
+.token-footer-btn.btn-primary:hover:not(:disabled) {
+  background: #488793;
+  border-color: #488793;
+}
+.token-footer-btn.btn-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ──────────── 终端弹窗深度定制 ──────────── */
+:deep(.token-terminal-dialog) {
   border-radius: 12px;
   overflow: hidden;
-  background: #141418;
+  background: #13181a;
+  border: 1px solid rgba(93, 164, 177, 0.25);
 }
-:deep(.macos-terminal-dialog .el-dialog__header) {
+:deep(.token-terminal-dialog .el-dialog__header) {
   padding: 10px 16px;
   margin-right: 0;
-  background: #1e1e24;
-  border-bottom: 1px solid #2a2a34;
+  background: #182022;
+  border-bottom: 1px solid rgba(93, 164, 177, 0.16);
 }
-:deep(.macos-terminal-dialog .el-dialog__body) { padding: 0; }
-:deep(.macos-terminal-dialog .el-dialog__footer) {
+:deep(.token-terminal-dialog .el-dialog__body) {
+  padding: 0;
+}
+:deep(.token-terminal-dialog .el-dialog__footer) {
   padding: 10px 16px;
-  background: #1e1e24;
-  border-top: 1px solid #2a2a34;
+  background: #182022;
+  border-top: 1px solid rgba(93, 164, 177, 0.16);
 }
-.modal-header { display: flex; align-items: center; gap: 12px; }
-.window-dots { display: flex; align-items: center; gap: 6px; }
-.dot { width: 9px; height: 9px; border-radius: 50%; }
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.window-dots {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+}
 .dot.red { background: #ff5f56; }
 .dot.yellow { background: #ffbd2e; }
 .dot.green { background: #27c93f; }
-.modal-title-info { display: flex; align-items: center; gap: 8px; flex: 1; }
+.modal-title-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+}
 .modal-email {
   font-size: 13px;
   font-weight: 600;
-  color: #f1f5f9;
+  color: #f4f8f8;
   font-family: var(--el-font-family-monospace, monospace);
 }
-.modal-terminal-wrap { height: 400px; display: flex; flex-direction: column; }
+.terminal-badge {
+  font-size: 11px;
+  color: #7ebbc5;
+  background: rgba(93, 164, 177, 0.15);
+  padding: 1px 7px;
+  border-radius: 4px;
+}
+.modal-terminal-wrap {
+  height: 400px;
+  display: flex;
+  flex-direction: column;
+}
 .modal-terminal-body {
   flex: 1;
   padding: 12px 16px;
   overflow-y: auto;
-  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, Courier, monospace;
+  font-family: var(--el-font-family-monospace, monospace);
   font-size: 12px;
   line-height: 1.6;
-  color: #d1d5db;
+  color: #cbd8da;
   word-break: break-all;
   white-space: pre-wrap;
-  background: #141418;
+  background: #13181a;
 }
-.terminal-empty { color: #64748b; }
-.log-hit { color: #34d399; }
-.log-miss { color: #fbbf24; }
-.log-err { color: #f87171; }
-.modal-footer { display: flex; align-items: center; justify-content: space-between; }
-.log-count-tip { font-size: 11px; color: #94a3b8; }
-.modal-footer-btns { display: flex; gap: 8px; }
+.terminal-empty {
+  color: #657e82;
+}
+.log-hit { color: #5da4b1; font-weight: 600; }
+.log-miss { color: #d49432; }
+.log-err { color: #c7564d; }
+
+.modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.log-count-tip {
+  font-size: 11px;
+  color: #809295;
+}
+.modal-footer-btns {
+  display: flex;
+  gap: 8px;
+}
+.btn-terminal-copy {
+  background: rgba(93, 164, 177, 0.15);
+  border: 1px solid rgba(93, 164, 177, 0.28);
+  color: #f4f8f8;
+}
+.btn-terminal-copy:hover {
+  background: rgba(93, 164, 177, 0.25);
+  color: #ffffff;
+}
 .text-xs { font-size: 11px; }
 </style>
