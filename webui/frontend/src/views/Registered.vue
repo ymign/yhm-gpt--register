@@ -10180,7 +10180,6 @@ onUnmounted(() => {
 .registered-workspace-body {
   flex: 1;
   min-height: 0;
-  height: 100%;
   display: grid;
   grid-template-columns: 1fr;
   overflow: hidden;
@@ -10193,8 +10192,8 @@ onUnmounted(() => {
 .center-table-pane {
   display: flex;
   flex-direction: column;
+  flex: 1;
   min-height: 0;
-  height: 100%;
   overflow: hidden;
   background: #ffffff;
 }
@@ -10202,7 +10201,6 @@ onUnmounted(() => {
 .table-scroll-wrap {
   flex: 1;
   min-height: 0;
-  height: 100%;
   overflow: hidden;
   position: relative;
   display: flex;
@@ -11099,41 +11097,51 @@ onUnmounted(() => {
   align-items: center;
   gap: 6px;
   font-size: 11px;
-  color: #65777a;
+  color: #21474e;
+  background: #edf6f8;
+  border: 1px solid rgba(93, 164, 177, 0.28);
+  padding: 2px 8px;
+  border-radius: 6px;
   white-space: nowrap;
 }
 .page-size-custom-label {
   font-weight: 600;
-  color: #4b5e61;
+  color: #1a3c42;
 }
 .page-size-custom-unit {
-  color: #65777a;
+  color: #657e82;
 }
 .page-size-custom-input {
-  width: 108px;
+  width: 96px;
 }
 .page-size-custom-input :deep(.el-input-number__decrease),
 .page-size-custom-input :deep(.el-input-number__increase) {
   width: 18px;
+  border-color: rgba(93, 164, 177, 0.22) !important;
+  color: #21474e !important;
 }
 .page-size-custom-input :deep(.el-input__wrapper) {
   padding-left: 6px;
   padding-right: 22px;
   height: 24px;
   background: #ffffff !important;
-  border: 1px solid #ded5c6 !important;
+  border: 1px solid rgba(93, 164, 177, 0.3) !important;
   box-shadow: none !important;
+  border-radius: 4px !important;
 }
 .page-size-custom-input :deep(.el-input__inner) {
   font-size: 11px;
   height: 22px;
   text-align: center;
+  font-family: var(--el-font-family-monospace, monospace);
+  color: #1a3c42;
+  font-weight: 600;
 }
 
 /* 考公工作台凝脂与天水碧雅致分页 */
 .octopus-pagination :deep(.el-pagination__total) {
-  font-size: 11px;
-  color: #65777a;
+  font-size: 11.5px;
+  color: #657e82;
   margin-right: 8px;
 }
 .octopus-pagination :deep(.el-pagination__sizes) {
@@ -11141,16 +11149,17 @@ onUnmounted(() => {
 }
 .octopus-pagination :deep(.el-select .el-input__wrapper) {
   background: #ffffff !important;
-  border: 1px solid #ded5c6 !important;
+  border: 1px solid rgba(93, 164, 177, 0.28) !important;
   box-shadow: none !important;
   height: 24px;
+  border-radius: 4px !important;
 }
 .octopus-pagination :deep(.btn-prev),
 .octopus-pagination :deep(.btn-next),
 .octopus-pagination :deep(.el-pager li) {
   background: #ffffff !important;
-  border: 1px solid #ded5c6 !important;
-  color: #4b5e61 !important;
+  border: 1px solid rgba(93, 164, 177, 0.25) !important;
+  color: #21474e !important;
   min-width: 26px;
   height: 24px;
   line-height: 22px;
@@ -11165,20 +11174,21 @@ onUnmounted(() => {
   font-weight: 700;
 }
 .octopus-pagination :deep(.el-pager li:hover) {
-  color: #28646e !important;
+  color: #1a3c42 !important;
   background: #edf6f8 !important;
   border-color: #5da4b1 !important;
 }
 .octopus-pagination :deep(.el-pagination__jump) {
-  font-size: 11px;
-  color: #65777a;
+  font-size: 11.5px;
+  color: #657e82;
   margin-left: 8px;
 }
 .octopus-pagination :deep(.el-pagination__editor.el-input .el-input__wrapper) {
   background: #ffffff !important;
-  border: 1px solid #ded5c6 !important;
+  border: 1px solid rgba(93, 164, 177, 0.28) !important;
   box-shadow: none !important;
   height: 24px;
+  border-radius: 4px !important;
 }
 
 .action-group-left {

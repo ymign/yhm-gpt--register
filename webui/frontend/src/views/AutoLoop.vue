@@ -97,21 +97,26 @@ function toggleConfigCollapsed() {
   } catch (_) {}
 }
 
-const configSummary = computed(() => {
+const configChips = computed(() => {
   const srcMap = {
-    remail: '🍎 Remail 自动购号',
-    cf_temp: '⚡ CF 临时邮箱',
-    outlook: '📦 微软 Outlook',
-    icloud_relay: '✉️ iCloud 邮箱',
+    remail: 'Remail 自动购号',
+    cf_temp: 'CF 临时邮箱',
+    outlook: '微软 Outlook',
+    icloud_relay: 'iCloud 邮箱',
   }
-  const src = srcMap[form.value.autoMailSource] || '🍎 Remail'
-  const conc = form.value.autoConcurrency || 1
-  const ctry = form.value.autoProxyCountry ? formatCountry(form.value.autoProxyCountry) : '🌐 随机出口'
+  const src = srcMap[form.value.autoMailSource] || 'Remail 自动购号'
+  const conc = `${form.value.autoConcurrency || 1} Workers`
+  const pow = `${powSlots.value} 算力槽`
+  const ctry = form.value.autoProxyCountry ? formatCountry(form.value.autoProxyCountry) : '随机出口'
   const sec = []
-  if (form.value.autoWantPassword) sec.push('🔑自动设密')
-  if (form.value.autoWant2fa) sec.push('🛡️自动2FA')
-  const secStr = sec.join(' + ') || '免密'
-  return `${src} · ⚡ ${conc} Workers · 🧮 ${powSlots.value} 算力槽位 · ${ctry} · ${secStr}`
+  if (form.value.autoWantPassword) sec.push('自动设密')
+  if (form.value.autoWant2fa) sec.push('自动2FA')
+  const secStr = sec.length ? sec.join(' + ') : '免密'
+  return [src, conc, pow, ctry, secStr]
+})
+
+const configSummary = computed(() => {
+  return configChips.value.join(' · ')
 })
 
 // ──────────── 4. 现代化全链路流水线五阶段定义 ────────────
@@ -592,11 +597,11 @@ onUnmounted(() => {
             </span>
           </div>
           <div class="timing-sub-row">
-            <span class="timing-sub-time">🕒 {{ formatClock(batchStartedAt) }}</span>
+            <span class="timing-sub-time mono">{{ formatClock(batchStartedAt) }}</span>
             <span class="timing-sub-arrow">→</span>
-            <span class="timing-sub-time">
-              <span v-if="st === 'running'" class="text-running-sub">🟢 运行中</span>
-              <span v-else>🏁 {{ formatClock(batchFinishedAt) }}</span>
+            <span class="timing-sub-time mono">
+              <span v-if="st === 'running'" class="text-running-sub">运行中</span>
+              <span v-else>{{ formatClock(batchFinishedAt) }}</span>
             </span>
           </div>
         </div>
@@ -607,44 +612,66 @@ onUnmounted(() => {
     <div class="macos-panel config-panel">
       <div class="panel-header" @click="toggleConfigCollapsed">
         <div class="panel-header-left">
-          <span class="macos-pill-tag">CONFIG</span>
+          <span class="autoloop-pill-tag">CONFIG</span>
           <span class="title">全自动批量参数调度</span>
 
-          <!-- 折叠时的精简摘要胶囊 -->
-          <div v-if="configCollapsed" class="config-summary-chip">
-            <span class="summary-dot"></span>
-            <span class="summary-text">{{ configSummary }}</span>
+          <!-- 折叠时的现代微规格芯片组 -->
+          <div v-if="configCollapsed" class="config-summary-chips">
+            <span v-for="(chip, cIdx) in configChips" :key="cIdx" class="config-chip-pill">
+              {{ chip }}
+            </span>
           </div>
 
-          <!-- 展开时的时序胶囊 -->
+          <!-- 展开时的时序微芯片 -->
           <div v-else-if="batchStartedAt" class="header-timing-pill" :class="{ 'header-timing-running': st === 'running' }">
             <span class="pill-dot" :class="{ 'pulse': st === 'running' }"></span>
-            <span>🕒 开始: {{ formatClock(batchStartedAt) }}</span>
-            <span class="pill-sep">|</span>
-            <span v-if="st === 'running'">⏱️ 耗时: <strong>{{ formatDuration(batchElapsedSec) }}</strong></span>
-            <span v-else>🏁 结束: {{ formatClock(batchFinishedAt) }} (总耗时 {{ formatDuration(batchElapsedSec) }})</span>
-            <span v-if="batchAvgSpeed !== '—'" class="pill-sep">|</span>
-            <span v-if="batchAvgSpeed !== '—'">⚡ 均速: {{ batchAvgSpeed }}</span>
+            <span class="mono">开始: {{ formatClock(batchStartedAt) }}</span>
+            <span class="pill-sep">·</span>
+            <span v-if="st === 'running'">耗时: <strong class="mono">{{ formatDuration(batchElapsedSec) }}</strong></span>
+            <span v-else>结束: <span class="mono">{{ formatClock(batchFinishedAt) }}</span> (总耗时 <span class="mono">{{ formatDuration(batchElapsedSec) }}</span>)</span>
+            <span v-if="batchAvgSpeed !== '—'" class="pill-sep">·</span>
+            <span v-if="batchAvgSpeed !== '—'">均速: <span class="mono">{{ batchAvgSpeed }}</span></span>
           </div>
         </div>
 
         <div class="control-actions" @click.stop>
-          <el-button
-            type="primary" class="start-btn" :disabled="!canStart"
+          <button
+            type="button"
+            class="autoloop-btn btn-primary"
+            :disabled="!canStart"
             @click="start"
           >
-            <el-icon><VideoPlay /></el-icon>开始自动运行
-          </el-button>
+            <el-icon><VideoPlay /></el-icon>
+            <span>开始自动运行</span>
+          </button>
           <div class="action-btn-group">
-            <el-button size="small" :disabled="!canPause" @click="call(autoPause, '暂停')">
-              <el-icon><VideoPause /></el-icon>暂停
-            </el-button>
-            <el-button size="small" :disabled="!canResume" @click="call(autoResume, '恢复')">
-              <el-icon><RefreshRight /></el-icon>恢复
-            </el-button>
-            <el-button size="small" type="danger" plain :disabled="!canStop" @click="call(autoStop, '停止')">
-              <el-icon><SwitchButton /></el-icon>停止任务
-            </el-button>
+            <button
+              type="button"
+              class="autoloop-btn btn-sub"
+              :disabled="!canPause"
+              @click="call(autoPause, '暂停')"
+            >
+              <el-icon><VideoPause /></el-icon>
+              <span>暂停</span>
+            </button>
+            <button
+              type="button"
+              class="autoloop-btn btn-sub"
+              :disabled="!canResume"
+              @click="call(autoResume, '恢复')"
+            >
+              <el-icon><RefreshRight /></el-icon>
+              <span>恢复</span>
+            </button>
+            <button
+              type="button"
+              class="autoloop-btn btn-danger"
+              :disabled="!canStop"
+              @click="call(autoStop, '停止')"
+            >
+              <el-icon><SwitchButton /></el-icon>
+              <span>停止任务</span>
+            </button>
           </div>
 
           <button
@@ -779,11 +806,11 @@ onUnmounted(() => {
         <div class="header-left">
           <div class="panel-header-title">
             <span class="dot-live"></span>
-            <span class="title">账号注册实时流水监控列表</span>
+            <span class="title">账号注册流水监控</span>
             <span class="badge-total">{{ taskList.length }} 个任务</span>
           </div>
 
-          <!-- 状态筛选胶囊 -->
+          <!-- 现代状态筛选胶囊组 -->
           <div class="filter-capsules">
             <button
               class="filter-pill"
@@ -820,7 +847,8 @@ onUnmounted(() => {
         </div>
 
         <div v-if="autoStatus.last_message" class="last-msg-hint">
-          {{ autoStatus.last_message }}
+          <span class="last-msg-dot"></span>
+          <span>{{ autoStatus.last_message }}</span>
         </div>
       </div>
 
@@ -831,14 +859,14 @@ onUnmounted(() => {
           height="100%"
           size="small"
           stripe
-          class="modern-stepper-table"
+          class="modern-stepper-table auto-stepper-table"
           :highlight-current-row="false"
         >
           <!-- 账号邮箱 -->
-          <el-table-column prop="email" label="账号邮箱" min-width="230" show-overflow-tooltip>
+          <el-table-column prop="email" label="账号邮箱" min-width="240" show-overflow-tooltip>
             <template #default="{ row }">
               <div class="email-modern-cell">
-                <span class="email-brand-icon">{{ getEmailIcon(row.email) }}</span>
+                <span class="auto-email-dot"></span>
                 <span
                   v-if="isPlaceholder(row.email)"
                   class="placeholder-shimmer-tag"
@@ -846,7 +874,7 @@ onUnmounted(() => {
                   <span class="shimmer-pulse"></span>
                   <span>Remail 自动购号中...</span>
                 </span>
-                <span v-else class="email-text-mono" :title="row.email">
+                <span v-else class="email-text-mono mono" :title="row.email">
                   {{ row.email }}
                 </span>
                 <button
@@ -878,7 +906,7 @@ onUnmounted(() => {
                     {{ formatCountry(getTaskCountry(row)) }}
                   </span>
                 </el-tooltip>
-                <span v-else class="geo-flag-pill geo-default">🌐 跟随代理</span>
+                <span v-else class="geo-flag-pill geo-default">跟随代理</span>
               </div>
             </template>
           </el-table-column>
@@ -922,7 +950,7 @@ onUnmounted(() => {
                   </template>
                 </div>
 
-                <!-- 步骤描述与微进度条 -->
+                <!-- 步骤描述与微状态（彻底移除 🎉 礼花） -->
                 <div class="stepper-meta-row">
                   <div v-if="row.status === 'running'" class="running-status-box">
                     <span class="pulse-beacon"></span>
@@ -930,13 +958,13 @@ onUnmounted(() => {
                     <span v-if="row.percent" class="status-pct mono">{{ row.percent }}%</span>
                   </div>
                   <div v-else-if="row.status === 'done'" class="done-status-box">
-                    <span class="done-tag">🎉 注册完成并成功入库 (100%)</span>
+                    <span class="done-tag">全流程完成 · 成功入库 (100%)</span>
                   </div>
                   <div v-else-if="row.status === 'failed'" class="failed-status-box" :title="row.error">
-                    <span class="fail-tag">❌ {{ row.error || row.phase_text || '注册失败' }}</span>
+                    <span class="fail-tag">✕ {{ row.error || row.phase_text || '注册失败' }}</span>
                   </div>
                   <div v-else class="pending-status-box">
-                    <span class="pending-tag">⏳ 等待 Worker 领取</span>
+                    <span class="pending-tag">等待 Worker 调度</span>
                   </div>
                 </div>
               </div>
@@ -967,11 +995,11 @@ onUnmounted(() => {
           </el-table-column>
 
           <!-- 操作 -->
-          <el-table-column label="操作" width="75" fixed="right" align="center">
+          <el-table-column label="操作" width="80" fixed="right" align="center">
             <template #default="{ row }">
               <button
                 type="button"
-                class="modern-log-btn"
+                class="modern-log-btn auto-micro-btn"
                 title="查看该账号注册终端日志"
                 @click="openTaskLog(row)"
               >
@@ -1333,9 +1361,11 @@ onUnmounted(() => {
 }
 
 .config-panel {
-  padding: 8px 12px;
+  padding: 8px 14px;
   flex-shrink: 0;
   transition: all 0.25s ease;
+  background: #ffffff;
+  border-color: rgba(93, 164, 177, 0.2);
 }
 
 .panel-header {
@@ -1349,59 +1379,64 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
 }
 
-.macos-pill-tag {
-  font-size: 9.5px;
+.autoloop-pill-tag {
+  font-size: 10px;
   font-weight: 700;
-  color: #10b981;
-  background: rgba(16, 185, 129, 0.1);
-  border: 1px solid rgba(16, 185, 129, 0.3);
-  padding: 1px 5px;
+  color: #ffffff;
+  background: #5da4b1;
+  padding: 2px 7px;
   border-radius: 4px;
+  letter-spacing: 0.5px;
+  font-family: var(--el-font-family-monospace, monospace);
 }
 
 .panel-header-left .title {
-  font-size: 12.5px;
-  font-weight: 700;
-  color: var(--app-title);
+  font-size: 13.5px;
+  font-weight: 600;
+  color: #1a3c42;
+  letter-spacing: -0.01em;
 }
 
-.config-summary-chip {
+/* 现代微规格芯片组 */
+.config-summary-chips {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: 11px;
-  color: var(--el-text-color-secondary);
-  background: var(--el-fill-color-light);
-  border: 1px solid var(--el-border-color-lighter);
-  padding: 2px 10px;
-  border-radius: 12px;
+  flex-wrap: wrap;
 }
 
-.summary-dot {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: #10b981;
+.config-chip-pill {
+  display: inline-flex;
+  align-items: center;
+  font-size: 11px;
+  font-weight: 500;
+  color: #21474e;
+  background: #edf6f8;
+  border: 1px solid rgba(93, 164, 177, 0.32);
+  padding: 1.5px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
 }
 
 .header-timing-pill {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: 10.5px;
-  background: var(--el-fill-color-light);
-  border: 1px solid var(--app-border);
-  padding: 1px 7px;
-  border-radius: 10px;
-  color: var(--el-text-color-secondary);
+  font-size: 11px;
+  background: #f4f7f6;
+  border: 1px solid rgba(93, 164, 177, 0.2);
+  padding: 2px 9px;
+  border-radius: 999px;
+  color: #657e82;
 }
 
 .header-timing-pill.header-timing-running {
-  background: rgba(16, 185, 129, 0.08);
-  border-color: rgba(16, 185, 129, 0.3);
-  color: #10b981;
+  background: #edf6f8;
+  border-color: rgba(93, 164, 177, 0.35);
+  color: #1a454d;
 }
 
 .pill-dot {
@@ -1412,8 +1447,12 @@ onUnmounted(() => {
 }
 
 .pill-dot.pulse {
-  background: #10b981;
-  box-shadow: 0 0 6px #10b981;
+  background: #5da4b1;
+  box-shadow: 0 0 6px #5da4b1;
+}
+
+.pill-sep {
+  opacity: 0.4;
 }
 
 .control-actions {
@@ -1422,32 +1461,94 @@ onUnmounted(() => {
   gap: 8px;
 }
 
-.start-btn {
-  font-weight: 700;
+/* 现代化操作按钮 */
+.autoloop-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 30px;
+  padding: 0 12px;
   border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.16s ease;
+  user-select: none;
+  outline: none;
+}
+
+.autoloop-btn.btn-primary {
+  background: #5da4b1;
+  border: 1px solid #5da4b1;
+  color: #ffffff;
+  font-weight: 600;
+  box-shadow: 0 2px 6px rgba(93, 164, 177, 0.25);
+}
+.autoloop-btn.btn-primary:hover:not(:disabled) {
+  background: #488793;
+  border-color: #488793;
+}
+.autoloop-btn.btn-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.autoloop-btn.btn-sub {
+  background: #ffffff;
+  border: 1px solid rgba(93, 164, 177, 0.28);
+  color: #21474e;
+}
+.autoloop-btn.btn-sub:hover:not(:disabled) {
+  background: #edf6f8;
+  border-color: #5da4b1;
+  color: #1a3c42;
+}
+.autoloop-btn.btn-sub:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  border-color: rgba(93, 164, 177, 0.18);
+}
+
+.autoloop-btn.btn-danger {
+  background: rgba(199, 86, 77, 0.08);
+  border: 1px solid rgba(199, 86, 77, 0.28);
+  color: #c7564d;
+}
+.autoloop-btn.btn-danger:hover:not(:disabled) {
+  background: #c7564d;
+  color: #ffffff;
+  border-color: #c7564d;
+}
+.autoloop-btn.btn-danger:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 .action-btn-group {
   display: flex;
-  gap: 4px;
+  gap: 6px;
 }
 
 .config-toggle-btn {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: 11px;
-  color: var(--el-color-primary);
-  background: var(--el-fill-color-light);
-  border: 1px solid var(--el-color-primary-light-7);
-  padding: 3px 8px;
+  height: 30px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #21474e;
+  background: #ffffff;
+  border: 1px solid rgba(93, 164, 177, 0.28);
+  padding: 0 10px;
   border-radius: 6px;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: all 0.16s ease;
 }
 
 .config-toggle-btn:hover {
-  background: var(--el-color-primary-light-9);
+  background: #edf6f8;
+  border-color: #5da4b1;
+  color: #1a3c42;
 }
 
 .config-toggle-btn .is-rotated {
@@ -1455,9 +1556,9 @@ onUnmounted(() => {
 }
 
 .config-panel .panel-body {
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px solid var(--el-border-color-lighter);
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(93, 164, 177, 0.14);
 }
 
 .mail-source-selector-row {
@@ -1468,29 +1569,30 @@ onUnmounted(() => {
 }
 
 .mail-source-badge-tip {
-  font-size: 11px;
-  color: var(--el-text-color-secondary);
+  font-size: 11.5px;
+  color: #657e82;
 }
 
 .feature-switches {
   display: flex;
   align-items: center;
   gap: 12px;
-  background: var(--el-fill-color-light);
-  border: 1px solid var(--app-border);
-  padding: 3px 8px;
+  background: #f4f7f6;
+  border: 1px solid rgba(93, 164, 177, 0.18);
+  padding: 4px 10px;
   border-radius: 6px;
 }
 
 .switch-item {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
 }
 
 .switch-label {
-  font-size: 11px;
-  color: var(--app-title);
+  font-size: 11.5px;
+  color: #21474e;
+  font-weight: 500;
 }
 
 /* ──────────── 4. 实时流水表格（现代化流线型设计） ──────────── */
@@ -1500,64 +1602,98 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  background: #ffffff;
+  border: 1px solid rgba(93, 164, 177, 0.2);
 }
 
 .table-panel-header {
-  padding: 8px 12px;
+  padding: 8px 14px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  border-bottom: 1px solid var(--app-border);
-  background: var(--el-fill-color-light);
+  border-bottom: 1px solid rgba(93, 164, 177, 0.16);
+  background: #ffffff;
   flex-shrink: 0;
 }
 
 .table-panel-header .header-left {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.panel-header-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.panel-header-title .title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: #1a3c42;
+  letter-spacing: -0.01em;
 }
 
 .dot-live {
-  width: 7px;
-  height: 7px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
-  background: #10b981;
-  box-shadow: 0 0 8px #10b981;
+  background: #5da4b1;
+  box-shadow: 0 0 6px #5da4b1;
 }
 
 .badge-total {
   font-size: 11px;
-  color: var(--app-text-secondary);
+  color: #657e82;
+  background: #f4f7f6;
+  border: 1px solid rgba(93, 164, 177, 0.2);
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-weight: 500;
 }
 
 .filter-capsules {
   display: flex;
-  gap: 4px;
+  gap: 5px;
 }
 
 .filter-pill {
-  border: 1px solid var(--app-border);
-  background: var(--app-window-bg);
-  color: var(--app-text-secondary);
-  border-radius: 12px;
-  padding: 2px 8px;
-  font-size: 10.5px;
+  border: 1px solid rgba(93, 164, 177, 0.22);
+  background: #ffffff;
+  color: #657e82;
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: 11px;
+  font-weight: 500;
   cursor: pointer;
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
   transition: all 0.15s ease;
 }
 
 .filter-pill:hover {
-  background: var(--el-fill-color);
+  background: #f4f7f6;
+  color: #1a3c42;
 }
 
 .filter-pill.active {
-  background: var(--el-color-primary);
-  color: #fff;
-  border-color: var(--el-color-primary);
+  background: #5da4b1;
+  color: #ffffff;
+  border-color: #5da4b1;
+}
+.filter-pill.active .pill-cnt {
+  color: #ffffff;
+  opacity: 0.9;
+}
+
+.pill-cnt {
+  font-family: var(--el-font-family-monospace, monospace);
+  font-weight: 600;
+  font-size: 10.5px;
+  color: #21474e;
 }
 
 .dot-pill {
@@ -1565,13 +1701,27 @@ onUnmounted(() => {
   height: 5px;
   border-radius: 50%;
 }
-.dot-running { background: #007aff; }
-.dot-done { background: #10b981; }
-.dot-failed { background: #ef4444; }
+.dot-running { background: #5da4b1; }
+.dot-done { background: #3b8e7e; }
+.dot-failed { background: #c7564d; }
 
 .last-msg-hint {
-  font-size: 11px;
-  color: var(--el-text-color-secondary);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  color: #657e82;
+  background: #f4f7f6;
+  border: 1px solid rgba(93, 164, 177, 0.2);
+  padding: 2px 9px;
+  border-radius: 6px;
+}
+
+.last-msg-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #5da4b1;
 }
 
 .table-container {
@@ -1581,26 +1731,31 @@ onUnmounted(() => {
 }
 
 .table-pagination-bar {
-  padding: 6px 12px;
+  padding: 6px 14px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  border-top: 1px solid var(--app-border);
-  background: var(--el-fill-color-light);
+  border-top: 1px solid rgba(93, 164, 177, 0.14);
+  background: #ffffff;
   flex-shrink: 0;
 }
 
 .page-tip {
-  font-size: 11px;
-  color: var(--el-text-color-secondary);
+  font-size: 11.5px;
+  color: #657e82;
 }
 
 /* ──────────── 现代化表格单元格与 Connected Stepper Pipeline ──────────── */
-.modern-stepper-table :deep(.el-table__row) {
-  transition: all 0.15s ease;
+.auto-stepper-table :deep(th.el-table__cell) {
+  background: #f4f7f6 !important;
+  color: #324e53 !important;
+  font-weight: 600;
+  font-size: 12px;
+  border-bottom: 1px solid rgba(93, 164, 177, 0.16) !important;
 }
-.modern-stepper-table :deep(.el-table__row:hover) {
-  background-color: var(--el-table-row-hover-bg-color) !important;
+
+.auto-stepper-table :deep(td.el-table__cell) {
+  border-bottom: 1px solid rgba(93, 164, 177, 0.08) !important;
 }
 
 .email-modern-cell {
@@ -1608,17 +1763,32 @@ onUnmounted(() => {
   align-items: center;
   gap: 6px;
   font-size: 12px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: all 0.12s ease;
+}
+.email-modern-cell:hover {
+  background: #edf6f8;
+}
+.email-modern-cell:hover .modern-copy-btn {
+  opacity: 1;
+  color: #5da4b1;
 }
 
-.email-brand-icon {
-  font-size: 13px;
+.auto-email-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #5da4b1;
   flex-shrink: 0;
 }
 
 .email-text-mono {
-  font-family: var(--font-mono, monospace);
-  font-weight: 600;
-  color: var(--app-title);
+  font-family: var(--el-font-family-monospace, monospace);
+  font-weight: 500;
+  color: #1a3c42;
+  font-size: 12.5px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1629,9 +1799,9 @@ onUnmounted(() => {
   align-items: center;
   gap: 5px;
   font-size: 11px;
-  color: #10b981;
-  background: rgba(16, 185, 129, 0.1);
-  border: 1px solid rgba(16, 185, 129, 0.25);
+  color: #21474e;
+  background: #edf6f8;
+  border: 1px solid rgba(93, 164, 177, 0.35);
   padding: 1px 6px;
   border-radius: 4px;
 }
@@ -1640,7 +1810,7 @@ onUnmounted(() => {
   width: 5px;
   height: 5px;
   border-radius: 50%;
-  background: #10b981;
+  background: #5da4b1;
   animation: pulse-ring 1.2s infinite;
 }
 
@@ -1648,19 +1818,19 @@ onUnmounted(() => {
   background: none;
   border: none;
   cursor: pointer;
-  color: var(--el-text-color-secondary);
+  color: #657e82;
   font-size: 12px;
   padding: 0 2px;
-  opacity: 0.5;
+  opacity: 0.25;
   transition: all 0.15s ease;
 }
 
 .modern-copy-btn:hover {
   opacity: 1;
-  color: var(--el-color-primary);
-  transform: scale(1.1);
+  color: #5da4b1;
 }
 
+/* Worker & 出口列 */
 .worker-meta-cell {
   display: flex;
   flex-direction: column;
@@ -1673,51 +1843,52 @@ onUnmounted(() => {
   align-items: center;
   gap: 4px;
   font-size: 10px;
-  font-weight: 700;
-  font-family: var(--font-mono, monospace);
-  color: var(--app-title);
-  background: var(--el-fill-color-light);
-  border: 1px solid var(--app-border);
-  padding: 1px 5px;
+  font-weight: 600;
+  font-family: var(--el-font-family-monospace, monospace);
+  color: #21474e;
+  background: #edf6f8;
+  border: 1px solid rgba(93, 164, 177, 0.3);
+  padding: 1px 6px;
   border-radius: 4px;
 }
 
 .worker-pill-badge.is-active {
-  border-color: rgba(16, 185, 129, 0.4);
-  background: rgba(16, 185, 129, 0.08);
+  border-color: #5da4b1;
+  background: rgba(93, 164, 177, 0.18);
+  color: #1a454d;
 }
 
 .worker-pulse-dot {
-  width: 5px;
-  height: 5px;
+  width: 4px;
+  height: 4px;
   border-radius: 50%;
   background: #94a3b8;
 }
 
 .worker-pulse-dot.live {
-  background: #10b981;
-  box-shadow: 0 0 6px #10b981;
+  background: #5da4b1;
+  box-shadow: 0 0 6px #5da4b1;
   animation: pulse-ring 1.5s infinite;
 }
 
 .geo-flag-pill {
   font-size: 10px;
-  color: var(--el-color-primary);
-  background: var(--el-fill-color-light);
-  border: 1px solid var(--app-border);
-  padding: 0 4px;
+  color: #657e82;
+  background: #f4f7f6;
+  border: 1px solid rgba(93, 164, 177, 0.2);
+  padding: 0 5px;
   border-radius: 3px;
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .geo-flag-pill.geo-hot {
-  color: #f59e0b;
-  border-color: rgba(245, 158, 11, 0.3);
-  background: rgba(245, 158, 11, 0.08);
+  color: #21474e;
+  border-color: rgba(93, 164, 177, 0.35);
+  background: #edf6f8;
 }
 
 .geo-default {
-  color: var(--el-text-color-secondary);
+  color: #7c8f92;
 }
 
 /* ──────────── Connected Stepper Pipeline ──────────── */
@@ -1730,19 +1901,19 @@ onUnmounted(() => {
 .stepper-track-row {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: 3px;
 }
 
 .stepper-node {
   display: inline-flex;
   align-items: center;
   gap: 3px;
-  font-size: 9.5px;
-  padding: 1px 4px;
-  border-radius: 3px;
-  background: var(--el-fill-color-light);
-  border: 1px solid transparent;
-  color: var(--el-text-color-secondary);
+  font-size: 10px;
+  padding: 1.5px 6px;
+  border-radius: 4px;
+  background: #f4f7f6;
+  border: 1px solid rgba(93, 164, 177, 0.16);
+  color: #657e82;
   transition: all 0.2s ease;
 }
 
@@ -1750,38 +1921,39 @@ onUnmounted(() => {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 12px;
-  height: 12px;
+  width: 11px;
+  height: 11px;
   border-radius: 50%;
-  font-size: 8.5px;
+  font-size: 8px;
   font-weight: 700;
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(93, 164, 177, 0.2);
+  color: #21474e;
 }
 
 .stepper-node-label {
-  font-size: 9px;
-  font-weight: 600;
+  font-size: 10px;
+  font-weight: 500;
 }
 
 .stepper-node.is-done {
-  background: rgba(16, 185, 129, 0.12);
-  border-color: rgba(16, 185, 129, 0.35);
-  color: #10b981;
+  background: rgba(93, 164, 177, 0.12);
+  border-color: rgba(93, 164, 177, 0.32);
+  color: #1a454d;
 }
 .stepper-node.is-done .stepper-node-dot {
-  background: #10b981;
+  background: #5da4b1;
   color: #ffffff;
 }
 
 .stepper-node.is-active {
-  background: rgba(0, 122, 255, 0.16);
-  border-color: #007aff;
-  color: #007aff;
-  font-weight: 700;
-  box-shadow: 0 0 8px rgba(0, 122, 255, 0.3);
+  background: #edf6f8;
+  border-color: #5da4b1;
+  color: #1a454d;
+  font-weight: 600;
+  box-shadow: 0 0 6px rgba(93, 164, 177, 0.25);
 }
 .stepper-node.is-active .stepper-node-dot {
-  background: #007aff;
+  background: #5da4b1;
   color: #ffffff;
 }
 .node-pulse {
@@ -1793,32 +1965,32 @@ onUnmounted(() => {
 }
 
 .stepper-node.is-failed {
-  background: rgba(239, 68, 68, 0.12);
-  border-color: rgba(239, 68, 68, 0.35);
-  color: #ef4444;
+  background: rgba(199, 86, 77, 0.1);
+  border-color: rgba(199, 86, 77, 0.3);
+  color: #c7564d;
 }
 .stepper-node.is-failed .stepper-node-dot {
-  background: #ef4444;
+  background: #c7564d;
   color: #ffffff;
 }
 
 .stepper-node.is-pending {
-  opacity: 0.38;
+  opacity: 0.45;
 }
 
 .stepper-connector {
   flex: 1;
-  height: 2px;
-  background: var(--el-fill-color);
+  height: 1.5px;
+  background: rgba(93, 164, 177, 0.2);
   border-radius: 2px;
   min-width: 6px;
   max-width: 14px;
 }
 .stepper-connector.is-done {
-  background: #10b981;
+  background: #5da4b1;
 }
 .stepper-connector.is-active {
-  background: #007aff;
+  background: #5da4b1;
 }
 
 .stepper-meta-row {
@@ -1831,14 +2003,14 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 5px;
-  color: var(--el-color-primary);
+  color: #21474e;
 }
 
 .pulse-beacon {
   width: 5px;
   height: 5px;
   border-radius: 50%;
-  background: #007aff;
+  background: #5da4b1;
   animation: pulse-ring 1.2s infinite;
 }
 
@@ -1852,65 +2024,90 @@ onUnmounted(() => {
 .status-pct {
   font-size: 10px;
   font-weight: 700;
-  color: #007aff;
+  color: #5da4b1;
 }
 
 .done-status-box {
-  color: #10b981;
+  display: inline-flex;
+  align-items: center;
+}
+.done-tag {
+  color: #1a454d;
   font-size: 10.5px;
-  font-weight: 600;
+  font-weight: 500;
+  background: rgba(93, 164, 177, 0.12);
+  border: 1px solid rgba(93, 164, 177, 0.28);
+  padding: 1px 7px;
+  border-radius: 3px;
 }
 
 .failed-status-box {
-  color: #ef4444;
+  display: inline-flex;
+  align-items: center;
+}
+.fail-tag {
+  color: #a1362e;
   font-size: 10.5px;
+  background: rgba(199, 86, 77, 0.1);
+  border: 1px solid rgba(199, 86, 77, 0.25);
+  padding: 1px 7px;
+  border-radius: 3px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .pending-status-box {
-  color: var(--el-text-color-secondary);
-  font-size: 10px;
+  color: #7c8f92;
+  font-size: 10.5px;
+}
+.pending-tag {
+  background: #f4f7f6;
+  padding: 1px 6px;
+  border-radius: 3px;
 }
 
 /* 耗时与时间列 */
 .duration-cell {
   font-size: 11.5px;
-  font-weight: 700;
+  font-weight: 500;
+  font-family: var(--el-font-family-monospace, monospace);
 }
 .duration-running {
-  color: #007aff;
+  color: #5da4b1;
 }
 .duration-done {
-  color: #10b981;
+  color: #21474e;
 }
 .duration-fail {
-  color: #ef4444;
+  color: #c7564d;
 }
 
 .time-cell {
-  font-size: 10.5px;
-  color: var(--el-text-color-secondary);
+  font-size: 11px;
+  color: #657e82;
+  font-family: var(--el-font-family-monospace, monospace);
 }
 
-.modern-log-btn {
+.auto-micro-btn {
   display: inline-flex;
   align-items: center;
   gap: 3px;
-  font-size: 10.5px;
-  font-weight: 600;
-  color: var(--el-color-primary);
-  background: var(--el-fill-color-light);
-  border: 1px solid var(--el-color-primary-light-7);
-  padding: 1px 5px;
+  font-size: 11px;
+  font-weight: 500;
+  color: #21474e;
+  background: #ffffff;
+  border: 1px solid rgba(93, 164, 177, 0.28);
+  padding: 2px 7px;
   border-radius: 4px;
   cursor: pointer;
   transition: all 0.15s ease;
 }
 
-.modern-log-btn:hover {
-  background: var(--el-color-primary-light-9);
+.auto-micro-btn:hover {
+  background: #edf6f8;
+  border-color: #5da4b1;
+  color: #1a3c42;
 }
 
 /* ──────────── 终端弹窗 ──────────── */
