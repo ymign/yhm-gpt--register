@@ -15,7 +15,7 @@ from typing import Callable, Optional
 import requests
 
 from .base import BaseSmsProvider, ConfigField, SmsActivation, register
-from .util import parse_price_spec, _safe_float
+from .util import SMS_COUNTRY_NAMES_CN, parse_price_spec, _safe_float
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +40,7 @@ ACTIVATE_ID_TO_ISO2 = {
     "155": "uy", "162": "fi", "164": "lu", "171": "dk", "172": "ch",
     "173": "no", "174": "au", "185": "us", "187": "us", "188": "cn",
     "189": "kr", "191": "jp",
+    "34": "ee", "44": "lt", "45": "hr", "49": "lv", "59": "si",
 }
 
 ISO2_NAMES_CN = {
@@ -57,16 +58,21 @@ ISO2_NAMES_CN = {
     "il": "以色列", "mm": "缅甸", "kh": "柬埔寨", "la": "老挝", "uz": "乌兹别克斯坦",
     "kg": "吉尔吉斯斯坦", "ec": "厄瓜多尔", "uy": "乌拉圭", "ve": "委内瑞拉",
     "ug": "乌干达", "gh": "加纳", "ma": "摩洛哥", "tz": "坦桑尼亚", "lu": "卢森堡",
-    "sk": "斯洛伐克",
+    "sk": "斯洛伐克", "si": "斯洛文尼亚", "hr": "克罗地亚", "lt": "立陶宛",
+    "lv": "拉脱维亚", "ee": "爱沙尼亚", "rs": "塞尔维亚", "ba": "波黑",
+    "al": "阿尔巴尼亚", "mk": "北马其顿", "md": "摩尔多瓦", "cy": "塞浦路斯",
+    "is": "冰岛", "mt": "马耳他", "bd": "孟加拉国", "lk": "斯里兰卡",
 }
 
-# 拉库存时轮询的国家（vak-sms 用 ISO2，getCountNumbersList 无需 API Key）
-STOCK_COUNTRIES = (
+# 拉库存时轮询的国家。必须覆盖官网能搜到的 openai.com 热门国（含斯洛文尼亚 si）。
+STOCK_COUNTRIES = tuple(dict.fromkeys((
     "th", "us", "ph", "vn", "id", "my", "in", "br", "cl", "mx",
     "gb", "de", "fr", "it", "es", "nl", "pl", "ca", "au", "jp",
     "kr", "tr", "ng", "za", "ke", "co", "ar", "pe", "ua", "kz",
     "ru", "hk", "tw", "sg", "ae", "ro", "cz", "se",
-)
+    "si", "sk", "ie", "pt", "hu", "bg", "at", "be", "ch", "no",
+    "dk", "fi", "gr", "nz", "il", "hr", "lt", "lv", "ee", "rs",
+)))
 
 VAK_ERRORS = {
     "apiKeyNotFound": "API Key 无效或不存在",
@@ -80,12 +86,28 @@ VAK_ERRORS = {
 
 
 def normalize_vak_country(raw: str) -> str:
-    cid = str(raw or "").strip().lower()
+    cid = str(raw or "").strip()
     if not cid:
         return "th"
-    if cid in ISO2_NAMES_CN or (len(cid) == 2 and cid.isalpha()):
-        return cid
-    return ACTIVATE_ID_TO_ISO2.get(cid, cid)
+    low = cid.lower()
+    if low in ISO2_NAMES_CN or (len(low) == 2 and low.isalpha()):
+        return low
+    if cid in ACTIVATE_ID_TO_ISO2:
+        return ACTIVATE_ID_TO_ISO2[cid]
+    if low in ACTIVATE_ID_TO_ISO2:
+        return ACTIVATE_ID_TO_ISO2[low]
+    for iso, name in ISO2_NAMES_CN.items():
+        if name == cid:
+            return iso
+    for code, name in SMS_COUNTRY_NAMES_CN.items():
+        if name != cid:
+            continue
+        if len(code) == 2 and code.isalpha():
+            return code.lower()
+        mapped = ACTIVATE_ID_TO_ISO2.get(code)
+        if mapped:
+            return mapped
+    return low if len(low) == 2 and low.isalpha() else cid
 
 
 def _extract_otp6(text: str) -> str:
@@ -360,16 +382,29 @@ class VakSmsProvider(BaseSmsProvider):
             "/api/getOfferNumberList",
             {"country": iso},
             needs_key=bool(self.api_key),
-            timeout=18,
+            timeout=12,
         )
-        blob = data.get(service_code) if isinstance(data, dict) else None
-        return blob if isinstance(blob, dict) else {}
+        if not isinstance(data, dict):
+            return {}
+        for key in (service_code, "dr", "openai.com"):
+            blob = data.get(key)
+            if isinstance(blob, dict) and (
+                blob.get("priceMap") or blob.get("minPrice") or blob.get("totalCount")
+            ):
+                return blob
+        return {}
+
+    _top_cache: tuple[float, str, list] = (0.0, "", [])
 
     def get_top_countries(self, service: Optional[str] = None, **_kwargs) -> list[dict]:
         """国家下拉用官网报价：minPrice + 各档库存合计，不是 SmsBower 数字 ID。"""
         service_code = str(service or self.default_service or "dr").strip() or "dr"
         if service_code.lower() in ("openai", "chatgpt"):
             service_code = "dr"
+        now = time.time()
+        cache_t, cache_svc, cache_rows = type(self)._top_cache
+        if cache_rows and cache_svc == service_code and now - cache_t < 45:
+            return cache_rows
         rows: list[dict] = []
 
         def _one(iso: str) -> Optional[dict]:
@@ -410,7 +445,7 @@ class VakSmsProvider(BaseSmsProvider):
                 logger.debug("Vak-SMS 报价 %s 失败: %s", iso, e)
                 return None
 
-        with ThreadPoolExecutor(max_workers=8) as pool:
+        with ThreadPoolExecutor(max_workers=12) as pool:
             futs = {pool.submit(_one, iso): iso for iso in STOCK_COUNTRIES}
             for fut in as_completed(futs):
                 row = fut.result()
@@ -422,6 +457,7 @@ class VakSmsProvider(BaseSmsProvider):
             r.get("price") if r.get("price") is not None else 999,
             -(r.get("count") or 0),
         ))
+        type(self)._top_cache = (now, service_code, rows)
         return rows
 
     def get_country_price_tiers(self, country: str, service: Optional[str] = None) -> list[dict]:

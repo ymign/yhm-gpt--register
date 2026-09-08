@@ -1289,9 +1289,19 @@ def api_sms_all_countries(provider: str = ""):
     p_key = (provider or "").strip()
     cfg = db.get_sms_internal_config(provider=p_key or None)
     scheme = "activate"
+    name_map = dict(SMS_COUNTRY_NAMES_CN)
     try:
         cls = get_provider_class(cfg.get("sms_provider") or p_key or "smsbower")
         scheme = str(getattr(cls, "country_scheme", "activate") or "activate")
+        extra_names = getattr(cls, "iso2_names", None)
+        if scheme == "iso2":
+            try:
+                from sms_providers.vaksms import ISO2_NAMES_CN
+                name_map.update(ISO2_NAMES_CN)
+            except Exception:
+                pass
+            if isinstance(extra_names, dict):
+                name_map.update(extra_names)
     except Exception:
         pass
 
@@ -1315,7 +1325,7 @@ def api_sms_all_countries(provider: str = ""):
 
     seen = set()
     countries = []
-    for cid, name in SMS_COUNTRY_NAMES_CN.items():
+    for cid, name in name_map.items():
         if not _is_scheme_id(cid):
             continue
         live = live_map.get(cid) or {}
@@ -1334,7 +1344,7 @@ def api_sms_all_countries(provider: str = ""):
             continue
         countries.append({
             "id": cid,
-            "name_cn": SMS_COUNTRY_NAMES_CN.get(cid, f"国家{cid}"),
+            "name_cn": name_map.get(cid, SMS_COUNTRY_NAMES_CN.get(cid, f"国家{cid}")),
             "openai_sms_safe": cid in OPENAI_SMS_COUNTRIES,
             "price": live.get("price"),
             "count": live.get("count"),
@@ -1382,11 +1392,19 @@ def api_sms_country_price_tiers(country: str = "6", service: str = "dr", provide
     if not cls.uses_price_tiers:
         return {"ok": True, "tiers": []}
 
+    country_id = str(country or "").strip()
+    if str(getattr(cls, "country_scheme", "") or "") == "iso2":
+        try:
+            from sms_providers.vaksms import normalize_vak_country
+            country_id = normalize_vak_country(country_id)
+        except Exception:
+            pass
+
     try:
         p = create_sms_provider(p_key, cfg)
         if hasattr(p, "get_country_price_tiers"):
-            tiers = p.get_country_price_tiers(country=country, service=service)
-            return {"ok": True, "tiers": tiers}
+            tiers = p.get_country_price_tiers(country=country_id, service=service)
+            return {"ok": True, "tiers": tiers, "country": country_id}
     except Exception as e:
         logger.warning(f"查询金额档位失败: {e}")
     return {"ok": True, "tiers": []}

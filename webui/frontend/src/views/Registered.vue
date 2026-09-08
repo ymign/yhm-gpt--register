@@ -1981,6 +1981,10 @@ function oauthCountryFits(cid, meta) {
 function coerceOAuthSmsCountry() {
   const meta = oauthSmsMeta.value
   if (!meta?.uses_country) return
+  const resolved = resolveOAuthSmsCountry(oauthForm.smsCountry)
+  if (resolved && resolved !== oauthForm.smsCountry) {
+    oauthForm.smsCountry = resolved
+  }
   if (!oauthCountryFits(oauthForm.smsCountry, meta)) {
     oauthForm.smsCountry = meta.default_country || (meta.country_scheme === 'iso2' ? 'th' : '52')
     if (!meta.uses_provider_ids) {
@@ -2355,6 +2359,7 @@ async function loadSmsCountries() {
   try {
     const r = await getSmsAllCountries(kind || oauthForm.smsProvider || 'smsbower')
     smsAllCountries.value = r.countries || []
+    coerceOAuthSmsCountry()
   } catch (e) {
     if (!smsAllCountries.value.length) {
       ElMessage.warning('加载接码国家失败，可直接输入国家 ID')
@@ -2367,10 +2372,31 @@ async function loadSmsCountries() {
 const oauthPriceTiers = ref([])
 const oauthPriceTiersLoading = ref(false)
 
+function resolveOAuthSmsCountry(raw) {
+  const v = String(raw || '').trim()
+  if (!v || v === 'AUTO') return v
+  if (oauthSmsMeta.value?.country_scheme !== 'iso2') return v
+  if (/^[a-z]{2}$/i.test(v)) return v.toLowerCase()
+  const list = smsAllCountries.value || []
+  const hit = list.find((c) => String(c.name_cn) === v || String(c.id) === v)
+  if (hit?.id) return String(hit.id)
+  const fuzzy = list.find((c) => String(c.name_cn || '').includes(v) || String(c.id || '').toLowerCase() === v.toLowerCase())
+  return fuzzy?.id ? String(fuzzy.id) : v
+}
+
+function onOAuthSmsCountryChange(val) {
+  const resolved = resolveOAuthSmsCountry(val)
+  if (resolved && resolved !== oauthForm.smsCountry) {
+    oauthForm.smsCountry = resolved
+  }
+  loadOAuthPriceTiers()
+}
+
 async function loadOAuthPriceTiers() {
   const kind = oauthForm.smsStrategy === 'skip' ? oauthForm.smsProvider : oauthForm.smsStrategy
   const meta = findSmsProviderMeta(kind)
-  const c = String(oauthForm.smsCountry || '').trim()
+  const c = resolveOAuthSmsCountry(oauthForm.smsCountry)
+  if (c && c !== oauthForm.smsCountry) oauthForm.smsCountry = c
   if (!c || c === 'AUTO' || !meta?.uses_price_tiers) {
     oauthPriceTiers.value = []
     return
@@ -2378,6 +2404,9 @@ async function loadOAuthPriceTiers() {
   oauthPriceTiersLoading.value = true
   try {
     const res = await getSmsPriceTiers(c, 'dr', kind || 'smsbower')
+    if (res.country && res.country !== oauthForm.smsCountry) {
+      oauthForm.smsCountry = res.country
+    }
     oauthPriceTiers.value = res.tiers || []
     if (oauthPriceTiers.value.length) {
       const sum = oauthPriceTiers.value.reduce((s, t) => s + (Number(t.count) || 0), 0)
@@ -7160,13 +7189,13 @@ onUnmounted(() => {
                           <el-select
                             v-model="oauthForm.smsCountry"
                             filterable
-                            allow-create
+                            :allow-create="oauthSmsMeta?.country_scheme !== 'iso2'"
                             @visible-change="(open) => open && loadSmsCountries()"
                             default-first-option
                             :loading="smsCountriesLoading"
-                            placeholder="搜索国家名或输入ID"
+                            :placeholder="oauthSmsMeta?.country_scheme === 'iso2' ? '搜索国家名，如 斯洛文尼亚' : '搜索国家名或输入ID'"
                             style="width: 100%"
-                            @change="loadOAuthPriceTiers"
+                            @change="onOAuthSmsCountryChange"
                           >
                             <el-option v-for="sc in SMS_COUNTRY_OPTIONS" :key="sc.value" :label="sc.label" :value="sc.value">
                               <div class="country-option-item">
