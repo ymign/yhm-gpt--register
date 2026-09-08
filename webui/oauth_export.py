@@ -648,9 +648,10 @@ def cpa_credential_to_sub2_account(cpa: dict) -> dict:
     plan_type = str(cpa.get("plan_type") or cpa.get("chatgpt_plan_type") or "").strip()
     exp_iso = str(cpa.get("expired") or cpa.get("expires_at") or "").strip()
 
-    creds: dict[str, Any] = {"access_token": access_token}
-    if refresh_token:
-        creds["refresh_token"] = refresh_token
+    creds: dict[str, Any] = {
+        "access_token": access_token,
+        "refresh_token": refresh_token or "1",
+    }
     if id_token:
         creds["id_token"] = id_token
     if email:
@@ -674,7 +675,7 @@ def cpa_credential_to_sub2_account(cpa: dict) -> dict:
 
 def build_sub2api_payload(cpa_list: list[dict]) -> dict:
     """多条 CPA 凭证打包生成标准的 sub2api-data 导入格式。"""
-    accounts = [cpa_credential_to_sub2_account(c) for c in cpa_list if c and c.get("access_token")]
+    accounts = [cpa_credential_to_sub2_account(c) for c in cpa_list if c and (c.get("access_token") or c.get("email"))]
     return {
         "type": "sub2api-data",
         "version": 1,
@@ -1133,7 +1134,7 @@ def execute_codex_oauth_flow(
             claims = _get_account_claims(new_at)
             cpa_doc = {
                 "access_token": new_at,
-                "refresh_token": new_rt,
+                "refresh_token": new_rt or "1",
                 "id_token": new_it,
                 "email": email,
                 "name": claims.get("name") or "",
@@ -2107,7 +2108,7 @@ def _run_one_oauth_export(task: OAuthExportTask, email: str) -> None:
         "type": "codex",
         "email": email,
         "access_token": at,
-        "refresh_token": rt,
+        "refresh_token": rt or "1",
         "id_token": it,
         "account_id": account_id,
         "plan_type": plan_type,

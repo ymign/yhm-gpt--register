@@ -114,7 +114,7 @@ def get_or_build_cpa_token_data(r: dict) -> dict:
         "account_id": account_id,
         "access_token": at,
         "last_refresh": last_refresh,
-        "refresh_token": rt,
+        "refresh_token": rt or "1",
     }
 
 
@@ -215,7 +215,7 @@ def get_or_build_sub2api_account_data(r: dict) -> dict:
         "priority": 1,
         "credentials": {
             "access_token": at,
-            "refresh_token": rt,
+            "refresh_token": rt or "1",
             "id_token": it,
             "chatgpt_account_id": chatgpt_account_id,
             "chatgpt_user_id": chatgpt_user_id,
@@ -242,9 +242,10 @@ def _render_sub2api_json_all(rows: list[dict]) -> bytes:
     now_iso_ms = now.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
     accounts = []
     for r in rows or []:
+        em = _s(r, "email")
         at = _s(r, "access_token") or _s(r, "accessToken")
         rt = _s(r, "refresh_token") or _s(r, "refreshToken")
-        if not at and not rt:
+        if not em and not at and not rt:
             continue
         accounts.append(get_or_build_sub2api_account_data(r))
 
@@ -369,7 +370,7 @@ def convert_session_payload_to_sub2api(data: Any) -> dict:
     for r in rows:
         if isinstance(r, dict):
             acc = get_or_build_sub2api_account_data(r)
-            if acc.get("credentials", {}).get("access_token") or acc.get("credentials", {}).get("refresh_token"):
+            if acc.get("credentials", {}).get("access_token") or acc.get("credentials", {}).get("refresh_token") or acc.get("name"):
                 accounts.append(acc)
 
     return {
@@ -394,7 +395,7 @@ def convert_session_payload_to_cpa(data: Any) -> list[dict]:
     for r in rows:
         if isinstance(r, dict):
             cpa = get_or_build_cpa_token_data(r)
-            if cpa.get("access_token") or cpa.get("refresh_token"):
+            if cpa.get("access_token") or cpa.get("refresh_token") or cpa.get("email"):
                 cpa_list.append(cpa)
     return cpa_list
 

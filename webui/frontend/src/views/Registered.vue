@@ -2961,6 +2961,9 @@ async function downloadSingleOAuthJson(email) {
     const res = await convertSessionToCpa({ email })
     if (res && res.data && res.data.length > 0) {
       const cpaDoc = res.data[0]
+      if (!cpaDoc.refresh_token || !cpaDoc.refresh_token.trim()) {
+        cpaDoc.refresh_token = '1'
+      }
       const blob = new Blob([JSON.stringify(cpaDoc, null, 2)], { type: 'application/json' })
       const url = window.URL.createObjectURL(blob)
       const a = document.createElement('a')
@@ -2996,7 +2999,15 @@ async function downloadSingleSub2Json(email) {
   try {
     const res = await convertSessionToSub2({ email })
     if (res && res.data) {
-      const blob = new Blob([JSON.stringify(res.data, null, 2)], { type: 'application/json' })
+      const sub2Payload = res.data
+      if (Array.isArray(sub2Payload.accounts)) {
+        sub2Payload.accounts.forEach((acc) => {
+          if (acc && acc.credentials && (!acc.credentials.refresh_token || !acc.credentials.refresh_token.trim())) {
+            acc.credentials.refresh_token = '1'
+          }
+        })
+      }
+      const blob = new Blob([JSON.stringify(sub2Payload, null, 2)], { type: 'application/json' })
       const url = window.URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url

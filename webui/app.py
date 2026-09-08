@@ -2820,12 +2820,12 @@ def api_oauth_export_download_cpa(task_id: str, emails: str = ""):
         cpa_list = []
         for em in email_list:
             row = db.get_registered(em)
-            if row and (row.get("access_token") or row.get("refresh_token")):
+            if row and (row.get("access_token") or row.get("refresh_token") or row.get("email")):
                 cpa_list.append({
                     "type": "codex",
                     "email": em,
                     "access_token": row.get("access_token") or "",
-                    "refresh_token": row.get("refresh_token") or "",
+                    "refresh_token": row.get("refresh_token") or "1",
                     "id_token": row.get("id_token") or "",
                     "last_refresh": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 })
@@ -2854,12 +2854,12 @@ def api_oauth_export_download_sub2(task_id: str, emails: str = ""):
         cpa_list = []
         for em in email_list:
             row = db.get_registered(em)
-            if row and (row.get("access_token") or row.get("refresh_token")):
+            if row and (row.get("access_token") or row.get("refresh_token") or row.get("email")):
                 cpa_list.append({
                     "type": "codex",
                     "email": em,
                     "access_token": row.get("access_token") or "",
-                    "refresh_token": row.get("refresh_token") or "",
+                    "refresh_token": row.get("refresh_token") or "1",
                     "id_token": row.get("id_token") or "",
                     "last_refresh": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 })

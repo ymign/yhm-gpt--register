@@ -494,12 +494,11 @@ def export_credential_dump(text: str, fmt_id: str, delimiter: str = "----") -> d
     if fmt_id == "sub2api_json":
         tokened = [
             r for r in rows
-            if _s(r.get("access_token")) or _s(r.get("refresh_token"))
+            if _s(r.get("access_token")) or _s(r.get("refresh_token")) or _s(r.get("email"))
         ]
         if not tokened:
             raise ValueError(
-                "这批号没有 access_token / refresh_token，无法导出 Sub2 JSON。"
-                "请改用「账号----密码----2FA」，或先写入账号管理再刷新 Token。"
+                "没有可供导出为 Sub2 JSON 的账号数据。"
             )
         rows = tokened
     filename = fmt.filename
