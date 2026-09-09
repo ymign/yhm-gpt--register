@@ -496,9 +496,16 @@ onUnmounted(() => {
 
 <template>
   <div class="autoloop-page">
+    <!-- 背景流体微光环境光球 (Ambient Glass Glow Orbs) -->
+    <div class="glass-ambient-sphere sphere-1"></div>
+    <div class="glass-ambient-sphere sphere-2"></div>
+    <div class="glass-ambient-sphere sphere-3"></div>
+
     <!-- ════════════ 1. 智能风控预警与自动熔断退避提示横幅 ════════════ -->
     <el-collapse-transition>
       <div v-if="riskWarning.active || st === 'paused'" class="risk-defense-banner">
+        <div class="card-glass-specular"></div>
+        <div class="liquid-caustic-flare"></div>
         <div class="risk-banner-left">
           <div class="risk-icon-pulse">
             <el-icon><Warning /></el-icon>
@@ -534,6 +541,8 @@ onUnmounted(() => {
     <div class="kpi-grid">
       <!-- 运行状态卡片 -->
       <div class="kpi-card" :class="stateBadgeClass">
+        <div class="card-glass-specular"></div>
+        <div class="liquid-caustic-flare"></div>
         <div class="kpi-icon-dot">
           <span class="live-pulse"></span>
         </div>
@@ -545,6 +554,8 @@ onUnmounted(() => {
 
       <!-- 成功出号 -->
       <div class="kpi-card hit-card">
+        <div class="card-glass-specular"></div>
+        <div class="liquid-caustic-flare"></div>
         <div class="kpi-info">
           <span class="kpi-title">成功出号</span>
           <div class="kpi-num-row">
@@ -556,6 +567,8 @@ onUnmounted(() => {
 
       <!-- 注册失败 -->
       <div class="kpi-card err-card">
+        <div class="card-glass-specular"></div>
+        <div class="liquid-caustic-flare"></div>
         <div class="kpi-info">
           <span class="kpi-title">注册失败</span>
           <span class="kpi-num text-danger">{{ autoStatus.registered_fail || 0 }}</span>
@@ -564,6 +577,8 @@ onUnmounted(() => {
 
       <!-- 出号速率 CPM -->
       <div class="kpi-card">
+        <div class="card-glass-specular"></div>
+        <div class="liquid-caustic-flare"></div>
         <div class="kpi-info">
           <div class="kpi-title-row">
             <span class="kpi-title">实时出号速率</span>
@@ -578,6 +593,8 @@ onUnmounted(() => {
 
       <!-- 成功率 -->
       <div class="kpi-card">
+        <div class="card-glass-specular"></div>
+        <div class="liquid-caustic-flare"></div>
         <div class="kpi-info">
           <span class="kpi-title">出号成功率</span>
           <span class="kpi-num">{{ successRate }}</span>
@@ -586,6 +603,8 @@ onUnmounted(() => {
 
       <!-- 批次耗时 -->
       <div class="kpi-card timing-card" :class="{ 'timing-card-running': st === 'running' }">
+        <div class="card-glass-specular"></div>
+        <div class="liquid-caustic-flare"></div>
         <div class="kpi-info">
           <div class="timing-kpi-header">
             <span class="kpi-title">批次耗时</span>
@@ -610,6 +629,8 @@ onUnmounted(() => {
 
     <!-- ════════════ 3. 全自动批量参数调度卡片 (一键折叠/展开，极简优雅) ════════════ -->
     <div class="macos-panel config-panel">
+      <div class="card-glass-specular"></div>
+      <div class="liquid-caustic-flare"></div>
       <div class="panel-header" @click="toggleConfigCollapsed">
         <div class="panel-header-left">
           <span class="autoloop-pill-tag">CONFIG</span>
@@ -802,6 +823,8 @@ onUnmounted(() => {
 
     <!-- ════════════ 4. 核心主区域：现代化极客流水监控表格列表 ════════════ -->
     <div class="macos-panel table-panel">
+      <div class="card-glass-specular"></div>
+      <div class="liquid-caustic-flare"></div>
       <div class="table-panel-header">
         <div class="header-left">
           <div class="panel-header-title">
@@ -1093,47 +1116,166 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-/* ──────────── 整体单屏自适应布局（绝无外层滚动条） ──────────── */
+/* ──────────── 3D实体液态水晶玻璃拟态 (Liquid Glass / Crystal Glassmorphism) ──────────── */
 .autoloop-page {
+  --glass-bg: linear-gradient(135deg, rgba(255, 255, 255, 0.84) 0%, rgba(255, 255, 255, 0.54) 50%, rgba(248, 250, 252, 0.7) 100%);
+  --glass-border: rgba(255, 255, 255, 0.92);
+  --glass-border-light: #ffffff;
+  --glass-shadow:
+    0 22px 48px -10px rgba(15, 23, 42, 0.08),
+    0 8px 18px -4px rgba(15, 23, 42, 0.04);
+  --glass-inset:
+    inset 0 2px 2px 0 #ffffff,
+    inset 1.5px 0 2px 0 rgba(255, 255, 255, 0.85),
+    inset -1.5px 0 2px 0 rgba(255, 255, 255, 0.55),
+    inset 0 -2px 3px 0 rgba(148, 163, 184, 0.18);
+  --accent-primary: #0284c7;
+  --accent-hover: #0369a1;
+  --text-main: #0f172a;
+  --text-muted: #475569;
+  --text-sub: #64748b;
+
+  position: relative;
   height: 100%;
   min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 8px;
+  padding: 10px 14px;
   overflow: hidden;
+  /* 摄影棚哑光台面 + 极细透气正交网格底纹 (如图片 29/31/32) */
+  background-color: #f6f8fb;
+  background-image:
+    radial-gradient(ellipse at 50% -12%, rgba(255, 255, 255, 0.98) 0%, transparent 65%),
+    radial-gradient(ellipse at 88% 18%, rgba(56, 189, 248, 0.12) 0%, transparent 45%),
+    radial-gradient(ellipse at 12% 82%, rgba(249, 115, 22, 0.08) 0%, transparent 45%),
+    linear-gradient(to right, rgba(203, 213, 225, 0.32) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(203, 213, 225, 0.32) 1px, transparent 1px);
+  background-size: 100% 100%, 100% 100%, 100% 100%, 32px 32px, 32px 32px;
+  background-attachment: fixed;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  color: var(--text-main);
 }
 
-/* ──────────── 1. 智能风控预警与自动熔断退避横幅 ──────────── */
+/* ════════ 背景环境微光光球 (柔和摄影棚漫射光晕) ════════ */
+.glass-ambient-sphere {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(75px);
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0.65;
+}
+.sphere-1 {
+  top: -40px;
+  left: 15%;
+  width: 420px;
+  height: 420px;
+  background: radial-gradient(circle, rgba(56, 189, 248, 0.55) 0%, rgba(14, 165, 233, 0.05) 70%);
+  animation: floatOrb1 15s ease-in-out infinite alternate;
+}
+.sphere-2 {
+  top: 30%;
+  right: 10%;
+  width: 460px;
+  height: 460px;
+  background: radial-gradient(circle, rgba(168, 85, 247, 0.45) 0%, rgba(99, 102, 241, 0.05) 70%);
+  animation: floatOrb2 19s ease-in-out infinite alternate-reverse;
+}
+.sphere-3 {
+  bottom: -60px;
+  left: 35%;
+  width: 480px;
+  height: 480px;
+  background: radial-gradient(circle, rgba(16, 185, 129, 0.4) 0%, rgba(5, 150, 105, 0.05) 70%);
+  animation: floatOrb1 17s ease-in-out infinite alternate;
+}
+@keyframes floatOrb1 {
+  0% { transform: translate(0, 0) scale(1); }
+  100% { transform: translate(25px, 15px) scale(1.06); }
+}
+@keyframes floatOrb2 {
+  0% { transform: translate(0, 0) scale(1); }
+  100% { transform: translate(-20px, 20px) scale(1.05); }
+}
+
+/* ════════ 核心精髓：彩虹棱镜色散高光 (Prismatic Caustic Dispersion Flare) ════════ */
+.liquid-caustic-flare {
+  position: absolute;
+  bottom: 0px;
+  left: 12%;
+  right: 12%;
+  height: 2px;
+  border-radius: 9999px;
+  background: linear-gradient(90deg,
+    transparent 0%,
+    rgba(249, 115, 22, 0.65) 15%,
+    rgba(251, 191, 36, 0.85) 32%,
+    rgba(255, 255, 255, 1) 50%,
+    rgba(56, 189, 248, 0.9) 66%,
+    rgba(168, 85, 247, 0.7) 84%,
+    transparent 100%
+  );
+  filter: blur(0.5px);
+  box-shadow: 0 3px 12px rgba(251, 191, 36, 0.42), 0 4px 14px rgba(56, 189, 248, 0.38);
+  pointer-events: none;
+  z-index: 3;
+}
+
+/* ════════ 核心精髓：顶部水滴凸透镜反光 (Curved Specular Liquid Sheen) ════════ */
+.card-glass-specular {
+  position: absolute;
+  top: 1px;
+  left: 2px;
+  right: 2px;
+  height: 48%;
+  border-radius: 14px 14px 42% 42% / 14px 14px 18px 18px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.92) 0%, rgba(255, 255, 255, 0.28) 55%, transparent 100%);
+  pointer-events: none;
+  z-index: 2;
+}
+
+/* ──────────── 1. 智能风控预警与自动熔断退避厚水晶横幅 ──────────── */
 .risk-defense-banner {
-  background: linear-gradient(135deg, rgba(239, 68, 68, 0.12) 0%, rgba(245, 158, 11, 0.12) 100%);
-  border: 1px solid rgba(239, 68, 68, 0.35);
-  border-radius: 10px;
+  position: relative;
+  background: linear-gradient(135deg, rgba(254, 242, 242, 0.9) 0%, rgba(255, 247, 237, 0.75) 100%);
+  backdrop-filter: blur(24px) saturate(200%);
+  -webkit-backdrop-filter: blur(24px) saturate(200%);
+  border: 1.5px solid rgba(239, 68, 68, 0.4);
+  border-top: 2px solid #ffffff;
+  border-radius: 14px;
   padding: 8px 14px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   flex-wrap: wrap;
   gap: 10px;
-  box-shadow: 0 4px 16px rgba(239, 68, 68, 0.08);
+  box-shadow: 0 10px 24px -4px rgba(239, 68, 68, 0.15), var(--glass-inset);
   flex-shrink: 0;
+  overflow: hidden;
+  z-index: 4;
 }
 
 .risk-banner-left {
+  position: relative;
+  z-index: 4;
   display: flex;
   align-items: center;
   gap: 10px;
 }
 
 .risk-icon-pulse {
-  width: 26px;
-  height: 26px;
+  width: 28px;
+  height: 28px;
   border-radius: 50%;
-  background: rgba(239, 68, 68, 0.2);
-  color: #ef4444;
+  background: linear-gradient(180deg, #f87171 0%, #ef4444 100%);
+  border: 1.5px solid rgba(255, 255, 255, 0.95);
+  color: #ffffff;
   display: flex;
   align-items: center;
   justify-content: center;
   font-size: 15px;
+  box-shadow: 0 4px 12px rgba(239, 68, 68, 0.4), inset 0 1.5px 1.5px #ffffff;
   animation: pulse-ring 1.8s infinite ease-in-out;
 }
 
@@ -1150,18 +1292,25 @@ onUnmounted(() => {
 }
 
 .risk-title {
-  font-size: 12px;
+  font-size: 12.5px;
+  font-weight: 800;
+  color: #b91c1c;
+}
+
+.risk-tag {
+  border-radius: 9999px !important;
   font-weight: 700;
-  color: #ef4444;
 }
 
 .risk-desc {
   font-size: 11px;
-  color: var(--el-text-color-secondary);
-  line-height: 1.3;
+  color: #7f1d1d;
+  line-height: 1.35;
 }
 
 .risk-banner-right {
+  position: relative;
+  z-index: 4;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -1172,22 +1321,27 @@ onUnmounted(() => {
   align-items: center;
   gap: 6px;
   font-size: 11.5px;
-  color: #f59e0b;
-  background: rgba(245, 158, 11, 0.15);
-  border: 1px solid rgba(245, 158, 11, 0.4);
-  padding: 2px 8px;
-  border-radius: 12px;
+  font-weight: 700;
+  color: #c2410c;
+  background: rgba(251, 146, 60, 0.2);
+  border: 1px solid rgba(251, 146, 60, 0.45);
+  padding: 2px 10px;
+  border-radius: 9999px;
+  box-shadow: inset 0 1px 1px #ffffff;
 }
 
 .cooldown-dot {
-  width: 5px;
-  height: 5px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
-  background: #f59e0b;
+  background: #ea580c;
+  box-shadow: 0 0 6px #ea580c;
 }
 
-/* ──────────── 2. 顶部 KPI 矩阵 ──────────── */
+/* ──────────── 2. 顶部 KPI 矩阵 (6 大厚水晶指标卡) ──────────── */
 .kpi-grid {
+  position: relative;
+  z-index: 4;
   display: grid;
   grid-template-columns: repeat(6, 1fr);
   gap: 8px;
@@ -1201,25 +1355,37 @@ onUnmounted(() => {
 }
 
 .kpi-card {
-  background: #ffffff;
-  border: 1px solid rgba(93, 164, 177, 0.16);
-  border-radius: 10px;
-  padding: 10px 14px;
-  min-height: 64px;
+  position: relative;
+  background: var(--glass-bg);
+  backdrop-filter: blur(24px) saturate(200%);
+  -webkit-backdrop-filter: blur(24px) saturate(200%);
+  border: 1.5px solid var(--glass-border);
+  border-top: 2px solid var(--glass-border-light);
+  border-radius: 14px;
+  padding: 8px 12px;
+  min-height: 60px;
   display: flex;
   align-items: center;
   gap: 10px;
-  box-shadow: 0 1px 3px rgba(35, 75, 82, 0.04);
-  transition: all 0.2s ease;
+  box-shadow: var(--glass-shadow), var(--glass-inset);
+  overflow: hidden;
+  transition: all 0.24s cubic-bezier(0.16, 1, 0.3, 1);
+  cursor: default;
 }
 
 .kpi-card:hover {
-  transform: translateY(-1px);
-  border-color: #5da4b1;
-  box-shadow: 0 4px 12px rgba(93, 164, 177, 0.12);
+  transform: translateY(-3px) scale(1.015);
+  border-color: rgba(56, 189, 248, 0.6);
+  box-shadow:
+    0 16px 36px -6px rgba(2, 132, 199, 0.18),
+    0 6px 14px rgba(15, 23, 42, 0.05),
+    var(--glass-inset);
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.95) 0%, rgba(255, 255, 255, 0.68) 100%);
 }
 
 .kpi-info {
+  position: relative;
+  z-index: 4;
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -1234,23 +1400,24 @@ onUnmounted(() => {
 }
 
 .cpm-icon {
-  color: #5da4b1;
+  color: #0284c7;
   font-size: 13px;
 }
 
 .kpi-title {
-  font-size: 11.5px;
-  color: #5a767b;
-  font-weight: 500;
+  font-size: 11px;
+  color: var(--text-muted);
+  font-weight: 700;
   white-space: nowrap;
 }
 
 .kpi-num {
-  font-size: 18px;
-  font-weight: 700;
-  color: #1a3c42;
-  font-family: "JetBrains Mono", monospace;
+  font-size: 19px;
+  font-weight: 800;
+  color: var(--text-main);
+  font-family: var(--el-font-family-monospace, monospace);
   line-height: 1.2;
+  letter-spacing: -0.02em;
 }
 
 .kpi-num-row {
@@ -1260,60 +1427,53 @@ onUnmounted(() => {
 }
 
 .kpi-sub {
-  font-size: 11px;
-  color: #7b9498;
+  font-size: 10.5px;
+  color: #64748b;
+  font-weight: 600;
   white-space: nowrap;
 }
 
+.text-success { color: #059669 !important; }
+.text-danger { color: #dc2626 !important; }
+.text-emerald { color: #0284c7 !important; }
+.text-primary { color: #0284c7 !important; }
+
 .kpi-icon-dot {
+  position: relative;
+  z-index: 4;
   display: flex;
   align-items: center;
   justify-content: center;
 }
 
 .live-pulse {
-  width: 8px;
-  height: 8px;
+  width: 9px;
+  height: 9px;
   border-radius: 50%;
   background: #94a3b8;
 }
 
 .state-running .live-pulse {
-  background: #5da4b1;
-  box-shadow: 0 0 10px #5da4b1;
+  background: #10b981;
+  box-shadow: 0 0 10px #10b981;
   animation: pulse-ring 1.5s infinite;
 }
 
 .state-running .status-text {
-  color: #28646e;
+  color: #047857;
 }
 
 .state-paused .live-pulse {
-  background: #d49432;
-  box-shadow: 0 0 8px #d49432;
+  background: #f59e0b;
+  box-shadow: 0 0 8px #f59e0b;
 }
 
 .state-paused .status-text {
-  color: #8c5c16;
+  color: #b45309;
 }
 
 .state-stopped .status-text {
-  color: #7b9498;
-}
-
-.hit-card {
-  border-color: rgba(93, 164, 177, 0.22);
-  background: #ffffff;
-}
-
-.err-card {
-  border-color: rgba(199, 86, 77, 0.22);
-  background: #ffffff;
-}
-
-.timing-card-running {
-  border-color: rgba(93, 164, 177, 0.35);
-  background: #ffffff;
+  color: #64748b;
 }
 
 .timing-kpi-header {
@@ -1326,21 +1486,22 @@ onUnmounted(() => {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #5da4b1;
-  box-shadow: 0 0 6px #5da4b1;
+  background: #10b981;
+  box-shadow: 0 0 8px #10b981;
 }
 
 .timing-sub-row {
   display: flex;
   align-items: center;
   gap: 4px;
-  font-size: 10.5px;
-  color: #7b9498;
+  font-size: 10px;
+  color: #64748b;
   margin-top: 2px;
+  font-weight: 500;
 }
 
 .timing-sub-time {
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--el-font-family-monospace, monospace);
 }
 
 .timing-sub-arrow {
@@ -1348,27 +1509,33 @@ onUnmounted(() => {
 }
 
 .text-running-sub {
-  color: #28646e;
-  font-weight: 600;
+  color: #0284c7;
+  font-weight: 700;
 }
 
-/* ──────────── 3. 参数配置卡片 (极简优雅可折叠) ──────────── */
+/* ──────────── 3. 参数配置厚水晶卡片 ──────────── */
 .macos-panel {
-  background: var(--app-window-bg);
-  border: 1px solid var(--app-border);
-  border-radius: 10px;
-  box-shadow: var(--app-shadow-sm);
+  position: relative;
+  background: var(--glass-bg);
+  backdrop-filter: blur(28px) saturate(200%);
+  -webkit-backdrop-filter: blur(28px) saturate(200%);
+  border: 1.5px solid var(--glass-border);
+  border-top: 2px solid var(--glass-border-light);
+  border-radius: 16px;
+  box-shadow: var(--glass-shadow), var(--glass-inset);
+  overflow: hidden;
 }
 
 .config-panel {
   padding: 8px 14px;
   flex-shrink: 0;
   transition: all 0.25s ease;
-  background: #ffffff;
-  border-color: rgba(93, 164, 177, 0.2);
+  z-index: 4;
 }
 
 .panel-header {
+  position: relative;
+  z-index: 4;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1383,20 +1550,21 @@ onUnmounted(() => {
 }
 
 .autoloop-pill-tag {
-  font-size: 10px;
-  font-weight: 700;
+  font-size: 9.5px;
+  font-weight: 800;
   color: #ffffff;
-  background: #5da4b1;
+  background: linear-gradient(180deg, #38bdf8 0%, #0284c7 100%);
   padding: 2px 7px;
-  border-radius: 4px;
+  border-radius: 9999px;
   letter-spacing: 0.5px;
   font-family: var(--el-font-family-monospace, monospace);
+  box-shadow: 0 2px 6px rgba(2, 132, 199, 0.35);
 }
 
 .panel-header-left .title {
   font-size: 13.5px;
-  font-weight: 600;
-  color: #1a3c42;
+  font-weight: 800;
+  color: var(--text-main);
   letter-spacing: -0.01em;
 }
 
@@ -1411,14 +1579,15 @@ onUnmounted(() => {
 .config-chip-pill {
   display: inline-flex;
   align-items: center;
-  font-size: 11px;
-  font-weight: 500;
-  color: #21474e;
-  background: #edf6f8;
-  border: 1px solid rgba(93, 164, 177, 0.32);
+  font-size: 10.5px;
+  font-weight: 700;
+  color: #0369a1;
+  background: rgba(2, 132, 199, 0.1);
+  border: 1px solid rgba(2, 132, 199, 0.25);
   padding: 1.5px 8px;
-  border-radius: 999px;
+  border-radius: 9999px;
   white-space: nowrap;
+  box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.8);
 }
 
 .header-timing-pill {
@@ -1426,17 +1595,18 @@ onUnmounted(() => {
   align-items: center;
   gap: 6px;
   font-size: 11px;
-  background: #f4f7f6;
-  border: 1px solid rgba(93, 164, 177, 0.2);
-  padding: 2px 9px;
-  border-radius: 999px;
-  color: #657e82;
+  background: rgba(255, 255, 255, 0.65);
+  border: 1px solid rgba(255, 255, 255, 0.9);
+  padding: 2px 10px;
+  border-radius: 9999px;
+  color: var(--text-muted);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04);
 }
 
 .header-timing-pill.header-timing-running {
-  background: #edf6f8;
-  border-color: rgba(93, 164, 177, 0.35);
-  color: #1a454d;
+  background: rgba(2, 132, 199, 0.12);
+  border-color: rgba(2, 132, 199, 0.3);
+  color: #0284c7;
 }
 
 .pill-dot {
@@ -1447,8 +1617,8 @@ onUnmounted(() => {
 }
 
 .pill-dot.pulse {
-  background: #5da4b1;
-  box-shadow: 0 0 6px #5da4b1;
+  background: #10b981;
+  box-shadow: 0 0 6px #10b981;
 }
 
 .pill-sep {
@@ -1456,72 +1626,95 @@ onUnmounted(() => {
 }
 
 .control-actions {
+  position: relative;
+  z-index: 4;
   display: flex;
   align-items: center;
   gap: 8px;
 }
 
-/* 现代化操作按钮 */
+/* 现代化 3D 水晶操作按钮 (对齐图片 31/32/33 的 Create Workspace / Start project 按钮) */
 .autoloop-btn {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  height: 30px;
-  padding: 0 12px;
-  border-radius: 6px;
-  font-size: 12px;
-  font-weight: 500;
+  height: 32px;
+  padding: 0 14px;
+  border-radius: 9999px;
+  font-size: 11.5px;
+  font-weight: 800;
   cursor: pointer;
-  transition: all 0.16s ease;
+  transition: all 0.18s cubic-bezier(0.16, 1, 0.3, 1);
   user-select: none;
   outline: none;
 }
 
+/* 启动按钮：绿光果冻水晶药丸 */
 .autoloop-btn.btn-primary {
-  background: #5da4b1;
-  border: 1px solid #5da4b1;
+  background: linear-gradient(180deg, #34d399 0%, #059669 100%);
+  border: 1.8px solid rgba(255, 255, 255, 0.95);
   color: #ffffff;
-  font-weight: 600;
-  box-shadow: 0 2px 6px rgba(93, 164, 177, 0.25);
+  box-shadow:
+    0 10px 24px -2px rgba(5, 150, 105, 0.45),
+    0 3px 8px rgba(15, 23, 42, 0.08),
+    inset 0 2px 2px rgba(255, 255, 255, 0.9),
+    inset 0 -2px 3px rgba(0, 0, 0, 0.2);
 }
 .autoloop-btn.btn-primary:hover:not(:disabled) {
-  background: #488793;
-  border-color: #488793;
+  transform: translateY(-2px) scale(1.02);
+  box-shadow:
+    0 14px 30px -2px rgba(5, 150, 105, 0.6),
+    0 4px 10px rgba(15, 23, 42, 0.1),
+    inset 0 2px 2px rgba(255, 255, 255, 0.95);
 }
 .autoloop-btn.btn-primary:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+  box-shadow: none;
 }
 
+/* 次级按钮：高透水晶药丸 */
 .autoloop-btn.btn-sub {
-  background: #ffffff;
-  border: 1px solid rgba(93, 164, 177, 0.28);
-  color: #21474e;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.95) 0%, rgba(241, 245, 249, 0.7) 100%);
+  border: 1.5px solid rgba(255, 255, 255, 0.95);
+  color: #334155;
+  box-shadow: 0 4px 10px rgba(15, 23, 42, 0.05), inset 0 1.5px 1px #ffffff;
 }
 .autoloop-btn.btn-sub:hover:not(:disabled) {
-  background: #edf6f8;
-  border-color: #5da4b1;
-  color: #1a3c42;
+  background: #ffffff;
+  border-color: #0284c7;
+  color: #0284c7;
+  transform: translateY(-2px);
+  box-shadow: 0 8px 18px -2px rgba(2, 132, 199, 0.25), inset 0 1.5px 1px #ffffff;
 }
 .autoloop-btn.btn-sub:disabled {
   opacity: 0.45;
   cursor: not-allowed;
-  border-color: rgba(93, 164, 177, 0.18);
+  box-shadow: none;
 }
 
+/* 停止按钮：红宝石果冻水晶药丸 */
 .autoloop-btn.btn-danger {
-  background: rgba(199, 86, 77, 0.08);
-  border: 1px solid rgba(199, 86, 77, 0.28);
-  color: #c7564d;
+  background: linear-gradient(180deg, #f87171 0%, #dc2626 100%);
+  border: 1.8px solid rgba(255, 255, 255, 0.95);
+  color: #ffffff;
+  box-shadow:
+    0 10px 24px -2px rgba(220, 38, 38, 0.45),
+    0 3px 8px rgba(15, 23, 42, 0.08),
+    inset 0 2px 2px rgba(255, 255, 255, 0.9),
+    inset 0 -2px 3px rgba(0, 0, 0, 0.2);
 }
 .autoloop-btn.btn-danger:hover:not(:disabled) {
-  background: #c7564d;
-  color: #ffffff;
-  border-color: #c7564d;
+  transform: translateY(-2px) scale(1.02);
+  box-shadow:
+    0 14px 30px -2px rgba(220, 38, 38, 0.6),
+    0 4px 10px rgba(15, 23, 42, 0.1),
+    inset 0 2px 2px rgba(255, 255, 255, 0.95);
 }
 .autoloop-btn.btn-danger:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+  box-shadow: none;
 }
 
 .action-btn-group {
@@ -1532,23 +1725,25 @@ onUnmounted(() => {
 .config-toggle-btn {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  height: 30px;
-  font-size: 12px;
-  font-weight: 500;
-  color: #21474e;
-  background: #ffffff;
-  border: 1px solid rgba(93, 164, 177, 0.28);
-  padding: 0 10px;
-  border-radius: 6px;
+  gap: 5px;
+  height: 32px;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: #334155;
+  background: rgba(255, 255, 255, 0.75);
+  border: 1.5px solid rgba(255, 255, 255, 0.95);
+  padding: 0 12px;
+  border-radius: 9999px;
   cursor: pointer;
-  transition: all 0.16s ease;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.04), inset 0 1px 1px #ffffff;
+  transition: all 0.18s ease;
 }
 
 .config-toggle-btn:hover {
-  background: #edf6f8;
-  border-color: #5da4b1;
-  color: #1a3c42;
+  background: #ffffff;
+  border-color: #0284c7;
+  color: #0284c7;
+  transform: translateY(-1px);
 }
 
 .config-toggle-btn .is-rotated {
@@ -1556,9 +1751,11 @@ onUnmounted(() => {
 }
 
 .config-panel .panel-body {
+  position: relative;
+  z-index: 4;
   margin-top: 10px;
   padding-top: 10px;
-  border-top: 1px solid rgba(93, 164, 177, 0.14);
+  border-top: 1px solid rgba(255, 255, 255, 0.6);
 }
 
 .mail-source-selector-row {
@@ -1569,50 +1766,54 @@ onUnmounted(() => {
 }
 
 .mail-source-badge-tip {
-  font-size: 11.5px;
-  color: #657e82;
+  font-size: 11px;
+  color: #64748b;
+  font-weight: 500;
 }
 
+/* 自动化附加功能水晶药丸开关 */
 .feature-switches {
   display: flex;
   align-items: center;
   gap: 12px;
-  background: #f4f7f6;
-  border: 1px solid rgba(93, 164, 177, 0.18);
-  padding: 4px 10px;
-  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.65);
+  border: 1.5px solid rgba(255, 255, 255, 0.9);
+  padding: 4px 12px;
+  border-radius: 9999px;
+  box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.04);
 }
 
 .switch-item {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
 }
 
 .switch-label {
-  font-size: 11.5px;
-  color: #21474e;
-  font-weight: 500;
+  font-size: 11px;
+  color: var(--text-main);
+  font-weight: 700;
 }
 
-/* ──────────── 4. 实时流水表格（现代化流线型设计） ──────────── */
+/* ──────────── 4. 实时流水表格（厚水晶面板） ──────────── */
 .table-panel {
+  position: relative;
   flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: #ffffff;
-  border: 1px solid rgba(93, 164, 177, 0.2);
+  z-index: 4;
 }
 
 .table-panel-header {
+  position: relative;
+  z-index: 4;
   padding: 8px 14px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  border-bottom: 1px solid rgba(93, 164, 177, 0.16);
-  background: #ffffff;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.6);
   flex-shrink: 0;
 }
 
@@ -1631,8 +1832,8 @@ onUnmounted(() => {
 
 .panel-header-title .title {
   font-size: 13.5px;
-  font-weight: 600;
-  color: #1a3c42;
+  font-weight: 800;
+  color: var(--text-main);
   letter-spacing: -0.01em;
 }
 
@@ -1640,60 +1841,83 @@ onUnmounted(() => {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #5da4b1;
-  box-shadow: 0 0 6px #5da4b1;
+  background: #10b981;
+  box-shadow: 0 0 8px #10b981;
 }
 
 .badge-total {
   font-size: 11px;
-  color: #657e82;
-  background: #f4f7f6;
-  border: 1px solid rgba(93, 164, 177, 0.2);
-  padding: 1px 7px;
-  border-radius: 999px;
-  font-weight: 500;
+  font-weight: 700;
+  color: #0369a1;
+  background: rgba(2, 132, 199, 0.1);
+  border: 1px solid rgba(2, 132, 199, 0.25);
+  padding: 1.5px 8px;
+  border-radius: 9999px;
 }
 
+/* 筛选胶囊组 (对齐图片 31/32 的 Crystal Filter Pills) */
 .filter-capsules {
   display: flex;
-  gap: 5px;
+  gap: 6px;
 }
 
 .filter-pill {
-  border: 1px solid rgba(93, 164, 177, 0.22);
-  background: #ffffff;
-  color: #657e82;
-  border-radius: 999px;
-  padding: 2px 10px;
+  border: 1.5px solid rgba(255, 255, 255, 0.9);
+  background: rgba(255, 255, 255, 0.7);
+  color: #475569;
+  border-radius: 9999px;
+  padding: 2.5px 11px;
   font-size: 11px;
-  font-weight: 500;
+  font-weight: 700;
   cursor: pointer;
   display: flex;
   align-items: center;
   gap: 5px;
-  transition: all 0.15s ease;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.04), inset 0 1px 1px #ffffff;
+  transition: all 0.18s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .filter-pill:hover {
-  background: #f4f7f6;
-  color: #1a3c42;
+  background: #ffffff;
+  color: #0284c7;
+  transform: translateY(-1px);
 }
 
 .filter-pill.active {
-  background: #5da4b1;
+  border-color: rgba(255, 255, 255, 0.95);
   color: #ffffff;
-  border-color: #5da4b1;
 }
+
+.filter-pill.active:not(.pill-running):not(.pill-done):not(.pill-failed) {
+  background: linear-gradient(180deg, #38bdf8 0%, #0284c7 100%);
+  box-shadow: 0 6px 16px -2px rgba(2, 132, 199, 0.45), inset 0 1.5px 1px rgba(255, 255, 255, 0.9);
+}
+
+.filter-pill.pill-running.active {
+  background: linear-gradient(180deg, #38bdf8 0%, #0284c7 100%);
+  box-shadow: 0 6px 16px -2px rgba(2, 132, 199, 0.45), inset 0 1.5px 1px rgba(255, 255, 255, 0.9);
+}
+
+.filter-pill.pill-done.active {
+  background: linear-gradient(180deg, #34d399 0%, #059669 100%);
+  box-shadow: 0 6px 16px -2px rgba(5, 150, 105, 0.45), inset 0 1.5px 1px rgba(255, 255, 255, 0.9);
+}
+
+.filter-pill.pill-failed.active {
+  background: linear-gradient(180deg, #f87171 0%, #dc2626 100%);
+  box-shadow: 0 6px 16px -2px rgba(220, 38, 38, 0.45), inset 0 1.5px 1px rgba(255, 255, 255, 0.9);
+}
+
 .filter-pill.active .pill-cnt {
   color: #ffffff;
-  opacity: 0.9;
+  opacity: 0.95;
 }
 
 .pill-cnt {
   font-family: var(--el-font-family-monospace, monospace);
-  font-weight: 600;
+  font-weight: 800;
   font-size: 10.5px;
-  color: #21474e;
+  color: #334155;
 }
 
 .dot-pill {
@@ -1701,61 +1925,84 @@ onUnmounted(() => {
   height: 5px;
   border-radius: 50%;
 }
-.dot-running { background: #5da4b1; }
-.dot-done { background: #3b8e7e; }
-.dot-failed { background: #c7564d; }
+.dot-running { background: #0284c7; }
+.dot-done { background: #10b981; }
+.dot-failed { background: #ef4444; }
 
 .last-msg-hint {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  font-size: 11.5px;
-  color: #657e82;
-  background: #f4f7f6;
-  border: 1px solid rgba(93, 164, 177, 0.2);
-  padding: 2px 9px;
-  border-radius: 6px;
+  font-size: 11px;
+  color: #475569;
+  background: rgba(255, 255, 255, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.9);
+  padding: 2px 10px;
+  border-radius: 9999px;
+  font-weight: 500;
 }
 
 .last-msg-dot {
   width: 5px;
   height: 5px;
   border-radius: 50%;
-  background: #5da4b1;
+  background: #0284c7;
 }
 
 .table-container {
+  position: relative;
+  z-index: 4;
   flex: 1;
   min-height: 0;
   overflow: hidden;
 }
 
 .table-pagination-bar {
+  position: relative;
+  z-index: 4;
   padding: 6px 14px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  border-top: 1px solid rgba(93, 164, 177, 0.14);
-  background: #ffffff;
+  border-top: 1px solid rgba(255, 255, 255, 0.6);
   flex-shrink: 0;
 }
 
 .page-tip {
-  font-size: 11.5px;
-  color: #657e82;
+  font-size: 11px;
+  color: var(--text-muted);
+  font-weight: 500;
 }
 
-/* ──────────── 现代化表格单元格与 Connected Stepper Pipeline ──────────── */
+/* ──────────── 水晶玻璃表格样式 ──────────── */
+.auto-stepper-table {
+  background: transparent !important;
+}
+
+.auto-stepper-table :deep(.el-table__inner-wrapper) {
+  background: transparent !important;
+}
+
+.auto-stepper-table :deep(tr) {
+  background: transparent !important;
+}
+
 .auto-stepper-table :deep(th.el-table__cell) {
-  background: #f4f7f6 !important;
-  color: #324e53 !important;
-  font-weight: 600;
-  font-size: 12px;
-  border-bottom: 1px solid rgba(93, 164, 177, 0.16) !important;
+  background: rgba(255, 255, 255, 0.7) !important;
+  backdrop-filter: blur(16px);
+  color: var(--text-main) !important;
+  font-weight: 800;
+  font-size: 11.5px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.85) !important;
 }
 
 .auto-stepper-table :deep(td.el-table__cell) {
-  border-bottom: 1px solid rgba(93, 164, 177, 0.08) !important;
+  background: rgba(255, 255, 255, 0.35);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.5) !important;
+}
+
+.auto-stepper-table :deep(.el-table__row:hover td.el-table__cell) {
+  background: rgba(255, 255, 255, 0.7) !important;
 }
 
 .email-modern-cell {
@@ -1765,30 +2012,31 @@ onUnmounted(() => {
   font-size: 12px;
   cursor: pointer;
   padding: 2px 6px;
-  border-radius: 4px;
-  transition: all 0.12s ease;
+  border-radius: 6px;
+  transition: all 0.14s ease;
 }
 .email-modern-cell:hover {
-  background: #edf6f8;
+  background: rgba(255, 255, 255, 0.85);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.05);
 }
 .email-modern-cell:hover .modern-copy-btn {
   opacity: 1;
-  color: #5da4b1;
+  color: #0284c7;
 }
 
 .auto-email-dot {
   width: 5px;
   height: 5px;
   border-radius: 50%;
-  background: #5da4b1;
+  background: #0284c7;
   flex-shrink: 0;
 }
 
 .email-text-mono {
   font-family: var(--el-font-family-monospace, monospace);
-  font-weight: 500;
-  color: #1a3c42;
-  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-main);
+  font-size: 12px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1798,19 +2046,20 @@ onUnmounted(() => {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  font-size: 11px;
-  color: #21474e;
-  background: #edf6f8;
-  border: 1px solid rgba(93, 164, 177, 0.35);
-  padding: 1px 6px;
-  border-radius: 4px;
+  font-size: 10.5px;
+  font-weight: 700;
+  color: #0369a1;
+  background: rgba(2, 132, 199, 0.12);
+  border: 1px solid rgba(2, 132, 199, 0.3);
+  padding: 1px 7px;
+  border-radius: 9999px;
 }
 
 .shimmer-pulse {
   width: 5px;
   height: 5px;
   border-radius: 50%;
-  background: #5da4b1;
+  background: #0284c7;
   animation: pulse-ring 1.2s infinite;
 }
 
@@ -1818,16 +2067,16 @@ onUnmounted(() => {
   background: none;
   border: none;
   cursor: pointer;
-  color: #657e82;
+  color: #94a3b8;
   font-size: 12px;
   padding: 0 2px;
-  opacity: 0.25;
+  opacity: 0.3;
   transition: all 0.15s ease;
 }
 
 .modern-copy-btn:hover {
   opacity: 1;
-  color: #5da4b1;
+  color: #0284c7;
 }
 
 /* Worker & 出口列 */
@@ -1843,19 +2092,20 @@ onUnmounted(() => {
   align-items: center;
   gap: 4px;
   font-size: 10px;
-  font-weight: 600;
+  font-weight: 700;
   font-family: var(--el-font-family-monospace, monospace);
-  color: #21474e;
-  background: #edf6f8;
-  border: 1px solid rgba(93, 164, 177, 0.3);
-  padding: 1px 6px;
+  color: #334155;
+  background: rgba(255, 255, 255, 0.75);
+  border: 1px solid rgba(255, 255, 255, 0.95);
+  padding: 1px 7px;
   border-radius: 4px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
 }
 
 .worker-pill-badge.is-active {
-  border-color: #5da4b1;
-  background: rgba(93, 164, 177, 0.18);
-  color: #1a454d;
+  border-color: rgba(2, 132, 199, 0.4);
+  background: rgba(2, 132, 199, 0.12);
+  color: #0284c7;
 }
 
 .worker-pulse-dot {
@@ -1866,29 +2116,29 @@ onUnmounted(() => {
 }
 
 .worker-pulse-dot.live {
-  background: #5da4b1;
-  box-shadow: 0 0 6px #5da4b1;
+  background: #10b981;
+  box-shadow: 0 0 6px #10b981;
   animation: pulse-ring 1.5s infinite;
 }
 
 .geo-flag-pill {
-  font-size: 10px;
-  color: #657e82;
-  background: #f4f7f6;
-  border: 1px solid rgba(93, 164, 177, 0.2);
-  padding: 0 5px;
+  font-size: 9.5px;
+  color: #475569;
+  background: rgba(255, 255, 255, 0.65);
+  border: 1px solid rgba(255, 255, 255, 0.85);
+  padding: 0 6px;
   border-radius: 3px;
-  font-weight: 500;
+  font-weight: 600;
 }
 
 .geo-flag-pill.geo-hot {
-  color: #21474e;
-  border-color: rgba(93, 164, 177, 0.35);
-  background: #edf6f8;
+  color: #0284c7;
+  border-color: rgba(2, 132, 199, 0.35);
+  background: rgba(2, 132, 199, 0.1);
 }
 
 .geo-default {
-  color: #7c8f92;
+  color: #94a3b8;
 }
 
 /* ──────────── Connected Stepper Pipeline ──────────── */
@@ -1911,9 +2161,9 @@ onUnmounted(() => {
   font-size: 10px;
   padding: 1.5px 6px;
   border-radius: 4px;
-  background: #f4f7f6;
-  border: 1px solid rgba(93, 164, 177, 0.16);
-  color: #657e82;
+  background: rgba(255, 255, 255, 0.65);
+  border: 1px solid rgba(255, 255, 255, 0.85);
+  color: #64748b;
   transition: all 0.2s ease;
 }
 
@@ -1925,35 +2175,35 @@ onUnmounted(() => {
   height: 11px;
   border-radius: 50%;
   font-size: 8px;
-  font-weight: 700;
-  background: rgba(93, 164, 177, 0.2);
-  color: #21474e;
+  font-weight: 800;
+  background: rgba(148, 163, 184, 0.3);
+  color: #475569;
 }
 
 .stepper-node-label {
   font-size: 10px;
-  font-weight: 500;
+  font-weight: 600;
 }
 
 .stepper-node.is-done {
-  background: rgba(93, 164, 177, 0.12);
-  border-color: rgba(93, 164, 177, 0.32);
-  color: #1a454d;
+  background: rgba(16, 185, 129, 0.12);
+  border-color: rgba(16, 185, 129, 0.35);
+  color: #047857;
 }
 .stepper-node.is-done .stepper-node-dot {
-  background: #5da4b1;
+  background: #10b981;
   color: #ffffff;
 }
 
 .stepper-node.is-active {
-  background: #edf6f8;
-  border-color: #5da4b1;
-  color: #1a454d;
-  font-weight: 600;
-  box-shadow: 0 0 6px rgba(93, 164, 177, 0.25);
+  background: rgba(2, 132, 199, 0.14);
+  border-color: #0284c7;
+  color: #0284c7;
+  font-weight: 700;
+  box-shadow: 0 0 8px rgba(2, 132, 199, 0.3);
 }
 .stepper-node.is-active .stepper-node-dot {
-  background: #5da4b1;
+  background: #0284c7;
   color: #ffffff;
 }
 .node-pulse {
@@ -1965,12 +2215,12 @@ onUnmounted(() => {
 }
 
 .stepper-node.is-failed {
-  background: rgba(199, 86, 77, 0.1);
-  border-color: rgba(199, 86, 77, 0.3);
-  color: #c7564d;
+  background: rgba(239, 68, 68, 0.12);
+  border-color: rgba(239, 68, 68, 0.35);
+  color: #dc2626;
 }
 .stepper-node.is-failed .stepper-node-dot {
-  background: #c7564d;
+  background: #ef4444;
   color: #ffffff;
 }
 
@@ -1980,17 +2230,17 @@ onUnmounted(() => {
 
 .stepper-connector {
   flex: 1;
-  height: 1.5px;
-  background: rgba(93, 164, 177, 0.2);
+  height: 2px;
+  background: rgba(203, 213, 225, 0.5);
   border-radius: 2px;
   min-width: 6px;
   max-width: 14px;
 }
 .stepper-connector.is-done {
-  background: #5da4b1;
+  background: #10b981;
 }
 .stepper-connector.is-active {
-  background: #5da4b1;
+  background: #0284c7;
 }
 
 .stepper-meta-row {
@@ -2003,14 +2253,15 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 5px;
-  color: #21474e;
+  color: #0284c7;
+  font-weight: 600;
 }
 
 .pulse-beacon {
   width: 5px;
   height: 5px;
   border-radius: 50%;
-  background: #5da4b1;
+  background: #0284c7;
   animation: pulse-ring 1.2s infinite;
 }
 
@@ -2023,8 +2274,8 @@ onUnmounted(() => {
 
 .status-pct {
   font-size: 10px;
-  font-weight: 700;
-  color: #5da4b1;
+  font-weight: 800;
+  color: #0284c7;
 }
 
 .done-status-box {
@@ -2032,13 +2283,13 @@ onUnmounted(() => {
   align-items: center;
 }
 .done-tag {
-  color: #1a454d;
+  color: #047857;
   font-size: 10.5px;
-  font-weight: 500;
-  background: rgba(93, 164, 177, 0.12);
-  border: 1px solid rgba(93, 164, 177, 0.28);
+  font-weight: 700;
+  background: rgba(16, 185, 129, 0.12);
+  border: 1px solid rgba(16, 185, 129, 0.3);
   padding: 1px 7px;
-  border-radius: 3px;
+  border-radius: 9999px;
 }
 
 .failed-status-box {
@@ -2046,23 +2297,24 @@ onUnmounted(() => {
   align-items: center;
 }
 .fail-tag {
-  color: #a1362e;
+  color: #dc2626;
   font-size: 10.5px;
-  background: rgba(199, 86, 77, 0.1);
-  border: 1px solid rgba(199, 86, 77, 0.25);
+  font-weight: 700;
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.3);
   padding: 1px 7px;
-  border-radius: 3px;
+  border-radius: 9999px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .pending-status-box {
-  color: #7c8f92;
+  color: #94a3b8;
   font-size: 10.5px;
 }
 .pending-tag {
-  background: #f4f7f6;
+  background: rgba(255, 255, 255, 0.6);
   padding: 1px 6px;
   border-radius: 3px;
 }
@@ -2070,47 +2322,52 @@ onUnmounted(() => {
 /* 耗时与时间列 */
 .duration-cell {
   font-size: 11.5px;
-  font-weight: 500;
+  font-weight: 700;
   font-family: var(--el-font-family-monospace, monospace);
 }
 .duration-running {
-  color: #5da4b1;
+  color: #0284c7;
 }
 .duration-done {
-  color: #21474e;
+  color: #059669;
 }
 .duration-fail {
-  color: #c7564d;
+  color: #dc2626;
 }
 
 .time-cell {
   font-size: 11px;
-  color: #657e82;
+  color: var(--text-muted);
   font-family: var(--el-font-family-monospace, monospace);
+  font-weight: 600;
 }
 
+/* 日志按钮：水晶微药丸按钮 */
 .auto-micro-btn {
   display: inline-flex;
   align-items: center;
   gap: 3px;
   font-size: 11px;
-  font-weight: 500;
-  color: #21474e;
-  background: #ffffff;
-  border: 1px solid rgba(93, 164, 177, 0.28);
-  padding: 2px 7px;
-  border-radius: 4px;
+  font-weight: 700;
+  color: #334155;
+  background: rgba(255, 255, 255, 0.8);
+  border: 1.2px solid rgba(255, 255, 255, 0.95);
+  padding: 2.5px 8px;
+  border-radius: 9999px;
   cursor: pointer;
-  transition: all 0.15s ease;
+  box-shadow: 0 2px 5px rgba(15, 23, 42, 0.04);
+  transition: all 0.16s ease;
 }
 
 .auto-micro-btn:hover {
-  background: #edf6f8;
-  border-color: #5da4b1;
-  color: #1a3c42;
+  background: #ffffff;
+  border-color: #0284c7;
+  color: #0284c7;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 10px rgba(2, 132, 199, 0.2);
 }
 
-/* ──────────── 终端弹窗 ──────────── */
+/* ──────────── 终端弹窗 (深色液态水晶玻璃，对齐图片 33) ──────────── */
 .macos-terminal-dialog :deep(.el-dialog__body) {
   padding: 0;
 }
@@ -2144,22 +2401,22 @@ onUnmounted(() => {
 .modal-email {
   font-size: 13px;
   font-weight: 700;
-  color: var(--app-title);
-  font-family: var(--font-mono, monospace);
+  color: #0f172a;
+  font-family: var(--el-font-family-monospace, monospace);
 }
 
 .modal-terminal-wrap {
-  background: #0d1117;
-  padding: 12px;
+  background: #090d16;
+  padding: 14px;
 }
 
 .modal-terminal-body {
   height: 380px;
   overflow-y: auto;
-  font-family: var(--font-mono, monospace);
+  font-family: var(--el-font-family-monospace, monospace);
   font-size: 11.5px;
   line-height: 1.6;
-  color: #e6edf3;
+  color: #e2e8f0;
 }
 
 .terminal-line {
@@ -2167,10 +2424,10 @@ onUnmounted(() => {
   word-break: break-all;
 }
 
-.line-err { color: #f85149; }
-.line-ok { color: #3fb950; }
-.line-warn { color: #d29922; }
-.line-info { color: #58a6ff; }
+.line-err { color: #f87171; }
+.line-ok { color: #34d399; }
+.line-warn { color: #fbbf24; }
+.line-info { color: #38bdf8; }
 
 .modal-footer {
   display: flex;
@@ -2180,7 +2437,7 @@ onUnmounted(() => {
 
 .log-count-tip {
   font-size: 11px;
-  color: var(--el-text-color-secondary);
+  color: var(--text-muted);
 }
 
 .modal-footer-btns {
@@ -2195,67 +2452,81 @@ onUnmounted(() => {
   100% { transform: scale(0.85); opacity: 0.6; }
 }
 
-/* ──────────── 全自动批量参数与排版系统性调优 ──────────── */
+/* ──────────── 3D 水晶拟态表单控件系统性调优 ──────────── */
 :deep(.macos-radio-group .el-radio-button__inner) {
-  border-color: rgba(93, 164, 177, 0.22) !important;
-  color: #38595f !important;
-  font-size: 12px !important;
-  font-weight: 500 !important;
-  padding: 6px 13px !important;
-  background: #ffffff !important;
+  border-color: rgba(255, 255, 255, 0.9) !important;
+  color: #334155 !important;
+  font-size: 11.5px !important;
+  font-weight: 700 !important;
+  padding: 5px 12px !important;
+  background: rgba(255, 255, 255, 0.75) !important;
+  backdrop-filter: blur(12px);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04), inset 0 1px 1px #ffffff !important;
   transition: all 0.16s ease !important;
 }
 :deep(.macos-radio-group .el-radio-button__original-radio:checked + .el-radio-button__inner) {
-  background: #5da4b1 !important;
-  border-color: #5da4b1 !important;
+  background: linear-gradient(180deg, #38bdf8 0%, #0284c7 100%) !important;
+  border-color: rgba(255, 255, 255, 0.95) !important;
   color: #ffffff !important;
-  font-weight: 600 !important;
-  box-shadow: -1px 0 0 0 #5da4b1 !important;
+  font-weight: 800 !important;
+  box-shadow: 0 4px 14px rgba(2, 132, 199, 0.4), inset 0 1.5px 1px rgba(255, 255, 255, 0.9) !important;
 }
 
 :deep(.macos-num-input) {
   width: 100% !important;
 }
 :deep(.macos-num-input .el-input__wrapper) {
-  background: #ffffff !important;
-  border: 1px solid rgba(93, 164, 177, 0.22) !important;
-  box-shadow: none !important;
-  border-radius: 6px !important;
+  background: rgba(255, 255, 255, 0.85) !important;
+  border: 1.2px solid rgba(255, 255, 255, 0.95) !important;
+  box-shadow: inset 0 1.5px 3px rgba(15, 23, 42, 0.06) !important;
+  border-radius: 8px !important;
   padding-left: 30px !important;
   padding-right: 30px !important;
   height: 30px !important;
+  transition: all 0.18s ease !important;
 }
 :deep(.macos-num-input.is-focus .el-input__wrapper),
 :deep(.macos-num-input .el-input__wrapper.is-focus) {
-  border-color: #5da4b1 !important;
-  box-shadow: 0 0 0 2px rgba(93, 164, 177, 0.2) !important;
+  border-color: #38bdf8 !important;
+  background: #ffffff !important;
+  box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.3), inset 0 1.5px 3px rgba(15, 23, 42, 0.06) !important;
 }
 :deep(.macos-num-input .el-input-number__decrease),
 :deep(.macos-num-input .el-input-number__increase) {
-  background: #f4f8f8 !important;
-  border-color: rgba(93, 164, 177, 0.18) !important;
-  color: #4b666a !important;
+  background: rgba(255, 255, 255, 0.6) !important;
+  border-color: rgba(203, 213, 225, 0.6) !important;
+  color: #475569 !important;
   width: 26px !important;
   height: 28px !important;
+  border-radius: 6px !important;
   transition: all 0.15s ease !important;
 }
 :deep(.macos-num-input .el-input-number__decrease:hover),
 :deep(.macos-num-input .el-input-number__increase:hover) {
-  background: #edf6f8 !important;
-  color: #28646e !important;
+  background: #ffffff !important;
+  color: #0284c7 !important;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08);
 }
 :deep(.macos-num-input .el-input__inner) {
-  font-family: "JetBrains Mono", monospace !important;
+  font-family: var(--el-font-family-monospace, monospace) !important;
   font-size: 13px !important;
-  font-weight: 600 !important;
-  color: #1a3c42 !important;
+  font-weight: 700 !important;
+  color: #0f172a !important;
   text-align: center !important;
 }
 
+:deep(.macos-country-select .el-select__wrapper) {
+  background: rgba(255, 255, 255, 0.85) !important;
+  border: 1.2px solid rgba(255, 255, 255, 0.95) !important;
+  box-shadow: inset 0 1.5px 3px rgba(15, 23, 42, 0.06) !important;
+  border-radius: 8px !important;
+  height: 30px !important;
+}
+
 :deep(.el-form-item__label) {
-  font-size: 12px !important;
-  font-weight: 600 !important;
-  color: #38595f !important;
+  font-size: 11.5px !important;
+  font-weight: 700 !important;
+  color: #334155 !important;
   margin-bottom: 4px !important;
   line-height: 1.3 !important;
 }
