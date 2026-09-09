@@ -1,99 +1,92 @@
 /* ═════════════════════════════════════════════════════════════════════
-   Apple macOS Design System (macOS Sequoia / VisionOS Inspired)
-   Pure Apple aesthetic: Typography, Vibrancy, Frosted Glass, Fluid Easing
+   Apple Liquid Glass Design System (macOS / VisionOS Crystal Glass)
+   Reference: 素材库 3D 实体液态水晶、凸透镜折射、马卡龙柔光与微晶质感
    ═════════════════════════════════════════════════════════════════════ */
 
 :root {
-  /* ═════════════════════════════════════════════════════════════════════
-     中国传统色·护眼配色规范 (天水碧 & 凝脂)
-     天水碧: #5DA4B1 (主色 / 灵动青翠 / 澄澈舒缓)
-     凝脂:   #F8F3E9 (底色 / 暖白如玉 / 柔和护眼过滤蓝光)
-     ═════════════════════════════════════════════════════════════════════ */
-  --c-tianshuibi: #5da4b1;
-  --c-ningzhi: #f8f3e9;
-  --c-tianshuibi-hover: #488793;
-  --c-tianshuibi-active: #396e78;
-  --c-tianshuibi-soft: rgba(93, 164, 177, 0.12);
-  --c-tianshuibi-border: rgba(93, 164, 177, 0.28);
+  /* ════════ 纯净灵动水晶配色 (Liquid Crystal Palette · 彻底摒弃AI紫色，对齐素材澄澈蓝宝石与水晶质感) ════════ */
+  --c-primary: #0284c7;
+  --c-primary-hover: #0369a1;
+  --c-primary-light: rgba(224, 242, 254, 0.7);
+  --c-primary-border: rgba(186, 230, 253, 0.8);
 
-  /* Element Plus 全局主色对齐天水碧 */
-  --el-color-primary: #5da4b1;
-  --el-color-primary-light-3: #7ebbc5;
-  --el-color-primary-light-5: #9ed1d9;
-  --el-color-primary-light-7: #bfe3e8;
-  --el-color-primary-light-8: #d5edf1;
-  --el-color-primary-light-9: #edf6f8;
-  --el-color-primary-dark-2: #488793;
+  /* Element Plus 全局主色对齐海洋蓝宝石水晶 (Sapphire Liquid Glass) */
+  --el-color-primary: #0284c7;
+  --el-color-primary-light-3: #38bdf8;
+  --el-color-primary-light-5: #7dd3fc;
+  --el-color-primary-light-7: #bae6fd;
+  --el-color-primary-light-8: #e0f2fe;
+  --el-color-primary-light-9: #f0f9ff;
+  --el-color-primary-dark-2: #0369a1;
 
-  /* 雅致传统状态色（摒弃刺眼高饱和霓虹色） */
-  --el-color-success: #5da4b1;
-  --el-color-warning: #d49432;
-  --el-color-danger: #c7564d;
-  --el-color-info: #7c8f92;
+  /* 柔和透亮水晶状态色 (对齐素材马卡龙柔和半透明色调) */
+  --el-color-success: #10b981;
+  --el-color-warning: #f59e0b;
+  --el-color-danger: #f43f5e;
+  --el-color-info: #64748b;
 
-  --brand: #5da4b1;
-  --brand-dark: #488793;
+  --brand: #0284c7;
+  --brand-dark: #0369a1;
 
-  /* 天水碧与凝脂护眼雅致基底 (清润如玉、彻底消除大面积蜡黄) */
-  --app-canvas-bg: #f4f7f6;
-  --app-window-bg: #ffffff;
-  --app-sidebar-bg: #5da4b1;
-  --app-header-bg: rgba(255, 255, 255, 0.92);
-  --app-content-bg: #f4f7f6;
-  --app-card-bg: #ffffff;
-  --app-border: rgba(93, 164, 177, 0.16);
-  --app-card-border: rgba(93, 164, 177, 0.14);
+  /* 纯净摄影棚瓷白底台 + 极致通透水晶层级 */
+  --app-canvas-bg: #f2f5f9;
+  --app-window-bg: rgba(255, 255, 255, 0.65);
+  --app-sidebar-bg: rgba(255, 255, 255, 0.68);
+  --app-header-bg: rgba(255, 255, 255, 0.75);
+  --app-content-bg: transparent;
+  --app-card-bg: rgba(255, 255, 255, 0.65);
+  --app-border: rgba(255, 255, 255, 0.85);
+  --app-card-border: rgba(255, 255, 255, 0.9);
 
-  /* 沉静青黛护眼文字层级 */
-  --app-title: #1a3c42;
-  --app-text-regular: #324e53;
-  --app-text-secondary: #657e82;
+  /* 顶级排版深灰文字层级 (告别发绿发黄) */
+  --app-title: #0f172a;
+  --app-text-regular: #334155;
+  --app-text-secondary: #64748b;
 
-  /* 柔和阴影与通透青雾光感 */
-  --app-shadow-sm: 0 1px 3px rgba(35, 75, 82, 0.05), 0 1px 2px rgba(35, 75, 82, 0.03);
-  --app-shadow-md: 0 4px 16px -2px rgba(35, 75, 82, 0.07), 0 2px 6px -1px rgba(35, 75, 82, 0.03);
-  --app-shadow-lg: 0 12px 32px -4px rgba(35, 75, 82, 0.09), 0 4px 12px -2px rgba(35, 75, 82, 0.04);
-  --app-shadow-glass: 0 8px 32px 0 rgba(93, 164, 177, 0.08);
+  /* 实体液态水晶双层漫射投影与顶部高光棱镜 */
+  --app-shadow-sm: 0 2px 6px rgba(15, 23, 42, 0.04), inset 0 1px 1px #ffffff;
+  --app-shadow-md: 0 10px 24px -4px rgba(15, 23, 42, 0.07), 0 4px 10px -2px rgba(15, 23, 42, 0.03), inset 0 1.5px 1.5px #ffffff;
+  --app-shadow-lg: 0 20px 48px -8px rgba(15, 23, 42, 0.09), 0 6px 16px -3px rgba(15, 23, 42, 0.04), inset 0 2px 2px #ffffff;
+  --app-shadow-glass: 0 16px 40px -6px rgba(100, 116, 139, 0.12), inset 0 2px 2px #ffffff;
 
   /* 终端 & 调试板 */
-  --app-log-bg: #1e282a;
-  --app-log-text: #eaf1f2;
-  --app-log-border: #2c3c3e;
+  --app-log-bg: #0f172a;
+  --app-log-text: #f1f5f9;
+  --app-log-border: rgba(255, 255, 255, 0.12);
 }
 
 html.dark {
-  --el-color-primary: #5da4b1;
-  --el-color-primary-light-3: #7ebbc5;
-  --el-color-primary-dark-2: #488793;
-  --el-color-success: #5da4b1;
-  --el-color-warning: #d49432;
-  --el-color-danger: #c7564d;
-  --el-color-info: #809295;
+  --el-color-primary: #38bdf8;
+  --el-color-primary-light-3: #7dd3fc;
+  --el-color-primary-dark-2: #0284c7;
+  --el-color-success: #34d399;
+  --el-color-warning: #fbbf24;
+  --el-color-danger: #fb7185;
+  --el-color-info: #94a3b8;
 
-  --brand: #5da4b1;
-  --brand-dark: #488793;
+  --brand: #38bdf8;
+  --brand-dark: #0284c7;
 
-  /* 暗调黛青护眼底色 (避免纯黑高对比刺眼) */
-  --app-canvas-bg: #13181a;
-  --app-window-bg: #182022;
-  --app-sidebar-bg: rgba(22, 29, 31, 0.88);
-  --app-header-bg: rgba(22, 29, 31, 0.85);
-  --app-content-bg: #13181a;
-  --app-card-bg: #182022;
-  --app-border: rgba(93, 164, 177, 0.16);
-  --app-card-border: rgba(93, 164, 177, 0.12);
-  --app-title: #f4f8f8;
-  --app-text-regular: #cbd8da;
-  --app-text-secondary: #8c9ea0;
+  --app-canvas-bg: #0b0f17;
+  --app-window-bg: rgba(15, 23, 42, 0.75);
+  --app-sidebar-bg: rgba(15, 23, 42, 0.8);
+  --app-header-bg: rgba(15, 23, 42, 0.8);
+  --app-content-bg: transparent;
+  --app-card-bg: rgba(30, 41, 59, 0.7);
+  --app-border: rgba(255, 255, 255, 0.08);
+  --app-card-border: rgba(255, 255, 255, 0.1);
+  --app-title: #f8fafc;
+  --app-text-regular: #cbd5e1;
+  --app-text-secondary: #94a3b8;
 
-  --app-shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.4);
-  --app-shadow-md: 0 4px 20px -2px rgba(0, 0, 0, 0.45);
-  --app-shadow-lg: 0 16px 36px -4px rgba(0, 0, 0, 0.55);
-  --app-shadow-glass: 0 8px 32px 0 rgba(0, 0, 0, 0.35);
+  --app-shadow-sm: 0 2px 6px rgba(0, 0, 0, 0.4);
+  --app-shadow-md: 0 10px 24px -4px rgba(0, 0, 0, 0.5);
+  --app-shadow-lg: 0 20px 48px -8px rgba(0, 0, 0, 0.6);
+  --app-shadow-glass: 0 16px 40px -6px rgba(0, 0, 0, 0.5);
 
-  --app-log-bg: #101516;
-  --app-log-text: #eaf1f2;
-  --app-log-border: #1f2b2d;
+  --app-log-bg: #080c14;
+  --app-log-text: #f1f5f9;
+  --app-log-border: rgba(255, 255, 255, 0.08);
 }
 
 * {

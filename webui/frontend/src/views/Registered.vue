@@ -5172,7 +5172,14 @@ onUnmounted(() => {
 
 <template>
   <div class="registered-page">
+    <!-- 背景流体微光环境光球 (Ambient Glass Glow Orbs) -->
+    <div class="glass-ambient-sphere sphere-1"></div>
+    <div class="glass-ambient-sphere sphere-2"></div>
+    <div class="glass-ambient-sphere sphere-3"></div>
+
     <div class="macos-window-panel">
+      <div class="card-glass-specular"></div>
+      <div class="liquid-caustic-flare"></div>
       <!-- ──────────── 顶部多维控制中枢 (Linear Command Deck) ──────────── -->
       <header class="linear-command-deck">
         <!-- 第 1 行：核心状态视图切轨 + 全局搜索 + 视图控制 -->
@@ -5264,22 +5271,25 @@ onUnmounted(() => {
 
           <!-- 右侧：全局搜索 + 视图工具 + 抽屉开关 -->
           <div class="command-deck-search">
-            <el-input
-              ref="searchInputRef"
-              v-model="searchKeyword"
-              placeholder="搜索邮箱、备注、IP、域名 (⌘K)..."
-              clearable
-              size="small"
-              class="linear-search-input"
-              :prefix-icon="Search"
-              @input="onSearchInput"
-              @clear="load(true)"
-              @keyup.enter="load(true)"
-            >
-              <template #suffix>
-                <span class="cmd-k-tag">⌘K</span>
-              </template>
-            </el-input>
+            <div class="search-glass-chassis">
+              <el-input
+                ref="searchInputRef"
+                v-model="searchKeyword"
+                placeholder="搜索邮箱、备注、IP、域名 (⌘K)..."
+                clearable
+                size="small"
+                class="linear-search-input"
+                :prefix-icon="Search"
+                @input="onSearchInput"
+                @clear="load(true)"
+                @keyup.enter="load(true)"
+              >
+                <template #suffix>
+                  <span class="cmd-k-tag">⌘K</span>
+                </template>
+              </el-input>
+              <div class="search-chassis-flare"></div>
+            </div>
 
             <!-- 密度切换 -->
             <el-dropdown trigger="click" @command="setTableDensity">
@@ -5958,8 +5968,8 @@ onUnmounted(() => {
                 </template>
               </el-table-column>
 
-              <!-- 8. 快捷操作列 (固定右侧，精致圆润按键) -->
-              <el-table-column label="快捷操作" width="226" fixed="right" align="center" header-align="center">
+              <!-- 8. 快捷操作列 (固定右侧，加宽至 280 彻底解决显示不全/遮挡) -->
+              <el-table-column label="快捷操作" width="280" fixed="right" align="center" header-align="center">
                 <template #default="{ row }">
                   <div class="cell-actions-block">
                     <button class="octopus-row-btn btn-cred" @click.stop="viewCred(row.email)" title="查看完整账号凭据">
@@ -7421,6 +7431,8 @@ onUnmounted(() => {
             title="查看全部账号"
             @click="setOAuthFilter('all')"
           >
+            <div class="card-glass-specular"></div>
+            <div class="liquid-caustic-flare"></div>
             <span class="kpi-label">已处理 / 总数</span>
             <span class="kpi-num">{{ oauthStats.done }} / {{ oauthStats.total }}</span>
           </div>
@@ -7430,6 +7442,8 @@ onUnmounted(() => {
             title="只看授权成功"
             @click="setOAuthFilter('success')"
           >
+            <div class="card-glass-specular"></div>
+            <div class="liquid-caustic-flare"></div>
             <span class="kpi-label">✅ OAuth 成功</span>
             <span class="kpi-num text-success">{{ oauthStats.success }}</span>
           </div>
@@ -7439,6 +7453,8 @@ onUnmounted(() => {
             title="只看需接码"
             @click="setOAuthFilter('phone')"
           >
+            <div class="card-glass-specular"></div>
+            <div class="liquid-caustic-flare"></div>
             <span class="kpi-label">📱 需手机接码</span>
             <span class="kpi-num text-warning">{{ oauthStats.need_phone }}</span>
           </div>
@@ -7448,6 +7464,8 @@ onUnmounted(() => {
             :title="failedOAuthEmails.length > 0 ? `点击筛选失败账号，可再点「批量重新授权」` : '只看失败'"
             @click="setOAuthFilter('fail')"
           >
+            <div class="card-glass-specular"></div>
+            <div class="liquid-caustic-flare"></div>
             <div style="display: flex; justify-content: space-between; align-items: center">
               <span class="kpi-label">❌ 失败 / 异常</span>
               <span
@@ -9663,43 +9681,137 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-/* ──────────── 页面整体布局：100% 高度 + 天水碧与凝脂中国传统护眼工位 ──────────── */
+/* ──────────── 3D实体液态水晶玻璃拟态 (Liquid Glass / Crystal Glassmorphism) ──────────── */
 .registered-page {
+  --glass-bg: rgba(255, 255, 255, 0.65);
+  --glass-border: rgba(255, 255, 255, 0.92);
+  --glass-border-light: #ffffff;
+  --glass-shadow:
+    0 20px 48px -10px rgba(100, 116, 139, 0.12),
+    0 6px 16px -3px rgba(100, 116, 139, 0.05);
+  --glass-inset:
+    inset 0 2px 2px 0 #ffffff,
+    inset 1px 0 1.5px 0 rgba(255, 255, 255, 0.85),
+    inset -1px 0 1.5px 0 rgba(255, 255, 255, 0.55),
+    inset 0 -1.5px 2px 0 rgba(148, 163, 184, 0.12);
+  --accent-primary: #0284c7;
+  --text-main: #0f172a;
+  --text-muted: #64748b;
+
+  position: relative;
   height: 100%;
   min-height: 0;
   display: flex;
   flex-direction: column;
+  padding: 8px 12px;
   overflow: hidden;
-  background: var(--app-content-bg, #f4f7f6);
-  --acc-bi: #5da4b1;
-  --acc-bi-soft: rgba(93, 164, 177, 0.12);
-  --acc-bi-line: rgba(93, 164, 177, 0.28);
-  --acc-zhi: #ffffff;
-  --el-color-primary: #5da4b1;
-  --el-color-success: #5da4b1;
-  --el-color-warning: #5da4b1;
-  --el-color-danger: #c7564d;
+  background: transparent !important;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+}
+
+/* ════════ 背景环境微光光球 (柔和马卡龙漫射光晕) ════════ */
+.glass-ambient-sphere {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(90px);
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0.45;
+}
+.sphere-1 {
+  top: -40px;
+  left: 15%;
+  width: 420px;
+  height: 420px;
+  background: radial-gradient(circle, rgba(199, 210, 254, 0.6) 0%, rgba(165, 180, 252, 0.05) 70%);
+  animation: floatOrb1 18s ease-in-out infinite alternate;
+}
+.sphere-2 {
+  top: 30%;
+  right: 10%;
+  width: 460px;
+  height: 460px;
+  background: radial-gradient(circle, rgba(233, 213, 255, 0.5) 0%, rgba(192, 132, 252, 0.05) 70%);
+  animation: floatOrb2 22s ease-in-out infinite alternate-reverse;
+}
+.sphere-3 {
+  bottom: -60px;
+  left: 35%;
+  width: 480px;
+  height: 480px;
+  background: radial-gradient(circle, rgba(254, 215, 170, 0.4) 0%, rgba(251, 191, 36, 0.05) 70%);
+  animation: floatOrb1 20s ease-in-out infinite alternate;
+}
+@keyframes floatOrb1 {
+  0% { transform: translate(0, 0) scale(1); }
+  100% { transform: translate(25px, 15px) scale(1.06); }
+}
+@keyframes floatOrb2 {
+  0% { transform: translate(0, 0) scale(1); }
+  100% { transform: translate(-20px, 20px) scale(1.05); }
+}
+
+/* ════════ 核心精髓：纯净光学晶体折射高光 (Pure Crystal Optical Flare) ════════ */
+.liquid-caustic-flare {
+  position: absolute;
+  bottom: 0px;
+  left: 15%;
+  right: 15%;
+  height: 1.5px;
+  border-radius: 9999px;
+  background: linear-gradient(90deg,
+    transparent 0%,
+    rgba(199, 210, 254, 0.35) 25%,
+    rgba(255, 255, 255, 0.85) 50%,
+    rgba(199, 210, 254, 0.35) 75%,
+    transparent 100%
+  );
+  filter: blur(0.5px);
+  box-shadow: 0 1px 8px rgba(199, 210, 254, 0.3);
+  pointer-events: none;
+  z-index: 3;
+}
+
+/* ════════ 核心精髓：顶部水滴凸透镜反光 (Curved Specular Liquid Sheen) ════════ */
+.card-glass-specular {
+  position: absolute;
+  top: 1px;
+  left: 2px;
+  right: 2px;
+  height: 48%;
+  border-radius: 14px 14px 42% 42% / 14px 14px 18px 18px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.92) 0%, rgba(255, 255, 255, 0.28) 55%, transparent 100%);
+  pointer-events: none;
+  z-index: 2;
 }
 
 .macos-window-panel {
+  position: relative;
   flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
-  background: #ffffff;
-  border: 1px solid rgba(93, 164, 177, 0.18);
-  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.65);
+  backdrop-filter: blur(28px) saturate(180%);
+  -webkit-backdrop-filter: blur(28px) saturate(180%);
+  border: 1.5px solid rgba(255, 255, 255, 0.92);
+  border-top: 2.2px solid #ffffff;
+  border-radius: 18px;
   overflow: hidden;
-  box-shadow: 0 4px 20px -2px rgba(35, 75, 82, 0.06);
+  box-shadow: var(--glass-shadow), var(--glass-inset);
+  z-index: 1;
 }
 
-/* ════════════════ 顶部控制中枢 (Linear Command Deck · 纯净通透雪白基底) ════════════════ */
+/* ════════════════ 顶部控制中枢 (Linear Command Deck · 厚水晶玻璃基底) ════════════════ */
 .linear-command-deck {
+  position: relative;
+  z-index: 4;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  background: #ffffff;
-  border-bottom: 1px solid rgba(93, 164, 177, 0.16);
+  background: rgba(255, 255, 255, 0.5);
+  backdrop-filter: blur(20px);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.7);
 }
 
 /* Row 1: Segmented Tabs + Search + Tools */
@@ -9709,19 +9821,28 @@ onUnmounted(() => {
   justify-content: space-between;
   gap: 16px;
   padding: 8px 16px;
-  border-bottom: 1px solid rgba(93, 164, 177, 0.12);
-  background: #ffffff;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.6);
+  background: transparent;
 }
 
+/* ──────────── 3D 实体水晶滑轨与胶囊选项卡 (1:1 复刻素材 2ac2e3a9c1fd2371a185add9ac5a345a.jpg 的 Tabs 质感) ──────────── */
 .linear-segmented-rail {
   display: inline-flex;
   align-items: center;
-  gap: 2px;
-  padding: 2px;
-  border-radius: 8px;
-  background: rgba(93, 164, 177, 0.08);
-  border: 1px solid rgba(93, 164, 177, 0.22);
-  height: 32px;
+  gap: 4px;
+  padding: 4px 6px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.45);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  border: 2px solid rgba(255, 255, 255, 0.92);
+  border-top: 2.5px solid #ffffff;
+  border-bottom: 2px solid rgba(203, 213, 225, 0.65);
+  box-shadow:
+    0 8px 20px -4px rgba(15, 23, 42, 0.08),
+    inset 0 2px 2.5px #ffffff,
+    inset 0 -2px 3px rgba(148, 163, 184, 0.2);
+  height: 38px;
   box-sizing: border-box;
   flex-shrink: 1;
   min-width: 0;
@@ -9736,74 +9857,62 @@ onUnmounted(() => {
 .segmented-tab {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 0 7px;
-  height: 26px;
-  border-radius: 5px;
-  border: 1px solid transparent;
-  background: transparent;
-  color: #4b666b;
+  gap: 6px;
+  padding: 0 11px;
+  height: 28px;
+  border-radius: 9999px;
+  border: 1.2px solid rgba(255, 255, 255, 0.85);
+  border-top: 1.5px solid #ffffff;
+  background: rgba(255, 255, 255, 0.6);
+  color: #334155;
   font-size: 11.5px;
-  font-weight: 500;
+  font-weight: 700;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: all 0.16s ease;
   white-space: nowrap;
   user-select: none;
   flex-shrink: 0;
   line-height: 1;
+  box-shadow: 0 2px 5px rgba(15, 23, 42, 0.04), inset 0 1px 1px #ffffff;
 }
 .segmented-tab:hover {
-  color: #1a454d;
-  background: rgba(255, 255, 255, 0.7);
+  background: #ffffff;
+  color: #0284c7;
+  border-color: #38bdf8;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(2, 132, 199, 0.18), inset 0 1.5px 1px #ffffff;
 }
 .segmented-tab.is-active {
-  font-weight: 600;
-  box-shadow: 0 1px 4px rgba(93, 164, 177, 0.18);
-  background: #ffffff;
-  border-color: #5da4b1;
-  color: #1a454d;
+  font-weight: 800;
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(180deg, #60a5fa 0%, #3b82f6 25%, #2563eb 60%, #1d4ed8 100%) !important;
+  color: #ffffff !important;
+  border: 1.8px solid rgba(255, 255, 255, 0.95) !important;
+  border-top: 2.2px solid #ffffff !important;
+  box-shadow:
+    0 6px 18px -2px rgba(37, 99, 235, 0.48),
+    inset 0 2px 2px rgba(255, 255, 255, 0.95),
+    inset 0 -2px 3px rgba(0, 0, 0, 0.25) !important;
+  transform: translateY(-1px);
 }
-
-/* 各标签激活专属微光主题与状态 (以天水碧为主基调) */
-.segmented-tab.tab-all.is-active {
-  background: #ffffff;
-  color: #21474e;
-  border-color: #5da4b1;
+.segmented-tab.is-active::before {
+  content: '';
+  position: absolute;
+  top: 1px;
+  left: 8%;
+  right: 8%;
+  height: 42%;
+  border-radius: 9999px 9999px 40% 40%;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.85) 0%, rgba(255, 255, 255, 0.15) 80%, transparent 100%);
+  pointer-events: none;
 }
-
-.segmented-tab.tab-cyan.is-active {
-  background: #ffffff;
-  color: #21474e;
-  border-color: #5da4b1;
-  box-shadow: 0 1px 4px rgba(93, 164, 177, 0.25);
-}
-
-.segmented-tab.tab-slate.is-active {
-  background: #ffffff;
-  color: #21474e;
-  border-color: #5da4b1;
-  box-shadow: 0 1px 4px rgba(93, 164, 177, 0.2);
-}
-
-.segmented-tab.tab-amber.is-active {
-  background: #ffffff;
-  color: #21474e;
-  border-color: #5da4b1;
-  box-shadow: 0 1px 4px rgba(93, 164, 177, 0.2);
-}
-
-.segmented-tab.tab-emerald.is-active {
-  background: #ffffff;
-  color: #21474e;
-  border-color: #5da4b1;
-  box-shadow: 0 1px 4px rgba(93, 164, 177, 0.2);
-}
-
-.segmented-tab.tab-rose.is-active {
-  background: #ffffff;
-  color: #21474e;
-  border-color: #5da4b1;
-  box-shadow: 0 1px 4px rgba(93, 164, 177, 0.2);
+.segmented-tab.is-active .tab-count-badge {
+  background: rgba(255, 255, 255, 0.28);
+  color: #ffffff;
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.8);
+  font-weight: 800;
 }
 
 /* 激活标签右上角微型取消小叉 */
@@ -9835,13 +9944,13 @@ onUnmounted(() => {
   border-radius: 50%;
   flex-shrink: 0;
 }
-.dot-emerald { background: #488793; box-shadow: 0 0 4px rgba(72, 135, 147, 0.4); }
-.dot-cyan { background: #5da4b1; box-shadow: 0 0 4px rgba(93, 164, 177, 0.4); }
-.dot-amber { background: #619da7; box-shadow: 0 0 4px rgba(97, 157, 167, 0.4); }
-.dot-rose { background: #c7564d; box-shadow: 0 0 4px rgba(199, 86, 77, 0.4); }
-.dot-slate { background: #859699; box-shadow: 0 0 4px rgba(133, 150, 153, 0.3); }
+.dot-emerald { background: #10b981; box-shadow: 0 0 6px #34d399; }
+.dot-cyan { background: #06b6d4; box-shadow: 0 0 6px #22d3ee; }
+.dot-amber { background: #f59e0b; box-shadow: 0 0 6px #fbbf24; }
+.dot-rose { background: #ef4444; box-shadow: 0 0 6px #f87171; }
+.dot-slate { background: #64748b; box-shadow: 0 0 6px #94a3b8; }
 
-/* 角标胶囊 (去除任何脏黄色，统一清爽水墨与天水碧) */
+/* 3D 水晶微胶囊角标 */
 .tab-count-badge {
   font-size: 11px;
   font-family: var(--el-font-family-monospace, monospace);
@@ -9851,48 +9960,50 @@ onUnmounted(() => {
   align-items: center;
   justify-content: center;
   border-radius: 9999px;
-  background: rgba(93, 164, 177, 0.10);
-  color: #385e65;
-  font-weight: 600;
+  background: rgba(15, 23, 42, 0.06);
+  color: #334155;
+  font-weight: 700;
   line-height: 1;
 }
 .tab-count-badge.count-cyan {
-  background: #edf6f8;
-  color: #28646e;
+  background: rgba(224, 242, 254, 0.9);
+  color: #0369a1;
 }
 .tab-count-badge.count-amber {
-  background: #edf6f8;
-  color: #28646e;
+  background: rgba(254, 243, 199, 0.9);
+  color: #92400e;
 }
 .tab-count-badge.count-emerald {
-  background: #edf6f8;
-  color: #28646e;
+  background: rgba(236, 253, 245, 0.9);
+  color: #065f46;
 }
 .tab-count-badge.count-rose {
-  background: #fdf0ee;
-  color: #9b3730;
+  background: rgba(254, 242, 242, 0.9);
+  color: #991b1b;
 }
 
-/* 复合多选筛选指示标签 */
+/* 复合多选筛选指示标签 (3D 水晶胶囊) */
 .rail-combo-indicator {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding: 2px 7px;
-  border-radius: 5px;
-  background: #edf6f8;
-  border: 1px dashed #bce2e7;
+  padding: 2px 9px;
+  border-radius: 9999px;
+  background: linear-gradient(180deg, rgba(238, 248, 255, 0.95) 0%, rgba(224, 242, 254, 0.85) 100%);
+  border: 1px solid #38bdf8;
   font-size: 10.5px;
-  color: #28646e;
+  color: #0284c7;
+  font-weight: 700;
   margin-left: 4px;
   white-space: nowrap;
   flex-shrink: 0;
   line-height: 1;
+  box-shadow: 0 2px 6px rgba(2, 132, 199, 0.15), inset 0 1px 1px #ffffff;
 }
 .combo-clear-btn {
   border: none;
   background: transparent;
-  color: #65777a;
+  color: #0284c7;
   cursor: pointer;
   font-size: 10px;
   padding: 0;
@@ -9901,7 +10012,7 @@ onUnmounted(() => {
   transition: color 0.15s ease;
 }
 .combo-clear-btn:hover {
-  color: #c7564d;
+  color: #dc2626;
 }
 
 .command-deck-search {
@@ -9911,64 +10022,117 @@ onUnmounted(() => {
   flex-shrink: 0;
 }
 
+/* ──────────── 3D 实体双层厚水晶搜索框 (1:1 复刻素材 2ac2e3a9c1fd2371a185add9ac5a345a.jpg 的 Search projects...) ──────────── */
+.search-glass-chassis {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 4px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.45);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  border: 2px solid rgba(255, 255, 255, 0.95);
+  border-top: 2.5px solid #ffffff;
+  border-bottom: 2px solid rgba(203, 213, 225, 0.65);
+  box-shadow:
+    0 10px 24px -4px rgba(15, 23, 42, 0.08),
+    0 3px 6px rgba(15, 23, 42, 0.04),
+    inset 0 2px 2.5px #ffffff,
+    inset 0 -2px 3px rgba(148, 163, 184, 0.22);
+  transition: all 0.18s ease;
+}
+.search-glass-chassis:hover {
+  background: rgba(255, 255, 255, 0.65);
+  box-shadow:
+    0 12px 28px -4px rgba(2, 132, 199, 0.15),
+    0 4px 8px rgba(15, 23, 42, 0.06),
+    inset 0 2px 2.5px #ffffff,
+    inset 0 -2px 3px rgba(148, 163, 184, 0.25);
+}
+
+/* 底边光学棱镜火彩 (对齐素材图左下角金色晶体高光) */
+.search-chassis-flare {
+  position: absolute;
+  bottom: -2.5px;
+  left: 20px;
+  width: 50px;
+  height: 3px;
+  border-radius: 9999px;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.95) 30%, rgba(251, 191, 36, 0.85) 60%, transparent 100%);
+  filter: blur(0.5px);
+  pointer-events: none;
+  box-shadow: 0 1px 6px rgba(251, 191, 36, 0.5);
+}
+
 .linear-search-input {
   width: 210px;
   transition: width 0.2s ease;
 }
 @media (max-width: 1400px) {
   .linear-search-input {
-    width: 170px;
+    width: 165px;
   }
 }
 .linear-search-input :deep(.el-input__wrapper) {
-  border-radius: 6px;
-  background: #ffffff;
-  border: 1px solid rgba(93, 164, 177, 0.22);
-  box-shadow: none !important;
-  height: 32px;
-  padding: 0 8px;
+  border-radius: 9px !important;
+  background: rgba(255, 255, 255, 0.92) !important;
+  border: 1px solid rgba(226, 232, 240, 0.85) !important;
+  box-shadow: inset 0 1.5px 3px rgba(15, 23, 42, 0.05) !important;
+  height: 28px !important;
+  padding: 0 8px 0 10px !important;
+  transition: all 0.18s ease !important;
 }
 .linear-search-input :deep(.el-input__wrapper.is-focus) {
-  border-color: #5da4b1;
-  box-shadow: 0 0 0 2px rgba(93, 164, 177, 0.2) !important;
+  border-color: #38bdf8 !important;
+  background: #ffffff !important;
+  box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.25), inset 0 1.5px 3px rgba(15, 23, 42, 0.05) !important;
 }
 .linear-search-input :deep(.el-input__inner) {
-  color: #1a3c42;
-  font-size: 12px;
+  color: #0f172a;
+  font-size: 11.5px;
+  font-weight: 600;
 }
 .cmd-k-tag {
-  font-size: 10.5px;
+  font-size: 10px;
   padding: 1px 5px;
   border-radius: 4px;
-  background: #edf6f8;
-  color: #38595f;
+  background: rgba(15, 23, 42, 0.06);
+  color: #64748b;
   font-family: var(--el-font-family-monospace, monospace);
-  border: 1px solid rgba(93, 164, 177, 0.18);
+  font-weight: 700;
 }
 
+/* 3D 水晶微圆按钮 (对齐素材 2ac2e3a9c1fd2371a185add9ac5a345a.jpg 的圆形操作按钮) */
 .ghost-tool-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   width: 32px;
   height: 32px;
-  border-radius: 6px;
-  border: 1px solid rgba(93, 164, 177, 0.22);
-  background: #ffffff;
-  color: #4b666a;
+  border-radius: 50%;
+  border: 1.2px solid rgba(255, 255, 255, 0.95);
+  border-top: 1.6px solid #ffffff;
+  border-bottom: 1.2px solid rgba(203, 213, 225, 0.7);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.95) 0%, rgba(241, 245, 249, 0.8) 100%);
+  color: #475569;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: all 0.16s ease;
   font-size: 14px;
+  box-shadow: 0 4px 10px -2px rgba(15, 23, 42, 0.08), inset 0 1px 1px #ffffff;
 }
 .ghost-tool-btn:hover {
-  background: #edf6f8;
-  border-color: #5da4b1;
-  color: #28646e;
+  background: #ffffff;
+  border-color: #0284c7;
+  color: #0284c7;
+  transform: translateY(-1.5px);
+  box-shadow: 0 6px 14px -2px rgba(2, 132, 199, 0.25), inset 0 1px 1px #ffffff;
 }
 .ghost-tool-btn.is-active {
-  background: #edf6f8;
-  border-color: #5da4b1;
-  color: #28646e;
+  background: linear-gradient(180deg, rgba(238, 248, 255, 0.98) 0%, rgba(224, 242, 254, 0.85) 100%);
+  border-color: #38bdf8;
+  color: #0284c7;
+  box-shadow: 0 4px 12px rgba(2, 132, 199, 0.2), inset 0 1px 1px #ffffff;
 }
 .is-spinning {
   animation: spin 1s linear infinite;
@@ -9977,11 +10141,13 @@ onUnmounted(() => {
   100% { transform: rotate(360deg); }
 }
 
-/* ════════════════ 全量水平下拉筛选栏 (Command Deck Filters Bar · 双排5列等宽矩阵) ════════════════ */
+/* ════════════════ 全量水平下拉筛选栏 (3D 实体水晶厚玻璃胶囊矩阵，对齐图片 31/32) ════════════════ */
 .command-deck-filters-bar {
   padding: 8px 16px;
-  background: #ffffff;
-  border-bottom: 1px solid rgba(93, 164, 177, 0.12);
+  background: rgba(255, 255, 255, 0.35);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border-bottom: 1.5px solid rgba(255, 255, 255, 0.85);
   display: flex;
   align-items: center;
   gap: 10px;
@@ -10001,38 +10167,58 @@ onUnmounted(() => {
   }
 }
 
+/* 10 个筛选下拉框全面重塑为 3D 水晶微晶槽 (1:1 复刻素材 2ac2e3a9c1fd2371a185add9ac5a345a.jpg 的 Select 下拉胶囊) */
 .filter-item-wrap {
   display: flex;
   align-items: center;
-  gap: 4px;
-  background: #ffffff;
-  border: 1px solid rgba(93, 164, 177, 0.22);
-  border-radius: 6px;
-  padding: 0 4px 0 8px;
-  height: 29px;
+  gap: 5px;
+  position: relative;
+  background: rgba(255, 255, 255, 0.45);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 2px solid rgba(255, 255, 255, 0.92);
+  border-top: 2.2px solid #ffffff;
+  border-bottom: 2px solid rgba(203, 213, 225, 0.6);
+  border-radius: 12px;
+  padding: 3px 6px 3px 10px;
+  height: 34px;
   box-sizing: border-box;
   width: 100%;
   min-width: 0;
-  transition: all 0.15s ease;
+  box-shadow:
+    0 6px 16px -3px rgba(15, 23, 42, 0.06),
+    inset 0 1.5px 2px #ffffff,
+    inset 0 -1.5px 2px rgba(148, 163, 184, 0.18);
+  transition: all 0.16s ease;
 }
 .filter-item-wrap:hover {
-  border-color: #5da4b1;
-  background: #f4f8f8;
+  background: rgba(255, 255, 255, 0.7);
+  border-color: rgba(56, 189, 248, 0.65);
+  border-top-color: #ffffff;
+  transform: translateY(-1px);
+  box-shadow:
+    0 8px 20px -3px rgba(2, 132, 199, 0.15),
+    inset 0 1.5px 2px #ffffff,
+    inset 0 -1.5px 2px rgba(148, 163, 184, 0.22);
 }
 .filter-item-wrap.is-filtered {
-  border-color: #5da4b1;
-  background: #edf6f8;
-  box-shadow: 0 1px 4px rgba(93, 164, 177, 0.15);
+  background: rgba(240, 249, 255, 0.85);
+  border-color: #38bdf8;
+  border-top-color: #7dd3fc;
+  box-shadow:
+    0 6px 16px -3px rgba(2, 132, 199, 0.2),
+    inset 0 1.5px 2px #ffffff,
+    inset 0 -1.5px 2px rgba(2, 132, 199, 0.18);
 }
 .filter-item-wrap.is-filtered .filter-label {
-  color: #1a454d;
+  color: #0284c7;
   font-weight: 700;
 }
 
 .filter-label {
-  font-size: 11.5px;
-  font-weight: 600;
-  color: #4b666a;
+  font-size: 11px;
+  font-weight: 700;
+  color: #475569;
   white-space: nowrap;
   flex-shrink: 0;
   user-select: none;
@@ -10057,18 +10243,27 @@ onUnmounted(() => {
 }
 
 .acct-select :deep(.el-select__wrapper) {
-  background: transparent !important;
-  box-shadow: none !important;
-  padding: 0 2px !important;
-  min-height: 25px !important;
-  height: 25px !important;
-  font-size: 11.5px !important;
-  color: #1a3c42;
+  background: rgba(255, 255, 255, 0.9) !important;
+  border-radius: 8px !important;
+  border: 1px solid rgba(226, 232, 240, 0.85) !important;
+  box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.04) !important;
+  padding: 0 6px !important;
+  min-height: 24px !important;
+  height: 24px !important;
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  color: #0f172a;
   width: 100%;
 }
+.acct-select :deep(.el-select__wrapper.is-focused) {
+  border-color: #38bdf8 !important;
+  background: #ffffff !important;
+  box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.2), inset 0 1px 2px rgba(15, 23, 42, 0.04) !important;
+}
 .acct-select :deep(.el-select__placeholder) {
-  color: #788c8f !important;
+  color: #64748b !important;
   font-size: 11.5px !important;
+  font-weight: 600 !important;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -10079,112 +10274,170 @@ onUnmounted(() => {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid rgba(199, 86, 77, 0.25);
-  background: #fdf2f1;
-  color: #9b3730;
-  border-radius: 6px;
+  border: 1.5px solid rgba(239, 68, 68, 0.4);
+  background: linear-gradient(180deg, rgba(254, 242, 242, 0.9) 0%, rgba(254, 226, 226, 0.75) 100%);
+  color: #dc2626;
+  border-radius: 12px;
   font-size: 11.5px;
-  font-weight: 600;
-  padding: 0 10px;
+  font-weight: 800;
+  padding: 0 12px;
   box-sizing: border-box;
   cursor: pointer;
-  transition: all 0.15s ease;
+  box-shadow: 0 2px 8px rgba(220, 38, 38, 0.12), inset 0 1px 1px #ffffff;
+  transition: all 0.16s ease;
   white-space: nowrap;
   flex-shrink: 0;
 }
 .filter-reset-link-btn:hover {
-  background: #fae4e2;
-  border-color: #c7564d;
-  color: #882b24;
+  background: #dc2626;
+  color: #ffffff;
+  border-color: #dc2626;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 14px rgba(220, 38, 38, 0.35);
 }
 
-/* Row 3: Action Ribbon (批量操作工具带 · 30px 高度完美对齐) */
+/* Row 3: Action Ribbon (3D 水晶果冻操作工具带 · 对齐图片 31/32) */
 .command-deck-actions {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
   padding: 8px 16px;
-  background: #ffffff;
-  border-bottom: 1px solid rgba(93, 164, 177, 0.14);
+  background: rgba(255, 255, 255, 0.40);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border-bottom: 1.5px solid rgba(255, 255, 255, 0.85);
 }
 .actions-group-left, .actions-group-right {
   display: flex;
   align-items: center;
   gap: 8px;
 }
+
+/* 操作菜单药丸按钮 (1:1 复刻素材 2ac2e3a9c1fd2371a185add9ac5a345a.jpg 的微晶按钮) */
 .action-menu-btn {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 0 12px;
-  height: 30px;
+  padding: 0 14px;
+  height: 33px;
   box-sizing: border-box;
-  border-radius: 6px;
-  border: 1px solid rgba(93, 164, 177, 0.22);
-  background: #ffffff;
-  color: #2b464b;
-  font-size: 12px;
-  font-weight: 500;
+  border-radius: 9999px;
+  border: 1.8px solid rgba(255, 255, 255, 0.95);
+  border-top: 2.2px solid #ffffff;
+  border-bottom: 1.8px solid rgba(203, 213, 225, 0.65);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.95) 0%, rgba(241, 245, 249, 0.8) 100%);
+  color: #1e293b;
+  font-size: 11.5px;
+  font-weight: 700;
   cursor: pointer;
-  transition: all 0.15s ease;
+  position: relative;
+  overflow: hidden;
+  box-shadow:
+    0 4px 12px -2px rgba(15, 23, 42, 0.08),
+    0 2px 4px rgba(15, 23, 42, 0.03),
+    inset 0 1.5px 1.5px #ffffff,
+    inset 0 -1.5px 2px rgba(148, 163, 184, 0.18);
+  transition: all 0.16s ease;
+}
+.action-menu-btn::before {
+  content: '';
+  position: absolute;
+  top: 1px;
+  left: 12%;
+  right: 12%;
+  height: 40%;
+  border-radius: 9999px 9999px 38% 38%;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.85) 0%, rgba(255, 255, 255, 0.1) 80%, transparent 100%);
+  pointer-events: none;
 }
 .action-menu-btn:hover {
-  background: #edf6f8;
-  border-color: #5da4b1;
-  color: #1a454d;
+  background: #ffffff;
+  border-color: rgba(56, 189, 248, 0.7);
+  border-top-color: #ffffff;
+  color: #0284c7;
+  transform: translateY(-1px);
+  box-shadow:
+    0 8px 20px -3px rgba(2, 132, 199, 0.2),
+    inset 0 2px 2px #ffffff,
+    inset 0 -1.5px 2px rgba(148, 163, 184, 0.2);
 }
 .action-menu-btn.has-selected {
-  border-color: #5da4b1;
-  color: #1a454d;
-  background: #edf6f8;
+  border-color: #38bdf8;
+  border-top-color: #7dd3fc;
+  color: #0284c7;
+  background: rgba(238, 248, 255, 0.9);
+  box-shadow: 0 4px 12px rgba(2, 132, 199, 0.22), inset 0 1.5px 1px #ffffff;
 }
 .action-menu-btn.action-refresh-btn {
-  border-color: rgba(93, 164, 177, 0.22);
-  background: #ffffff;
-  color: #2b464b;
+  border-color: rgba(255, 255, 255, 0.95);
 }
 .action-menu-btn.action-refresh-btn:hover {
-  border-color: #5da4b1;
-  background: #edf6f8;
-  color: #1a454d;
+  border-color: #38bdf8;
 }
+
 .linear-chunk-select {
   width: 105px;
 }
 .linear-chunk-select :deep(.el-input__wrapper) {
-  background: #ffffff;
-  border: 1px solid rgba(93, 164, 177, 0.22);
-  border-radius: 6px;
-  box-shadow: none !important;
-  height: 30px;
-  font-size: 12px;
-  padding: 0 8px;
+  background: rgba(255, 255, 255, 0.65);
+  border: 1px solid rgba(255, 255, 255, 0.9);
+  border-radius: 9999px;
+  box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.04) !important;
+  height: 32px;
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 0 10px;
 }
 .linear-chunk-select :deep(.el-input__wrapper.is-focus) {
-  border-color: #5da4b1;
-  box-shadow: 0 0 0 2px rgba(93, 164, 177, 0.2) !important;
+  border-color: #38bdf8;
+  box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.2), inset 0 1px 2px rgba(15, 23, 42, 0.04) !important;
 }
+
+/* 一键导出按钮：1:1 复刻素材 2ac2e3a9c1fd2371a185add9ac5a345a.jpg 的 "Search projects..." 蓝宝石 3D 药丸 */
 .primary-export-btn {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
-  padding: 0 14px;
-  height: 30px;
+  padding: 0 18px;
+  height: 33px;
   box-sizing: border-box;
-  border-radius: 6px;
-  border: none;
-  background: #5da4b1;
-  color: #ffffff;
+  border-radius: 9999px;
+  border: 2px solid rgba(255, 255, 255, 0.95) !important;
+  border-top: 2.5px solid #ffffff !important;
+  border-bottom: 2px solid rgba(30, 58, 138, 0.8) !important;
+  background: linear-gradient(180deg, #60a5fa 0%, #3b82f6 25%, #2563eb 60%, #1d4ed8 100%) !important;
+  color: #ffffff !important;
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 800;
   cursor: pointer;
-  transition: all 0.15s ease;
-  box-shadow: 0 2px 6px rgba(93, 164, 177, 0.3);
+  position: relative;
+  overflow: hidden;
+  transition: all 0.16s ease;
+  box-shadow:
+    0 10px 24px -3px rgba(37, 99, 235, 0.5),
+    0 4px 10px rgba(37, 99, 235, 0.25),
+    inset 0 2.5px 2.5px rgba(255, 255, 255, 0.95),
+    inset 0 -2.5px 3.5px rgba(0, 0, 0, 0.3) !important;
+}
+.primary-export-btn::before {
+  content: '';
+  position: absolute;
+  top: 1px;
+  left: 8%;
+  right: 8%;
+  height: 42%;
+  border-radius: 9999px 9999px 40% 40%;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.85) 0%, rgba(255, 255, 255, 0.15) 80%, transparent 100%);
+  pointer-events: none;
 }
 .primary-export-btn:hover:not(:disabled) {
-  background: #488793;
-  box-shadow: 0 3px 10px rgba(93, 164, 177, 0.4);
+  transform: translateY(-1px) scale(1.02);
+  box-shadow:
+    0 14px 28px -3px rgba(37, 99, 235, 0.65),
+    0 6px 14px rgba(37, 99, 235, 0.35),
+    inset 0 2.5px 2.5px #ffffff !important;
 }
 
 /* ════════════════ 核心工作区 (Workspace Body) ════════════════ */
@@ -10206,7 +10459,7 @@ onUnmounted(() => {
   flex: 1;
   min-height: 0;
   overflow: hidden;
-  background: #ffffff;
+  background: transparent !important;
 }
 
 .table-scroll-wrap {
@@ -10216,37 +10469,34 @@ onUnmounted(() => {
   position: relative;
   display: flex;
   flex-direction: column;
+  margin: 8px 14px 6px 14px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.62);
+  backdrop-filter: blur(24px) saturate(180%);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  border: 1.5px solid rgba(255, 255, 255, 0.92);
+  border-top: 2px solid #ffffff;
+  box-shadow: 0 16px 40px -8px rgba(100, 116, 139, 0.09), inset 0 1.5px 1.5px #ffffff;
 }
 
 .table-scroll-wrap :deep(.el-table) {
   height: 100% !important;
-  max-height: 100% !important;
-  flex: 1;
+  border-radius: 14px;
+  overflow: hidden;
 }
 
-.table-scroll-wrap :deep(.el-table__inner-wrapper) {
-  height: 100% !important;
-  display: flex;
-  flex-direction: column;
-}
-
-.table-scroll-wrap :deep(.el-table__body-wrapper) {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto !important;
-  overflow-x: auto !important;
-}
-
-/* ════════════════ 右侧全景档案 纯净护眼重构 ════════════════ */
+/* ════════════════ 右侧全景档案 3D实体水晶抽屉 ════════════════ */
 .details-panel-drawer {
-  border-left: 1px solid rgba(93, 164, 177, 0.16);
-  background: #ffffff;
+  border-left: 1.5px solid rgba(255, 255, 255, 0.9);
+  background: rgba(255, 255, 255, 0.75);
+  backdrop-filter: blur(28px) saturate(190%);
+  -webkit-backdrop-filter: blur(28px) saturate(190%);
   display: flex;
   flex-direction: column;
   height: 100%;
   min-height: 0;
   overflow: hidden;
-  box-shadow: -6px 0 24px rgba(70, 60, 50, 0.08);
+  box-shadow: -10px 0 32px rgba(15, 23, 42, 0.08);
   position: relative;
   z-index: 10;
 }
@@ -10259,8 +10509,9 @@ onUnmounted(() => {
   align-items: center;
   justify-content: space-between;
   padding: 0 14px;
-  border-bottom: 1px solid rgba(93, 164, 177, 0.14);
-  background: #ffffff;
+  border-bottom: 1.5px solid rgba(255, 255, 255, 0.85);
+  background: rgba(255, 255, 255, 0.55);
+  backdrop-filter: blur(16px);
   flex-shrink: 0;
 }
 .details-head-title {
@@ -10272,8 +10523,8 @@ onUnmounted(() => {
   width: 7px;
   height: 7px;
   border-radius: 999px;
-  background: #5da4b1;
-  box-shadow: 0 0 6px rgba(93, 164, 177, 0.5);
+  background: #0284c7;
+  box-shadow: 0 0 8px #38bdf8;
   animation: beaconPulse 2s ease-in-out infinite;
 }
 @keyframes beaconPulse {
@@ -10288,14 +10539,14 @@ onUnmounted(() => {
 .head-text-meta .title-main {
   font-size: 12.5px;
   font-weight: 700;
-  color: #243538;
+  color: #0f172a;
   letter-spacing: 0.3px;
   line-height: 1.2;
 }
 .head-text-meta .title-sub {
   font-size: 8.5px;
   font-weight: 600;
-  color: #718487;
+  color: #64748b;
   letter-spacing: 0.8px;
   line-height: 1;
 }
@@ -10306,28 +10557,33 @@ onUnmounted(() => {
   gap: 6px;
 }
 .dossier-tool-btn {
-  border: 1px solid #ded5c6;
-  background: #ffffff;
-  color: #5c6e71;
+  border: 1.2px solid rgba(255, 255, 255, 0.95);
+  border-top: 1.6px solid #ffffff;
+  background: rgba(255, 255, 255, 0.85);
+  color: #475569;
   cursor: pointer;
-  width: 26px;
-  height: 26px;
-  border-radius: 6px;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
   display: flex;
   align-items: center;
   justify-content: center;
   font-size: 13px;
-  transition: all 0.15s ease;
+  transition: all 0.16s ease;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.05), inset 0 1px 1px #ffffff;
 }
 .dossier-tool-btn:hover {
-  color: #243538;
-  background: #f4ede1;
-  border-color: #cfc4b2;
+  color: #0284c7;
+  background: #ffffff;
+  border-color: #0284c7;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 10px rgba(2, 132, 199, 0.2);
 }
 .dossier-tool-btn.close-btn:hover {
-  color: #9b3730;
-  background: #fdf0ee;
-  border-color: #f1c8c4;
+  color: #dc2626;
+  background: #ffffff;
+  border-color: #dc2626;
+  box-shadow: 0 4px 10px rgba(220, 38, 38, 0.2);
 }
 
 /* 主内容滚动容器 */
@@ -10350,21 +10606,24 @@ onUnmounted(() => {
   border-radius: 4px;
 }
 
-/* 统一档案卡片基类 */
+/* 统一档案卡片基类 (3D 水晶卡片，对齐素材 2ac2e3a9c1fd2371a185add9ac5a345a.jpg 的 Card) */
 .dossier-card {
-  border-radius: 9px;
-  background: #ffffff;
-  border: 1px solid #ded5c6;
-  box-shadow: 0 1px 3px rgba(70, 60, 50, 0.05);
-  padding: 10px 12px;
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.92) 0%, rgba(248, 250, 252, 0.75) 100%);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1.5px solid rgba(255, 255, 255, 0.95);
+  border-top: 2px solid #ffffff;
+  box-shadow: 0 8px 24px -4px rgba(15, 23, 42, 0.08), inset 0 2px 2px #ffffff, inset 0 -2px 3px rgba(148, 163, 184, 0.15);
+  padding: 12px;
   display: flex;
   flex-direction: column;
   gap: 8px;
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  transition: all 0.18s cubic-bezier(0.16, 1, 0.3, 1);
 }
 .dossier-card:hover {
-  border-color: #cfc4b2;
-  box-shadow: 0 2px 8px rgba(70, 60, 50, 0.08);
+  border-color: rgba(56, 189, 248, 0.5);
+  box-shadow: 0 12px 28px -4px rgba(2, 132, 199, 0.18), inset 0 2px 2px #ffffff;
 }
 
 /* 1. 账号核心身份卡片 (Profile Hero) */
@@ -11036,37 +11295,6 @@ onUnmounted(() => {
   background: rgba(56, 189, 248, 0.08);
 }
 
-/* ════════════════ 表格主体与单元格 (纯白清透高质感基底) ════════════════ */
-.linear-modern-table {
-  background: #ffffff !important;
-  font-size: 12px;
-}
-.linear-modern-table :deep(.el-table__header th.el-table__cell) {
-  background: #eef5f6 !important;
-  color: #21474e !important;
-  font-size: 11.5px !important;
-  font-weight: 600 !important;
-  padding: 7px 8px !important;
-  border-bottom: 1px solid rgba(93, 164, 177, 0.22) !important;
-  border-right: none !important;
-}
-.linear-modern-table :deep(.el-table__row td.el-table__cell) {
-  padding: 6px 8px !important;
-  border-bottom: 1px solid rgba(93, 164, 177, 0.08) !important;
-  border-right: none !important;
-  background: transparent !important;
-  color: #283a3d;
-}
-.linear-modern-table :deep(.el-table__row) {
-  background: #ffffff !important;
-}
-.linear-modern-table :deep(.el-table__row:hover > td.el-table__cell) {
-  background: #edf5f6 !important;
-}
-.linear-modern-table :deep(.is-focused-row > td.el-table__cell) {
-  background: rgba(93, 164, 177, 0.12) !important;
-}
-
 .table-footer-bar {
   display: flex;
   align-items: center;
@@ -11074,8 +11302,11 @@ onUnmounted(() => {
   height: 46px;
   min-height: 46px;
   padding: 0 16px;
-  border-top: 1px solid rgba(93, 164, 177, 0.16);
-  background: #ffffff;
+  border-top: 1.5px solid rgba(255, 255, 255, 0.9);
+  background: rgba(255, 255, 255, 0.65);
+  backdrop-filter: blur(24px) saturate(180%);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  box-shadow: 0 -4px 16px rgba(15, 23, 42, 0.04);
   flex-shrink: 0;
   z-index: 10;
 }
@@ -11084,18 +11315,20 @@ onUnmounted(() => {
   align-items: center;
   gap: 8px;
   font-size: 11.5px;
-  color: #65777a;
-}
-.selected-badge {
-  color: #28646e;
+  color: #64748b;
   font-weight: 500;
 }
-.selected-badge b {
-  color: #28646e;
+.selected-badge {
+  color: #0284c7;
   font-weight: 700;
 }
+.selected-badge b {
+  color: #0284c7;
+  font-weight: 800;
+}
 .total-badge {
-  color: #65777a;
+  color: #64748b;
+  font-weight: 600;
 }
 .footer-pagination-right {
   display: flex;
@@ -11103,24 +11336,28 @@ onUnmounted(() => {
   gap: 10px;
 }
 
+/* 3D 水晶胶囊自定义页码输入框 */
 .page-size-custom {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   font-size: 11px;
-  color: #21474e;
-  background: #edf6f8;
-  border: 1px solid rgba(93, 164, 177, 0.28);
-  padding: 2px 8px;
-  border-radius: 6px;
+  color: #0369a1;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.95) 0%, rgba(241, 245, 249, 0.75) 100%);
+  border: 1.2px solid rgba(255, 255, 255, 0.95);
+  border-top: 1.6px solid #ffffff;
+  padding: 2px 10px;
+  border-radius: 9999px;
+  box-shadow: 0 4px 12px -2px rgba(15, 23, 42, 0.06), inset 0 1.5px 1px #ffffff;
   white-space: nowrap;
 }
 .page-size-custom-label {
-  font-weight: 600;
-  color: #1a3c42;
+  font-weight: 700;
+  color: #0f172a;
 }
 .page-size-custom-unit {
-  color: #657e82;
+  color: #64748b;
+  font-weight: 600;
 }
 .page-size-custom-input {
   width: 96px;
@@ -11128,78 +11365,89 @@ onUnmounted(() => {
 .page-size-custom-input :deep(.el-input-number__decrease),
 .page-size-custom-input :deep(.el-input-number__increase) {
   width: 18px;
-  border-color: rgba(93, 164, 177, 0.22) !important;
-  color: #21474e !important;
+  border-color: rgba(203, 213, 225, 0.6) !important;
+  color: #475569 !important;
+  background: rgba(255, 255, 255, 0.7) !important;
 }
 .page-size-custom-input :deep(.el-input__wrapper) {
   padding-left: 6px;
   padding-right: 22px;
   height: 24px;
-  background: #ffffff !important;
-  border: 1px solid rgba(93, 164, 177, 0.3) !important;
-  box-shadow: none !important;
-  border-radius: 4px !important;
+  background: rgba(255, 255, 255, 0.9) !important;
+  border: 1px solid rgba(203, 213, 225, 0.7) !important;
+  box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.05) !important;
+  border-radius: 9999px !important;
 }
 .page-size-custom-input :deep(.el-input__inner) {
   font-size: 11px;
   height: 22px;
   text-align: center;
   font-family: var(--el-font-family-monospace, monospace);
-  color: #1a3c42;
-  font-weight: 600;
+  color: #0f172a;
+  font-weight: 700;
 }
 
-/* 考公工作台凝脂与天水碧雅致分页 */
+/* 3D 水晶透镜分页控件 */
 .octopus-pagination :deep(.el-pagination__total) {
   font-size: 11.5px;
-  color: #657e82;
+  color: #64748b;
+  font-weight: 600;
   margin-right: 8px;
 }
 .octopus-pagination :deep(.el-pagination__sizes) {
   margin-right: 8px;
 }
 .octopus-pagination :deep(.el-select .el-input__wrapper) {
-  background: #ffffff !important;
-  border: 1px solid rgba(93, 164, 177, 0.28) !important;
-  box-shadow: none !important;
-  height: 24px;
-  border-radius: 4px !important;
+  background: rgba(255, 255, 255, 0.9) !important;
+  border: 1.2px solid rgba(255, 255, 255, 0.95) !important;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04) !important;
+  height: 26px;
+  border-radius: 9999px !important;
 }
 .octopus-pagination :deep(.btn-prev),
 .octopus-pagination :deep(.btn-next),
 .octopus-pagination :deep(.el-pager li) {
-  background: #ffffff !important;
-  border: 1px solid rgba(93, 164, 177, 0.25) !important;
-  color: #21474e !important;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.95) 0%, rgba(241, 245, 249, 0.8) 100%) !important;
+  border: 1.2px solid rgba(255, 255, 255, 0.95) !important;
+  border-top: 1.6px solid #ffffff !important;
+  color: #334155 !important;
   min-width: 26px;
-  height: 24px;
-  line-height: 22px;
-  border-radius: 4px;
+  height: 26px;
+  line-height: 24px;
+  border-radius: 7px;
   font-size: 11px;
+  font-weight: 700;
   margin: 0 2px;
+  box-shadow: 0 4px 10px -2px rgba(15, 23, 42, 0.08), inset 0 1px 1px #ffffff !important;
+  transition: all 0.16s ease !important;
+}
+.octopus-pagination :deep(.el-pager li:hover),
+.octopus-pagination :deep(.btn-prev:hover),
+.octopus-pagination :deep(.btn-next:hover) {
+  background: #ffffff !important;
+  border-color: #0284c7 !important;
+  color: #0284c7 !important;
+  transform: translateY(-1px);
+  box-shadow: 0 6px 14px -2px rgba(2, 132, 199, 0.25) !important;
 }
 .octopus-pagination :deep(.el-pager li.is-active) {
-  background: #5da4b1 !important;
-  border-color: #5da4b1 !important;
+  background: linear-gradient(180deg, #38bdf8 0%, #0284c7 100%) !important;
+  border-color: #38bdf8 !important;
   color: #ffffff !important;
-  font-weight: 700;
-}
-.octopus-pagination :deep(.el-pager li:hover) {
-  color: #1a3c42 !important;
-  background: #edf6f8 !important;
-  border-color: #5da4b1 !important;
+  font-weight: 800 !important;
+  box-shadow: 0 6px 16px -2px rgba(2, 132, 199, 0.45), inset 0 1.5px 1px rgba(255, 255, 255, 0.8) !important;
 }
 .octopus-pagination :deep(.el-pagination__jump) {
   font-size: 11.5px;
-  color: #657e82;
+  color: #64748b;
   margin-left: 8px;
 }
 .octopus-pagination :deep(.el-pagination__editor.el-input .el-input__wrapper) {
-  background: #ffffff !important;
-  border: 1px solid rgba(93, 164, 177, 0.28) !important;
-  box-shadow: none !important;
+  background: rgba(255, 255, 255, 0.9) !important;
+  border: 1px solid rgba(203, 213, 225, 0.8) !important;
+  box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.05) !important;
   height: 24px;
-  border-radius: 4px !important;
+  border-radius: 6px !important;
 }
 
 .action-group-left {
@@ -12042,27 +12290,33 @@ onUnmounted(() => {
   font-weight: 500;
 }
 
-/* ──────────── OAICS / Plus 控制台弹窗样式 (天水碧与冷白高雅体系) ──────────── */
+/* ──────────── 3D实体液态水晶 OAuth 控制台弹窗样式 (Liquid Glass) ──────────── */
 :deep(.oa-custom-dialog) {
-  border-radius: 14px !important;
+  border-radius: 18px !important;
   overflow: hidden !important;
-  border: 1px solid rgba(93, 164, 177, 0.22) !important;
-  box-shadow: 0 16px 48px -4px rgba(35, 75, 82, 0.16) !important;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.92) 0%, rgba(255, 255, 255, 0.72) 50%, rgba(248, 250, 252, 0.88) 100%) !important;
+  backdrop-filter: blur(32px) saturate(210%) !important;
+  -webkit-backdrop-filter: blur(32px) saturate(210%) !important;
+  border: 1.8px solid rgba(255, 255, 255, 0.95) !important;
+  border-top: 2.5px solid #ffffff !important;
+  box-shadow: 0 32px 72px -12px rgba(15, 23, 42, 0.22), 0 10px 24px rgba(15, 23, 42, 0.06), inset 0 2.5px 2px #ffffff !important;
 }
 :deep(.oa-custom-dialog .el-dialog__header) {
   padding: 14px 20px 12px !important;
   margin-right: 0 !important;
-  border-bottom: 1px solid rgba(93, 164, 177, 0.14) !important;
-  background: #ffffff !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.75) !important;
+  background: rgba(255, 255, 255, 0.45) !important;
+  backdrop-filter: blur(16px) !important;
 }
 :deep(.oa-custom-dialog .el-dialog__body) {
-  padding: 16px 20px !important;
-  background: #ffffff !important;
+  padding: 14px 20px !important;
+  background: transparent !important;
 }
 :deep(.oa-custom-dialog .el-dialog__footer) {
   padding: 12px 20px !important;
-  border-top: 1px solid rgba(93, 164, 177, 0.14) !important;
-  background: #fbfdfd !important;
+  border-top: 1px solid rgba(255, 255, 255, 0.75) !important;
+  background: rgba(255, 255, 255, 0.5) !important;
+  backdrop-filter: blur(16px) !important;
 }
 
 .oa-header {
@@ -12077,88 +12331,100 @@ onUnmounted(() => {
   gap: 8px;
 }
 .oa-title-badge {
-  background: #5da4b1;
+  background: linear-gradient(180deg, #38bdf8 0%, #0284c7 100%);
   color: #fff;
-  font-size: 11px;
-  font-weight: 700;
-  padding: 2px 7px;
-  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 800;
+  padding: 2.5px 8px;
+  border-radius: 9999px;
   letter-spacing: 0.5px;
+  box-shadow: 0 2px 6px rgba(2, 132, 199, 0.35), inset 0 1px 1px rgba(255, 255, 255, 0.8);
 }
 .oa-title-badge.plus-badge {
-  background: #5da4b1;
+  background: linear-gradient(180deg, #38bdf8 0%, #0284c7 100%);
 }
 .oa-title-badge.health-badge {
-  background: #5da4b1;
+  background: linear-gradient(180deg, #34d399 0%, #059669 100%);
 }
 .oa-title-badge.sec-badge {
-  background: #5da4b1;
+  background: linear-gradient(180deg, #c084fc 0%, #7c3aed 100%);
 }
 .health-action-btn {
-  background: #5da4b1 !important;
-  border: none !important;
+  background: linear-gradient(180deg, #38bdf8 0%, #0284c7 100%) !important;
+  border: 1.5px solid rgba(255, 255, 255, 0.95) !important;
+  border-radius: 9999px !important;
   color: #fff !important;
-  font-weight: 600;
+  font-weight: 700;
+  box-shadow: 0 4px 10px rgba(2, 132, 199, 0.3) !important;
 }
 .feat-action-btn {
-  background: #5da4b1 !important;
-  border: none !important;
+  background: linear-gradient(180deg, #38bdf8 0%, #0284c7 100%) !important;
+  border: 1.5px solid rgba(255, 255, 255, 0.95) !important;
+  border-radius: 9999px !important;
   color: #fff !important;
-  font-weight: 600;
+  font-weight: 700;
+  box-shadow: 0 4px 10px rgba(2, 132, 199, 0.3) !important;
 }
 .oa-title-badge.feat-badge {
-  background: #5da4b1;
+  background: linear-gradient(180deg, #38bdf8 0%, #0284c7 100%);
 }
 .oa-title-text {
-  font-size: 14px;
-  font-weight: 600;
-  color: #1a3c42;
+  font-size: 14.5px;
+  font-weight: 800;
+  color: #0f172a;
+  letter-spacing: -0.01em;
 }
 .oa-target-pill {
   display: inline-flex;
   align-items: center;
   height: 22px;
-  padding: 0 8px;
-  border-radius: 11px;
+  padding: 0 9px;
+  border-radius: 9999px;
   font-size: 11px;
-  font-weight: 600;
-  background: #edf6f8;
-  color: #28646e;
-  border: 1px solid rgba(93, 164, 177, 0.25);
+  font-weight: 700;
+  background: rgba(2, 132, 199, 0.12);
+  color: #0369a1;
+  border: 1px solid rgba(2, 132, 199, 0.28);
+  box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.8);
 }
 .oa-config-toggle-btn {
   display: inline-flex;
   align-items: center;
   gap: 5px;
   height: 28px;
-  padding: 0 10px;
-  border-radius: 6px;
+  padding: 0 11px;
+  border-radius: 9999px;
   font-size: 11.5px;
-  font-weight: 500;
-  border: 1px solid rgba(93, 164, 177, 0.25);
-  background: #ffffff;
-  color: #35474a;
+  font-weight: 700;
+  border: 1.2px solid rgba(255, 255, 255, 0.95);
+  background: rgba(255, 255, 255, 0.85);
+  color: #334155;
   cursor: pointer;
-  transition: all 0.15s ease;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.04);
+  transition: all 0.16s ease;
 }
 .oa-config-toggle-btn:hover {
-  background: #edf6f8;
-  border-color: #5da4b1;
-  color: #1a454d;
+  background: #ffffff;
+  border-color: #0284c7;
+  color: #0284c7;
+  transform: translateY(-1px);
 }
 
 .oa-dialog-container {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 10px;
 }
 
 /* 配置卡片 */
 .oa-config-card {
-  background: var(--el-fill-color-light);
-  border: 1px solid var(--el-border-color-lighter);
-  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.72);
+  backdrop-filter: blur(20px);
+  border: 1.5px solid rgba(255, 255, 255, 0.95);
+  border-top: 2px solid #ffffff;
+  border-radius: 14px;
   padding: 12px;
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.05), inset 0 1.5px 1px #ffffff;
 }
 .oa-proxy-input {
   font-size: 11px;
@@ -12211,15 +12477,15 @@ onUnmounted(() => {
   background: rgba(244, 63, 94, 0.1);
 }
 .plus-kpi-card.hit-team {
-  border-color: rgba(99, 102, 241, 0.45);
-  background: rgba(99, 102, 241, 0.08);
+  border-color: rgba(2, 132, 199, 0.45);
+  background: rgba(2, 132, 199, 0.08);
 }
 .text-pro {
   color: #f43f5e;
   font-weight: 700;
 }
 .text-team {
-  color: #6366f1;
+  color: #0284c7;
   font-weight: 700;
 }
 .plus-kpi-card.hit-promo {
@@ -12677,77 +12943,86 @@ onUnmounted(() => {
   background: var(--c-tianshuibi-soft);
 }
 
-/* ──────────── OAuth 控制台专用样式规范 (天水碧 × 凝脂高质感) ──────────── */
+/* ──────────── OAuth 控制台专用样式规范 (3D Liquid Glass 液态水晶拟态) ──────────── */
 .oa-kpi-grid {
   display: grid !important;
   grid-template-columns: repeat(4, 1fr) !important;
   gap: 10px !important;
   width: 100% !important;
-  margin-bottom: 6px !important;
+  margin-bottom: 8px !important;
 }
 .oa-kpi-card {
-  background: #ffffff !important;
-  border: 1px solid rgba(93, 164, 177, 0.22) !important;
-  border-radius: 8px !important;
+  position: relative !important;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.88) 0%, rgba(255, 255, 255, 0.58) 50%, rgba(248, 250, 252, 0.75) 100%) !important;
+  backdrop-filter: blur(24px) saturate(200%) !important;
+  -webkit-backdrop-filter: blur(24px) saturate(200%) !important;
+  border: 1.5px solid rgba(255, 255, 255, 0.95) !important;
+  border-top: 2px solid #ffffff !important;
+  border-radius: 14px !important;
   padding: 8px 14px !important;
   display: flex !important;
   flex-direction: column !important;
   justify-content: center !important;
-  height: 62px !important;
+  height: 64px !important;
   box-sizing: border-box !important;
-  transition: all 0.16s ease !important;
+  transition: all 0.22s cubic-bezier(0.16, 1, 0.3, 1) !important;
   cursor: pointer !important;
-  box-shadow: 0 1px 3px rgba(35, 75, 82, 0.04) !important;
+  box-shadow: 0 8px 22px -4px rgba(15, 23, 42, 0.06), inset 0 1.5px 1.5px #ffffff, inset 0 -1.5px 2px rgba(148, 163, 184, 0.15) !important;
+  overflow: hidden !important;
 }
 .oa-kpi-card:hover {
-  border-color: #5da4b1 !important;
-  transform: translateY(-1px);
-  box-shadow: 0 3px 10px rgba(93, 164, 177, 0.12) !important;
+  border-color: rgba(56, 189, 248, 0.6) !important;
+  transform: translateY(-2.5px) scale(1.015);
+  box-shadow: 0 16px 36px -4px rgba(2, 132, 199, 0.22), inset 0 1.5px 1.5px #ffffff !important;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.95) 0%, rgba(255, 255, 255, 0.75) 100%) !important;
 }
 .oa-kpi-card.is-filter-active {
-  border-color: #5da4b1 !important;
-  background: #edf6f8 !important;
-  box-shadow: 0 0 0 1px #5da4b1 !important;
+  border-color: #38bdf8 !important;
+  box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.35), 0 10px 24px -2px rgba(2, 132, 199, 0.25) !important;
 }
 .oa-kpi-card .kpi-label {
+  position: relative;
+  z-index: 4;
   font-size: 11px !important;
-  color: #5f7a7e !important;
-  font-weight: 500 !important;
-  margin-bottom: 3px !important;
+  color: var(--text-muted) !important;
+  font-weight: 700 !important;
+  margin-bottom: 2px !important;
   white-space: nowrap !important;
 }
 .oa-kpi-card .kpi-num {
-  font-size: 18px !important;
-  font-weight: 700 !important;
-  font-family: 'JetBrains Mono', monospace !important;
-  color: #1a3c42 !important;
+  position: relative;
+  z-index: 4;
+  font-size: 19px !important;
+  font-weight: 800 !important;
+  font-family: var(--el-font-family-monospace, monospace) !important;
+  color: var(--text-main) !important;
   line-height: 1.1 !important;
+  letter-spacing: -0.02em;
 }
 .oa-kpi-card .text-success {
-  color: #28646e !important;
+  color: #059669 !important;
 }
 .oa-kpi-card .text-warning {
-  color: #d49432 !important;
+  color: #d97706 !important;
 }
 .oa-kpi-card .text-danger {
-  color: #c7564d !important;
+  color: #dc2626 !important;
 }
 .oa-retry-tag {
-  font-size: 10.5px;
-  padding: 1px 6px;
-  border-radius: 4px;
-  background: #fdf2f1;
-  color: #c7564d;
-  border: 1px solid rgba(199, 86, 77, 0.3);
-  font-weight: 600;
+  font-size: 10px;
+  padding: 1.5px 7px;
+  border-radius: 9999px;
+  background: rgba(239, 68, 68, 0.12);
+  color: #dc2626;
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  font-weight: 700;
   cursor: pointer;
   line-height: 1.2;
-  transition: all 0.15s ease;
+  transition: all 0.16s ease;
 }
 .oa-retry-tag:hover {
-  background: #fae4e2;
-  border-color: #c7564d;
-  color: #9b3730;
+  background: #dc2626;
+  color: #ffffff;
 }
 
 .oauth-table-filter-bar {
@@ -12760,20 +13035,24 @@ onUnmounted(() => {
 :deep(.oa-filter-radio .el-radio-button__inner) {
   height: 28px !important;
   line-height: 26px !important;
-  padding: 0 10px !important;
+  padding: 0 11px !important;
   font-size: 11.5px !important;
-  font-weight: 500 !important;
-  border: 1px solid rgba(93, 164, 177, 0.22) !important;
-  background: #ffffff !important;
-  color: #4b666a !important;
-  transition: all 0.15s ease !important;
+  font-weight: 700 !important;
+  border: 1.2px solid rgba(255, 255, 255, 0.95) !important;
+  background: rgba(255, 255, 255, 0.75) !important;
+  backdrop-filter: blur(12px);
+  color: #475569 !important;
+  border-radius: 9999px !important;
+  margin-right: 4px;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04), inset 0 1px 1px #ffffff !important;
+  transition: all 0.16s ease !important;
 }
 :deep(.oa-filter-radio .el-radio-button__original-radio:checked + .el-radio-button__inner) {
-  background: #5da4b1 !important;
-  border-color: #5da4b1 !important;
+  background: linear-gradient(180deg, #38bdf8 0%, #0284c7 100%) !important;
+  border-color: rgba(255, 255, 255, 0.95) !important;
   color: #ffffff !important;
-  font-weight: 600 !important;
-  box-shadow: -1px 0 0 0 #5da4b1 !important;
+  font-weight: 800 !important;
+  box-shadow: 0 4px 12px rgba(2, 132, 199, 0.4), inset 0 1.5px 1px rgba(255, 255, 255, 0.9) !important;
 }
 
 .oa-search-input {
@@ -12781,42 +13060,43 @@ onUnmounted(() => {
 }
 :deep(.oa-search-input .el-input__wrapper) {
   height: 28px !important;
-  border-radius: 6px !important;
-  background: #ffffff !important;
-  border: 1px solid rgba(93, 164, 177, 0.22) !important;
-  box-shadow: none !important;
+  border-radius: 9999px !important;
+  background: rgba(255, 255, 255, 0.85) !important;
+  border: 1.2px solid rgba(255, 255, 255, 0.95) !important;
+  box-shadow: inset 0 1.5px 3px rgba(15, 23, 42, 0.06) !important;
 }
 :deep(.oa-search-input .el-input__wrapper.is-focus) {
-  border-color: #5da4b1 !important;
-  box-shadow: 0 0 0 2px rgba(93, 164, 177, 0.2) !important;
+  background: #ffffff !important;
+  border-color: #38bdf8 !important;
+  box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.3), inset 0 1.5px 3px rgba(15, 23, 42, 0.06) !important;
 }
 
 .oauth-table-wrap {
-  border-radius: 8px;
+  border-radius: 14px;
   overflow: hidden;
-  border: 1px solid rgba(93, 164, 177, 0.18);
+  border: 1.5px solid rgba(255, 255, 255, 0.95);
+  background: rgba(255, 255, 255, 0.5);
+  box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.04);
 }
 .oauth-table-wrap :deep(.el-table) {
-  background: #ffffff !important;
+  background: transparent !important;
 }
 .oauth-table-wrap :deep(.el-table__header th.el-table__cell) {
-  background: #eef5f6 !important;
-  color: #21474e !important;
+  background: rgba(255, 255, 255, 0.8) !important;
+  backdrop-filter: blur(16px);
+  color: var(--text-main) !important;
   font-size: 11.5px !important;
-  font-weight: 600 !important;
-  padding: 7px 8px !important;
-  border-bottom: 1px solid rgba(93, 164, 177, 0.22) !important;
+  font-weight: 800 !important;
+  padding: 8px !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.85) !important;
 }
 .oauth-table-wrap :deep(.el-table__row td.el-table__cell) {
   padding: 6px 8px !important;
-  border-bottom: 1px solid rgba(93, 164, 177, 0.08) !important;
-  color: #283a3d !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.5) !important;
+  background: rgba(255, 255, 255, 0.3) !important;
 }
 .oauth-table-wrap :deep(.el-table__row:hover > td.el-table__cell) {
-  background: #edf6f8 !important;
-}
-.oauth-table-wrap :deep(.el-table__row--striped td.el-table__cell) {
-  background: #fafcfc !important;
+  background: rgba(255, 255, 255, 0.75) !important;
 }
 
 .oa-email-line {
@@ -12828,8 +13108,8 @@ onUnmounted(() => {
 }
 .oa-email-text {
   font-size: 12px;
-  font-weight: 500;
-  color: #1a3c42;
+  font-weight: 600;
+  color: var(--text-main);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -12837,12 +13117,12 @@ onUnmounted(() => {
   transition: color 0.15s ease;
 }
 .oa-email-line:hover .oa-email-text {
-  color: #5da4b1;
+  color: #0284c7;
   text-decoration: underline;
 }
 .oa-copy-ico {
   font-size: 11px;
-  color: #76888b;
+  color: #94a3b8;
   opacity: 0;
   transition: opacity 0.15s ease;
 }
@@ -12854,37 +13134,36 @@ onUnmounted(() => {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding: 2px 7px;
-  border-radius: 4px;
+  padding: 2.5px 8px;
+  border-radius: 9999px;
   font-size: 11px;
-  font-weight: 500;
+  font-weight: 700;
   line-height: 1.3;
 }
 .oa-status-badge.is-pending {
-  background: #f4f8f8;
-  color: #6a8286;
-  border: 1px solid rgba(93, 164, 177, 0.2);
+  background: rgba(255, 255, 255, 0.65);
+  color: #64748b;
+  border: 1px solid rgba(255, 255, 255, 0.9);
 }
 .oa-status-badge.is-running {
-  background: #edf6f8;
-  color: #28646e;
-  border: 1px solid rgba(93, 164, 177, 0.3);
-  font-weight: 600;
+  background: rgba(2, 132, 199, 0.12);
+  color: #0284c7;
+  border: 1px solid rgba(2, 132, 199, 0.3);
 }
 .oa-status-badge.is-success {
-  background: #edf6f8;
-  color: #28646e;
-  border: 1px solid rgba(93, 164, 177, 0.3);
+  background: rgba(16, 185, 129, 0.12);
+  color: #059669;
+  border: 1px solid rgba(16, 185, 129, 0.3);
 }
 .oa-status-badge.is-warning {
-  background: #fcf4e6;
-  color: #8c5c16;
-  border: 1px solid rgba(212, 148, 50, 0.3);
+  background: rgba(245, 158, 11, 0.12);
+  color: #d97706;
+  border: 1px solid rgba(245, 158, 11, 0.3);
 }
 .oa-status-badge.is-danger {
-  background: #fdf2f1;
-  color: #9b3730;
-  border: 1px solid rgba(199, 86, 77, 0.3);
+  background: rgba(239, 68, 68, 0.12);
+  color: #dc2626;
+  border: 1px solid rgba(239, 68, 68, 0.3);
 }
 
 .oa-row-actions {
@@ -12895,112 +13174,137 @@ onUnmounted(() => {
   width: 100%;
 }
 .oa-micro-btn {
-  height: 22px;
-  padding: 0 7px;
-  border-radius: 4px;
+  height: 24px;
+  padding: 0 9px;
+  border-radius: 9999px;
   font-size: 11px;
-  font-weight: 500;
-  border: 1px solid rgba(93, 164, 177, 0.25);
-  background: #ffffff;
-  color: #28646e;
+  font-weight: 700;
+  border: 1.2px solid rgba(255, 255, 255, 0.95);
+  background: rgba(255, 255, 255, 0.85);
+  color: #334155;
   cursor: pointer;
-  transition: all 0.15s ease;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04);
+  transition: all 0.16s ease;
   display: inline-flex;
   align-items: center;
   gap: 3px;
 }
 .oa-micro-btn:hover {
-  background: #edf6f8;
-  border-color: #5da4b1;
-  color: #1a454d;
+  background: #ffffff;
+  border-color: #0284c7;
+  color: #0284c7;
+  transform: translateY(-1px);
 }
 .oa-micro-btn.btn-retry {
-  color: #d49432;
-  border-color: rgba(212, 148, 50, 0.3);
+  color: #d97706;
 }
 .oa-micro-btn.btn-retry:hover {
-  background: #fcf4e6;
-  border-color: #d49432;
-  color: #8c5c16;
+  background: #d97706;
+  border-color: #d97706;
+  color: #ffffff;
 }
 .oa-micro-btn.btn-dl {
-  color: #28646e;
-  border-color: rgba(93, 164, 177, 0.3);
+  color: #0284c7;
 }
 .oa-micro-btn.btn-dl:hover {
-  background: #edf6f8;
-  border-color: #5da4b1;
+  background: #0284c7;
+  border-color: #0284c7;
+  color: #ffffff;
 }
 
+/* 3D 水晶果冻底部操作按钮 (对齐图片 31/32/33 的果冻药丸) */
 .oa-footer-btn {
-  height: 30px;
-  padding: 0 12px;
-  border-radius: 6px;
+  height: 32px;
+  padding: 0 14px;
+  border-radius: 9999px;
   font-size: 12px;
-  font-weight: 500;
+  font-weight: 800;
   display: inline-flex;
   align-items: center;
   gap: 5px;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: all 0.18s cubic-bezier(0.16, 1, 0.3, 1);
   box-sizing: border-box;
+  outline: none;
 }
-.oa-footer-btn.btn-export-cpa,
+.oa-footer-btn.btn-export-cpa {
+  background: linear-gradient(180deg, rgba(56, 189, 248, 0.22) 0%, rgba(2, 132, 199, 0.15) 100%);
+  border: 1.5px solid rgba(56, 189, 248, 0.45);
+  color: #0284c7;
+  box-shadow: 0 4px 10px rgba(2, 132, 199, 0.15), inset 0 1px 1px #ffffff;
+}
+.oa-footer-btn.btn-export-cpa:hover:not(:disabled) {
+  transform: translateY(-1px);
+  background: #0284c7;
+  border-color: #0284c7;
+  color: #ffffff;
+  box-shadow: 0 8px 18px -2px rgba(2, 132, 199, 0.4);
+}
 .oa-footer-btn.btn-export-sub2 {
-  background: #edf6f8;
-  border: 1px solid rgba(93, 164, 177, 0.35);
-  color: #21474e;
+  background: linear-gradient(180deg, rgba(52, 211, 153, 0.22) 0%, rgba(5, 150, 105, 0.15) 100%);
+  border: 1.5px solid rgba(52, 211, 153, 0.45);
+  color: #059669;
+  box-shadow: 0 4px 10px rgba(5, 150, 105, 0.15), inset 0 1px 1px #ffffff;
 }
-.oa-footer-btn.btn-export-cpa:hover:not(:disabled),
 .oa-footer-btn.btn-export-sub2:hover:not(:disabled) {
-  background: #dbeef2;
-  border-color: #5da4b1;
-  color: #1a454d;
+  transform: translateY(-1px);
+  background: #059669;
+  border-color: #059669;
+  color: #ffffff;
+  box-shadow: 0 8px 18px -2px rgba(5, 150, 105, 0.4);
 }
 .oa-footer-btn:disabled {
   opacity: 0.45;
   cursor: not-allowed;
+  box-shadow: none;
 }
 .oa-footer-btn.btn-close {
-  background: #ffffff;
-  border: 1px solid rgba(93, 164, 177, 0.25);
-  color: #35474a;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.95) 0%, rgba(241, 245, 249, 0.7) 100%);
+  border: 1.5px solid rgba(255, 255, 255, 0.95);
+  color: #475569;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.04), inset 0 1.5px 1px #ffffff;
 }
 .oa-footer-btn.btn-close:hover {
-  background: #edf6f8;
-  border-color: #5da4b1;
-  color: #1a454d;
+  background: #ffffff;
+  border-color: #0284c7;
+  color: #0284c7;
+  transform: translateY(-1px);
 }
 .oa-footer-btn.btn-warn {
-  background: #fcf4e6;
-  border: 1px solid rgba(212, 148, 50, 0.35);
-  color: #8c5c16;
+  background: linear-gradient(180deg, #fb923c 0%, #ea580c 100%);
+  border: 1.8px solid rgba(255, 255, 255, 0.95);
+  color: #ffffff;
+  box-shadow: 0 8px 20px -2px rgba(234, 88, 12, 0.45), inset 0 1.5px 1px rgba(255, 255, 255, 0.9);
 }
 .oa-footer-btn.btn-warn:hover:not(:disabled) {
-  background: #faedd6;
-  border-color: #d49432;
-  color: #724709;
+  transform: translateY(-2px);
+  box-shadow: 0 12px 26px -2px rgba(234, 88, 12, 0.6);
 }
 .oa-footer-btn.btn-stop {
-  background: #fdf2f1;
-  border: 1px solid rgba(199, 86, 77, 0.3);
-  color: #c7564d;
+  background: linear-gradient(180deg, #f87171 0%, #dc2626 100%);
+  border: 1.8px solid rgba(255, 255, 255, 0.95);
+  color: #ffffff;
+  box-shadow: 0 8px 20px -2px rgba(220, 38, 38, 0.45), inset 0 1.5px 1px rgba(255, 255, 255, 0.9);
 }
 .oa-footer-btn.btn-stop:hover {
-  background: #fae4e2;
-  border-color: #c7564d;
-  color: #9b3730;
+  transform: translateY(-2px);
+  box-shadow: 0 12px 26px -2px rgba(220, 38, 38, 0.6);
 }
 .oa-footer-btn.btn-primary {
-  background: #5da4b1;
-  border: 1px solid #488793;
+  background: linear-gradient(180deg, #38bdf8 0%, #0284c7 100%);
+  border: 1.8px solid rgba(255, 255, 255, 0.95);
   color: #ffffff;
-  font-weight: 600;
-  box-shadow: 0 2px 6px rgba(93, 164, 177, 0.25);
+  box-shadow:
+    0 10px 24px -2px rgba(2, 132, 199, 0.48),
+    0 3px 8px rgba(15, 23, 42, 0.08),
+    inset 0 2px 2px rgba(255, 255, 255, 0.9),
+    inset 0 -2px 3px rgba(0, 0, 0, 0.2);
 }
 .oa-footer-btn.btn-primary:hover:not(:disabled) {
-  background: #488793;
-  box-shadow: 0 3px 10px rgba(93, 164, 177, 0.35);
+  transform: translateY(-2px) scale(1.02);
+  box-shadow:
+    0 14px 30px -2px rgba(2, 132, 199, 0.6),
+    inset 0 2px 2px rgba(255, 255, 255, 0.95);
 }
 
 .oauth-table-empty {
@@ -15035,111 +15339,176 @@ onUnmounted(() => {
   overflow: hidden !important;
 }
 
-/* ════════════════ 账号管理核心表格视觉系统 (中国传统色·天水碧与凝脂护眼规范) ════════════════ */
+/* ════════════════ 3D实体液态水晶 Element Plus 全局表格与弹窗系统 (Liquid Glass System) ════════════════ */
 :root {
-  --oct-bg: #f4f7f6;
-  --oct-panel: #ffffff;
-  --oct-panel-2: #f4f8f8;
-  --oct-line: rgba(93, 164, 177, 0.2);
-  --oct-line-bright: rgba(93, 164, 177, 0.35);
-  --oct-text: #1a3c42;
-  --oct-muted: #5f7a7e;
-  --oct-green: #5da4b1;
-  --oct-ocean: #488793;
+  --el-table-border-color: rgba(255, 255, 255, 0.75);
+  --el-table-header-bg-color: rgba(255, 255, 255, 0.88);
+  --el-table-row-hover-bg-color: rgba(255, 255, 255, 0.95);
+  --el-table-current-row-bg-color: rgba(224, 242, 254, 0.78);
 }
 
-/* ──────────── Table Container & Grid ──────────── */
+/* ──────────── Table Container & Grid (3D 通透水晶厚玻璃拟态卡片，对齐素材 c8b5b50986689a684f7f898b714d8a5a.jpg) ──────────── */
 .octopus-table-container {
   flex: 1;
   min-height: 0;
   position: relative;
-  background: #ffffff;
+  background: transparent;
 }
 
 .octopus-table-grid {
-  background: #ffffff !important;
+  background: transparent !important;
   font-size: 12px;
 }
 
-/* 考公工作台质感表头与统一居中对齐 */
+/* 3D 水晶磨砂质感表头与统一居中对齐 */
 .octopus-table-grid .el-table__header th.el-table__cell {
-  background: #eef5f6 !important;
-  color: #21474e !important;
+  background: rgba(248, 250, 252, 0.75) !important;
+  color: #334155 !important;
   font-size: 11.5px !important;
-  font-weight: 600 !important;
+  font-weight: 700 !important;
   letter-spacing: 0.3px;
   padding: 8px 8px !important;
-  border-bottom: 1px solid rgba(93, 164, 177, 0.22) !important;
+  border-bottom: 1px solid rgba(226, 232, 240, 0.65) !important;
   border-right: none !important;
 }
 
 .octopus-table-grid .el-table__header th.el-table__cell .cell {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  text-align: center;
+  color: #334155 !important;
+  font-weight: 700 !important;
 }
 
-/* 行设计与微弱交替 (基础通用样式) */
+/* 行设计与微弱交替 (半透明柔和磨砂底) */
 .octopus-table-grid .el-table__row td.el-table__cell {
   padding: 6px 8px !important;
-  border-bottom: 1px solid rgba(93, 164, 177, 0.08) !important;
+  background: rgba(255, 255, 255, 0.45) !important;
+  border-bottom: 1px solid rgba(241, 245, 249, 0.6) !important;
   border-right: none !important;
-  color: #283a3d !important;
+  color: #334155 !important;
+  transition: background 0.16s ease !important;
 }
 
-/* ──────────── 表格密度三档调优 (Compact / Default / Relaxed) ──────────── */
-/* 1. 紧凑模式 (Compact - 高屏效) */
+.octopus-table-grid .el-table__row--striped td.el-table__cell {
+  background: rgba(248, 250, 252, 0.35) !important;
+}
+
+/* 悬浮行高光激活 (柔和天蓝微光) */
+.octopus-table-grid .el-table__row:hover > td.el-table__cell {
+  background: rgba(240, 249, 255, 0.85) !important;
+}
+.octopus-table-grid .el-table__row:hover > td.el-table__cell:first-child {
+  box-shadow: inset 3.5px 0 0 #38bdf8 !important;
+}
+
+/* 选中聚焦行 (清澈海蓝微光) */
+.octopus-table-grid .is-focused-row > td.el-table__cell {
+  background: rgba(224, 242, 254, 0.75) !important;
+}
+.octopus-table-grid .is-focused-row > td.el-table__cell:first-child {
+  box-shadow: inset 3.5px 0 0 #0284c7 !important;
+}
+
+/* 固定列：高不透明度磨砂，防止滚动透字错位同时保持轻盈 */
+.octopus-table-grid .el-table__fixed,
+.octopus-table-grid .el-table__fixed-right,
+.octopus-table-grid .el-table__fixed-right-patch,
+.octopus-table-grid .el-table__fixed-body-wrapper {
+  background: rgba(255, 255, 255, 0.94) !important;
+  backdrop-filter: blur(16px);
+  box-shadow: -4px 0 16px rgba(15, 23, 42, 0.05) !important;
+}
+
+.octopus-table-grid .el-table__fixed-right th.el-table__cell,
+.octopus-table-grid .el-table__fixed th.el-table__cell,
+.octopus-table-grid .el-table__fixed-right-patch {
+  background: rgba(248, 250, 252, 0.94) !important;
+  color: #334155 !important;
+  font-weight: 700 !important;
+  border-bottom: 1px solid rgba(226, 232, 240, 0.65) !important;
+}
+.octopus-table-grid .el-table__fixed th.el-table__cell .cell,
+.octopus-table-grid .el-table__fixed-right th.el-table__cell .cell {
+  color: #334155 !important;
+  font-weight: 700 !important;
+}
+
+.octopus-table-grid .el-table__fixed-right td.el-table__cell,
+.octopus-table-grid .el-table__fixed td.el-table__cell {
+  background: rgba(255, 255, 255, 0.94) !important;
+  color: #334155 !important;
+}
+
+.octopus-table-grid .el-table__fixed-right tr:hover td.el-table__cell,
+.octopus-table-grid .el-table__fixed tr:hover td.el-table__cell {
+  background: rgba(241, 245, 249, 0.95) !important;
+}
+
+/* 3D 水晶多选框 (对齐素材 2ac2e3a9c1fd2371a185add9ac5a345a.jpg 中的复选框) */
+.octopus-table-grid .el-checkbox__inner {
+  border-radius: 6px !important;
+  background: rgba(255, 255, 255, 0.9) !important;
+  border: 1.5px solid rgba(203, 213, 225, 0.9) !important;
+  box-shadow: inset 0 1px 1px #ffffff, 0 2px 5px rgba(15, 23, 42, 0.06) !important;
+  transition: all 0.16s ease !important;
+}
+.octopus-table-grid .el-checkbox__inner:hover {
+  border-color: #0284c7 !important;
+  box-shadow: 0 0 0 2px rgba(2, 132, 199, 0.2), inset 0 1px 1px #ffffff !important;
+}
+.octopus-table-grid .el-checkbox__input.is-checked .el-checkbox__inner,
+.octopus-table-grid .el-checkbox__input.is-indeterminate .el-checkbox__inner {
+  background: linear-gradient(180deg, #38bdf8 0%, #0284c7 100%) !important;
+  border-color: #0284c7 !important;
+  box-shadow: 0 2px 6px rgba(2, 132, 199, 0.35), inset 0 1px 1px rgba(255, 255, 255, 0.8) !important;
+}
+
+/* 密度控制规范 */
 .octopus-table-grid.density-compact .el-table__header th.el-table__cell,
 .octopus-table-grid.density-compact .el-table__fixed th.el-table__cell,
 .octopus-table-grid.density-compact .el-table__fixed-right th.el-table__cell {
-  padding: 4px 6px !important;
-  font-size: 11px !important;
+  padding: 6px 8px !important;
 }
 .octopus-table-grid.density-compact .el-table__row td.el-table__cell,
 .octopus-table-grid.density-compact .el-table__fixed td.el-table__cell,
 .octopus-table-grid.density-compact .el-table__fixed-right td.el-table__cell {
-  padding: 2.5px 6px !important;
+  padding: 3.5px 8px !important;
 }
 .octopus-table-grid.density-compact .account-cell-container {
-  gap: 1px !important;
+  gap: 1.5px;
 }
 .octopus-table-grid.density-compact .account-main-line {
-  gap: 4px !important;
-  line-height: 1.1 !important;
+  gap: 4px;
 }
 .octopus-table-grid.density-compact .email-text {
-  font-size: 11.5px !important;
+  font-size: 11.5px;
 }
 .octopus-table-grid.density-compact .provider-avatar-badge {
-  width: 15px !important;
-  height: 15px !important;
-  font-size: 9.5px !important;
+  width: 16px;
+  height: 16px;
+  font-size: 9px;
 }
 .octopus-table-grid.density-compact .meta-badge-pill {
-  font-size: 9.5px !important;
-  padding: 0 4px !important;
-  line-height: 13px !important;
+  height: 17px;
+  font-size: 10px;
+  padding: 0 4px;
 }
 .octopus-table-grid.density-compact .sec-badge {
-  font-size: 9.5px !important;
-  padding: 1px 5px !important;
+  padding: 1px 5px;
+  font-size: 9.5px;
 }
 .octopus-table-grid.density-compact .octopus-row-btn {
-  height: 20px !important;
-  padding: 0 5px !important;
-  font-size: 10px !important;
+  height: 21px;
+  padding: 0 7px;
+  font-size: 10px;
 }
 .octopus-table-grid.density-compact .octopus-row-btn.btn-more {
-  width: 20px !important;
-  height: 20px !important;
+  width: 21px;
+  height: 21px;
 }
 
-/* 2. 标准模式 (Default - 默认平衡) */
 .octopus-table-grid.density-default .el-table__header th.el-table__cell,
 .octopus-table-grid.density-default .el-table__fixed th.el-table__cell,
 .octopus-table-grid.density-default .el-table__fixed-right th.el-table__cell {
-  padding: 8px 8px !important;
+  padding: 9px 8px !important;
 }
 .octopus-table-grid.density-default .el-table__row td.el-table__cell,
 .octopus-table-grid.density-default .el-table__fixed td.el-table__cell,
@@ -15147,104 +15516,48 @@ onUnmounted(() => {
   padding: 6px 8px !important;
 }
 
-/* 3. 宽松模式 (Relaxed - 大间距舒适) */
 .octopus-table-grid.density-relaxed .el-table__header th.el-table__cell,
 .octopus-table-grid.density-relaxed .el-table__fixed th.el-table__cell,
 .octopus-table-grid.density-relaxed .el-table__fixed-right th.el-table__cell {
-  padding: 12px 10px !important;
-  font-size: 12px !important;
+  padding: 12px 8px !important;
 }
 .octopus-table-grid.density-relaxed .el-table__row td.el-table__cell,
 .octopus-table-grid.density-relaxed .el-table__fixed td.el-table__cell,
 .octopus-table-grid.density-relaxed .el-table__fixed-right td.el-table__cell {
-  padding: 13px 10px !important;
+  padding: 9px 8px !important;
 }
 .octopus-table-grid.density-relaxed .account-cell-container {
-  gap: 6px !important;
+  gap: 4px;
 }
 .octopus-table-grid.density-relaxed .account-main-line {
-  gap: 8px !important;
+  gap: 7px;
 }
 .octopus-table-grid.density-relaxed .email-text {
-  font-size: 13px !important;
+  font-size: 13px;
 }
 .octopus-table-grid.density-relaxed .provider-avatar-badge {
-  width: 21px !important;
-  height: 21px !important;
-  font-size: 13px !important;
+  width: 20px;
+  height: 20px;
+  font-size: 11px;
 }
 .octopus-table-grid.density-relaxed .meta-badge-pill {
-  font-size: 10.5px !important;
-  padding: 2px 6px !important;
+  height: 21px;
+  font-size: 11px;
+  padding: 0 7px;
 }
 .octopus-table-grid.density-relaxed .sec-badge {
-  font-size: 11px !important;
-  padding: 3px 8px !important;
+  padding: 2.5px 8px;
+  font-size: 11px;
 }
 .octopus-table-grid.density-relaxed .octopus-row-btn {
-  height: 25px !important;
-  padding: 0 8px !important;
-  font-size: 11.5px !important;
+  height: 26px;
+  padding: 0 11px;
+  font-size: 11.5px;
 }
 .octopus-table-grid.density-relaxed .octopus-row-btn.btn-more {
-  width: 25px !important;
-  height: 25px !important;
+  width: 26px;
+  height: 26px;
 }
-
-.octopus-table-grid .el-table__row {
-  background: #ffffff !important;
-}
-.octopus-table-grid .el-table__row--striped {
-  background: #fafcfc !important;
-}
-
-.octopus-table-grid .el-table__row:hover > td.el-table__cell {
-  background: #edf6f8 !important;
-}
-.octopus-table-grid .el-table__row:hover > td.el-table__cell:first-child {
-  box-shadow: inset 3px 0 0 #5da4b1 !important;
-}
-
-/* 固定列温润护眼适配 */
-.octopus-table-grid .el-table__fixed,
-.octopus-table-grid .el-table__fixed-right,
-.octopus-table-grid .el-table__fixed-right-patch,
-.octopus-table-grid .el-table__fixed-body-wrapper {
-  background: #ffffff !important;
-  box-shadow: -4px 0 12px rgba(70, 60, 50, 0.06) !important;
-}
-
-.octopus-table-grid .el-table__fixed-right th.el-table__cell,
-.octopus-table-grid .el-table__fixed th.el-table__cell,
-.octopus-table-grid .el-table__fixed-right-patch {
-  background: #eef5f6 !important;
-  color: #21474e !important;
-  border-bottom: 1px solid rgba(93, 164, 177, 0.22) !important;
-}
-
-.octopus-table-grid .el-table__fixed-right td.el-table__cell,
-.octopus-table-grid .el-table__fixed td.el-table__cell {
-  background: #ffffff !important;
-  color: #283a3d !important;
-}
-
-.octopus-table-grid .el-table__fixed-right tr:hover td.el-table__cell,
-.octopus-table-grid .el-table__fixed tr:hover td.el-table__cell {
-  background: #edf5f6 !important;
-}
-
-/* 脉冲圆点 (传统矿物色系) */
-.pulse-indicator-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  display: inline-block;
-  flex-shrink: 0;
-}
-.dot-emerald { background: #5da4b1; box-shadow: 0 0 4px #5da4b1; }
-.dot-cyan { background: #5da4b1; box-shadow: 0 0 4px #5da4b1; }
-.dot-amber { background: #d49432; box-shadow: 0 0 4px #d49432; }
-.dot-rose { background: #c7564d; box-shadow: 0 0 4px #c7564d; }
 
 /* ──────────── 1. 账号与网络出口规范化 (严格左对齐) ──────────── */
 .account-cell-container {
@@ -15272,11 +15585,12 @@ onUnmounted(() => {
   justify-content: center;
   font-size: 10px;
   flex-shrink: 0;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.1);
 }
 .email-text {
   font-size: 12.5px;
-  font-weight: 500;
-  color: #1a3c42;
+  font-weight: 600;
+  color: #0f172a;
   cursor: pointer;
   white-space: nowrap;
   overflow: hidden;
@@ -15286,12 +15600,12 @@ onUnmounted(() => {
   letter-spacing: -0.01em;
 }
 .email-text:hover {
-  color: #5da4b1;
+  color: #0284c7;
   text-decoration: underline;
 }
 .email-copy-btn {
   font-size: 11px;
-  color: #76888b;
+  color: #94a3b8;
   cursor: pointer;
   opacity: 0;
   transition: opacity 0.15s ease;
@@ -15313,48 +15627,48 @@ onUnmounted(() => {
   align-items: center;
   height: 19px;
   padding: 0 6px;
-  border-radius: 4px;
-  font-size: 11px;
-  border: 1px solid rgba(93, 164, 177, 0.2);
-  background: #f4f8f8;
-  color: #38595f;
+  border-radius: 9999px;
+  font-size: 10.5px;
+  border: 1px solid rgba(255, 255, 255, 0.9);
+  background: rgba(255, 255, 255, 0.85);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04), inset 0 1px 1px #ffffff;
+  color: #475569;
   white-space: nowrap;
   transition: all 0.15s ease;
 }
 .country-pill {
-  color: #285e68;
-  background: #edf6f8;
-  border-color: rgba(93, 164, 177, 0.3);
-  font-weight: 500;
+  color: #0369a1;
+  background: rgba(224, 242, 254, 0.75);
+  border-color: rgba(186, 230, 253, 0.8);
+  font-weight: 600;
   cursor: pointer;
 }
 .country-pill:hover {
-  border-color: #5da4b1;
-  color: #1a454d;
-  background: #e1f0f3;
+  border-color: #38bdf8;
+  color: #0284c7;
+  background: #ffffff;
 }
 .ip-pill {
-  color: #4b666a;
-  background: #f4f8f8;
-  border-color: rgba(93, 164, 177, 0.18);
+  color: #475569;
   cursor: pointer;
 }
 .ip-pill:hover {
-  color: #28646e;
-  border-color: #5da4b1;
-  background: #edf6f8;
+  color: #0284c7;
+  border-color: rgba(56, 189, 248, 0.8);
+  background: #ffffff;
 }
 .pickup-pill {
-  color: #28646e;
-  border-color: #bce2e7;
-  background: #edf6f8;
+  color: #0284c7;
+  border-color: rgba(56, 189, 248, 0.6);
+  background: rgba(240, 249, 255, 0.85);
   cursor: pointer;
 }
 .pickup-pill:hover {
-  background: #dbeef2;
+  background: #0284c7;
+  color: #ffffff;
 }
 
-/* ──────────── 2. 密码 / 2FA 经典极简胶囊徽章 ──────────── */
+/* ──────────── 2. 密码 / 2FA 3D 水晶微胶囊徽章 ──────────── */
 .sec-col-wrapper {
   display: inline-flex;
   align-items: center;
@@ -15366,212 +15680,262 @@ onUnmounted(() => {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 2px 7px;
+  padding: 0 9px;
+  height: 22px;
   border-radius: 9999px;
   font-size: 10.5px;
   line-height: 1.1;
-  font-weight: 600;
+  font-weight: 800;
   letter-spacing: 0.2px;
   cursor: pointer;
   user-select: none;
-  transition: all 0.15s ease;
+  position: relative;
+  overflow: hidden;
+  transition: all 0.16s ease;
   white-space: nowrap;
+  border: 1.2px solid rgba(255, 255, 255, 0.95);
+  border-top: 1.8px solid #ffffff;
+  border-bottom: 1.2px solid rgba(5, 150, 105, 0.4);
+}
+.sec-badge::before {
+  content: '';
+  position: absolute;
+  top: 1px;
+  left: 10%;
+  right: 10%;
+  height: 40%;
+  border-radius: 9999px 9999px 38% 38%;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.85) 0%, rgba(255, 255, 255, 0.15) 75%, transparent 100%);
+  pointer-events: none;
 }
 .sec-badge:hover {
   transform: translateY(-1px);
 }
 
-/* 密码✓ */
+/* 密码✓ 3D 薄荷/海盐绿液态果冻 (1:1 复刻素材 2ac2e3a9c1fd2371a185add9ac5a345a.jpg 的微晶多选) */
 .sec-pwd-ok {
-  background: #edf6f8;
-  color: #28646e;
-  border: 1px solid #bce2e7;
+  background: linear-gradient(180deg, #6ee7b7 0%, #34d399 35%, #10b981 70%, #059669 100%) !important;
+  color: #ffffff !important;
+  border-color: rgba(255, 255, 255, 0.95) !important;
+  border-top-color: #ffffff !important;
+  box-shadow: 0 3px 8px rgba(16, 185, 129, 0.4), inset 0 1.5px 1.5px rgba(255, 255, 255, 0.95), inset 0 -1.5px 2px rgba(0, 0, 0, 0.22) !important;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
 }
 .sec-pwd-ok:hover {
-  background: #dbeef2;
-  border-color: #5da4b1;
-  box-shadow: 0 1px 4px rgba(93, 164, 177, 0.2);
+  box-shadow: 0 5px 12px rgba(16, 185, 129, 0.55), inset 0 1.5px 1.5px #ffffff !important;
 }
 
-/* 密码× */
+/* 密码× 3D 珊瑚红微晶 */
 .sec-pwd-no {
-  background: #f4f7f7;
-  color: #71888c;
-  border: 1px solid rgba(93, 164, 177, 0.18);
+  background: linear-gradient(180deg, #fca5a5 0%, #f87171 35%, #ef4444 70%, #dc2626 100%) !important;
+  color: #ffffff !important;
+  border-color: rgba(255, 255, 255, 0.95) !important;
+  border-top-color: #ffffff !important;
+  box-shadow: 0 3px 8px rgba(239, 68, 68, 0.4), inset 0 1.5px 1.5px rgba(255, 255, 255, 0.95), inset 0 -1.5px 2px rgba(0, 0, 0, 0.22) !important;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
 }
 .sec-pwd-no:hover {
-  background: #edf3f4;
-  color: #4a686d;
-  border-color: rgba(93, 164, 177, 0.35);
+  box-shadow: 0 5px 12px rgba(239, 68, 68, 0.55), inset 0 1.5px 1.5px #ffffff !important;
 }
 
-/* 2FA✓ */
+/* 2FA✓ 3D 薄荷/海盐绿液态果冻 (1:1 复刻素材 2ac2e3a9c1fd2371a185add9ac5a345a.jpg 的微晶多选) */
 .sec-2fa-ok {
-  background: #edf6f8;
-  color: #28646e;
-  border: 1px solid rgba(93, 164, 177, 0.35);
-  font-weight: 600;
+  background: linear-gradient(180deg, #6ee7b7 0%, #34d399 35%, #10b981 70%, #059669 100%) !important;
+  color: #ffffff !important;
+  border-color: rgba(255, 255, 255, 0.95) !important;
+  border-top-color: #ffffff !important;
+  box-shadow: 0 3px 8px rgba(16, 185, 129, 0.4), inset 0 1.5px 1.5px rgba(255, 255, 255, 0.95), inset 0 -1.5px 2px rgba(0, 0, 0, 0.22) !important;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
 }
 .sec-2fa-ok:hover {
-  background: #dbeef2;
-  border-color: #5da4b1;
-  box-shadow: 0 1px 4px rgba(93, 164, 177, 0.2);
+  box-shadow: 0 5px 12px rgba(16, 185, 129, 0.55), inset 0 1.5px 1.5px #ffffff !important;
 }
 
-/* 2FA× */
+/* 2FA× 3D 珊瑚红微晶 */
 .sec-2fa-no {
-  background: #f4f7f7;
-  color: #71888c;
-  border: 1px solid rgba(93, 164, 177, 0.18);
+  background: linear-gradient(180deg, #fca5a5 0%, #f87171 35%, #ef4444 70%, #dc2626 100%) !important;
+  color: #ffffff !important;
+  border-color: rgba(255, 255, 255, 0.95) !important;
+  border-top-color: #ffffff !important;
+  box-shadow: 0 3px 8px rgba(239, 68, 68, 0.4), inset 0 1.5px 1.5px rgba(255, 255, 255, 0.95), inset 0 -1.5px 2px rgba(0, 0, 0, 0.22) !important;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
 }
 .sec-2fa-no:hover {
-  background: #edf3f4;
-  color: #4a686d;
-  border-color: rgba(93, 164, 177, 0.35);
+  box-shadow: 0 5px 12px rgba(239, 68, 68, 0.55), inset 0 1.5px 1.5px #ffffff !important;
 }
 
-/* ──────────── 3. Token 凭据健康 (表头与内容整体居中对齐，内部两行垂直对齐) ──────────── */
-.cell-token-block {
-  display: inline-flex;
+/* ──────────── 3. Token 凭据状态规范 (3D 水晶微胶囊，对齐素材 2ac2e3a9c1fd2371a185add9ac5a345a.jpg) ──────────── */
+.token-cell-container {
+  display: flex;
   flex-direction: column;
-  align-items: flex-start;
+  align-items: center;
   justify-content: center;
   gap: 3px;
-  margin: 0 auto;
+  width: 100%;
 }
-.token-status-line {
+.token-main-line {
   display: inline-flex;
   align-items: center;
-  justify-content: flex-start;
-  gap: 6px;
-  font-size: 11.5px;
+  justify-content: center;
+  gap: 5px;
+  padding: 2px 9px;
+  border-radius: 9999px;
+  background: linear-gradient(180deg, rgba(236, 253, 245, 0.95) 0%, rgba(209, 250, 229, 0.88) 100%);
+  border: 1.2px solid rgba(52, 211, 153, 0.65);
+  border-top: 1.6px solid #ffffff;
+  border-bottom: 1.2px solid rgba(16, 185, 129, 0.35);
+  box-shadow: 0 2px 6px rgba(16, 185, 129, 0.18), inset 0 1px 1px #ffffff;
+  transition: all 0.16s ease;
 }
-.token-main-text {
-  color: #1a3c42;
-  font-weight: 500;
+.token-main-line:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 10px rgba(16, 185, 129, 0.28);
 }
 .token-main-text.is-ok {
-  color: #28646e;
+  color: #065f46 !important;
+  font-weight: 700;
 }
 .token-main-text.is-refreshable {
-  color: #c7564d;
-  cursor: pointer;
-  text-decoration: underline dotted rgba(199, 86, 77, 0.5);
+  color: #dc2626 !important;
 }
-.token-main-text.is-refreshable:hover {
-  color: #b03d34;
-  text-decoration: underline solid #c7564d;
+.token-main-text:hover {
+  text-decoration: underline;
 }
 
 .token-sub-line {
-  font-size: 11px;
+  font-size: 10px;
   display: inline-flex;
   align-items: center;
-  justify-content: flex-start;
-  gap: 6px;
-  color: #6a8286;
+  justify-content: center;
+  gap: 4px;
+  color: #64748b;
+  padding: 1px 7px;
+  border-radius: 9999px;
+  background: rgba(241, 245, 249, 0.75);
+  border: 1px solid rgba(255, 255, 255, 0.95);
+  box-shadow: inset 0 1px 1px #ffffff;
 }
 .token-sub-dot {
-  width: 6px;
-  height: 6px;
+  width: 5px;
+  height: 5px;
   border-radius: 50%;
   flex-shrink: 0;
 }
 .token-sub-dot.sub-dot-active {
-  background: #5da4b1;
-  box-shadow: 0 0 4px rgba(93, 164, 177, 0.4);
+  background: #10b981;
+  box-shadow: 0 0 5px #34d399;
 }
 .token-sub-dot.sub-dot-none {
-  background: #9bb1b5;
+  background: #cbd5e1;
 }
 .rt-active-text {
-  color: #28646e;
+  color: #0284c7;
+  font-weight: 700;
   cursor: pointer;
 }
 .rt-active-text:hover {
   text-decoration: underline;
 }
 .rt-none-text {
-  color: #789094;
+  color: #94a3b8;
   cursor: pointer;
 }
 .rt-none-text:hover {
-  color: #28646e;
+  color: #0284c7;
   text-decoration: underline;
 }
-/* ──────────── 现代化 AT 有效期微芯片 (Modern Status Chip) ──────────── */
+
+/* ──────────── 4. 3D 水晶 AT 有效期微芯片 (1:1 复刻素材 2ac2e3a9c1fd2371a185add9ac5a345a.jpg 的晶体胶囊) ──────────── */
 .at-expiry-modern-badge {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  height: 22px;
-  padding: 0 8px;
-  border-radius: 5px;
-  font-size: 11px;
+  height: 23px;
+  padding: 0 10px;
+  border-radius: 9999px;
+  font-size: 10.5px;
   font-family: var(--el-font-family-monospace, monospace);
-  font-weight: 500;
+  font-weight: 700;
   cursor: pointer;
+  position: relative;
+  overflow: hidden;
   transition: all 0.16s ease;
   white-space: nowrap;
   user-select: none;
   box-sizing: border-box;
+  border: 1.2px solid rgba(255, 255, 255, 0.95);
+  border-top: 1.8px solid #ffffff;
+  border-bottom: 1.2px solid rgba(203, 213, 225, 0.6);
+  box-shadow: 0 3px 8px -1px rgba(15, 23, 42, 0.08), inset 0 1.2px 1.2px #ffffff, inset 0 -1.2px 1.5px rgba(0, 0, 0, 0.06);
 }
-
+.at-expiry-modern-badge::before {
+  content: '';
+  position: absolute;
+  top: 1px;
+  left: 10%;
+  right: 10%;
+  height: 40%;
+  border-radius: 9999px 9999px 38% 38%;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.85) 0%, rgba(255, 255, 255, 0.15) 75%, transparent 100%);
+  pointer-events: none;
+}
 .at-expiry-modern-badge.at-exp-ok {
-  background: rgba(93, 164, 177, 0.08);
-  border: 1px solid rgba(93, 164, 177, 0.25);
-  color: #245b64;
+  background: linear-gradient(180deg, rgba(236, 253, 245, 0.98) 0%, rgba(209, 250, 229, 0.92) 100%) !important;
+  border-color: rgba(52, 211, 153, 0.65) !important;
+  border-top-color: #ffffff !important;
+  color: #065f46 !important;
+  box-shadow: 0 3px 8px rgba(16, 185, 129, 0.25), inset 0 1.5px 1.5px #ffffff, inset 0 -1.2px 1.8px rgba(5, 150, 105, 0.15) !important;
 }
 .at-expiry-modern-badge.at-exp-ok .expiry-status-dot {
-  background: #5da4b1;
-  box-shadow: 0 0 4px rgba(93, 164, 177, 0.5);
+  background: #10b981;
+  box-shadow: 0 0 5px #34d399;
 }
 .at-expiry-modern-badge.at-exp-ok:hover {
-  background: rgba(93, 164, 177, 0.16);
-  border-color: #5da4b1;
-  color: #1a454d;
-  box-shadow: 0 2px 6px rgba(93, 164, 177, 0.18);
   transform: translateY(-1px);
+  box-shadow: 0 5px 12px rgba(16, 185, 129, 0.38), inset 0 1.5px 1.5px #ffffff !important;
 }
 
 .at-expiry-modern-badge.at-exp-warn {
-  background: rgba(212, 148, 50, 0.08);
-  border: 1px solid rgba(212, 148, 50, 0.3);
-  color: #8c5c16;
+  background: linear-gradient(180deg, rgba(254, 243, 199, 0.98) 0%, rgba(253, 230, 138, 0.92) 100%) !important;
+  border-color: rgba(245, 158, 11, 0.65) !important;
+  border-top-color: #ffffff !important;
+  color: #92400e !important;
+  box-shadow: 0 3px 8px rgba(245, 158, 11, 0.25), inset 0 1.5px 1.5px #ffffff, inset 0 -1.2px 1.8px rgba(217, 119, 6, 0.15) !important;
 }
 .at-expiry-modern-badge.at-exp-warn .expiry-status-dot {
-  background: #d49432;
-  box-shadow: 0 0 4px rgba(212, 148, 50, 0.5);
+  background: #f59e0b;
+  box-shadow: 0 0 5px #fbbf24;
 }
 .at-expiry-modern-badge.at-exp-warn:hover {
-  background: rgba(212, 148, 50, 0.16);
-  border-color: #d49432;
-  color: #724709;
+  transform: translateY(-1px);
+  box-shadow: 0 5px 12px rgba(245, 158, 11, 0.38), inset 0 1.5px 1.5px #ffffff !important;
 }
 
 .at-expiry-modern-badge.at-exp-dead {
-  background: rgba(199, 86, 77, 0.08);
-  border: 1px solid rgba(199, 86, 77, 0.28);
-  color: #9b3730;
+  background: linear-gradient(180deg, rgba(254, 242, 242, 0.98) 0%, rgba(254, 226, 226, 0.92) 100%) !important;
+  border-color: rgba(239, 68, 68, 0.65) !important;
+  border-top-color: #ffffff !important;
+  color: #991b1b !important;
+  box-shadow: 0 3px 8px rgba(239, 68, 68, 0.25), inset 0 1.5px 1.5px #ffffff, inset 0 -1.2px 1.8px rgba(185, 28, 28, 0.15) !important;
 }
 .at-expiry-modern-badge.at-exp-dead .expiry-status-dot {
-  background: #c7564d;
+  background: #ef4444;
+  box-shadow: 0 0 5px #f87171;
 }
 .at-expiry-modern-badge.at-exp-dead:hover {
-  background: rgba(199, 86, 77, 0.15);
-  border-color: #c7564d;
-  color: #882b24;
+  transform: translateY(-1px);
+  box-shadow: 0 5px 12px rgba(239, 68, 68, 0.38), inset 0 1.5px 1.5px #ffffff !important;
 }
 
 .at-expiry-modern-badge.at-exp-none,
 .at-expiry-modern-badge.at-exp-unknown {
-  background: rgba(120, 140, 144, 0.08);
-  border: 1px solid rgba(120, 140, 144, 0.2);
-  color: #6a8286;
+  background: rgba(241, 245, 249, 0.85);
+  border: 1.2px solid rgba(203, 213, 225, 0.7);
+  color: #64748b;
 }
 .at-expiry-modern-badge.at-exp-none .expiry-status-dot,
 .at-expiry-modern-badge.at-exp-unknown .expiry-status-dot {
-  background: #9bb1b5;
+  background: #94a3b8;
 }
 
 .expiry-status-dot {
@@ -15588,46 +15952,22 @@ onUnmounted(() => {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  border: 1px solid rgba(93, 164, 177, 0.25);
-  background: rgba(93, 164, 177, 0.08);
-  border-radius: 5px;
+  border-radius: 9999px;
   padding: 0 8px;
   height: 22px;
   font-size: 11px;
-  color: #245b64;
   font-family: var(--el-font-family-monospace, monospace);
   cursor: pointer;
   white-space: nowrap;
+  font-weight: 600;
 }
-.at-exp-chip:hover {
-  filter: brightness(0.96);
-}
-.dossier-tag.at-exp-ok { color: #28646e; }
-.dossier-tag.at-exp-warn { color: #8c5c16; }
-.dossier-tag.at-exp-dead { color: #9b3730; }
+.dossier-tag.at-exp-ok { color: #065f46; background: rgba(236, 253, 245, 0.9); }
+.dossier-tag.at-exp-warn { color: #92400e; background: rgba(254, 243, 199, 0.9); }
+.dossier-tag.at-exp-dead { color: #991b1b; background: rgba(254, 242, 242, 0.9); }
 .dossier-tag.at-exp-none,
-.dossier-tag.at-exp-unknown { color: #76888b; }
+.dossier-tag.at-exp-unknown { color: #64748b; background: rgba(241, 245, 249, 0.9); }
 
-.rt-active-text {
-  color: #5da4b1;
-}
-.rt-active-text.rt-click-refresh {
-  cursor: pointer;
-  transition: all 0.15s ease;
-}
-.rt-active-text.rt-click-refresh:hover {
-  color: #488793;
-  text-decoration: underline;
-}
-.rt-none-text {
-  color: #76888b;
-  cursor: pointer;
-}
-.rt-none-text:hover {
-  color: #243538;
-}
-
-/* ──────────── 4. 套餐与特权订阅 ──────────── */
+/* ──────────── 5. 套餐与特权订阅 (3D 水晶微晶药丸，对齐素材 2ac2e3a9c1fd2371a185add9ac5a345a.jpg) ──────────── */
 .cell-entitlements-block {
   display: flex;
   align-items: center;
@@ -15639,53 +15979,93 @@ onUnmounted(() => {
 .entitlement-badge {
   display: inline-flex;
   align-items: center;
-  padding: 1px 6px;
-  border-radius: 4px;
-  font-size: 10.5px;
-  font-weight: 500;
+  padding: 0 10px;
+  height: 23px;
+  border-radius: 9999px;
+  font-size: 11px;
+  font-weight: 800;
   cursor: pointer;
+  position: relative;
+  overflow: hidden;
+  transition: all 0.16s ease;
+  border: 1.2px solid rgba(255, 255, 255, 0.95);
+  border-top: 1.8px solid #ffffff;
+  border-bottom: 1.2px solid rgba(203, 213, 225, 0.6);
+  box-shadow: 0 3px 8px -1px rgba(15, 23, 42, 0.08), inset 0 1.2px 1.2px #ffffff, inset 0 -1.2px 1.5px rgba(0, 0, 0, 0.06);
+}
+.entitlement-badge::before {
+  content: '';
+  position: absolute;
+  top: 1px;
+  left: 10%;
+  right: 10%;
+  height: 40%;
+  border-radius: 9999px 9999px 38% 38%;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.85) 0%, rgba(255, 255, 255, 0.15) 75%, transparent 100%);
+  pointer-events: none;
+}
+.entitlement-badge:hover {
+  transform: translateY(-1px);
 }
 .entitlement-badge.success {
-  background: #edf6f8;
-  color: #28646e;
-  border: 1px solid #bce2e7;
+  background: linear-gradient(180deg, rgba(236, 253, 245, 0.98) 0%, rgba(209, 250, 229, 0.92) 100%) !important;
+  color: #065f46 !important;
+  border-color: rgba(52, 211, 153, 0.7) !important;
+  border-top-color: #ffffff !important;
+  box-shadow: 0 3px 8px rgba(16, 185, 129, 0.25), inset 0 1.5px 1.5px #ffffff, inset 0 -1.2px 1.8px rgba(5, 150, 105, 0.15) !important;
 }
-.entitlement-badge.primary {
-  background: #edf6f8;
-  color: #28646e;
-  border: 1px solid #bce2e7;
+.entitlement-badge.success:hover {
+  box-shadow: 0 5px 12px rgba(16, 185, 129, 0.38), inset 0 1.5px 1.5px #ffffff !important;
 }
+.entitlement-badge.primary,
 .entitlement-badge.cyan {
-  background: #edf6f8;
-  color: #28646e;
-  border: 1px solid #bce2e7;
+  background: linear-gradient(180deg, rgba(238, 248, 255, 0.98) 0%, rgba(224, 242, 254, 0.92) 100%) !important;
+  color: #0284c7 !important;
+  border-color: rgba(56, 189, 248, 0.7) !important;
+  border-top-color: #ffffff !important;
+  box-shadow: 0 3px 8px rgba(2, 132, 199, 0.25), inset 0 1.5px 1.5px #ffffff, inset 0 -1.2px 1.8px rgba(2, 132, 199, 0.15) !important;
+}
+.entitlement-badge.primary:hover,
+.entitlement-badge.cyan:hover {
+  box-shadow: 0 5px 12px rgba(2, 132, 199, 0.38), inset 0 1.5px 1.5px #ffffff !important;
 }
 .entitlement-badge.warning {
-  background: #fcf4e6;
-  color: #8c5c16;
-  border: 1px solid #eed8b5;
+  background: linear-gradient(180deg, rgba(254, 243, 199, 0.98) 0%, rgba(253, 230, 138, 0.92) 100%) !important;
+  color: #92400e !important;
+  border-color: rgba(245, 158, 11, 0.7) !important;
+  border-top-color: #ffffff !important;
+  box-shadow: 0 3px 8px rgba(245, 158, 11, 0.25), inset 0 1.5px 1.5px #ffffff, inset 0 -1.2px 1.8px rgba(217, 119, 6, 0.15) !important;
 }
 .entitlement-badge.danger {
-  background: #fdf0ee;
-  color: #9b3730;
-  border: 1px solid #f1c8c4;
+  background: linear-gradient(180deg, rgba(254, 242, 242, 0.98) 0%, rgba(254, 226, 226, 0.92) 100%) !important;
+  color: #991b1b !important;
+  border-color: rgba(239, 68, 68, 0.7) !important;
+  border-top-color: #ffffff !important;
+  box-shadow: 0 3px 8px rgba(239, 68, 68, 0.25), inset 0 1.5px 1.5px #ffffff, inset 0 -1.2px 1.8px rgba(185, 28, 28, 0.15) !important;
 }
 .free-plain-text {
-  font-size: 11.5px;
-  color: #5c6e71;
+  font-size: 10.5px;
+  color: #475569;
   display: inline-flex;
   align-items: center;
   gap: 5px;
+  font-weight: 700;
+  padding: 2px 9px;
+  border-radius: 9999px;
+  background: rgba(241, 245, 249, 0.75);
+  border: 1px solid rgba(255, 255, 255, 0.95);
+  border-top: 1.4px solid #ffffff;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04), inset 0 1px 1px #ffffff;
 }
 .free-dot {
   width: 5px;
   height: 5px;
   border-radius: 50%;
-  background: #5da4b1;
+  background: #94a3b8;
   display: inline-block;
 }
 
-/* ──────────── 5. 导出留痕与备注 ──────────── */
+/* ──────────── 6. 导出留痕与备注 ──────────── */
 .cell-export-block {
   display: flex;
   flex-direction: column;
@@ -15703,21 +16083,21 @@ onUnmounted(() => {
   cursor: pointer;
 }
 .export-fresh-text {
-  color: #28646e;
-  font-weight: 500;
+  color: #0284c7;
+  font-weight: 700;
 }
 .export-tag-label {
-  color: #488793;
-  font-weight: 500;
+  color: #0369a1;
+  font-weight: 600;
 }
 .export-date-mono {
   font-size: 10px;
-  color: #76888b;
+  color: #64748b;
 }
 
 .export-note-text {
   font-size: 10.5px;
-  color: #687a7d;
+  color: #64748b;
   padding-left: 0;
   cursor: pointer;
   white-space: nowrap;
@@ -15727,11 +16107,11 @@ onUnmounted(() => {
   text-align: center;
 }
 .export-note-text:hover {
-  color: #28646e;
+  color: #0284c7;
   text-decoration: underline;
 }
 
-/* ──────────── 6. 注册时间 ──────────── */
+/* ──────────── 7. 注册时间 ──────────── */
 .cell-time-block {
   display: flex;
   flex-direction: column;
@@ -15743,244 +16123,210 @@ onUnmounted(() => {
 }
 .time-main-mono {
   font-size: 11.5px;
-  color: #334649;
+  color: #1e293b;
+  font-weight: 600;
 }
 .time-relative-text {
   font-size: 10px;
-  color: #76888b;
+  color: #64748b;
 }
 
-/* ──────────── 7. 快捷操作列微按钮 ──────────── */
+/* ──────────── 8. 快捷操作列 3D 实体水晶药丸按键 (严格对齐素材 2ac2e3a9c1fd2371a185add9ac5a345a.jpg 与 3c96dc7ad762c523c88e687794b9c39a.jpg) ──────────── */
 .cell-actions-block {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 4px;
+  gap: 5px;
   width: 100%;
+  white-space: nowrap;
+  flex-wrap: nowrap;
 }
 .octopus-row-btn {
-  height: 24px;
-  padding: 0 8px;
-  border-radius: 6px;
+  height: 25px;
+  padding: 0 9px;
+  border-radius: 9999px;
   font-size: 11px;
-  font-weight: 500;
-  border: 1px solid #ded5c6;
-  background: #ffffff;
-  color: #35474a;
+  font-weight: 700;
+  border: 1.5px solid rgba(255, 255, 255, 0.95);
+  border-top: 2px solid #ffffff;
+  border-bottom: 1.5px solid rgba(203, 213, 225, 0.6);
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: all 0.16s ease;
   user-select: none;
+  position: relative;
+  overflow: hidden;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  white-space: nowrap;
+  flex-shrink: 0;
+  box-shadow: 0 3px 8px -1px rgba(15, 23, 42, 0.1), inset 0 1.5px 1.5px #ffffff, inset 0 -1.5px 2px rgba(0, 0, 0, 0.08);
+}
+.octopus-row-btn::before {
+  content: '';
+  position: absolute;
+  top: 1px;
+  left: 10%;
+  right: 10%;
+  height: 40%;
+  border-radius: 9999px 9999px 38% 38%;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.85) 0%, rgba(255, 255, 255, 0.15) 75%, transparent 100%);
+  pointer-events: none;
 }
 .octopus-row-btn:hover {
-  border-color: #cfc4b2;
-  color: #243538;
-  background: #f4ede1;
   transform: translateY(-1px);
 }
+/* 凭证: 1:1 复刻素材图 row 2 的 "Text" 微晶按键 */
 .octopus-row-btn.btn-cred {
-  background: #ffffff;
-  color: #35474a;
+  background: linear-gradient(180deg, #ffffff 0%, rgba(241, 245, 249, 0.95) 100%);
+  color: #1e293b;
+  border-color: rgba(255, 255, 255, 0.95);
 }
 .octopus-row-btn.btn-cred:hover {
-  background: #f4ede1;
-  border-color: #cfc4b2;
-  color: #243538;
+  background: #ffffff;
+  color: #0284c7;
+  border-color: #38bdf8;
+  box-shadow: 0 4px 12px rgba(2, 132, 199, 0.25), inset 0 1.5px 1.5px #ffffff;
 }
+/* 2FA: 1:1 复刻素材图 row 3 的薄荷晶体 (带翠绿光晕) */
 .octopus-row-btn.btn-2fa {
-  background: #edf6f8;
-  border-color: #bce2e7;
-  color: #28646e;
-  font-weight: 600;
+  background: linear-gradient(180deg, #6ee7b7 0%, #34d399 35%, #10b981 70%, #059669 100%) !important;
+  border-color: rgba(255, 255, 255, 0.95) !important;
+  border-top-color: #ffffff !important;
+  color: #ffffff !important;
+  box-shadow: 0 4px 12px rgba(16, 185, 129, 0.45), inset 0 1.8px 1.8px rgba(255, 255, 255, 0.95), inset 0 -1.8px 2.5px rgba(0, 0, 0, 0.25) !important;
 }
 .octopus-row-btn.btn-2fa:hover {
-  background: #dbeef2;
-  border-color: #5da4b1;
-  color: #1e525b;
-  box-shadow: 0 1px 4px rgba(93, 164, 177, 0.2);
+  box-shadow: 0 6px 16px rgba(16, 185, 129, 0.6), inset 0 1.8px 1.8px #ffffff !important;
 }
+/* 刷Token: 1:1 复刻素材图 row 1 的 "Search projects..." 蓝宝石晶体 */
 .octopus-row-btn.btn-refresh {
-  background: #edf6f8;
-  border-color: #bce2e7;
-  color: #28646e;
-  font-weight: 600;
+  background: linear-gradient(180deg, #60a5fa 0%, #3b82f6 30%, #2563eb 65%, #1d4ed8 100%) !important;
+  border-color: rgba(255, 255, 255, 0.95) !important;
+  border-top-color: #ffffff !important;
+  color: #ffffff !important;
+  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.45), inset 0 1.8px 1.8px rgba(255, 255, 255, 0.95), inset 0 -1.8px 2.5px rgba(0, 0, 0, 0.25) !important;
 }
 .octopus-row-btn.btn-refresh:hover {
-  background: #dbeef2;
-  border-color: #5da4b1;
-  color: #1e525b;
-  box-shadow: 0 1px 4px rgba(93, 164, 177, 0.2);
+  box-shadow: 0 6px 16px rgba(37, 99, 235, 0.6), inset 0 1.8px 1.8px #ffffff !important;
 }
+/* 查码: 1:1 复刻素材图 row 1 的 "Create workspace" 暖珊瑚/琥珀晶体 */
 .octopus-row-btn.btn-mail {
-  background: #edf6f8;
-  border-color: #bce2e7;
-  color: #28646e;
-  font-weight: 600;
+  background: linear-gradient(180deg, #fb7185 0%, #f97316 35%, #ea580c 70%, #c2410c 100%) !important;
+  border-color: rgba(255, 255, 255, 0.95) !important;
+  border-top-color: #ffffff !important;
+  color: #ffffff !important;
+  box-shadow: 0 4px 12px rgba(234, 88, 12, 0.45), inset 0 1.8px 1.8px rgba(255, 255, 255, 0.95), inset 0 -1.8px 2.5px rgba(0, 0, 0, 0.25) !important;
 }
 .octopus-row-btn.btn-mail:hover {
-  background: #dbeef2;
-  border-color: #5da4b1;
-  color: #1e525b;
-  box-shadow: 0 1px 4px rgba(93, 164, 177, 0.2);
+  box-shadow: 0 6px 16px rgba(234, 88, 12, 0.6), inset 0 1.8px 1.8px #ffffff !important;
 }
 .octopus-row-btn.btn-more {
-  padding: 0 6px;
-  font-weight: 700;
-  letter-spacing: 1px;
+  width: 25px;
+  height: 25px;
+  padding: 0;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(180deg, #ffffff 0%, rgba(241, 245, 249, 0.9) 100%);
+  color: #475569;
+  border: 1.5px solid rgba(255, 255, 255, 0.95);
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.06), inset 0 1.2px 1.2px #ffffff;
+}
+.octopus-row-btn.btn-more:hover {
+  background: #ffffff;
+  color: #0284c7;
+  border-color: #38bdf8;
+  box-shadow: 0 4px 10px rgba(2, 132, 199, 0.25);
 }
 
-/* 账号界面：天水碧 #5DA4B1 × 凝脂 #F8F3E9 护眼典雅配色规范 */
-.registered-page {
-  --acc-bi: #5da4b1;
-  --acc-zhi: #ffffff;
+/* ──────────── 9. 状态指示小圆点 (果冻水晶微光) ──────────── */
+.pulse-indicator-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  display: inline-block;
+  flex-shrink: 0;
 }
-.registered-page .dot-emerald,
-.registered-page .pulse-indicator-dot.dot-emerald,
 .dot-emerald {
-  background: #5da4b1 !important;
-  box-shadow: none !important;
+  background: #10b981 !important;
+  box-shadow: 0 0 6px #34d399 !important;
 }
-.registered-page .dot-cyan,
 .dot-cyan {
-  background: #5da4b1 !important;
-  box-shadow: none !important;
+  background: #06b6d4 !important;
+  box-shadow: 0 0 6px #22d3ee !important;
 }
-.registered-page .dot-rose,
-.dot-rose {
-  background: #c7564d !important;
-  box-shadow: none !important;
-}
-.registered-page .dot-amber,
 .dot-amber {
-  background: #d49432 !important;
-  box-shadow: none !important;
+  background: #f59e0b !important;
+  box-shadow: 0 0 6px #fbbf24 !important;
 }
-.registered-page .segmented-tab.tab-emerald.is-active,
-.segmented-tab.tab-emerald.is-active {
-  background: #ffffff !important;
-  color: #9c5424 !important;
-  border-color: #f0cdb5 !important;
-  box-shadow: 0 1px 4px rgba(217, 120, 57, 0.18) !important;
+.dot-rose {
+  background: #ef4444 !important;
+  box-shadow: 0 0 6px #f87171 !important;
 }
-.registered-page .segmented-tab.tab-cyan.is-active,
-.segmented-tab.tab-cyan.is-active {
-  background: #ffffff !important;
-  color: #28646e !important;
-  border-color: #bce2e7 !important;
-  box-shadow: 0 1px 4px rgba(93, 164, 177, 0.2) !important;
-}
-.registered-page .segmented-tab.tab-rose.is-active,
-.segmented-tab.tab-rose.is-active {
-  background: #ffffff !important;
-  color: #9b3730 !important;
-  border-color: #f0c4c0 !important;
-  box-shadow: 0 1px 4px rgba(199, 86, 77, 0.18) !important;
-}
-.registered-page .segmented-tab.tab-amber.is-active,
-.segmented-tab.tab-amber.is-active {
-  background: #ffffff !important;
-  color: #8c5c16 !important;
-  border-color: #eed4a8 !important;
-  box-shadow: 0 1px 4px rgba(212, 148, 50, 0.18) !important;
-}
-.tab-count-badge.count-emerald {
-  background: #fae9de !important;
-  color: #9c5424 !important;
-}
-.tab-count-badge.count-cyan {
-  background: #dbeef2 !important;
-  color: #28646e !important;
-}
-.tab-count-badge.count-rose {
-  background: #fae4e2 !important;
-  color: #9b3730 !important;
-}
-.tab-count-badge.count-amber {
-  background: #faedd6 !important;
-  color: #8c5c16 !important;
-}
-.sec-pwd-ok,
-.sec-2fa-ok {
-  background: #edf6f8 !important;
-  color: #28646e !important;
-  border-color: #bce2e7 !important;
-  box-shadow: none !important;
-}
-.sec-pwd-ok:hover,
-.sec-2fa-ok:hover {
-  background: #dbeef2 !important;
-  border-color: #5da4b1 !important;
-  box-shadow: 0 1px 4px rgba(93, 164, 177, 0.2) !important;
-}
-.sec-pwd-ok .sec-dot,
-.sec-2fa-ok .sec-dot {
-  background: #5da4b1 !important;
-}
-.at-exp-chip.at-exp-ok,
-.dossier-tag.at-exp-ok {
-  color: #28646e !important;
-  background: #edf6f8 !important;
-  border-color: #bce2e7 !important;
-}
-.at-exp-chip.at-exp-warn,
-.dossier-tag.at-exp-warn {
-  color: #8c5c16 !important;
-  background: #fcf4e6 !important;
-  border-color: #eed8b5 !important;
-}
-.at-exp-chip.at-exp-dead,
-.dossier-tag.at-exp-dead {
-  color: #9b3730 !important;
-  background: #fdf0ee !important;
-  border-color: #f1c8c4 !important;
-}
-.token-main-text.is-ok {
-  color: #28646e !important;
-}
-.token-main-text.is-refreshable {
-  color: #c7564d !important;
-}
-.primary-export-btn {
-  background: #5da4b1 !important;
-  color: #ffffff !important;
-}
-.primary-export-btn:hover:not(:disabled) {
-  background: #488793 !important;
-  box-shadow: 0 2px 8px rgba(93, 164, 177, 0.35) !important;
-}
-.dock-btn-primary {
-  border-color: #5da4b1 !important;
-  background: #5da4b1 !important;
-  color: #ffffff !important;
-  box-shadow: 0 2px 6px rgba(93, 164, 177, 0.3) !important;
-}
-.dock-btn .ico-emerald,
-.dock-btn .ico-blue {
-  color: #28646e !important;
-}
-.dock-btn-danger {
-  color: #9b3730 !important;
-  border-color: #f1c8c4 !important;
-  background: #fdf0ee !important;
-}
-.linear-modern-table :deep(.is-focused-row > td.el-table__cell),
-.linear-modern-table .is-focused-row > td.el-table__cell {
-  background: rgba(93, 164, 177, 0.12) !important;
-}
-.dossier-pulse-beacon {
-  background: #5da4b1 !important;
-  box-shadow: 0 0 6px rgba(93, 164, 177, 0.5) !important;
-}
-.tag-emerald,
-.tag-cyan,
-.text-emerald {
-  color: #28646e !important;
-}
-.selected-badge,
-.selected-badge b {
-  color: #28646e !important;
-}
-.linear-modern-table :deep(.el-table__row td.el-table__cell) {
-  color: #283a3d !important;
+.dot-slate {
+  background: #64748b !important;
+  box-shadow: 0 0 6px #94a3b8 !important;
 }
 
+/* ──────────── 10. 全局下拉菜单与气泡弹层 3D 水晶拟态 ──────────── */
+.extract-dropdown-menu,
+.macos-dropdown-menu,
+.col-setting-popover,
+.density-menu-popover {
+  border-radius: 14px !important;
+  background: rgba(255, 255, 255, 0.92) !important;
+  backdrop-filter: blur(28px) saturate(190%) !important;
+  -webkit-backdrop-filter: blur(28px) saturate(190%) !important;
+  border: 1.5px solid rgba(255, 255, 255, 0.95) !important;
+  border-top: 2px solid #ffffff !important;
+  box-shadow: 0 20px 48px -8px rgba(15, 23, 42, 0.18), 0 8px 16px rgba(15, 23, 42, 0.06), inset 0 2px 2px #ffffff !important;
+  padding: 6px !important;
+}
+
+.extract-dropdown-menu .el-dropdown-menu__item,
+.macos-dropdown-menu .el-dropdown-menu__item {
+  border-radius: 8px !important;
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  color: #1e293b !important;
+  padding: 7px 12px !important;
+  transition: all 0.15s ease !important;
+}
+.extract-dropdown-menu .el-dropdown-menu__item:hover,
+.macos-dropdown-menu .el-dropdown-menu__item:hover {
+  background: linear-gradient(180deg, rgba(238, 248, 255, 0.95) 0%, rgba(224, 242, 254, 0.8) 100%) !important;
+  color: #0284c7 !important;
+  box-shadow: inset 0 1px 1px #ffffff !important;
+}
+
+/* ──────────── 11. 3D实体液态水晶 OAuth 控制台弹窗 (对齐素材 961356eebdecace364b9e4e43548e143.jpg) ──────────── */
+.oa-custom-dialog {
+  border-radius: 20px !important;
+  overflow: hidden !important;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.94) 0%, rgba(255, 255, 255, 0.78) 50%, rgba(248, 250, 252, 0.9) 100%) !important;
+  backdrop-filter: blur(32px) saturate(210%) !important;
+  -webkit-backdrop-filter: blur(32px) saturate(210%) !important;
+  border: 2px solid rgba(255, 255, 255, 0.95) !important;
+  border-top: 2.5px solid #ffffff !important;
+  box-shadow: 0 32px 72px -12px rgba(15, 23, 42, 0.22), 0 12px 28px rgba(15, 23, 42, 0.08), inset 0 2.5px 2px #ffffff !important;
+}
+.oa-custom-dialog .el-dialog__header {
+  padding: 16px 22px 14px !important;
+  margin-right: 0 !important;
+  border-bottom: 1.5px solid rgba(255, 255, 255, 0.85) !important;
+  background: rgba(255, 255, 255, 0.5) !important;
+  backdrop-filter: blur(16px) !important;
+}
+.oa-custom-dialog .el-dialog__body {
+  padding: 16px 22px !important;
+  background: transparent !important;
+}
+.oa-custom-dialog .el-dialog__footer {
+  padding: 14px 22px !important;
+  border-top: 1.5px solid rgba(255, 255, 255, 0.85) !important;
+  background: rgba(255, 255, 255, 0.55) !important;
+  backdrop-filter: blur(16px) !important;
+}
 </style>

@@ -74,18 +74,20 @@ onMounted(() => {
 
 <template>
   <el-container class="admin-macos-shell">
-    <!-- 左侧 macOS 原生风格边栏 (支持毛玻璃与红黄绿交通灯) -->
-    <el-aside :width="collapse ? '68px' : '224px'" class="macos-sidebar">
-      <!-- 边栏顶部：macOS 经典三色交通灯与品牌 Logo -->
+    <!-- 全局背景流体环境微光光球 (Ambient Glass Glow Orbs) -->
+    <div class="shell-ambient-sphere sphere-1"></div>
+    <div class="shell-ambient-sphere sphere-2"></div>
+    <div class="shell-ambient-sphere sphere-3"></div>
+
+    <!-- 左侧 3D 水晶拟态浮空边栏 (Liquid Glass Sidebar) -->
+    <el-aside :width="collapse ? '74px' : '232px'" class="macos-sidebar">
+      <div class="sidebar-glass-specular"></div>
+      <div class="sidebar-caustic-flare"></div>
+      <!-- 边栏顶部：品牌 Logo (3D 水晶徽标) -->
       <div class="sidebar-topbar">
-        <div class="mac-traffic-lights">
-          <span class="traffic-dot red" title="关闭"></span>
-          <span class="traffic-dot yellow" title="最小化"></span>
-          <span class="traffic-dot green" title="最大化"></span>
-        </div>
-        <div v-if="!collapse" class="macos-brand">
+        <div class="macos-brand">
           <span class="brand-badge">GPT</span>
-          <span class="brand-title">少司命</span>
+          <span v-if="!collapse" class="brand-title">少司命</span>
         </div>
       </div>
 
@@ -236,19 +238,79 @@ onMounted(() => {
 </template>
 
 <style scoped>
-/* ──────────── macOS 系统级全屏外壳 ──────────── */
+/* ──────────── 3D实体液态水晶 macOS 系统级全屏工作区 ──────────── */
 .admin-macos-shell {
   height: 100vh;
   width: 100vw;
   overflow: hidden;
   display: flex;
-  background: var(--app-canvas-bg);
+  position: relative;
+  /* 摄影棚柔和瓷白底台 + 极细透气网格底纹 (严格对照素材图舒适高质感底色) */
+  background-color: #f1f4f9;
+  background-image:
+    radial-gradient(ellipse at 12% 15%, rgba(199, 210, 254, 0.45) 0%, transparent 45%),
+    radial-gradient(ellipse at 88% 85%, rgba(254, 215, 170, 0.25) 0%, transparent 45%),
+    radial-gradient(ellipse at 50% 0%, rgba(255, 255, 255, 0.95) 0%, transparent 60%),
+    linear-gradient(to right, rgba(148, 163, 184, 0.18) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(148, 163, 184, 0.18) 1px, transparent 1px);
+  background-size: 100% 100%, 100% 100%, 100% 100%, 28px 28px, 28px 28px;
 }
 
-/* ──────────── 左侧中国传统色「天水碧」沉静边栏 ──────────── */
+/* ════════ 全局环境微光光球 (柔和马卡龙环境透光，不刺眼) ════════ */
+.shell-ambient-sphere {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(100px);
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0.55;
+}
+.sphere-1 {
+  top: -60px;
+  left: -40px;
+  width: 500px;
+  height: 500px;
+  background: radial-gradient(circle, rgba(199, 210, 254, 0.7) 0%, rgba(165, 180, 252, 0.12) 70%);
+  animation: floatOrb1 18s ease-in-out infinite alternate;
+}
+.sphere-2 {
+  top: 35%;
+  right: 10%;
+  width: 520px;
+  height: 520px;
+  background: radial-gradient(circle, rgba(233, 213, 255, 0.6) 0%, rgba(192, 132, 252, 0.08) 70%);
+  animation: floatOrb2 22s ease-in-out infinite alternate-reverse;
+}
+.sphere-3 {
+  bottom: -60px;
+  left: 30%;
+  width: 550px;
+  height: 550px;
+  background: radial-gradient(circle, rgba(254, 215, 170, 0.5) 0%, rgba(251, 191, 36, 0.08) 70%);
+  animation: floatOrb1 20s ease-in-out infinite alternate;
+}
+@keyframes floatOrb1 {
+  0% { transform: translate(0, 0) scale(1); }
+  100% { transform: translate(25px, 15px) scale(1.06); }
+}
+@keyframes floatOrb2 {
+  0% { transform: translate(0, 0) scale(1); }
+  100% { transform: translate(-20px, -15px) scale(1.05); }
+}
+
+/* ──────────── 左侧 3D 浮空实体水晶边栏 (Liquid Glass Floating Island) ──────────── */
 .macos-sidebar {
-  background: #5da4b1;
-  border-right: 1px solid rgba(0, 0, 0, 0.08);
+  position: relative;
+  margin: 10px 0 10px 12px;
+  height: calc(100vh - 20px) !important;
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.65);
+  backdrop-filter: blur(30px) saturate(180%);
+  -webkit-backdrop-filter: blur(30px) saturate(180%);
+  border: 1.5px solid rgba(255, 255, 255, 0.92);
+  border-top: 2.2px solid #ffffff;
+  border-bottom: 1.5px solid rgba(203, 213, 225, 0.5);
+  box-shadow: 0 20px 48px -8px rgba(100, 116, 139, 0.12), 0 6px 18px -4px rgba(100, 116, 139, 0.06), inset 0 2px 2px #ffffff, inset 0 -1.5px 2px rgba(148, 163, 184, 0.15);
   display: flex;
   flex-direction: column;
   transition: width 0.22s cubic-bezier(0.4, 0, 0.2, 1);
@@ -256,41 +318,89 @@ onMounted(() => {
   z-index: 10;
   user-select: none;
 }
+html.dark .macos-sidebar {
+  background: rgba(15, 23, 42, 0.82);
+  border-color: rgba(255, 255, 255, 0.08);
+  box-shadow: 0 20px 48px -8px rgba(0, 0, 0, 0.5);
+}
 
+/* 顶部高光反射膜与底部彩色光焦散 */
+.sidebar-glass-specular {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 38px;
+  border-radius: 20px 20px 45% 45% / 20px 20px 18px 18px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.95) 0%, rgba(255, 255, 255, 0.25) 55%, transparent 100%);
+  pointer-events: none;
+  z-index: 2;
+}
+.sidebar-caustic-flare {
+  position: absolute;
+  bottom: -4px;
+  left: 15%;
+  right: 15%;
+  height: 16px;
+  border-radius: 50%;
+  background: radial-gradient(ellipse at center, rgba(199, 210, 254, 0.4) 0%, rgba(254, 215, 170, 0.2) 50%, transparent 80%);
+  filter: blur(6px);
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* 边栏顶部品牌区域 (3D 水晶大徽标) */
 .sidebar-topbar {
-  padding: 16px 16px 12px;
+  padding: 14px 14px 12px;
+  margin: 6px 8px 8px;
+  background: rgba(255, 255, 255, 0.7);
+  backdrop-filter: blur(16px);
+  border: 1.2px solid rgba(255, 255, 255, 0.95);
+  border-top: 1.8px solid #ffffff;
+  border-radius: 14px;
+  box-shadow: 0 4px 14px -2px rgba(15, 23, 42, 0.05), inset 0 1.5px 1px #ffffff;
   display: flex;
   align-items: center;
-  gap: 12px;
+  justify-content: flex-start;
   flex-shrink: 0;
+  position: relative;
+  z-index: 3;
+}
+html.dark .sidebar-topbar {
+  background: rgba(30, 41, 59, 0.85);
+  border-color: rgba(255, 255, 255, 0.1);
 }
 
 .macos-brand {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
 }
 .brand-badge {
   font-size: 11px;
-  font-weight: 700;
-  background: #ffffff;
-  color: #1a454d;
-  padding: 2px 7px;
-  border-radius: 6px;
+  font-weight: 800;
+  background: linear-gradient(180deg, #38bdf8 0%, #0284c7 60%, #0369a1 100%);
+  color: #ffffff;
+  padding: 3px 8px;
+  border-radius: 8px;
   letter-spacing: 0.5px;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
+  border: 1.2px solid rgba(255, 255, 255, 0.95);
+  box-shadow: 0 4px 12px rgba(2, 132, 199, 0.35), inset 0 1.5px 1px rgba(255, 255, 255, 0.85);
 }
 .brand-title {
-  font-size: 13.5px;
-  font-weight: 600;
-  color: #ffffff;
+  font-size: 14.5px;
+  font-weight: 800;
+  color: #0f172a;
   letter-spacing: -0.01em;
+}
+html.dark .brand-title {
+  color: #f1f5f9;
 }
 
 .sidebar-scroll {
   flex: 1;
   min-height: 0;
-  padding: 0 8px;
+  padding: 0 4px;
 }
 
 .macos-side-menu {
@@ -300,84 +410,168 @@ onMounted(() => {
 
 /* 分组标题 */
 :deep(.macos-menu-group .el-menu-item-group__title) {
-  padding: 12px 12px 6px !important;
-  font-size: 11px !important;
-  font-weight: 600 !important;
-  color: rgba(255, 255, 255, 0.65) !important;
+  padding: 12px 14px 4px !important;
+  font-size: 10.5px !important;
+  font-weight: 700 !important;
+  color: #64748b !important;
   letter-spacing: 0.8px !important;
   text-transform: uppercase !important;
 }
+html.dark :deep(.macos-menu-group .el-menu-item-group__title) {
+  color: #94a3b8 !important;
+}
 
-/* 导航项 */
+/* 导航项 (通透柔和水晶微胶囊，对齐素材 2ac2e3a9c1fd2371a185add9ac5a345a.jpg 与 3c96dc7ad762c523c88e687794b9c39a.jpg) */
 .macos-menu-item {
-  height: 36px !important;
-  line-height: 36px !important;
-  margin-bottom: 3px !important;
-  border-radius: 8px !important;
-  color: rgba(255, 255, 255, 0.92) !important;
-  font-size: 13px !important;
-  font-weight: 500 !important;
-  padding: 0 12px !important;
-  transition: all 0.16s cubic-bezier(0.4, 0, 0.2, 1) !important;
+  height: 38px !important;
+  line-height: 38px !important;
+  margin: 4px 8px !important;
+  border-radius: 11px !important;
+  padding: 0 10px !important;
+  background: rgba(255, 255, 255, 0.45) !important;
+  backdrop-filter: blur(10px) !important;
+  -webkit-backdrop-filter: blur(10px) !important;
+  border: 1px solid rgba(255, 255, 255, 0.8) !important;
+  border-top: 1.4px solid rgba(255, 255, 255, 0.95) !important;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.02), inset 0 1px 1px rgba(255, 255, 255, 0.8) !important;
+  color: #334155 !important;
+  font-size: 12.5px !important;
+  font-weight: 600 !important;
+  transition: all 0.16s cubic-bezier(0.16, 1, 0.3, 1) !important;
+  display: flex !important;
+  align-items: center !important;
+}
+html.dark .macos-menu-item {
+  background: rgba(30, 41, 59, 0.45) !important;
+  border-color: rgba(255, 255, 255, 0.06) !important;
+  color: #cbd5e1 !important;
 }
 
 .macos-menu-item:hover {
-  background: rgba(255, 255, 255, 0.18) !important;
-  color: #ffffff !important;
+  background: rgba(255, 255, 255, 0.9) !important;
+  border-color: rgba(56, 189, 248, 0.6) !important;
+  border-top-color: #ffffff !important;
+  color: #0284c7 !important;
+  transform: translateY(-1px) !important;
+  box-shadow: 0 4px 14px rgba(2, 132, 199, 0.15), inset 0 1.5px 1px #ffffff !important;
 }
 html.dark .macos-menu-item:hover {
-  background: rgba(255, 255, 255, 0.18) !important;
+  background: rgba(51, 65, 85, 0.7) !important;
+  color: #38bdf8 !important;
+  border-color: rgba(56, 189, 248, 0.3) !important;
 }
 
-/* 选中激活态：纯白玉润胶囊 (无瑕白玉配天水碧青翠) */
+/* 选中激活态：3D 蓝宝石果冻药丸 (对齐素材 2ac2e3a9c1fd2371a185add9ac5a345a.jpg 的 Search projects 纯净蓝宝石玻璃) */
 .macos-menu-item.is-active {
+  background: linear-gradient(180deg, #38bdf8 0%, #0284c7 60%, #0369a1 100%) !important;
+  color: #ffffff !important;
+  font-weight: 800 !important;
+  border: 1.8px solid rgba(255, 255, 255, 0.95) !important;
+  border-top: 2.2px solid #ffffff !important;
+  box-shadow: 0 8px 20px -3px rgba(2, 132, 199, 0.45), 0 3px 8px rgba(2, 132, 199, 0.25), inset 0 2px 2px rgba(255, 255, 255, 0.95), inset 0 -2px 3px rgba(0, 0, 0, 0.22) !important;
+  transform: translateY(-1px) !important;
+}
+html.dark .macos-menu-item.is-active {
+  background: linear-gradient(180deg, #0284c7 0%, #0369a1 100%) !important;
+  color: #ffffff !important;
+  border-color: #38bdf8 !important;
+  box-shadow: 0 8px 20px -3px rgba(2, 132, 199, 0.5), inset 0 1.5px 1px rgba(255, 255, 255, 0.4) !important;
+}
+
+/* 菜单图标通透微晶座舱 */
+.menu-icon {
+  font-size: 15px !important;
+  margin-right: 9px !important;
+  color: #64748b !important;
+  background: rgba(255, 255, 255, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.85);
+  border-radius: 7px;
+  width: 25px;
+  height: 25px;
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.03), inset 0 1px 1px #ffffff;
+  transition: all 0.16s ease !important;
+  flex-shrink: 0;
+}
+html.dark .menu-icon {
+  color: #94a3b8 !important;
+  background: rgba(15, 23, 42, 0.6);
+  border-color: rgba(255, 255, 255, 0.08);
+}
+.macos-menu-item:hover .menu-icon {
   background: #ffffff !important;
-  color: #1a454d !important;
-  font-weight: 600 !important;
-  box-shadow: 0 3px 10px rgba(18, 56, 62, 0.2) !important;
+  color: #0284c7 !important;
+  border-color: rgba(56, 189, 248, 0.6) !important;
+  box-shadow: 0 2px 6px rgba(2, 132, 199, 0.18) !important;
 }
 .macos-menu-item.is-active .menu-icon {
-  color: #1a454d !important;
+  color: #ffffff !important;
+  background: rgba(255, 255, 255, 0.25) !important;
+  border-color: rgba(255, 255, 255, 0.65) !important;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15), inset 0 1px 1px rgba(255, 255, 255, 0.7) !important;
 }
-
-.menu-icon {
-  font-size: 16px !important;
-  margin-right: 10px !important;
-  color: rgba(255, 255, 255, 0.85);
+html.dark .macos-menu-item.is-active .menu-icon {
+  color: #ffffff !important;
+  background: rgba(2, 132, 199, 0.6) !important;
+  border-color: rgba(56, 189, 248, 0.4) !important;
 }
 
 .menu-label {
   letter-spacing: -0.01em;
+  font-size: 12.5px;
 }
 
 /* 边栏底部 */
 .sidebar-bottom {
-  padding: 10px 12px;
-  border-top: 1px solid rgba(248, 243, 233, 0.18);
+  padding: 10px 12px 14px;
+  border-top: 1.2px solid rgba(255, 255, 255, 0.8);
   flex-shrink: 0;
+  background: rgba(255, 255, 255, 0.45);
+  backdrop-filter: blur(16px);
+}
+html.dark .sidebar-bottom {
+  border-top: 1.2px solid rgba(255, 255, 255, 0.08);
+  background: rgba(15, 23, 42, 0.5);
 }
 .collapse-btn {
   width: 100%;
-  height: 30px;
+  height: 32px;
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  color: rgba(248, 243, 233, 0.85);
+  background: rgba(255, 255, 255, 0.8);
+  backdrop-filter: blur(12px);
+  border: 1.2px solid rgba(255, 255, 255, 0.95);
+  border-top: 1.6px solid #ffffff;
+  border-radius: 9999px;
+  color: #475569;
   font-size: 11.5px;
+  font-weight: 700;
   cursor: pointer;
   outline: none;
-  transition: all 0.15s ease;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.04), inset 0 1px 1px #ffffff;
+  transition: all 0.16s ease;
 }
 .collapse-btn:hover {
-  background: rgba(248, 243, 233, 0.15);
-  color: #ffffff;
+  background: #ffffff;
+  color: #0284c7;
+  border-color: #7dd3fc;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(2, 132, 199, 0.16);
+}
+html.dark .collapse-btn {
+  background: rgba(30, 41, 59, 0.8);
+  border-color: rgba(255, 255, 255, 0.1);
+  color: #94a3b8;
+  box-shadow: none;
 }
 html.dark .collapse-btn:hover {
-  background: rgba(248, 243, 233, 0.15);
+  background: rgba(51, 65, 85, 0.9);
+  color: #38bdf8;
+  border-color: #38bdf8;
 }
 
 /* ──────────── 右侧主体外壳与毛玻璃顶栏 ──────────── */
@@ -386,22 +580,32 @@ html.dark .collapse-btn:hover {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  background: var(--app-content-bg);
+  background: transparent;
   overflow: hidden;
+  position: relative;
+  z-index: 1;
 }
 
 .macos-topbar {
-  height: 50px !important;
+  height: 48px !important;
+  margin: 10px 10px 0 10px;
   padding: 0 16px !important;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  background: var(--app-header-bg);
-  backdrop-filter: blur(24px) saturate(180%);
-  -webkit-backdrop-filter: blur(24px) saturate(180%);
-  border-bottom: 1px solid var(--app-border);
+  background: rgba(255, 255, 255, 0.68);
+  backdrop-filter: blur(28px) saturate(180%);
+  -webkit-backdrop-filter: blur(28px) saturate(180%);
+  border: 1.2px solid rgba(255, 255, 255, 0.92);
+  border-top: 1.8px solid #ffffff;
+  border-radius: 16px;
+  box-shadow: 0 8px 24px -4px rgba(100, 116, 139, 0.08), inset 0 1.5px 1px #ffffff;
   flex-shrink: 0;
   z-index: 9;
+}
+html.dark .macos-topbar {
+  background: rgba(15, 23, 42, 0.8);
+  border-bottom: 1.5px solid rgba(255, 255, 255, 0.08);
 }
 
 .topbar-left {
@@ -445,16 +649,49 @@ html.dark .collapse-btn:hover {
   gap: 12px;
 }
 
+/* ──────────── 3D 实体双层厚水晶 Spotlight 搜索框 (1:1 复刻素材图 Search projects...) ──────────── */
 .macos-spotlight-search {
-  width: 190px;
+  width: 195px;
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 3px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.5);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1.8px solid rgba(255, 255, 255, 0.95);
+  border-top: 2.2px solid #ffffff;
+  border-bottom: 1.8px solid rgba(203, 213, 225, 0.6);
+  box-shadow:
+    0 4px 12px -2px rgba(15, 23, 42, 0.06),
+    inset 0 1.5px 1.5px #ffffff,
+    inset 0 -1.5px 2px rgba(148, 163, 184, 0.18);
+  transition: all 0.16s ease;
 }
-.macos-spotlight-search :deep(.el-input__wrapper) {
-  background: var(--el-fill-color-light) !important;
+.macos-spotlight-search:hover {
+  background: rgba(255, 255, 255, 0.7);
+  border-color: rgba(56, 189, 248, 0.6);
+  box-shadow:
+    0 6px 16px -2px rgba(2, 132, 199, 0.15),
+    inset 0 1.5px 1.5px #ffffff;
+}
+.macos-spotlight-search :deep(.el-select__wrapper) {
+  background: rgba(255, 255, 255, 0.92) !important;
   border-radius: 8px !important;
-  box-shadow: none !important;
+  border: 1px solid rgba(226, 232, 240, 0.85) !important;
+  box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.04) !important;
+  height: 24px !important;
+  min-height: 24px !important;
+  padding: 0 6px !important;
+}
+.macos-spotlight-search :deep(.el-select__wrapper.is-focused) {
+  background: #ffffff !important;
+  border-color: #38bdf8 !important;
+  box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.2), inset 0 1px 2px rgba(15, 23, 42, 0.04) !important;
 }
 
-/* 状态指标胶囊群 */
+/* 状态指标胶囊群 (3D 通透水晶微胶囊，对齐素材舒适配色) */
 .macos-stat-pills {
   display: flex;
   align-items: center;
@@ -463,36 +700,49 @@ html.dark .collapse-btn:hover {
 .stat-pill {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 2px 8px;
-  border-radius: 12px;
+  gap: 5px;
+  padding: 3px 9px;
+  border-radius: 9999px;
   font-size: 11px;
-  background: #ffffff;
-  border: 1px solid rgba(93, 164, 177, 0.22);
+  background: rgba(255, 255, 255, 0.65);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(255, 255, 255, 0.9);
+  border-top: 1.5px solid #ffffff;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.03), inset 0 1px 1px #ffffff;
+  transition: all 0.16s ease;
+}
+.stat-pill:hover {
+  background: rgba(255, 255, 255, 0.85);
+  transform: translateY(-1px);
 }
 .stat-pill .pill-dot {
-  width: 5px;
-  height: 5px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
-  background: #5da4b1;
+  background: #64748b;
+  box-shadow: 0 0 5px currentColor;
 }
 .stat-pill .pill-label {
-  color: #65777a;
+  color: #64748b;
+  font-weight: 600;
 }
 .stat-pill .pill-val {
   font-weight: 700;
-  font-family: "SFMono-Regular", Consolas, monospace;
-  color: #234e55;
+  font-family: -apple-system, BlinkMacSystemFont, "SFMono-Regular", Consolas, monospace;
+  color: #0f172a;
 }
 
-.stat-pill.pill-success .pill-dot { background: #5da4b1; }
-.stat-pill.pill-success .pill-val { color: #234e55; }
-.stat-pill.pill-warning .pill-dot { background: #5da4b1; }
-.stat-pill.pill-warning .pill-val { color: #234e55; }
-.stat-pill.pill-primary .pill-dot { background: #5da4b1; }
-.stat-pill.pill-primary .pill-val { color: #234e55; }
-.stat-pill.pill-danger .pill-dot { background: #c7564d; }
-.stat-pill.pill-danger .pill-val { color: #9b3730; }
+.stat-pill.pill-info .pill-dot { background: #0284c7; color: #0284c7; }
+.stat-pill.pill-info .pill-val { color: #0369a1; }
+.stat-pill.pill-success .pill-dot { background: #10b981; color: #10b981; }
+.stat-pill.pill-success .pill-val { color: #047857; }
+.stat-pill.pill-warning .pill-dot { background: #f59e0b; color: #f59e0b; }
+.stat-pill.pill-warning .pill-val { color: #b45309; }
+.stat-pill.pill-primary .pill-dot { background: #3b82f6; color: #3b82f6; }
+.stat-pill.pill-primary .pill-val { color: #1d4ed8; }
+.stat-pill.pill-danger .pill-dot { background: #f43f5e; color: #f43f5e; }
+.stat-pill.pill-danger .pill-val { color: #be123c; }
 
 /* 主题切换开关 */
 .macos-theme-toggle {
@@ -556,7 +806,7 @@ html.dark .collapse-btn:hover {
   display: flex;
   flex-direction: column;
   overflow: hidden !important;
-  background: var(--app-content-bg);
+  background: transparent;
 }
 
 .circuit-banner {
