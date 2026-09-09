@@ -191,6 +191,8 @@ class SentinelPrecomputePool:
             # 纯内存会话（用于握手 sentinel 计算）
             session = CffiSession(impersonate=impersonate)
             session.trust_env = False
+            if ua:
+                session.headers["User-Agent"] = ua
             device_id = str(uuid.uuid4())
 
             qresult = get_sentinel_token_via_quickjs(
@@ -210,6 +212,9 @@ class SentinelPrecomputePool:
                 max_touch_points=fp.get("max_touch_points", 0),
                 device_pixel_ratio=fp.get("device_pixel_ratio", 1.0),
                 timezone=fp.get("timezone", ""),
+                sec_ch_ua=fp.get("sec_ch_ua", ""),
+                sec_ch_ua_platform=fp.get("sec_ch_ua_platform", ""),
+                sec_ch_ua_mobile=fp.get("sec_ch_ua_mobile", ""),
                 sec_ch_ua_full_version_list=fp.get("sec_ch_ua_full_version_list", ""),
                 sec_ch_ua_arch=fp.get("sec_ch_ua_arch", ""),
                 sec_ch_ua_bitness=fp.get("sec_ch_ua_bitness", ""),

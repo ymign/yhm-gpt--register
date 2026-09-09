@@ -138,10 +138,30 @@ class _TlsRetrySession:
         return self._call_with_retry("put", *args, **kwargs)
 
 
+def _apply_session_headers(session, user_agent: Optional[str], extra_headers: Optional[dict] = None) -> None:
+    """把本号 UA / Client Hints 写到 session 默认头。
+
+    curl_cffi impersonate 会自带 Chrome/146 的 User-Agent 和 sec-ch-ua。
+    不覆盖的话，任何没传 headers= 的请求都会在同一出口 IP 上漏出 146，
+    而业务请求自称 Chrome/149 —— Cloudflare 能对上。
+    """
+    ua = (user_agent or "").strip() or USER_AGENT
+    try:
+        session.headers["User-Agent"] = ua
+    except Exception:
+        return
+    if extra_headers:
+        for key, value in extra_headers.items():
+            if value is None or value == "":
+                continue
+            session.headers[key] = value
+
+
 def create_http_session(
     proxy: Optional[str] = None,
     impersonate: str = "chrome146",
     user_agent: Optional[str] = None,
+    extra_headers: Optional[dict] = None,
 ):
     """
     创建 HTTP 会话。优先使用 curl_cffi 模拟浏览器 TLS 指纹，
@@ -167,6 +187,7 @@ def create_http_session(
         else:
             # 显式设置空代理，覆盖系统环境变量 (trust_env=False 对 libcurl 不够)
             session.proxies = {"https": "", "http": ""}
+        _apply_session_headers(session, user_agent, extra_headers)
         # 代理链路 5.4% 偶发 TLS 瞬断，原 session 重试实测 8/8 一次即恢复。
         # 包在这里才能同时覆盖 auth_flow 的 35 处调用和 sentinel（它直接拿 session 自己发请求）。
         return _TlsRetrySession(session)
@@ -184,5 +205,5 @@ def create_http_session(
         session.mount("http://", adapter)
         if proxy:
             session.proxies = {"https": proxy, "http": proxy}
-        session.headers["User-Agent"] = user_agent or USER_AGENT
+        _apply_session_headers(session, user_agent, extra_headers)
         return session

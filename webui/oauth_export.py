@@ -33,7 +33,7 @@ from http_client import create_http_session
 from mail_providers import create_mail_provider, get_provider_class
 from sentinel import get_sentinel_token
 from . import db
-from .proxy_util import COUNTRY_LANG_MAP, new_proxy_session_id, resolve_target_country, route_proxy_country
+from .proxy_util import new_proxy_session_id, resolve_target_country, route_proxy_country
 
 logger = logging.getLogger(__name__)
 
@@ -398,16 +398,22 @@ def _abs_auth_url(url: str) -> str:
     return u
 
 
-def _enter_auth_page(session, url: str, nav_headers: dict, timeout, log_fn, label: str) -> str:
+def _enter_auth_page(session, url: str, fp: dict, ua: str, timeout, log_fn, label: str) -> str:
     """GET continue_url，把服务端返回的下一页真正打开，绑定登录会话。"""
     curr = _abs_auth_url(url)
     if not curr:
         return ""
+    referer = "https://auth.openai.com/"
     for hop in range(6):
         try:
             if log_fn and hop == 0:
                 log_fn(f"{label} 🌐 [OpenAI REQ] GET {_short_url(curr)}")
-            r = session.get(curr, headers=nav_headers, allow_redirects=False, timeout=timeout)
+            r = session.get(
+                curr,
+                headers=_nav_headers(fp, ua, curr, referer),
+                allow_redirects=False,
+                timeout=timeout,
+            )
         except Exception as e:
             if log_fn:
                 log_fn(f"{label} GET 异常: {e}")
@@ -422,6 +428,7 @@ def _enter_auth_page(session, url: str, nav_headers: dict, timeout, log_fn, labe
                 if log_fn:
                     log_fn(f"{label} 打开后又回到登录/密码页，会话没保住")
                 return loc
+            referer = curr
             curr = loc
             continue
         return curr
@@ -432,9 +439,10 @@ def _follow_oauth_callback(
     session,
     start_urls: list[str],
     redirect_uri: str,
-    nav_headers: dict,
     post_headers: dict,
     device_id: str,
+    fp: dict,
+    ua: str,
     timeout: int = 30,
     log_fn: Optional[Callable[[str], None]] = None,
     fallback_workspace_id: str = "",
@@ -460,6 +468,7 @@ def _follow_oauth_callback(
             continue
 
         _log(f"[5/6] 跟踪跳转 {start_idx+1}/{len(start_urls)} 起点={start_kind} {_short_url(curr)}")
+        referer = "https://chatgpt.com/" if "oauth/authorize" in curr else "https://auth.openai.com/"
 
         for hop in range(15):
             if _callback_has_code(curr, redirect_uri):
@@ -470,7 +479,12 @@ def _follow_oauth_callback(
             for retry_idx in range(3):
                 try:
                     _log(f"[5/6] 🌐 [OpenAI REQ] hop {hop+1} GET {_short_url(curr)}")
-                    r = session.get(curr, headers=nav_headers, allow_redirects=False, timeout=timeout)
+                    r = session.get(
+                        curr,
+                        headers=_nav_headers(fp, ua, curr, referer),
+                        allow_redirects=False,
+                        timeout=timeout,
+                    )
                     break
                 except Exception as e:
                     if retry_idx < 2:
@@ -499,6 +513,7 @@ def _follow_oauth_callback(
                 if _page_kind_from_url(loc) in ("密码页", "登录页") and hop >= 4:
                     _log("[5/6] 跳转落到登录/密码页，说明当前会话未真正登录，停止这条起点")
                     break
+                referer = curr
                 curr = loc
                 continue
 
@@ -522,6 +537,7 @@ def _follow_oauth_callback(
                     _log(f"[5/6] HTML meta refresh -> {_short_url(meta_target)}")
                     if _callback_has_code(meta_target, redirect_uri):
                         return meta_target
+                    referer = curr
                     curr = meta_target
                     continue
 
@@ -533,6 +549,7 @@ def _follow_oauth_callback(
                     _log(f"[5/6] HTML JS location -> {_short_url(loc_target)}")
                     if _callback_has_code(loc_target, redirect_uri):
                         return loc_target
+                    referer = curr
                     curr = loc_target
                     continue
 
@@ -574,6 +591,7 @@ def _follow_oauth_callback(
                                 ws_loc = urljoin("https://auth.openai.com", ws_loc)
                             if _callback_has_code(ws_loc, redirect_uri):
                                 return ws_loc
+                            referer = curr
                             curr = ws_loc
                             continue
                         ws_data = {}
@@ -588,6 +606,7 @@ def _follow_oauth_callback(
                             _log(f"[5/6] workspace/select continue_url={_short_url(next_url)}")
                             if _callback_has_code(next_url, redirect_uri):
                                 return next_url
+                            referer = curr
                             curr = next_url
                             continue
                         _log(f"[5/6] workspace/select 无下一跳 body={(ws_resp.text or '')[:120]}")
@@ -602,6 +621,7 @@ def _follow_oauth_callback(
                             next_url = urljoin("https://auth.openai.com", next_url)
                         if _callback_has_code(next_url, redirect_uri):
                             return next_url
+                        referer = curr
                         curr = next_url
                         continue
 
@@ -894,6 +914,137 @@ def _classify_oauth_error(err: str, status: str = "") -> str:
     return "other"
 
 
+def _client_hint_headers(fp: dict) -> dict:
+    """本号 Client Hints，键名小写，与注册链一致。"""
+    if not fp or not fp.get("sec_ch_ua"):
+        return {}
+    headers = {
+        "sec-ch-ua": fp["sec_ch_ua"],
+        "sec-ch-ua-mobile": fp.get("sec_ch_ua_mobile") or "?0",
+        "sec-ch-ua-platform": fp.get("sec_ch_ua_platform") or "",
+    }
+    for key, name in (
+        ("sec_ch_ua_full_version_list", "sec-ch-ua-full-version-list"),
+        ("sec_ch_ua_arch", "sec-ch-ua-arch"),
+        ("sec_ch_ua_bitness", "sec-ch-ua-bitness"),
+        ("sec_ch_ua_model", "sec-ch-ua-model"),
+        ("sec_ch_ua_platform_version", "sec-ch-ua-platform-version"),
+    ):
+        if fp.get(key):
+            headers[name] = fp[key]
+    return headers
+
+
+def _session_identity_headers(fp: dict, ua: str) -> dict:
+    headers = {
+        "User-Agent": ua,
+        "Accept-Language": (fp or {}).get("lang_full") or "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br, zstd",
+    }
+    headers.update(_client_hint_headers(fp or {}))
+    return headers
+
+
+def _nav_headers(fp: dict, ua: str, url: str = "", referer: str = "") -> dict:
+    """文档导航头。无 Referer 视为地址栏直达（warmup）；有 Referer 则按跳转标 site。"""
+    headers = {
+        "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,"
+                  "image/avif,image/webp,image/apng,*/*;q=0.8",
+        "Accept-Language": (fp or {}).get("lang_full") or "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br, zstd",
+        "sec-fetch-dest": "document",
+        "sec-fetch-mode": "navigate",
+        "sec-fetch-site": "none",
+        "sec-fetch-user": "?1",
+        "upgrade-insecure-requests": "1",
+        "priority": "u=0, i",
+        "User-Agent": ua,
+    }
+    headers.update(_client_hint_headers(fp or {}))
+    if referer:
+        headers["Referer"] = referer
+        try:
+            dest = (urlparse(url or "").netloc or "").lower()
+            src = (urlparse(referer).netloc or "").lower()
+            headers["sec-fetch-site"] = "same-origin" if dest and dest == src else "cross-site"
+        except Exception:
+            headers["sec-fetch-site"] = "cross-site"
+    return headers
+
+
+def _xhr_headers(fp: dict, ua: str, referer: str, device_id: str = "") -> dict:
+    origin = "https://auth.openai.com"
+    try:
+        parsed = urlparse(referer or "")
+        if parsed.scheme and parsed.netloc:
+            origin = f"{parsed.scheme}://{parsed.netloc}"
+    except Exception:
+        pass
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "User-Agent": ua,
+        "Accept-Language": (fp or {}).get("lang_full") or "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br, zstd",
+        "Origin": origin,
+        "Referer": referer,
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-origin",
+        "priority": "u=1, i",
+    }
+    if device_id:
+        headers["oai-device-id"] = device_id
+    headers.update(_client_hint_headers(fp or {}))
+    return headers
+
+
+def _sentinel_fp_kwargs(fp: dict, ua: str) -> dict:
+    fp = fp or {}
+    return {
+        "user_agent": ua,
+        "sec_ch_ua": fp.get("sec_ch_ua", ""),
+        "sec_ch_ua_platform": fp.get("sec_ch_ua_platform", ""),
+        "sec_ch_ua_mobile": fp.get("sec_ch_ua_mobile", ""),
+        "sec_ch_ua_full_version_list": fp.get("sec_ch_ua_full_version_list", ""),
+        "sec_ch_ua_arch": fp.get("sec_ch_ua_arch", ""),
+        "sec_ch_ua_bitness": fp.get("sec_ch_ua_bitness", ""),
+        "sec_ch_ua_model": fp.get("sec_ch_ua_model", ""),
+        "sec_ch_ua_platform_version": fp.get("sec_ch_ua_platform_version", ""),
+        "screen": fp.get("screen", ""),
+        "lang": fp.get("lang", ""),
+        "lang_full": fp.get("lang_full", ""),
+        "browser_type": fp.get("browser_type", ""),
+        "navigator_platform": fp.get("navigator_platform", ""),
+        "navigator_vendor": fp.get("navigator_vendor"),
+        "hardware_concurrency": fp.get("hardware_concurrency", 0),
+        "device_memory": fp.get("device_memory"),
+        "max_touch_points": fp.get("max_touch_points", 0),
+        "device_pixel_ratio": fp.get("device_pixel_ratio", 0.0),
+        "timezone": fp.get("timezone", ""),
+    }
+
+
+def _oauth_http_session(proxy: str, fp: dict):
+    ua = (fp or {}).get("user_agent") or ""
+    impersonate = (fp or {}).get("impersonate") or "chrome146"
+    return create_http_session(
+        proxy=proxy or None,
+        impersonate=impersonate,
+        user_agent=ua,
+        extra_headers=_session_identity_headers(fp or {}, ua),
+    )
+
+
+def _rotate_proxy_ip(proxy: str, country: str) -> str:
+    if not proxy:
+        return proxy
+    try:
+        return route_proxy_country(proxy, country or "", new_proxy_session_id())
+    except Exception:
+        return proxy
+
+
 def execute_codex_oauth_flow(
     email: str,
     mail_provider: Any,
@@ -931,13 +1082,13 @@ def execute_codex_oauth_flow(
     phone_verified = False
     verified_phone = ""
 
-    country_code = (target_country or account_info.get("reg_country") or "JP").strip().upper()
-    lang_full = COUNTRY_LANG_MAP.get(country_code, "ja-JP,ja;q=0.9,en-US;q=0.8" if country_code == "JP" else "en-US,en;q=0.9")
+    country_code = (target_country or account_info.get("reg_country") or "").strip().upper()
 
-    # 生成与目标国家对齐的一致性浏览器指纹
-    fp = generate_fingerprint(country_code=country_code)
+    # 生成与目标国家对齐的一致性浏览器指纹；语言跟指纹走，不再另套 COUNTRY_LANG_MAP / 默认 JP。
+    fp = generate_fingerprint(country_code=country_code or None)
     ua = fp.get("user_agent") or "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
     impersonate = fp.get("impersonate") or "chrome146"
+    lang_full = fp.get("lang_full") or "en-US,en;q=0.9"
     _trace_put(
         trace,
         impersonate=impersonate,
@@ -973,61 +1124,42 @@ def execute_codex_oauth_flow(
     }
     auth_url = f"https://auth.openai.com/oauth/authorize?{urlencode(auth_params)}"
 
-    # 采用自带 _TlsRetrySession 和代理标准化的安全会话
-    session = create_http_session(proxy=proxy or None, impersonate=impersonate, user_agent=ua)
+    session = _oauth_http_session(proxy, fp)
 
     # ──────────────── 阶段 1: 建立会话与预热 ────────────────
     _step("1", "[1/6] 发起鉴权 (建立会话)")
-    _log(f"[1/6] 发起 Codex OAuth 鉴权 (模拟 {impersonate}, 国别: {country_code})...")
+    _log(f"[1/6] 发起 Codex OAuth 鉴权 (模拟 {impersonate}, 国别: {country_code or '未指定'})...")
 
-    # 构造完整导航头（必须包含 client hints 以避免被 Cloudflare 403 拦截）
-    nav_headers = {
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-        "Accept-Language": lang_full,
-        "Accept-Encoding": "gzip, deflate, br, zstd",
-        "User-Agent": ua,
-        "Sec-Fetch-Dest": "document",
-        "Sec-Fetch-Mode": "navigate",
-        "Sec-Fetch-Site": "cross-site",
-        "Sec-Fetch-User": "?1",
-        "Upgrade-Insecure-Requests": "1",
-        "Priority": "u=0, i",
-        "Referer": "https://chatgpt.com/",
-    }
-    if fp.get("sec_ch_ua"):
-        nav_headers["Sec-Ch-Ua"] = fp["sec_ch_ua"]
-        nav_headers["Sec-Ch-Ua-Mobile"] = fp.get("sec_ch_ua_mobile") or "?0"
-        nav_headers["Sec-Ch-Ua-Platform"] = fp["sec_ch_ua_platform"]
-        for key, name in (
-            ("sec_ch_ua_full_version_list", "Sec-Ch-Ua-Full-Version-List"),
-            ("sec_ch_ua_arch", "Sec-Ch-Ua-Arch"),
-            ("sec_ch_ua_bitness", "Sec-Ch-Ua-Bitness"),
-            ("sec_ch_ua_model", "Sec-Ch-Ua-Model"),
-            ("sec_ch_ua_platform_version", "Sec-Ch-Ua-Platform-Version"),
-        ):
-            if fp.get(key):
-                nav_headers[name] = fp[key]
+    warmup_headers = _nav_headers(fp, ua)
+    auth_headers = _nav_headers(fp, ua, auth_url, "https://chatgpt.com/")
 
-    # 先对 chatgpt.com 进行预热，建立 oai-did 与 Cloudflare 信任态
+    # 先对 chatgpt.com 进行预热：地址栏直达，site=none，不带 Referer
     try:
-        session.get("https://chatgpt.com/", headers=nav_headers, timeout=min(20.0, timeout))
+        session.get("https://chatgpt.com/", headers=warmup_headers, timeout=min(20.0, timeout))
     except Exception as e:
         logger.debug(f"[oauth_export] warmup 提示: {e}")
 
     try:
         t0 = time.time()
-        resp = session.get(auth_url, headers=nav_headers, allow_redirects=True, timeout=timeout)
+        resp = session.get(auth_url, headers=auth_headers, allow_redirects=True, timeout=timeout)
         t_hop = int((time.time() - t0) * 1000)
         status_code = getattr(resp, "status_code", 0)
         if status_code in (401, 403):
-            _log(f"[1/6] ⚠️ 授权服务器响应 {status_code}，正在切换备选会话重试...")
+            _log(f"[1/6] ⚠️ 授权服务器响应 {status_code}，保持本号指纹，只换同国新 IP 重试")
             time.sleep(2)
-            session = create_http_session(proxy=proxy or None, impersonate="chrome142", user_agent=ua)
-            resp = session.get(auth_url, headers=nav_headers, allow_redirects=True, timeout=timeout)
+            proxy = _rotate_proxy_ip(proxy, country_code)
+            session = _oauth_http_session(proxy, fp)
+            try:
+                session.get("https://chatgpt.com/", headers=warmup_headers, timeout=min(20.0, timeout))
+            except Exception:
+                pass
+            resp = session.get(auth_url, headers=auth_headers, allow_redirects=True, timeout=timeout)
             status_code = getattr(resp, "status_code", 0)
             if status_code in (401, 403):
                 raise RuntimeError(f"OpenAI 授权服务器返回 HTTP {status_code}，当前网络/代理节点受限")
         _log(f"[1/6] 授权会话建立成功 ({t_hop}ms): status={status_code or 'OK'}")
+    except RuntimeError:
+        raise
     except Exception as e:
         raise RuntimeError(f"连接 OpenAI 授权服务器失败: {e}")
 
@@ -1043,48 +1175,14 @@ def execute_codex_oauth_flow(
             session,
             device_id=device_id,
             flow="authorize_continue",
-            user_agent=ua,
-            sec_ch_ua=fp.get("sec_ch_ua", ""),
-            sec_ch_ua_platform=fp.get("sec_ch_ua_platform", ""),
-            sec_ch_ua_mobile=fp.get("sec_ch_ua_mobile", ""),
-            sec_ch_ua_full_version_list=fp.get("sec_ch_ua_full_version_list", ""),
-            sec_ch_ua_arch=fp.get("sec_ch_ua_arch", ""),
-            sec_ch_ua_bitness=fp.get("sec_ch_ua_bitness", ""),
-            sec_ch_ua_model=fp.get("sec_ch_ua_model", ""),
-            sec_ch_ua_platform_version=fp.get("sec_ch_ua_platform_version", ""),
-            screen=fp.get("screen", ""),
-            lang=fp.get("lang", ""),
-            lang_full=lang_full,
-            browser_type=fp.get("browser_type", ""),
-            navigator_platform=fp.get("navigator_platform", ""),
-            navigator_vendor=fp.get("navigator_vendor"),
-            hardware_concurrency=fp.get("hardware_concurrency", 0),
-            device_memory=fp.get("device_memory"),
-            max_touch_points=fp.get("max_touch_points", 0),
-            device_pixel_ratio=fp.get("device_pixel_ratio", 0.0),
-            timezone=fp.get("timezone", ""),
+            **_sentinel_fp_kwargs(fp, ua),
         )
         t_pow = int((time.time() - t_pow0) * 1000)
         _log(f"[2/6] Sentinel PoW 计算完成 ({t_pow}ms, token_len={len(st_token)}, so={'有' if so_token else '无'})")
     except Exception as e:
         _log(f"[2/6] Sentinel Token 计算提示: {e}")
 
-    post_headers = {
-        "Accept": "application/json",
-        "Content-Type": "application/json",
-        "User-Agent": ua,
-        "Accept-Language": lang_full,
-        "Origin": "https://auth.openai.com",
-        "Referer": "https://auth.openai.com/log-in",
-        "oai-device-id": device_id,
-        "Sec-Fetch-Dest": "empty",
-        "Sec-Fetch-Mode": "cors",
-        "Sec-Fetch-Site": "same-origin",
-    }
-    if fp.get("sec_ch_ua"):
-        post_headers["Sec-Ch-Ua"] = fp["sec_ch_ua"]
-        post_headers["Sec-Ch-Ua-Mobile"] = fp.get("sec_ch_ua_mobile") or "?0"
-        post_headers["Sec-Ch-Ua-Platform"] = fp["sec_ch_ua_platform"]
+    post_headers = _xhr_headers(fp, ua, "https://auth.openai.com/log-in", device_id)
     if st_token:
         post_headers["openai-sentinel-token"] = st_token
     if so_token:
@@ -1102,10 +1200,10 @@ def execute_codex_oauth_flow(
         err_msg = (step_resp.text or "")[:200]
         # 如果遇到 409 invalid_state，自动切换至标准 AuthFlow.run_protocol_login 作为强健兜底
         if step_resp.status_code == 409 or "invalid_state" in err_msg:
-            _log(f"[2/6] ⚠️ 触发 409 会话刷新态，正在自动调用 AuthFlow 全链路登录引擎兜底重登...")
+            _log("[2/6] ⚠️ 触发 409 invalid_state：保持本号指纹，换同国新 IP 后走协议登录（不再同 IP 换皮）")
             from auth_flow import AuthFlow
             cfg = Config()
-            cfg.proxy = proxy or None
+            cfg.proxy = _rotate_proxy_ip(proxy, country_code) or None
             env_overrides = {
                 "TARGET_COUNTRY": country_code,
                 "OTP_TIMEOUT": str(int(timeout)),
@@ -1119,6 +1217,7 @@ def execute_codex_oauth_flow(
                     "password": account_info.get("password") or "",
                     "totp_secret": account_info.get("totp_secret") or "",
                 },
+                fingerprint=fp,
             )
             login_res = login_flow.run_protocol_login(
                 mail_provider=mail_provider,
@@ -1208,9 +1307,10 @@ def execute_codex_oauth_flow(
         if password:
             _log("[2/6] 当前是密码页，库里有登录密码，提交 password/verify")
             try:
+                pw_url = f"https://auth.openai.com/log-in/password?email={quote(email)}"
                 session.get(
-                    f"https://auth.openai.com/log-in/password?email={quote(email)}",
-                    headers=nav_headers,
+                    pw_url,
+                    headers=_nav_headers(fp, ua, pw_url, "https://auth.openai.com/log-in"),
                     timeout=timeout,
                 )
             except Exception as e:
@@ -1318,8 +1418,7 @@ def execute_codex_oauth_flow(
                 session,
                 device_id=device_id,
                 flow="authorize_continue",
-                user_agent=ua,
-                lang_full=lang_full,
+                **_sentinel_fp_kwargs(fp, ua),
             )
         except Exception as e:
             _log(f"[4/6] OTP 提交前 Sentinel 计算失败（继续用原 token）: {e}")
@@ -1386,7 +1485,7 @@ def execute_codex_oauth_flow(
 
         add_phone_url = continue_url or "https://auth.openai.com/add-phone"
         _log("[5/6] 登录后要绑手机。先打开绑手机页，把这次登录会话挂上，再去租号")
-        opened = _enter_auth_page(session, add_phone_url, nav_headers, timeout, _log, "[5/6] 绑手机页")
+        opened = _enter_auth_page(session, add_phone_url, fp, ua, timeout, _log, "[5/6] 绑手机页")
         if _page_kind_from_url(opened) in ("登录页", "密码页"):
             raise RuntimeError(
                 "2FA 后打开绑手机页又回到登录，这次登录会话没有保住。"
@@ -1596,7 +1695,8 @@ def execute_codex_oauth_flow(
                     opened = _enter_auth_page(
                         session,
                         opened or add_phone_url,
-                        nav_headers,
+                        fp,
+                        ua,
                         timeout,
                         _log,
                         "[sms] 绑手机页重开",
@@ -1746,9 +1846,10 @@ def execute_codex_oauth_flow(
         session=session,
         start_urls=start_candidates,
         redirect_uri=redirect_uri,
-        nav_headers=nav_headers,
         post_headers=post_headers,
         device_id=device_id,
+        fp=fp,
+        ua=ua,
         timeout=timeout,
         log_fn=_log,
         fallback_workspace_id=fallback_wid,
@@ -1774,12 +1875,11 @@ def execute_codex_oauth_flow(
     # ──────────────── 阶段 6: 换取 Token ────────────────
     _step("6", "[6/6] 换取Token (OAuth交换)")
     _log("[6/6] 正在使用 authorization code 换取 Refresh Token ...")
-    token_headers = {
-        "Content-Type": "application/x-www-form-urlencoded",
-        "Accept": "application/json",
-        "User-Agent": ua,
-        "Origin": "https://auth.openai.com",
-    }
+    token_headers = _xhr_headers(
+        fp, ua, "https://auth.openai.com/sign-in-with-chatgpt/codex/consent", device_id
+    )
+    token_headers["Content-Type"] = "application/x-www-form-urlencoded"
+    token_headers["Accept"] = "application/json"
     token_form = {
         "grant_type": "authorization_code",
         "client_id": client_id,

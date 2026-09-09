@@ -492,6 +492,12 @@ _WEBGL_PROFILES = {
         ("Google Inc. (Apple)", "ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)"),
         ("Google Inc. (Apple)", "ANGLE (Apple, ANGLE Metal Renderer: Apple M3 Pro, Unspecified Version)"),
     ],
+    # sec-ch-ua-arch=x86 的 Intel Mac，不能再配 Apple M 系列 GPU。
+    "chrome_mac_intel": [
+        ("Google Inc. (Intel)", "ANGLE (Intel, ANGLE Metal Renderer: Intel(R) UHD Graphics 630, Unspecified Version)"),
+        ("Google Inc. (Intel)", "ANGLE (Intel, ANGLE Metal Renderer: Intel(R) Iris Plus Graphics 655, Unspecified Version)"),
+        ("Google Inc. (AMD)", "ANGLE (AMD, ANGLE Metal Renderer: AMD Radeon Pro 5500M, Unspecified Version)"),
+    ],
     "firefox": [
         ("Google Inc. (NVIDIA)", "ANGLE (NVIDIA, NVIDIA GeForce RTX 3070 Direct3D11 vs_5_0 ps_5_0, D3D11)"),
         ("Google Inc. (Intel)", "ANGLE (Intel, Intel(R) UHD Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)"),
@@ -516,8 +522,14 @@ def _apply_hardware(fp: dict, r: random.Random) -> None:
     fp["max_touch_points"] = r.choice(prof["max_touch_points"])
     fp["device_pixel_ratio"] = r.choice(prof["device_pixel_ratio"])
 
-    # WebGL / Audio 硬件指纹一致性绑定
-    w_vendor, w_renderer = r.choice(_WEBGL_PROFILES.get(key, _WEBGL_PROFILES["chrome"]))
+    # WebGL 必须跟 sec-ch-ua-arch 同机：x86 配 Intel/AMD，arm 配 Apple Metal。
+    webgl_key = key
+    arch = str(fp.get("sec_ch_ua_arch") or "").strip('"').lower()
+    if key == "chrome_mac" and arch == "x86":
+        webgl_key = "chrome_mac_intel"
+    w_vendor, w_renderer = r.choice(
+        _WEBGL_PROFILES.get(webgl_key) or _WEBGL_PROFILES.get(key) or _WEBGL_PROFILES["chrome"]
+    )
     fp["webgl_vendor"] = w_vendor
     fp["webgl_renderer"] = w_renderer
     fp["audio_sample_rate"] = r.choice([44100, 48000])

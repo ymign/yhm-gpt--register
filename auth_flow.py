@@ -158,6 +158,7 @@ class AuthFlow:
         on_session_ready: Optional[Any] = None,
         account_callback: Optional[Any] = None,
         on_email_assigned: Optional[Any] = None,
+        fingerprint: Optional[dict] = None,
     ):
         # 本次流程专属的配置覆盖（WEBUI_ALLOW_LOGIN / OTP_TIMEOUT / OAuth 开关等）。
         # ⚠️ 以前 registrar 是直接写 os.environ 再在 finally 里还原的，
@@ -168,11 +169,17 @@ class AuthFlow:
         self.config = config
         target_country = (self._env_overrides.get("TARGET_COUNTRY") or "").strip().upper()
         self._country_code = target_country  # IP 地理国家码（如指定了目标国家则直接对齐）
-        self._fingerprint = generate_fingerprint(country_code=target_country if target_country else None)
-        self._ua = self._fingerprint["user_agent"]
+        # OAuth 409 兜底必须注入原指纹：同 IP 再 generate 一套等于换皮。
+        if isinstance(fingerprint, dict) and fingerprint.get("user_agent"):
+            self._fingerprint = dict(fingerprint)
+            self._ua = self._fingerprint["user_agent"]
+            self._fingerprint_locked = True
+        else:
+            self._fingerprint = generate_fingerprint(country_code=target_country if target_country else None)
+            self._ua = self._fingerprint["user_agent"]
+            self._fingerprint_locked = False
         self._oai_session_id = str(uuid.uuid4())
         self._exit_ip = ""
-        self._fingerprint_locked = False
         self._impersonate_candidates = self._fingerprint.get(
             "fallback_impersonates",
             [self._fingerprint["impersonate"], "chrome146", "chrome142"],
@@ -185,11 +192,7 @@ class AuthFlow:
             f"screen={self._fingerprint.get('screen')} lang={self._fingerprint.get('lang')} "
             f"正在创建 TLS 会话..."
         )
-        self.session = create_http_session(
-            proxy=config.proxy,
-            impersonate=self._impersonate_candidates[self._impersonate_idx],
-            user_agent=self._ua,
-        )
+        self._new_http_session(self._impersonate_candidates[self._impersonate_idx])
         logger.info("HTTP 会话已建立")
         self.result = AuthResult()
         # 可选 SMS 接码控制器（sms_provider.PhoneCallbackController 实例）
@@ -787,17 +790,14 @@ class AuthFlow:
         current = start_url
         callback_url = ""
         chose_account = False  # /choose-an-account 每条链路只选一次，防 200/同 URL 循环
+        referer = "https://chatgpt.com/"
         for i in range(12):
             if self._callback_has_code(current, redirect_uri):
                 callback_url = current
                 break
             resp = self.session.get(
                 current,
-                headers={
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                    "Referer": "https://chatgpt.com/",
-                    "User-Agent": self._ua,
-                },
+                headers=self._nav_headers_for(current, referer),
                 timeout=30,
                 allow_redirects=False,
             )
@@ -817,6 +817,7 @@ class AuthFlow:
                         if next_url:
                             if next_url.startswith("/"):
                                 next_url = urljoin("https://auth.openai.com", next_url)
+                            referer = current
                             current = next_url
                             continue
 
@@ -829,6 +830,7 @@ class AuthFlow:
                     if next_url:
                         if next_url.startswith("/"):
                             next_url = urljoin("https://auth.openai.com", next_url)
+                        referer = current
                         current = next_url
                         continue
 
@@ -843,6 +845,7 @@ class AuthFlow:
                 callback_url = loc
                 current = loc
                 break
+            referer = current
             current = loc
         return callback_url, current
 
@@ -876,13 +879,11 @@ class AuthFlow:
             logger.warning("Codex callback state 不匹配，期望=%s 实际=%s", expected_state[:20], got_state[:20])
             return False
 
-        headers = {
-            "Content-Type": "application/x-www-form-urlencoded",
-            "Accept": "application/json",
-            "Origin": "https://auth.openai.com",
-            "Referer": "https://auth.openai.com/sign-in-with-chatgpt/codex/consent",
-            "User-Agent": self._ua,
-        }
+        headers = self._common_headers(
+            "https://auth.openai.com/sign-in-with-chatgpt/codex/consent"
+        )
+        headers["Content-Type"] = "application/x-www-form-urlencoded"
+        headers["Accept"] = "application/json"
         form = {
             "grant_type": "authorization_code",
             "client_id": client_id,
@@ -1850,6 +1851,8 @@ class AuthFlow:
         fallback_impersonates 是**同家族**构造的（见 fingerprint.py 各 _gen_*），
         所以只会 chrome→chrome、safari→safari，不会跨族；但同族换版本一样要同步头。
         """
+        if getattr(self, "_fingerprint_locked", False):
+            return False
         if self._impersonate_idx >= len(self._impersonate_candidates) - 1:
             return False
         self._impersonate_idx += 1
@@ -1861,10 +1864,74 @@ class AuthFlow:
         except Exception as e:  # 兜底：宁可维持旧指纹也不要把流程搞崩
             logger.warning(f"client hints 同步失败（沿用旧指纹）: {e}")
         logger.warning(f"TLS 异常，切换指纹重试: impersonate={imp}, ua={self._ua[:60]}...")
-        self.session = create_http_session(
-            proxy=self.config.proxy, impersonate=imp, user_agent=self._ua,
-        )
+        self._new_http_session(imp)
         return True
+
+    def _client_hint_headers(self) -> dict:
+        """本号 Client Hints。Safari/Firefox 的 sec_ch_ua 为空，一个都不发。"""
+        fp = self._fingerprint or {}
+        if not fp.get("sec_ch_ua"):
+            return {}
+        headers = {
+            "sec-ch-ua": fp["sec_ch_ua"],
+            "sec-ch-ua-mobile": fp.get("sec_ch_ua_mobile") or "?0",
+            "sec-ch-ua-platform": fp.get("sec_ch_ua_platform") or "",
+        }
+        for key, name in (
+            ("sec_ch_ua_full_version_list", "sec-ch-ua-full-version-list"),
+            ("sec_ch_ua_arch", "sec-ch-ua-arch"),
+            ("sec_ch_ua_bitness", "sec-ch-ua-bitness"),
+            ("sec_ch_ua_model", "sec-ch-ua-model"),
+            ("sec_ch_ua_platform_version", "sec-ch-ua-platform-version"),
+        ):
+            if fp.get(key):
+                headers[name] = fp[key]
+        return headers
+
+    def _session_identity_headers(self) -> dict:
+        """无自定义头的请求也要带本号 UA / 语言 / CH，避免 curl_cffi 默认 Chrome/146 泄漏。"""
+        fp = self._fingerprint or {}
+        headers = {
+            "User-Agent": self._ua,
+            "Accept-Language": fp.get("lang_full") or "en-US,en;q=0.9",
+            "Accept-Encoding": "gzip, deflate, br, zstd",
+        }
+        headers.update(self._client_hint_headers())
+        return headers
+
+    def _bind_session_identity(self) -> None:
+        try:
+            self.session.headers.update(self._session_identity_headers())
+        except Exception:
+            pass
+
+    def _new_http_session(self, impersonate: str | None = None):
+        imp = impersonate or (self._fingerprint or {}).get("impersonate") or "chrome146"
+        self.session = create_http_session(
+            proxy=self.config.proxy,
+            impersonate=imp,
+            user_agent=self._ua,
+            extra_headers=self._session_identity_headers(),
+        )
+        self._bind_session_identity()
+        return self.session
+
+    def _nav_headers_for(self, url: str, referer: str = "") -> dict:
+        """文档导航跳转头：CH + Sec-Fetch，Referer/site 跟当前跳转。
+
+        用户点击后的 302 链会保留 sec-fetch-user=?1，这里不 pop。
+        curl_cffi impersonate 缺头还会补回去，pop 等于没写。
+        """
+        headers = self._navigation_headers()
+        if referer:
+            headers["Referer"] = referer
+            try:
+                dest = (urlparse(url).netloc or "").lower()
+                src = (urlparse(referer).netloc or "").lower()
+                headers["sec-fetch-site"] = "same-origin" if dest and dest == src else "cross-site"
+            except Exception:
+                headers["sec-fetch-site"] = "cross-site"
+        return headers
 
     @staticmethod
     def _datadog_trace_headers() -> dict:
@@ -2048,11 +2115,7 @@ class AuthFlow:
                 except Exception as _px_err:
                     logger.debug(f"warmup 代理轮换跳过: {_px_err}")
 
-                self.session = create_http_session(
-                    proxy=self.config.proxy,
-                    impersonate=locked_imp,
-                    user_agent=self._ua,
-                )
+                self._new_http_session(locked_imp)
             try:
                 resp = self.session.get(
                     "https://chatgpt.com", headers=headers, timeout=35,
@@ -2098,7 +2161,11 @@ class AuthFlow:
     def check_proxy(self) -> bool:
         logger.info("检查网络连通性...")
         try:
-            resp = self.session.get("https://cloudflare.com/cdn-cgi/trace", timeout=15)
+            resp = self.session.get(
+                "https://cloudflare.com/cdn-cgi/trace",
+                headers=self._navigation_headers(),
+                timeout=15,
+            )
             if resp.status_code == 200:
                 loc = re.search(r"loc=(\w+)", resp.text)
                 ip = re.search(r"ip=([^\n]+)", resp.text)
@@ -2116,14 +2183,17 @@ class AuthFlow:
                     self._fingerprint["geo_country"] = country_code
                     if country_code != self._country_code:
                         self._country_code = country_code
-                        self._fingerprint = apply_geo_to_fingerprint(self._fingerprint, country_code)
-                        self._fingerprint["exit_ip"] = self._exit_ip
-                        logger.info(
-                            f"指纹已按出口地区对齐: lang={self._fingerprint.get('lang')} "
-                            f"tz={self._fingerprint.get('timezone')} "
-                            f"os={self._fingerprint.get('browser_os')} "
-                            f"ip={self._exit_ip or '?'}"
-                        )
+                        # 注入指纹（OAuth 409 兜底）只记出口，不重抽语言/时区。
+                        if not getattr(self, "_fingerprint_locked", False):
+                            self._fingerprint = apply_geo_to_fingerprint(self._fingerprint, country_code)
+                            self._fingerprint["exit_ip"] = self._exit_ip
+                            logger.info(
+                                f"指纹已按出口地区对齐: lang={self._fingerprint.get('lang')} "
+                                f"tz={self._fingerprint.get('timezone')} "
+                                f"os={self._fingerprint.get('browser_os')} "
+                                f"ip={self._exit_ip or '?'}"
+                            )
+                self._bind_session_identity()
                 self._fingerprint_locked = True
             else:
                 logger.warning(f"网络探测异常: cloudflare trace {resp.status_code}")
@@ -3561,20 +3631,11 @@ class AuthFlow:
             # 逐跳整页导航，头必须像浏览器：同 auth_oauth_init，旧版只发
             # Accept/Referer/UA，缺 client hints 和 Sec-Fetch-*（实测那正是
             # 409 invalid_state 的来源，见 auth_oauth_init docstring）。
-            headers = self._navigation_headers()
-            headers["Referer"] = referer
-            headers.pop("sec-fetch-user", None)   # 302 跟随非用户点击
-            # 跨站跳转（chatgpt.com <-> auth.openai.com）标 cross-site，同站标 same-origin
-            try:
-                headers["sec-fetch-site"] = (
-                    "same-origin"
-                    if urlparse(current_url).netloc == urlparse(referer).netloc
-                    else "cross-site"
-                )
-            except Exception:
-                headers["sec-fetch-site"] = "cross-site"
             resp = self.session.get(
-                current_url, headers=headers, timeout=30, allow_redirects=False
+                current_url,
+                headers=self._nav_headers_for(current_url, referer),
+                timeout=30,
+                allow_redirects=False,
             )
             self._trace_http(f"redirect_hop_{i+1}", resp)
             referer = current_url
@@ -3657,7 +3718,7 @@ class AuthFlow:
             try:
                 self.session.get(
                     "https://chatgpt.com/",
-                    headers={"Referer": current_url},
+                    headers=self._nav_headers_for("https://chatgpt.com/", current_url),
                     timeout=30,
                 )
             except Exception:
@@ -3679,8 +3740,10 @@ class AuthFlow:
             new_query = urlencode({k: v[0] for k, v in params.items()})
             authorize_url = urlunparse(parsed._replace(query=new_query))
 
+            referer = "https://chatgpt.com/"
             resp = self.session.get(
                 authorize_url,
+                headers=self._nav_headers_for(authorize_url, referer),
                 allow_redirects=False,
                 timeout=15,
             )
@@ -3691,6 +3754,9 @@ class AuthFlow:
             current_url = resp.headers.get("Location", "")
             logger.info(f"reauthorize Location: {current_url[:150]}")
             if resp.status_code in (301, 302, 303, 307, 308) and current_url:
+                referer = authorize_url
+                if not current_url.startswith("http"):
+                    current_url = urljoin(authorize_url, current_url)
                 for hop in range(15):
                     logger.debug(f"reauthorize redirect hop {hop+1}: {current_url[:100]}")
                     if "code=" in current_url and ("callback" in current_url or "state=" in current_url):
@@ -3699,7 +3765,7 @@ class AuthFlow:
                     try:
                         hop_resp = self.session.get(
                             current_url,
-                            headers=self._navigation_headers(),
+                            headers=self._nav_headers_for(current_url, referer),
                             allow_redirects=False,
                             timeout=15,
                         )
@@ -3711,11 +3777,13 @@ class AuthFlow:
                                 if wid:
                                     n_url = self._workspace_select(wid)
                                     if n_url:
+                                        referer = current_url
                                         current_url = urljoin("https://auth.openai.com", n_url)
                                         continue
                             if "/choose-an-account" in current_url:
                                 n_url = self._choose_account_select(h_text, current_url)
                                 if n_url:
+                                    referer = current_url
                                     current_url = urljoin("https://auth.openai.com", n_url)
                                     continue
 
@@ -3725,6 +3793,7 @@ class AuthFlow:
                             if "code=" in final_url:
                                 return final_url
                             break
+                        referer = current_url
                         current_url = next_loc
                         if not current_url.startswith("http"):
                             current_url = urljoin(authorize_url, current_url)
@@ -3834,14 +3903,11 @@ class AuthFlow:
             return False
         try:
             current = callback_url
+            referer = "https://auth.openai.com/"
             for hop in range(8):
                 resp = self.session.get(
                     current,
-                    headers={
-                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                        "Referer": "https://auth.openai.com/",
-                        "User-Agent": self._ua,
-                    },
+                    headers=self._nav_headers_for(current, referer),
                     timeout=30,
                     allow_redirects=False,
                 )
@@ -3853,13 +3919,19 @@ class AuthFlow:
                     break
                 if loc.startswith("/"):
                     loc = urljoin(current, loc)
+                referer = current
                 current = loc
                 # 已到 chatgpt.com 主页就够
                 parsed = urlparse(current)
                 if "chatgpt.com" in (parsed.netloc or "") and "/api/auth/callback" not in current:
                     # 再 GET 一下主页，让 cookie 全部落地
                     try:
-                        self.session.get(current, timeout=20, allow_redirects=True)
+                        self.session.get(
+                            current,
+                            headers=self._nav_headers_for(current, referer),
+                            timeout=20,
+                            allow_redirects=True,
+                        )
                     except Exception:
                         pass
                     break
@@ -3897,12 +3969,11 @@ class AuthFlow:
             logger.info("code_verifier 候选数=%s 示例=%s", len(verifier_candidates), show)
 
         logger.info("执行 OAuth Token 交换...")
-        headers = {
-            "Content-Type": "application/x-www-form-urlencoded",
-            "Accept": "application/json",
-            "Origin": "https://auth.openai.com",
-            "Referer": "https://auth.openai.com/sign-in-with-chatgpt/codex/consent",
-        }
+        headers = self._common_headers(
+            "https://auth.openai.com/sign-in-with-chatgpt/codex/consent"
+        )
+        headers["Content-Type"] = "application/x-www-form-urlencoded"
+        headers["Accept"] = "application/json"
         base_form = {
             "grant_type": "authorization_code",
             "client_id": self._oauth_client_id or "YOUR_OPENAI_WEB_CLIENT_ID",
@@ -4022,14 +4093,11 @@ class AuthFlow:
             current = sec_url
             callback_url = ""
             max_hops = 10
+            referer = "https://chatgpt.com/"
             for i in range(max_hops):
                 resp = self.session.get(
                     current,
-                    headers={
-                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                        "Referer": "https://chatgpt.com/",
-                        "User-Agent": self._ua,
-                    },
+                    headers=self._nav_headers_for(current, referer),
                     timeout=30,
                     allow_redirects=False,
                 )
@@ -4044,6 +4112,7 @@ class AuthFlow:
                     break
                 if resp.status_code not in (301, 302, 303, 307, 308) or not loc:
                     break
+                referer = current
                 current = loc
 
             if not callback_url:

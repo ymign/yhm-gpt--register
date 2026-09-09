@@ -49,7 +49,7 @@ def _ensure_sdk_file(session: Any, timeout_ms: int = 15000) -> Path:
             SENTINEL_SDK_URL,
             headers={
                 "accept": "*/*",
-                "accept-language": "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7",
+                "accept-language": "en-US,en;q=0.9",
                 "referer": "https://auth.openai.com/",
                 "sec-fetch-dest": "script",
                 "sec-fetch-mode": "no-cors",

@@ -89,7 +89,44 @@ def _quickjs_script_path() -> Path:
 _sdk_file_cache: Optional[Path] = None
 
 
-def _ensure_sdk_file(session: Any, timeout_ms: int) -> Path:
+def _identity_http_headers(
+    *,
+    user_agent: str = "",
+    lang_full: str = "",
+    sec_ch_ua: str = "",
+    sec_ch_ua_mobile: str = "",
+    sec_ch_ua_platform: str = "",
+    sec_ch_ua_full_version_list: str = "",
+    sec_ch_ua_arch: str = "",
+    sec_ch_ua_bitness: str = "",
+    sec_ch_ua_model: str = "",
+    sec_ch_ua_platform_version: str = "",
+) -> dict[str, str]:
+    """Sentinel HTTP 层与 PoW 画像用同一套 UA / 语言 / Client Hints。"""
+    headers: dict[str, str] = {}
+    if user_agent:
+        headers["User-Agent"] = user_agent
+    if lang_full:
+        headers["accept-language"] = lang_full
+    if sec_ch_ua:
+        headers["sec-ch-ua"] = sec_ch_ua
+        headers["sec-ch-ua-mobile"] = sec_ch_ua_mobile or "?0"
+        if sec_ch_ua_platform:
+            headers["sec-ch-ua-platform"] = sec_ch_ua_platform
+        if sec_ch_ua_full_version_list:
+            headers["sec-ch-ua-full-version-list"] = sec_ch_ua_full_version_list
+        if sec_ch_ua_arch:
+            headers["sec-ch-ua-arch"] = sec_ch_ua_arch
+        if sec_ch_ua_bitness:
+            headers["sec-ch-ua-bitness"] = sec_ch_ua_bitness
+        if sec_ch_ua_model:
+            headers["sec-ch-ua-model"] = sec_ch_ua_model
+        if sec_ch_ua_platform_version:
+            headers["sec-ch-ua-platform-version"] = sec_ch_ua_platform_version
+    return headers
+
+
+def _ensure_sdk_file(session: Any, timeout_ms: int, identity_headers: Optional[dict] = None) -> Path:
     """Download OpenAI's actual sdk.js to /tmp cache (one-shot per version)."""
     global _sdk_file_cache
     if _sdk_file_cache and _sdk_file_cache.exists():
@@ -102,16 +139,19 @@ def _ensure_sdk_file(session: Any, timeout_ms: int) -> Path:
         _sdk_file_cache = sdk_file
         return sdk_file
 
+    headers = {
+        "accept": "*/*",
+        "accept-language": "en-US,en;q=0.9",
+        "referer": "https://auth.openai.com/",
+        "sec-fetch-dest": "script",
+        "sec-fetch-mode": "no-cors",
+        "sec-fetch-site": "same-site",
+    }
+    if identity_headers:
+        headers.update(identity_headers)
     resp = session.get(
         SENTINEL_SDK_URL,
-        headers={
-            "accept": "*/*",
-            "accept-language": "zh-CN,zh;q=0.9",
-            "referer": "https://auth.openai.com/",
-            "sec-fetch-dest": "script",
-            "sec-fetch-mode": "no-cors",
-            "sec-fetch-site": "same-site",
-        },
+        headers=headers,
         timeout=max(10, int(timeout_ms / 1000)),
     )
     if getattr(resp, "status_code", 0) != 200:
@@ -164,23 +204,27 @@ def _fetch_sentinel_challenge(
     request_p: str,
     timeout_ms: int,
     lang_full: str = "",
+    identity_headers: Optional[dict] = None,
 ) -> dict:
     body = {"p": request_p, "id": device_id, "flow": flow}
     accept_lang = lang_full or "en-US,en;q=0.9"
+    headers = {
+        "origin": "https://sentinel.openai.com",
+        "referer": f"https://sentinel.openai.com/backend-api/sentinel/frame.html?sv={SENTINEL_VERSION}",
+        "content-type": "text/plain;charset=UTF-8",
+        "accept": "*/*",
+        "accept-encoding": "gzip, deflate, br, zstd",
+        "accept-language": accept_lang,
+        "sec-fetch-dest": "empty",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-site": "same-origin",
+    }
+    if identity_headers:
+        headers.update(identity_headers)
     resp = session.post(
         SENTINEL_REQ_URL,
         data=json.dumps(body, separators=(",", ":")),
-        headers={
-            "origin": "https://sentinel.openai.com",
-            "referer": f"https://sentinel.openai.com/backend-api/sentinel/frame.html?sv={SENTINEL_VERSION}",
-            "content-type": "text/plain;charset=UTF-8",
-            "accept": "*/*",
-            "accept-encoding": "gzip, deflate, br, zstd",
-            "accept-language": accept_lang,
-            "sec-fetch-dest": "empty",
-            "sec-fetch-mode": "cors",
-            "sec-fetch-site": "same-origin",
-        },
+        headers=headers,
         timeout=max(10, int(timeout_ms / 1000)),
     )
     if getattr(resp, "status_code", 0) != 200:
@@ -210,7 +254,10 @@ def get_sentinel_token_via_quickjs(
     max_touch_points: int = 0,
     device_pixel_ratio: float = 0.0,
     timezone: str = "",  # IANA 时区名（如 Asia/Tokyo）
-    # Client Hints 全套（QuickJS 路径不直接用，但为了签名统一接收）
+    # Client Hints：PoW 画像与 /sentinel/req、sdk.js 下载共用
+    sec_ch_ua: str = "",
+    sec_ch_ua_platform: str = "",
+    sec_ch_ua_mobile: str = "",
     sec_ch_ua_full_version_list: str = "",
     sec_ch_ua_arch: str = "",
     sec_ch_ua_bitness: str = "",
@@ -282,8 +329,21 @@ def get_sentinel_token_via_quickjs(
     if device_memory is not None:
         env_payload["device_memory"] = int(device_memory)
 
+    identity_headers = _identity_http_headers(
+        user_agent=user_agent,
+        lang_full=lang_full or lang_primary,
+        sec_ch_ua=sec_ch_ua,
+        sec_ch_ua_mobile=sec_ch_ua_mobile,
+        sec_ch_ua_platform=sec_ch_ua_platform,
+        sec_ch_ua_full_version_list=sec_ch_ua_full_version_list,
+        sec_ch_ua_arch=sec_ch_ua_arch,
+        sec_ch_ua_bitness=sec_ch_ua_bitness,
+        sec_ch_ua_model=sec_ch_ua_model,
+        sec_ch_ua_platform_version=sec_ch_ua_platform_version,
+    )
+
     try:
-        sdk_file = _ensure_sdk_file(session, timeout_ms)
+        sdk_file = _ensure_sdk_file(session, timeout_ms, identity_headers=identity_headers)
 
         requirements = _run_quickjs_action(
             action="requirements",
@@ -298,7 +358,13 @@ def get_sentinel_token_via_quickjs(
             return None
 
         challenge = _fetch_sentinel_challenge(
-            session, device_id=did, flow=flow, request_p=request_p, timeout_ms=timeout_ms, lang_full=lang_full,
+            session,
+            device_id=did,
+            flow=flow,
+            request_p=request_p,
+            timeout_ms=timeout_ms,
+            lang_full=lang_full,
+            identity_headers=identity_headers,
         )
         c_value = str(challenge.get("token") or "").strip()
         if not c_value:
