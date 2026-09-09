@@ -349,3 +349,406 @@ html.dark ::-webkit-scrollbar-thumb {
 html.dark ::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.38);
 }
+
+/* ═════════════════════════════════════════════════════════════════════
+   macOS / VisionOS 3D 实体水晶日志终端座舱 (Crystal Glass Terminal Dialog)
+   彻底根除白-黑-白拼凑感，构筑纯净瓷白水晶托盘 + 深曜石微透内胆 + 3D 实体按键
+   ═════════════════════════════════════════════════════════════════════ */
+.macos-terminal-dialog.el-dialog {
+  background: rgba(255, 255, 255, 0.92) !important;
+  backdrop-filter: blur(32px) saturate(190%) !important;
+  -webkit-backdrop-filter: blur(32px) saturate(190%) !important;
+  border-radius: 22px !important;
+  border: 2px solid rgba(255, 255, 255, 0.98) !important;
+  border-top: 2.8px solid #ffffff !important;
+  border-bottom: 2px solid rgba(203, 213, 225, 0.75) !important;
+  box-shadow:
+    0 30px 70px -15px rgba(15, 23, 42, 0.22),
+    0 10px 25px -5px rgba(15, 23, 42, 0.08),
+    inset 0 2px 2.5px #ffffff,
+    inset 0 -2px 3px rgba(148, 163, 184, 0.15) !important;
+  overflow: hidden !important;
+}
+
+html.dark .macos-terminal-dialog.el-dialog {
+  background: rgba(15, 23, 42, 0.94) !important;
+  border-color: rgba(255, 255, 255, 0.14) !important;
+  border-top-color: rgba(255, 255, 255, 0.25) !important;
+  box-shadow:
+    0 30px 70px -15px rgba(0, 0, 0, 0.6),
+    inset 0 1.5px 2px rgba(255, 255, 255, 0.2) !important;
+}
+
+/* 弹窗头部：透明无缝融入外壳，杜绝生硬截断 */
+.macos-terminal-dialog .el-dialog__header {
+  padding: 14px 20px 12px 20px !important;
+  margin-right: 0 !important;
+  background: transparent !important;
+  border-bottom: 1px solid rgba(226, 232, 240, 0.75) !important;
+  display: flex !important;
+  align-items: center !important;
+}
+html.dark .macos-terminal-dialog .el-dialog__header {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08) !important;
+}
+
+/* 弹窗主体容器：留足呼吸空间 */
+.macos-terminal-dialog .el-dialog__body {
+  padding: 16px 20px 12px 20px !important;
+  background: transparent !important;
+}
+
+/* 弹窗底栏：透明晶质融合 */
+.macos-terminal-dialog .el-dialog__footer {
+  padding: 12px 20px 16px 20px !important;
+  background: transparent !important;
+  border-top: 1px solid rgba(226, 232, 240, 0.75) !important;
+}
+html.dark .macos-terminal-dialog .el-dialog__footer {
+  border-top: 1px solid rgba(255, 255, 255, 0.08) !important;
+}
+
+/* ──────────────── 1. 顶部 Header 3D 水晶组件 ──────────────── */
+.macos-terminal-dialog .modal-header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+}
+
+/* macOS 3D 水晶露珠交通灯 */
+.macos-terminal-dialog .window-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 3.5px 8px;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.65);
+  border: 1.2px solid rgba(255, 255, 255, 0.95);
+  border-top: 1.5px solid #ffffff;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.04), inset 0 1px 1.5px #ffffff;
+}
+html.dark .macos-terminal-dialog .window-dots {
+  background: rgba(30, 41, 59, 0.7);
+  border-color: rgba(255, 255, 255, 0.12);
+  box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.15);
+}
+.macos-terminal-dialog .dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  position: relative;
+  box-shadow:
+    inset 0 1.2px 1.5px rgba(255, 255, 255, 0.9),
+    inset 0 -1.2px 1.8px rgba(0, 0, 0, 0.25),
+    0 1px 3px rgba(0, 0, 0, 0.12);
+}
+.macos-terminal-dialog .dot.red {
+  background: radial-gradient(circle at 35% 30%, #ff857d 0%, #ff5f56 70%, #d83a30 100%);
+}
+.macos-terminal-dialog .dot.yellow {
+  background: radial-gradient(circle at 35% 30%, #ffe07a 0%, #ffbd2e 70%, #d99b1a 100%);
+}
+.macos-terminal-dialog .dot.green {
+  background: radial-gradient(circle at 35% 30%, #68f07e 0%, #27c93f 70%, #1da331 100%);
+}
+
+.macos-terminal-dialog .modal-title-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+}
+
+.macos-terminal-dialog .modal-email {
+  font-size: 13px;
+  font-weight: 700;
+  color: #0f172a;
+  font-family: var(--el-font-family-monospace, monospace);
+  letter-spacing: -0.01em;
+  padding: 2px 8px;
+  border-radius: 6px;
+  transition: all 0.15s ease;
+  cursor: pointer;
+}
+.macos-terminal-dialog .modal-email:hover {
+  color: #0284c7;
+  background: rgba(224, 242, 254, 0.6);
+}
+html.dark .macos-terminal-dialog .modal-email {
+  color: #f8fafc;
+}
+
+/* 3D 微晶标题标签 (对齐素材清透胶囊质感) */
+.macos-terminal-dialog .modal-run-tag {
+  display: inline-flex !important;
+  align-items: center !important;
+  height: 24px !important;
+  padding: 0 12px !important;
+  border-radius: 9999px !important;
+  font-size: 11px !important;
+  font-weight: 700 !important;
+  background: linear-gradient(180deg, rgba(236, 253, 245, 0.95) 0%, rgba(209, 250, 229, 0.85) 100%) !important;
+  border: 1.2px solid rgba(255, 255, 255, 0.95) !important;
+  border-top: 1.6px solid #ffffff !important;
+  border-bottom: 1.2px solid rgba(167, 243, 208, 0.9) !important;
+  color: #065f46 !important;
+  box-shadow: 0 2px 6px rgba(16, 185, 129, 0.18), inset 0 1.2px 1.5px #ffffff !important;
+  position: relative;
+  overflow: hidden;
+}
+.macos-terminal-dialog .modal-run-tag::before {
+  content: '';
+  position: absolute;
+  top: 1px;
+  left: 10%;
+  right: 10%;
+  height: 40%;
+  border-radius: 9999px 9999px 40% 40%;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.85) 0%, rgba(255, 255, 255, 0.2) 75%, transparent 100%);
+  pointer-events: none;
+}
+html.dark .macos-terminal-dialog .modal-run-tag {
+  background: linear-gradient(180deg, rgba(6, 95, 70, 0.7) 0%, rgba(4, 120, 87, 0.5) 100%) !important;
+  color: #a7f3d0 !important;
+  border-color: rgba(52, 211, 153, 0.4) !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3) !important;
+}
+
+/* ──────────────── 2. 沉浸式深曜石发光晶体终端座舱 ──────────────── */
+.macos-terminal-dialog .modal-terminal-wrap {
+  border-radius: 16px;
+  overflow: hidden;
+  border: 1.5px solid rgba(255, 255, 255, 0.95);
+  border-top: 2px solid #ffffff;
+  border-bottom: 1.5px solid rgba(203, 213, 225, 0.75);
+  box-shadow:
+    0 10px 30px -4px rgba(15, 23, 42, 0.15),
+    inset 0 2px 5px rgba(0, 0, 0, 0.5),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+  position: relative;
+}
+html.dark .macos-terminal-dialog .modal-terminal-wrap {
+  border-color: rgba(255, 255, 255, 0.15);
+  border-top-color: rgba(255, 255, 255, 0.25);
+  box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.7);
+}
+
+.macos-terminal-dialog .modal-terminal-body {
+  height: 390px;
+  background: radial-gradient(circle at 15% 0%, #162032 0%, #0b101d 55%, #060911 100%) !important;
+  padding: 16px 18px;
+  overflow-y: auto;
+  font-family: "JetBrains Mono", "SF Mono", Consolas, "Liberation Mono", Menlo, monospace !important;
+  font-size: 12px;
+  line-height: 1.75;
+  color: #cbd5e1;
+  word-break: break-all;
+  white-space: pre-wrap;
+}
+
+/* 日志行与高级色彩语义层级 */
+.macos-terminal-dialog .terminal-line {
+  padding: 1px 4px;
+  border-radius: 4px;
+  margin-bottom: 1.5px;
+  transition: background 0.12s ease;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.macos-terminal-dialog .terminal-line:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+/* 时间戳微晶冰蓝字 */
+.macos-terminal-dialog .terminal-time {
+  color: #38bdf8;
+  font-weight: 600;
+  font-size: 11.5px;
+  flex-shrink: 0;
+  letter-spacing: 0.2px;
+}
+.macos-terminal-dialog .terminal-text {
+  flex: 1;
+  min-width: 0;
+}
+
+/* 语义状态高亮 */
+.macos-terminal-dialog .terminal-line.log-hit,
+.macos-terminal-dialog .terminal-line.log-hit .terminal-text {
+  color: #34d399 !important;
+  font-weight: 600;
+  text-shadow: 0 0 10px rgba(52, 211, 153, 0.35);
+}
+
+.macos-terminal-dialog .terminal-line.log-err,
+.macos-terminal-dialog .terminal-line.log-err .terminal-text {
+  color: #fb7185 !important;
+  font-weight: 600;
+  text-shadow: 0 0 10px rgba(251, 113, 133, 0.35);
+}
+
+.macos-terminal-dialog .terminal-line.log-warn,
+.macos-terminal-dialog .terminal-line.log-warn .terminal-text {
+  color: #fbbf24 !important;
+  font-weight: 500;
+}
+
+.macos-terminal-dialog .terminal-line.log-step,
+.macos-terminal-dialog .terminal-line.log-step .terminal-text {
+  color: #67e8f9 !important;
+  font-weight: 600;
+}
+
+.macos-terminal-dialog .terminal-line.log-net,
+.macos-terminal-dialog .terminal-line.log-net .terminal-text {
+  color: #a5b4fc !important;
+}
+
+.macos-terminal-dialog .terminal-line.log-task,
+.macos-terminal-dialog .terminal-line.log-task .terminal-text {
+  color: #7dd3fc !important;
+}
+
+.macos-terminal-dialog .terminal-line.log-miss,
+.macos-terminal-dialog .terminal-line.log-miss .terminal-text {
+  color: #94a3b8 !important;
+}
+
+.macos-terminal-dialog .terminal-empty {
+  color: #64748b;
+  font-style: italic;
+  padding: 50px 0;
+  text-align: center;
+  font-size: 13px;
+}
+
+/* 终端内专属纤细透明水晶滚动条 */
+.macos-terminal-dialog .modal-terminal-body::-webkit-scrollbar {
+  width: 5px;
+}
+.macos-terminal-dialog .modal-terminal-body::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.2);
+}
+.macos-terminal-dialog .modal-terminal-body::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.22);
+  border-radius: 9999px;
+  box-shadow: inset 0 0 4px rgba(255, 255, 255, 0.3);
+}
+.macos-terminal-dialog .modal-terminal-body::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.45);
+}
+
+/* ──────────────── 3. 底部 Footer 3D 实体水晶按键系统 ──────────────── */
+.macos-terminal-dialog .modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+}
+
+/* 左侧统计药丸胶囊 */
+.macos-terminal-dialog .log-count-tip {
+  display: inline-flex;
+  align-items: center;
+  height: 26px;
+  padding: 0 11px;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.7);
+  border: 1.2px solid rgba(226, 232, 240, 0.9);
+  border-top: 1.5px solid #ffffff;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.03), inset 0 1px 1px #ffffff;
+  font-size: 12px;
+  font-weight: 600;
+  color: #475569;
+  font-family: var(--el-font-family-monospace, monospace);
+}
+html.dark .macos-terminal-dialog .log-count-tip {
+  background: rgba(30, 41, 59, 0.7);
+  border-color: rgba(255, 255, 255, 0.12);
+  color: #94a3b8;
+}
+
+.macos-terminal-dialog .modal-footer-btns {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* 复制全部日志：3D 实体微晶白玉药丸按钮 (对齐素材 Text / Upgrade plan) */
+.macos-terminal-dialog .modal-footer-btns .el-button:not(.el-button--primary) {
+  height: 31px !important;
+  padding: 0 14px !important;
+  border-radius: 9999px !important;
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(248, 250, 252, 0.9) 100%) !important;
+  color: #1e293b !important;
+  border: 1.2px solid rgba(255, 255, 255, 0.98) !important;
+  border-top: 1.8px solid #ffffff !important;
+  border-bottom: 1.5px solid rgba(203, 213, 225, 0.7) !important;
+  box-shadow: 0 3px 8px -1px rgba(15, 23, 42, 0.05), inset 0 1.5px 1.5px #ffffff !important;
+  position: relative;
+  overflow: hidden;
+  transition: all 0.18s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
+.macos-terminal-dialog .modal-footer-btns .el-button:not(.el-button--primary)::before {
+  content: '';
+  position: absolute;
+  top: 1px;
+  left: 8%;
+  right: 8%;
+  height: 42%;
+  border-radius: 9999px 9999px 40% 40%;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.95) 0%, rgba(255, 255, 255, 0.2) 75%, transparent 100%);
+  pointer-events: none;
+}
+.macos-terminal-dialog .modal-footer-btns .el-button:not(.el-button--primary):hover {
+  background: #ffffff !important;
+  color: #0284c7 !important;
+  border-color: rgba(56, 189, 248, 0.65) !important;
+  border-top-color: #ffffff !important;
+  transform: translateY(-1px) !important;
+  box-shadow: 0 6px 16px rgba(2, 132, 199, 0.2), inset 0 1.5px 1.5px #ffffff !important;
+}
+
+/* 关闭按钮：3D 冰海蓝宝琉璃药丸按钮 (对齐素材 Create workspace) */
+.macos-terminal-dialog .modal-footer-btns .el-button--primary {
+  height: 31px !important;
+  padding: 0 18px !important;
+  border-radius: 9999px !important;
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  background: linear-gradient(180deg, rgba(240, 249, 255, 0.96) 0%, rgba(224, 242, 254, 0.9) 50%, rgba(186, 230, 253, 0.8) 100%) !important;
+  border: 1.2px solid rgba(255, 255, 255, 0.98) !important;
+  border-top: 1.8px solid #ffffff !important;
+  border-bottom: 1.5px solid rgba(186, 230, 253, 0.9) !important;
+  color: #0369a1 !important;
+  box-shadow:
+    0 3px 10px -1px rgba(2, 132, 199, 0.28),
+    0 1px 3px rgba(15, 23, 42, 0.03),
+    inset 0 1.5px 1.5px #ffffff,
+    inset 0 -1.2px 1.8px rgba(2, 132, 199, 0.12) !important;
+  position: relative;
+  overflow: hidden;
+  transition: all 0.18s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
+.macos-terminal-dialog .modal-footer-btns .el-button--primary::before {
+  content: '';
+  position: absolute;
+  top: 1px;
+  left: 8%;
+  right: 8%;
+  height: 42%;
+  border-radius: 9999px 9999px 40% 40%;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.95) 0%, rgba(255, 255, 255, 0.25) 75%, transparent 100%);
+  pointer-events: none;
+}
+.macos-terminal-dialog .modal-footer-btns .el-button--primary:hover {
+  background: linear-gradient(180deg, rgba(240, 249, 255, 1) 0%, rgba(224, 242, 254, 0.96) 100%) !important;
+  transform: translateY(-1px) !important;
+  box-shadow: 0 6px 16px rgba(2, 132, 199, 0.42), inset 0 1.8px 1.8px #ffffff !important;
+}
+

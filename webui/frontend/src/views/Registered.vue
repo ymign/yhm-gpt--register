@@ -1593,12 +1593,25 @@ const oaStats = computed(() => {
   return { total, done, running, pending, hit, cs, err, percent }
 })
 
+function formatTerminalLine(line) {
+  if (!line) return { time: '', text: '' }
+  const str = String(line)
+  const match = str.match(/^(\[\d{2}:\d{2}:\d{2}\])\s*(.*)$/)
+  if (match) {
+    return { time: match[1], text: match[2] }
+  }
+  return { time: '', text: str }
+}
+
 function getLogClass(line) {
   if (!line) return ''
-  if (line.includes('HIT') || line.includes('oaics_') || line.includes('★') || line.includes('◆')) return 'log-hit'
-  if (line.includes('MISS') || line.includes('state=CS') || line.includes('Free')) return 'log-miss'
-  if (line.includes('err=') || line.includes('ERROR') || line.includes('失败') || line.includes('封号') || line.includes('失效')) return 'log-err'
-  if (line.includes('[task]') || line.includes('HTTP')) return 'log-task'
+  const s = String(line)
+  if (s.includes('HIT') || s.includes('oaics_') || s.includes('★') || s.includes('◆') || s.includes('成功') || s.includes('存活') || s.includes('已入库')) return 'log-hit'
+  if (s.includes('err=') || s.includes('ERROR') || s.includes('失败') || s.includes('封号') || s.includes('失效') || s.includes('异常') || s.includes('banned')) return 'log-err'
+  if (s.includes('MISS') || s.includes('state=CS') || s.includes('Free') || s.includes('等待') || s.includes('需接码') || s.includes('未接')) return 'log-warn'
+  if (s.includes('[1/') || s.includes('[2/') || s.includes('[3/') || s.includes('[4/') || s.includes('[5/') || s.includes('[6/') || s.includes('发起') || s.includes('开始')) return 'log-step'
+  if (s.includes('网络出口') || s.includes('代理') || s.includes('cliproxy') || s.includes('目标国家')) return 'log-net'
+  if (s.includes('[task]') || s.includes('HTTP')) return 'log-task'
   return ''
 }
 
@@ -6750,10 +6763,10 @@ onUnmounted(() => {
             <span class="dot green"></span>
           </div>
           <div class="modal-title-info">
-            <span class="modal-email">{{ currentPlusLogItem?.email }}</span>
-            <el-tag size="small" type="info" effect="plain" class="modal-run-tag">
+            <span class="modal-email mono" @click="currentPlusLogItem?.email && copyText(currentPlusLogItem.email, '邮箱已复制')" title="点击复制邮箱">{{ currentPlusLogItem?.email }}</span>
+            <span class="modal-run-tag">
               Plus 检测日志
-            </el-tag>
+            </span>
           </div>
         </div>
       </template>
@@ -6766,7 +6779,8 @@ onUnmounted(() => {
             class="terminal-line"
             :class="getLogClass(line)"
           >
-            {{ line }}
+            <span v-if="formatTerminalLine(line).time" class="terminal-time mono">{{ formatTerminalLine(line).time }}</span>
+            <span class="terminal-text">{{ formatTerminalLine(line).text }}</span>
           </div>
           <div v-if="!plusLogLines.length" class="terminal-empty">
             {{ plusLogLoading ? '正在加载日志...' : '暂无详细日志' }}
@@ -7008,10 +7022,10 @@ onUnmounted(() => {
             <span class="dot green"></span>
           </div>
           <div class="modal-title-info">
-            <span class="modal-email">{{ currentOaLogItem?.email }}</span>
-            <el-tag size="small" type="info" effect="plain" class="modal-run-tag">
+            <span class="modal-email mono" @click="currentOaLogItem?.email && copyText(currentOaLogItem.email, '邮箱已复制')" title="点击复制邮箱">{{ currentOaLogItem?.email }}</span>
+            <span class="modal-run-tag">
               OAICS 检测日志
-            </el-tag>
+            </span>
           </div>
         </div>
       </template>
@@ -7024,7 +7038,8 @@ onUnmounted(() => {
             class="terminal-line"
             :class="getLogClass(line)"
           >
-            {{ line }}
+            <span v-if="formatTerminalLine(line).time" class="terminal-time mono">{{ formatTerminalLine(line).time }}</span>
+            <span class="terminal-text">{{ formatTerminalLine(line).text }}</span>
           </div>
           <div v-if="!oaLogLines.length" class="terminal-empty">
             {{ oaLogLoading ? '正在加载日志...' : '暂无详细日志' }}
@@ -7825,10 +7840,10 @@ onUnmounted(() => {
             <span class="dot green"></span>
           </div>
           <div class="modal-title-info">
-            <span class="modal-email">{{ currentOAuthLogItem?.email }}</span>
-            <el-tag size="small" type="success" effect="plain" class="modal-run-tag">
+            <span class="modal-email mono" @click="currentOAuthLogItem?.email && copyText(currentOAuthLogItem.email, '邮箱已复制')" title="点击复制邮箱">{{ currentOAuthLogItem?.email }}</span>
+            <span class="modal-run-tag">
               OAuth 导出日志
-            </el-tag>
+            </span>
           </div>
         </div>
       </template>
@@ -7841,7 +7856,8 @@ onUnmounted(() => {
             class="terminal-line"
             :class="getLogClass(line)"
           >
-            {{ line }}
+            <span v-if="formatTerminalLine(line).time" class="terminal-time mono">{{ formatTerminalLine(line).time }}</span>
+            <span class="terminal-text">{{ formatTerminalLine(line).text }}</span>
           </div>
           <div v-if="!oauthLogLines.length" class="terminal-empty">
             {{ oauthLogLoading ? '正在加载日志...' : '暂无详细日志' }}
@@ -8154,18 +8170,24 @@ onUnmounted(() => {
             <span class="dot green"></span>
           </div>
           <div class="modal-title-info">
-            <span class="modal-email">{{ currentHealthLogItem?.email }}</span>
-            <el-tag size="small" type="success" effect="plain" class="modal-run-tag">
+            <span class="modal-email mono" @click="currentHealthLogItem?.email && copyText(currentHealthLogItem.email, '邮箱已复制')" title="点击复制邮箱">{{ currentHealthLogItem?.email }}</span>
+            <span class="modal-run-tag">
               验活详细日志
-            </el-tag>
+            </span>
           </div>
         </div>
       </template>
 
       <div class="modal-terminal-wrap">
         <div ref="healthModalLogBoxRef" class="modal-terminal-body">
-          <div v-for="(line, idx) in healthLogLines" :key="idx" class="terminal-line">
-            {{ line }}
+          <div
+            v-for="(line, idx) in healthLogLines"
+            :key="idx"
+            class="terminal-line"
+            :class="getLogClass(line)"
+          >
+            <span v-if="formatTerminalLine(line).time" class="terminal-time mono">{{ formatTerminalLine(line).time }}</span>
+            <span class="terminal-text">{{ formatTerminalLine(line).text }}</span>
           </div>
           <div v-if="!healthLogLines.length" class="terminal-empty">
             {{ healthLogLoading ? '正在加载日志...' : '暂无详细日志' }}
@@ -8507,10 +8529,10 @@ onUnmounted(() => {
             <span class="dot green"></span>
           </div>
           <div class="modal-title-info">
-            <span class="modal-email">{{ currentSecurityLogItem?.email }}</span>
-            <el-tag size="small" :type="currentSecurityLogItem?.action === 'password' ? 'primary' : 'success'" effect="plain" class="modal-run-tag">
+            <span class="modal-email mono" @click="currentSecurityLogItem?.email && copyText(currentSecurityLogItem.email, '邮箱已复制')" title="点击复制邮箱">{{ currentSecurityLogItem?.email }}</span>
+            <span class="modal-run-tag">
               {{ currentSecurityLogItem?.action === 'password' ? '🔑 设密任务日志' : '🛡️ 2FA 绑定日志' }}
-            </el-tag>
+            </span>
           </div>
         </div>
       </template>
@@ -8523,7 +8545,8 @@ onUnmounted(() => {
             class="terminal-line"
             :class="getLogClass(line)"
           >
-            {{ line }}
+            <span v-if="formatTerminalLine(line).time" class="terminal-time mono">{{ formatTerminalLine(line).time }}</span>
+            <span class="terminal-text">{{ formatTerminalLine(line).text }}</span>
           </div>
           <div v-if="!securityLogLines.length" class="terminal-empty">
             {{ securityLogLoading ? '正在加载日志...' : '暂无详细日志' }}
@@ -8814,10 +8837,10 @@ onUnmounted(() => {
             <span class="dot green"></span>
           </div>
           <div class="modal-title-info">
-            <span class="modal-email">{{ currentWarmingLogItem?.email }}</span>
-            <el-tag size="small" type="warning" effect="plain" class="modal-run-tag">
+            <span class="modal-email mono" @click="currentWarmingLogItem?.email && copyText(currentWarmingLogItem.email, '邮箱已复制')" title="点击复制邮箱">{{ currentWarmingLogItem?.email }}</span>
+            <span class="modal-run-tag">
               ☀️ 账号保鲜活跃日志
-            </el-tag>
+            </span>
           </div>
         </div>
       </template>
@@ -8830,7 +8853,8 @@ onUnmounted(() => {
             class="terminal-line"
             :class="getLogClass(line)"
           >
-            {{ line }}
+            <span v-if="formatTerminalLine(line).time" class="terminal-time mono">{{ formatTerminalLine(line).time }}</span>
+            <span class="terminal-text">{{ formatTerminalLine(line).text }}</span>
           </div>
           <div v-if="!warmingLogLines.length" class="terminal-empty">
             {{ warmingLogLoading ? '正在加载日志...' : '暂无详细日志' }}
@@ -12676,92 +12700,126 @@ onUnmounted(() => {
   overflow: hidden;
 }
 
-/* ──────────── 单账号详细日志终端弹窗 ──────────── */
-:deep(.macos-terminal-dialog) {
-  border-radius: 12px;
-  overflow: hidden;
-  background: #141418;
-}
-:deep(.macos-terminal-dialog .el-dialog__header) {
-  padding: 10px 16px;
-  margin-right: 0;
-  background: #1e1e24;
-  border-bottom: 1px solid #2a2a34;
-}
-:deep(.macos-terminal-dialog .el-dialog__body) {
-  padding: 0;
-}
-:deep(.macos-terminal-dialog .el-dialog__footer) {
-  padding: 10px 16px;
-  background: #1e1e24;
-  border-top: 1px solid #2a2a34;
-}
-
+/* ──────────── 单账号详细日志终端弹窗 (统一对齐全局 3D 实体水晶日志终端规范) ──────────── */
 .modal-header {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 14px;
+  width: 100%;
 }
 .window-dots {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 7px;
+  padding: 3.5px 8px;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.65);
+  border: 1.2px solid rgba(255, 255, 255, 0.95);
+  border-top: 1.5px solid #ffffff;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.04), inset 0 1px 1.5px #ffffff;
 }
 .dot {
-  width: 9px;
-  height: 9px;
+  width: 10px;
+  height: 10px;
   border-radius: 50%;
+  position: relative;
+  box-shadow:
+    inset 0 1.2px 1.5px rgba(255, 255, 255, 0.9),
+    inset 0 -1.2px 1.8px rgba(0, 0, 0, 0.25),
+    0 1px 3px rgba(0, 0, 0, 0.12);
 }
-.dot.red { background: #ff5f56; }
-.dot.yellow { background: #ffbd2e; }
-.dot.green { background: #27c93f; }
+.dot.red { background: radial-gradient(circle at 35% 30%, #ff857d 0%, #ff5f56 70%, #d83a30 100%); }
+.dot.yellow { background: radial-gradient(circle at 35% 30%, #ffe07a 0%, #ffbd2e 70%, #d99b1a 100%); }
+.dot.green { background: radial-gradient(circle at 35% 30%, #68f07e 0%, #27c93f 70%, #1da331 100%); }
 
 .modal-title-info {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   flex: 1;
 }
 .modal-email {
   font-size: 13px;
-  font-weight: 600;
-  color: #f1f5f9;
+  font-weight: 700;
+  color: #0f172a;
   font-family: var(--el-font-family-monospace, monospace);
+  letter-spacing: -0.01em;
+  padding: 2px 8px;
+  border-radius: 6px;
+  transition: all 0.15s ease;
+  cursor: pointer;
+}
+.modal-email:hover {
+  color: #0284c7;
+  background: rgba(224, 242, 254, 0.6);
 }
 .modal-run-tag {
-  font-size: 10.5px;
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 12px;
+  border-radius: 9999px;
+  font-size: 11px;
+  font-weight: 700;
+  background: linear-gradient(180deg, rgba(236, 253, 245, 0.95) 0%, rgba(209, 250, 229, 0.85) 100%);
+  border: 1.2px solid rgba(255, 255, 255, 0.95);
+  border-top: 1.6px solid #ffffff;
+  border-bottom: 1.2px solid rgba(167, 243, 208, 0.9);
+  color: #065f46;
+  box-shadow: 0 2px 6px rgba(16, 185, 129, 0.18), inset 0 1.2px 1.5px #ffffff;
+  position: relative;
+  overflow: hidden;
 }
 
 .modal-terminal-wrap {
-  height: 400px;
-  display: flex;
-  flex-direction: column;
+  border-radius: 16px;
+  overflow: hidden;
+  border: 1.5px solid rgba(255, 255, 255, 0.95);
+  border-top: 2px solid #ffffff;
+  border-bottom: 1.5px solid rgba(203, 213, 225, 0.75);
+  box-shadow:
+    0 10px 30px -4px rgba(15, 23, 42, 0.15),
+    inset 0 2px 5px rgba(0, 0, 0, 0.5),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.08);
 }
 .modal-terminal-body {
-  flex: 1;
-  padding: 12px 16px;
+  height: 390px;
+  background: radial-gradient(circle at 15% 0%, #162032 0%, #0b101d 55%, #060911 100%) !important;
+  padding: 16px 18px;
   overflow-y: auto;
-  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, Courier, monospace;
+  font-family: "JetBrains Mono", "SF Mono", Consolas, "Liberation Mono", Menlo, monospace !important;
   font-size: 12px;
-  line-height: 1.6;
-  color: #d1d5db;
+  line-height: 1.75;
+  color: #cbd5e1;
   word-break: break-all;
   white-space: pre-wrap;
-  background: #141418;
 }
 
 .modal-footer {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  width: 100%;
 }
 .log-count-tip {
-  font-size: 11px;
-  color: #94a3b8;
+  display: inline-flex;
+  align-items: center;
+  height: 26px;
+  padding: 0 11px;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.7);
+  border: 1.2px solid rgba(226, 232, 240, 0.9);
+  border-top: 1.5px solid #ffffff;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.03), inset 0 1px 1px #ffffff;
+  font-size: 12px;
+  font-weight: 600;
+  color: #475569;
+  font-family: var(--el-font-family-monospace, monospace);
 }
 .modal-footer-btns {
   display: flex;
-  gap: 8px;
+  align-items: center;
+  gap: 10px;
 }
 
 /* ──────────── macOS 凭证弹窗精致卡片风格 ──────────── */
