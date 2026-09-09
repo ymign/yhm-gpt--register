@@ -90,11 +90,11 @@ const proxyHealthStats = ref({
 
 let timer = null
 
-// ════════════════ 9 大核心功能模块定义 (3D 环绕 / 侧向层叠场景) ════════════════
+// ════════════════ 10 大核心战术功能模块定义 (赛博机械拓扑节点) ════════════════
 const modules = [
   {
-    id: "SYS-AUTOLOOP-001", short: "跑号 · 舰队", title: "全自动并发跑号", symbol: "舰",
-    subtitle: "多 Worker 自动化无人值守", state: "高频就绪", folder: "调度中心 / 自动舰队", priority: "最高",
+    id: "SYS-AUTOLOOP-001", num: "01", code: "auto-worker.md", short: "跑号 · 舰队", title: "全自动并发跑号", symbol: "舰",
+    subtitle: "多 Worker 自动化无人值守跑号", state: "高频就绪", folder: "调度中心 / 自动舰队", priority: "最高",
     path: "/auto", date: "实时轮询调度", status: "运行状态 正常",
     description: "多协程并发跑号引擎，结合真实浏览器指纹库与住宅代理路由，支持自动化取件、PoW 碰撞及 2FA 强制绑定。",
     tags: ["并发 Worker", "指纹对齐", "PoW 预计算", "2FA 强制"],
@@ -102,8 +102,8 @@ const modules = [
     accent: "green", completion: 98,
   },
   {
-    id: "SYS-ASSETS-002", short: "资产 · 中枢", title: "账号资产管理中枢", symbol: "资",
-    subtitle: "Token / 2FA / 密码 / 导出", state: "核心资产", folder: "资产中枢 / 注册结果", priority: "最高",
+    id: "SYS-ASSETS-002", num: "02", code: "assets-manager.md", short: "资产 · 中枢", title: "账号资产管理中枢", symbol: "资",
+    subtitle: "Token / 2FA / 官方设密 / 导出", state: "核心资产", folder: "资产中枢 / 注册结果", priority: "最高",
     path: "/registered", date: "秒级实时入库", status: "覆盖率 92%",
     description: "全量账号资产集中管理平台，支持 Access Token 极速置换、Session JSON 复制、CPA/Sub2API 导出及批次备注留痕。",
     tags: ["Token 凭证", "2FA TOTP", "官方设密", "多格式导出"],
@@ -111,7 +111,7 @@ const modules = [
     accent: "ice", completion: 94,
   },
   {
-    id: "SYS-POW-003", short: "算力 · 防御", title: "Sentinel PoW 预计算池", symbol: "算",
+    id: "SYS-POW-003", num: "03", code: "pow-sentinel.md", short: "算力 · 防御", title: "Sentinel PoW 预计算池", symbol: "算",
     subtitle: "0ms 瞬时取用 / 削峰填谷", state: "就绪 10 槽", folder: "防御引擎 / 算力缓冲", priority: "高",
     path: "/auto", date: "协程常驻预热", status: "0ms 命中率 99%",
     description: "后台守护协程预计算 OpenAI Sentinel Proof-of-Work，注册流水线免去 15s 客户端碰撞等待，平滑 CPU 瞬时波峰。",
@@ -120,8 +120,8 @@ const modules = [
     accent: "silver", completion: 99,
   },
   {
-    id: "SYS-PROXY-004", short: "代理 · 路由", title: "动态住宅代理池", symbol: "网",
-    subtitle: "健康评级 / 15min 自动冷冻", state: "实时防护", folder: "网络中枢 / 住宅路由", priority: "高",
+    id: "SYS-PROXY-004", num: "04", code: "proxy-pool.md", short: "代理 · 路由", title: "动态住宅代理池", symbol: "网",
+    subtitle: "健康评级 / 15min 自动冷冻隔离", state: "实时防护", folder: "网络中枢 / 住宅路由", priority: "高",
     path: "/proxy-pool", date: "实时健康探测", status: "隔离冷冻 0",
     description: "出口代理智能健康度跟踪与风控隔离系统，一号一 IP 严格隔离，连续 409 代理自动熔断冷冻 15 分钟。",
     tags: ["住宅代理", "一号一IP", "409 冷冻", "智能换国"],
@@ -129,7 +129,7 @@ const modules = [
     accent: "warm", completion: 91,
   },
   {
-    id: "SYS-REMAIL-005", short: "邮箱 · 枢纽", title: "Remail & 邮箱配置", symbol: "邮",
+    id: "SYS-REMAIL-005", num: "05", code: "remail-mail.md", short: "邮箱 · 枢纽", title: "Remail & 邮箱配置", symbol: "邮",
     subtitle: "Remail 暂存 / 微软 OAuth / CF", state: "0s 即取", folder: "邮箱枢纽 / 渠道配置", priority: "高",
     path: "/mail-config", date: "全协议支持", status: "暂存复用 0s",
     description: "全功能邮箱中枢，支持 Remail 失败复用免扣积分、微软 Graph OAuth 授权直连与 Cloudflare Worker 邮件提取。",
@@ -138,8 +138,8 @@ const modules = [
     accent: "mist", completion: 96,
   },
   {
-    id: "SYS-OAUTH-006", short: "授权 · 接码", title: "Codex OAuth 授权导出", symbol: "码",
-    subtitle: "Codex 接码 / 授权直通", state: "多渠道", folder: "接码流水 / OAuth 导出", priority: "中",
+    id: "SYS-OAUTH-006", num: "06", code: "oauth-codex.md", short: "授权 · 接码", title: "Codex OAuth 授权导出", symbol: "码",
+    subtitle: "Codex 接码 / OAuth 授权直连", state: "多渠道", folder: "接码流水 / OAuth 导出", priority: "中",
     path: "/sms-config", date: "按需接码授权", status: "直通授权",
     description: "Codex 及第三方平台 OAuth 自动授权工作台，支持短信平台自动租赁号码、收码与回填，实现免封直连。",
     tags: ["Codex 凭证", "短信接码", "OAuth 2.0", "一键直连"],
@@ -147,7 +147,7 @@ const modules = [
     accent: "ice", completion: 88,
   },
   {
-    id: "SYS-EXTRACT-007", short: "代付 · 提链", title: "全渠道提链出码代付", symbol: "链",
+    id: "SYS-EXTRACT-007", num: "07", code: "payment-extract.md", short: "代付 · 提链", title: "全渠道提链出码代付", symbol: "链",
     subtitle: "PayPal / GCash / PIX / iDEAL", state: "秒级提链", folder: "提炼中枢 / 全球代付", priority: "高",
     path: "/extract", date: "多币种支持", status: "提链出码",
     description: "全渠道支付链接提取与自动代付流水线，覆盖 PayPal 一条龙、GCash、PIX、Hosted Invoice 等主流结账链路。",
@@ -156,8 +156,8 @@ const modules = [
     accent: "silver", completion: 92,
   },
   {
-    id: "SYS-HEALTH-008", short: "验活 · 探测", title: "账号批量并发验活", symbol: "验",
-    subtitle: "Token 有效性 / Plus 资格", state: "并发探测", folder: "质检流水 / 验活中枢", priority: "中",
+    id: "SYS-HEALTH-008", num: "08", code: "token-health.md", short: "验活 · 探测", title: "账号批量并发验活", symbol: "验",
+    subtitle: "Token 有效性 / Plus 资格探测", state: "并发探测", folder: "质检流水 / 验活中枢", priority: "中",
     path: "/registered", date: "高并发检测", status: "存活率 99.4%",
     description: "批量 Access Token 状态验活与订阅套餐（Plus / Pro / Team / Promo）深度探测，支持毫秒级异常标记与归档。",
     tags: ["Token 验活", "Plus 探测", "试用特权", "批量体检"],
@@ -165,13 +165,22 @@ const modules = [
     accent: "warm", completion: 97,
   },
   {
-    id: "SYS-WARM-009", short: "保温 · 保鲜", title: "账号自动化保温保鲜", symbol: "温",
-    subtitle: "官方会话交互 / 活跃度沉淀", state: "智能保鲜", folder: "生命周期 / 自动保温", priority: "中",
+    id: "SYS-WARM-009", num: "09", code: "session-warm.md", short: "保温 · 保鲜", title: "账号自动化保温保鲜", symbol: "温",
+    subtitle: "官方拟真交互 / 活跃度防封", state: "智能保鲜", folder: "生命周期 / 自动保温", priority: "中",
     path: "/registered", date: "周期性轮询", status: "活跃防封",
     description: "自动化与 OpenAI 官方模型发起多轮拟真对话，沉淀账号活跃度画像，显著降低批量冷号被风控扫荡的概率。",
     tags: ["模型交互", "活跃保鲜", "拟真对话", "防封加固"],
     advice: ["冷号建议每隔 3~7 天进行一次交互保温，保持会话活跃度", "可配合住宅代理模拟真实用户日常访问"],
     accent: "mist", completion: 86,
+  },
+  {
+    id: "SYS-EXPORT-010", num: "10", code: "shipment-export.md", short: "发货 · 转换", title: "发货导入与格式转换", symbol: "导",
+    subtitle: "NDJSON 入库 / Sub2 / CPA 导出", state: "全格式", folder: "数据流转 / 发货导出", priority: "高",
+    path: "/shipment-import", date: "实时批量处理", status: "Sub2/CPA 兼容",
+    description: "多渠道账号发货导入与全格式转换中枢，支持 NDJSON 自动解析入库、Sub2API 结构转换及带有 Refresh Token 容错的 CPA 格式导出。",
+    tags: ["发货导入", "NDJSON", "Sub2API", "CPA 转换"],
+    advice: ["支持第三方发货文件一键拖入，自动识别账密与 2FA 凭证", "导出 Sub2API/CPA 时系统已对未授权账号自动补齐 refresh_token 兜底"],
+    accent: "ice", completion: 95,
   },
 ]
 
@@ -215,8 +224,9 @@ function toggleGroup(idx) {
   openGroups.value[idx] = !openGroups.value[idx]
 }
 
-// ════════════════ 系统模块中枢交互控制 (旗舰中枢看板 × 架构矩阵) ════════════════
-const viewMode = ref('hero') // 'hero' (旗舰中枢控制台) | 'matrix' (架构矩阵)
+// ════════════════ 赛博战术工控蓝图布局控制 (对齐 Image #22 / #24 美学体系) ════════════════
+const pageLayout = ref('split') // 'split' (工控分屏中枢，默认推荐，一屏尽览) | 'matrix' (全屏战术矩阵)
+const inspectorDrawerOpen = ref(false)
 const selectedIndex = ref(0)
 const slideDirection = ref('right') // 'right' | 'left' 用于卡片平滑流体过渡
 const isPlaying = ref(false) // 自动巡航展示开关
@@ -226,16 +236,25 @@ let wheelThrottle = false
 const activeModule = computed(() => modules[selectedIndex.value] || modules[0])
 
 const moduleIconMap = [
-  Compass,      // 0: 全自动并发跑号
-  Files,        // 1: 账号资产管理中枢
-  Opportunity,  // 2: Sentinel PoW 预计算池
-  Connection,   // 3: 动态住宅代理池
-  Message,      // 4: Remail & 邮箱配置
-  Key,          // 5: Codex OAuth 授权导出
-  CreditCard,   // 6: 全渠道提链出码代付
-  CircleCheck,  // 7: 账号批量并发验活
-  Sunny,        // 8: 账号自动化保温保鲜
+  Compass,      // 0: 全自动并发跑号 (01)
+  Files,        // 1: 账号资产管理中枢 (02)
+  Opportunity,  // 2: Sentinel PoW 预计算池 (03)
+  Connection,   // 3: 动态住宅代理池 (04)
+  Message,      // 4: Remail & 邮箱配置 (05)
+  Key,          // 5: Codex OAuth 授权导出 (06)
+  CreditCard,   // 6: 全渠道提链出码代付 (07)
+  CircleCheck,  // 7: 账号批量并发验活 (08)
+  Sunny,        // 8: 账号自动化保温保鲜 (09)
+  Download,     // 9: 发货导入与格式转换 (10)
 ]
+
+// 战术蓝图双列对齐：左列为奇数 (01, 03, 05, 07, 09)，右列为偶数 (02, 04, 06, 08, 10)
+const leftModules = computed(() =>
+  modules.filter((_, idx) => idx % 2 === 0).map(m => ({ ...m, rawIndex: modules.indexOf(m) }))
+)
+const rightModules = computed(() =>
+  modules.filter((_, idx) => idx % 2 === 1).map(m => ({ ...m, rawIndex: modules.indexOf(m) }))
+)
 
 function getModuleIcon(idx) {
   return moduleIconMap[idx] || Compass
@@ -245,6 +264,17 @@ function selectCard(idx) {
   const target = ((idx % modules.length) + modules.length) % modules.length
   slideDirection.value = target >= selectedIndex.value ? 'right' : 'left'
   selectedIndex.value = target
+}
+
+function openModuleInspector(idx) {
+  selectCard(idx)
+  inspectorDrawerOpen.value = true
+}
+
+function executeModule(mod) {
+  if (mod?.path) {
+    router.push(mod.path)
+  }
 }
 
 function nextCard(dir = 1) {
@@ -460,557 +490,354 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="octopus-app-wrapper" :class="{ 'material-open': materialDrawerOpen }">
-    <main class="octopus-workbench-shell">
-      <!-- ════════════════ 顶部控制中枢 Header (Top Bar) ════════════════ -->
-      <header class="topbar">
-        <div class="page-title">
-          <h1>OpenAI 自动化注册资产工作台</h1>
-          <p>全自动并发舰队 · 算力防风控 · 资产自愈 · 全球出口拓扑</p>
+  <div class="octopus-app-wrapper glass-dashboard-app" :class="{ 'material-open': materialDrawerOpen }">
+    <!-- 背景流体微光环境光球 (Ambient Glass Glow Orbs) -->
+    <div class="glass-ambient-sphere sphere-1"></div>
+    <div class="glass-ambient-sphere sphere-2"></div>
+    <div class="glass-ambient-sphere sphere-3"></div>
+
+    <main class="glass-workbench-shell">
+      <!-- ════════════════ 1. 顶部悬浮毛玻璃导控栏 (Floating Glass Navbar) ════════════════ -->
+      <header class="glass-navbar">
+        <div class="card-glass-specular"></div>
+        <div class="liquid-caustic-flare"></div>
+        <div class="nav-brand-group">
+          <div class="brand-orb-icon">
+            <el-icon><Operation /></el-icon>
+          </div>
+          <div class="brand-titles">
+            <div class="brand-main-row">
+              <h1 class="brand-title">OpenAI 自动化注册资产中枢</h1>
+              <span class="glass-pulse-badge">
+                <i class="pulse-dot"></i>
+                系统运行正常
+              </span>
+            </div>
+            <p class="brand-subtitle">Pipeline Architecture · 多协程防风控与资产自愈中枢</p>
+          </div>
         </div>
 
-        <div class="search-box">
+        <div class="nav-search-slot">
           <el-icon><Search /></el-icon>
           <input
-            placeholder="搜索功能模块、邮箱、代理或任务条件…"
-            @keyup.enter="showToast('已筛选相关模块')"
+            placeholder="快捷搜索功能模块、路由或数据…"
+            @keyup.enter="showToast('已匹配相关功能')"
           />
           <kbd>⌘ K</kbd>
         </div>
 
-        <div class="top-actions">
-          <!-- 强调色快速切换 -->
-          <div class="theme-control">
-            <button
-              class="round-btn theme-toggle"
-              title="切换强调色 (静海 / 翡翠 / 鸢尾 / 琥珀 / 绯樱)"
-              @click="openMaterialDrawer(null)"
-            >
-              <span class="theme-toggle-icon">✦</span>
-            </button>
-          </div>
-
-          <!-- 流体材质设置抽屉按钮 -->
+        <div class="nav-actions-group">
           <button
-            class="round-btn filter-btn active"
-            title="四张流体卡片材质与调色设置"
-            @click="openMaterialDrawer(selectedMetricIndex)"
-          >
-            <el-icon><Filter /></el-icon>
-          </button>
-
-          <!-- 刷新概览 -->
-          <button
-            class="round-btn"
+            class="glass-icon-btn"
             :class="{ 'is-loading': summaryLoading }"
-            title="刷新数据概览"
+            title="刷新系统概览"
             @click="loadDashboardSummary"
           >
             <el-icon :class="{ 'is-spinning': summaryLoading }"><Refresh /></el-icon>
           </button>
 
-          <!-- 核心行动按键: 一键批量并发 -->
-          <button class="scan-btn" @click="router.push('/auto')">
+          <button
+            class="glass-icon-btn"
+            title="调节毛玻璃流速与材质"
+            @click="openMaterialDrawer(0)"
+          >
+            <el-icon><Filter /></el-icon>
+          </button>
+
+          <button class="glass-cta-btn" @click="router.push('/auto')">
             <el-icon><Compass /></el-icon>
-            <span>一键批量并发</span>
+            <span>一键并发跑号</span>
           </button>
         </div>
       </header>
 
-      <!-- ════════════════ 1. 核心四大 3D 流体卡片 (Metric Grid) ════════════════ -->
-      <section class="metric-grid" aria-label="核心指标概览">
-        <!-- Card 0: 号池库存总览 (Cyan) -->
-        <article
-          class="metric-card aurora"
-          :class="{ selected: selectedMetricIndex === 0 }"
-          :data-material="metricCardSettings[0].material"
-          :style="{
-            '--material-opacity': metricCardSettings[0].opacity / 100,
-            '--material-blur': `${metricCardSettings[0].blur}px`,
-            '--flow-duration': `${Math.max(2.2, 8 - metricCardSettings[0].flow / 50)}s`,
-            '--mat-a': metricCardSettings[0].colorA,
-            '--mat-b': metricCardSettings[0].colorB,
-            '--mat-c': metricCardSettings[0].colorC,
-          }"
-          @click="selectedMetricIndex = 0"
-          @dblclick="router.push('/pool')"
-        >
-          <span class="metric-select-mark" v-if="selectedMetricIndex === 0">✓ 已选择</span>
-          <span>POOL / 号池总览</span>
-          <h3>号池库存</h3>
-          <strong>{{ stats.total || summaryData.pool.total || 0 }}<small>个</small></strong>
-          <p>可用 {{ stats.available || summaryData.pool.available || 0 }} · <em>可用率 {{ Math.min(100, Math.round(((stats.available || summaryData.pool.available || 0) / (stats.total || summaryData.pool.total || 1)) * 100)) }}%</em></p>
-        </article>
+      <!-- ════════════════ 2. 四大核心遥测毛玻璃指标卡 (4 Glass Metric Pods) ════════════════ -->
+      <section class="glass-metrics-grid" aria-label="核心指标统计">
+        <!-- Pod 1: 号池库存 -->
+        <div class="glass-metric-card" @click="router.push('/pool')" title="点击直达号池管理">
+          <div class="card-glass-specular"></div>
+          <div class="liquid-caustic-flare"></div>
+          <div class="metric-top-row">
+            <div class="metric-icon-orb blue-orb">
+              <el-icon><Folder /></el-icon>
+            </div>
+            <span class="metric-tag">号池库存</span>
+            <span class="metric-link-hint"><el-icon><ArrowRight /></el-icon></span>
+          </div>
+          <div class="metric-value-row">
+            <strong class="metric-number">{{ stats.total || summaryData.pool.total || 0 }}</strong>
+            <span class="metric-unit">个可用</span>
+          </div>
+          <div class="metric-footer-row">
+            <span>可用 {{ stats.available || summaryData.pool.available || 0 }}</span>
+            <span class="metric-highlight">可用率 {{ Math.min(100, Math.round(((stats.available || summaryData.pool.available || 0) / (stats.total || summaryData.pool.total || 1)) * 100)) }}%</span>
+          </div>
+        </div>
 
-        <!-- Card 1: GPT 注册资产 (Original) -->
-        <article
-          class="metric-card aurora"
-          :class="{ selected: selectedMetricIndex === 1 }"
-          :data-material="metricCardSettings[1].material"
-          :style="{
-            '--material-opacity': metricCardSettings[1].opacity / 100,
-            '--material-blur': `${metricCardSettings[1].blur}px`,
-            '--flow-duration': `${Math.max(2.2, 8 - metricCardSettings[1].flow / 50)}s`,
-            '--mat-a': metricCardSettings[1].colorA,
-            '--mat-b': metricCardSettings[1].colorB,
-            '--mat-c': metricCardSettings[1].colorC,
-          }"
-          @click="selectedMetricIndex = 1"
-          @dblclick="router.push('/registered')"
-        >
-          <span class="metric-select-mark" v-if="selectedMetricIndex === 1">✓ 已选择</span>
-          <span>ASSETS / 注册资产</span>
-          <h3>GPT 资产库</h3>
-          <strong>{{ summaryData.registered.total }}<small>个账号</small></strong>
-          <p>2FA 保护 {{ summaryData.registered.with_2fa }} · <em>覆盖率 {{ summaryData.registered.sec_rate }}%</em></p>
-        </article>
+        <!-- Pod 2: GPT 资产库 -->
+        <div class="glass-metric-card" @click="router.push('/registered')" title="点击直达账号资产库">
+          <div class="card-glass-specular"></div>
+          <div class="liquid-caustic-flare"></div>
+          <div class="metric-top-row">
+            <div class="metric-icon-orb emerald-orb">
+              <el-icon><CircleCheckFilled /></el-icon>
+            </div>
+            <span class="metric-tag">GPT 资产库</span>
+            <span class="metric-link-hint"><el-icon><ArrowRight /></el-icon></span>
+          </div>
+          <div class="metric-value-row">
+            <strong class="metric-number">{{ summaryData.registered.total }}</strong>
+            <span class="metric-unit">个账号</span>
+          </div>
+          <div class="metric-footer-row">
+            <span>2FA 保护 {{ summaryData.registered.with_2fa }}</span>
+            <span class="metric-highlight emerald">覆盖率 {{ summaryData.registered.sec_rate }}%</span>
+          </div>
+        </div>
 
-        <!-- Card 2: 自动化跑号舰队 (Rain) -->
-        <article
-          class="metric-card aurora"
-          :class="{ selected: selectedMetricIndex === 2 }"
-          :data-material="metricCardSettings[2].material"
-          :style="{
-            '--material-opacity': metricCardSettings[2].opacity / 100,
-            '--material-blur': `${metricCardSettings[2].blur}px`,
-            '--flow-duration': `${Math.max(2.2, 8 - metricCardSettings[2].flow / 50)}s`,
-            '--mat-a': metricCardSettings[2].colorA,
-            '--mat-b': metricCardSettings[2].colorB,
-            '--mat-c': metricCardSettings[2].colorC,
-          }"
-          @click="selectedMetricIndex = 2"
-          @dblclick="router.push('/auto')"
-        >
-          <span class="metric-select-mark" v-if="selectedMetricIndex === 2">✓ 已选择</span>
-          <span>FLEET / 自动跑号</span>
-          <h3>并发 Worker</h3>
-          <strong>{{ autoStatus.concurrency || 1 }}<small>核并发</small></strong>
-          <p>成功 {{ autoStatus.registered_ok || summaryData.pool.done || 0 }} · <em>成功率 {{ summaryData.registered.success_rate || 100 }}%</em></p>
-        </article>
+        <!-- Pod 3: 自动跑号并发 -->
+        <div class="glass-metric-card" @click="router.push('/auto')" title="点击直达全自动并发跑号">
+          <div class="card-glass-specular"></div>
+          <div class="liquid-caustic-flare"></div>
+          <div class="metric-top-row">
+            <div class="metric-icon-orb cyan-orb">
+              <el-icon><Compass /></el-icon>
+            </div>
+            <span class="metric-tag">并发跑号</span>
+            <span class="metric-link-hint"><el-icon><ArrowRight /></el-icon></span>
+          </div>
+          <div class="metric-value-row">
+            <strong class="metric-number">{{ autoStatus.concurrency || 1 }}</strong>
+            <span class="metric-unit">核并发</span>
+          </div>
+          <div class="metric-footer-row">
+            <span>成功 {{ autoStatus.registered_ok || summaryData.pool.done || 0 }}</span>
+            <span class="metric-highlight">成功率 {{ summaryData.registered.success_rate || 100 }}%</span>
+          </div>
+        </div>
 
-        <!-- Card 3: PoW 与算力防御 (Chrome) -->
-        <article
-          class="metric-card aurora"
-          :class="{ selected: selectedMetricIndex === 3 }"
-          :data-material="metricCardSettings[3].material"
-          :style="{
-            '--material-opacity': metricCardSettings[3].opacity / 100,
-            '--material-blur': `${metricCardSettings[3].blur}px`,
-            '--flow-duration': `${Math.max(2.2, 8 - metricCardSettings[3].flow / 50)}s`,
-            '--mat-a': metricCardSettings[3].colorA,
-            '--mat-b': metricCardSettings[3].colorB,
-            '--mat-c': metricCardSettings[3].colorC,
-          }"
-          @click="selectedMetricIndex = 3"
-          @dblclick="router.push('/proxy-pool')"
-        >
-          <span class="metric-select-mark" v-if="selectedMetricIndex === 3">✓ 已选择</span>
-          <span>SENTINEL / 算力防风控</span>
-          <h3>PoW 预计算</h3>
-          <strong>{{ sentinelStats.current_size }}<small>槽位就绪</small></strong>
-          <p>冷冻隔离 {{ proxyHealthStats.cooling_down_count }} · <em class="danger">0ms 瞬时取用</em></p>
-        </article>
+        <!-- Pod 4: Sentinel 算力防御 -->
+        <div class="glass-metric-card" @click="router.push('/proxy-pool')" title="点击直达代理与算力池">
+          <div class="card-glass-specular"></div>
+          <div class="liquid-caustic-flare"></div>
+          <div class="metric-top-row">
+            <div class="metric-icon-orb violet-orb">
+              <el-icon><Opportunity /></el-icon>
+            </div>
+            <span class="metric-tag">Sentinel 防御</span>
+            <span class="metric-link-hint"><el-icon><ArrowRight /></el-icon></span>
+          </div>
+          <div class="metric-value-row">
+            <strong class="metric-number">{{ sentinelStats.current_size }}</strong>
+            <span class="metric-unit">槽位就绪</span>
+          </div>
+          <div class="metric-footer-row">
+            <span>隔离冷冻 {{ proxyHealthStats.cooling_down_count }}</span>
+            <span class="metric-highlight violet">0ms 瞬时取用</span>
+          </div>
+        </div>
       </section>
 
-      <!-- ════════════════ 2. 核心工作台网格 (左任务队列 + 中3D环绕 + 右详情面板) ════════════════ -->
-      <div class="workspace-grid">
-        <!-- ───── 左侧栏: 实时任务队列 (Queue Pane) ───── -->
-        <section class="queue-pane">
-          <div class="section-heading">
-            <h2>实时任务队列</h2>
-            <span>流水 · 阶段 · 耗时</span>
+      <!-- ════════════════ 3. 核心工作区 (Glass Workspace) ════════════════ -->
+      <section class="glass-workspace-layout">
+        <!-- 左侧/主体：10 大核心功能玻璃工作台 (Glass Command Hub) -->
+        <div class="glass-main-panel">
+          <div class="card-glass-specular"></div>
+          <div class="liquid-caustic-flare"></div>
+          <div class="glass-panel-header">
+            <div class="panel-header-left">
+              <h2 class="panel-title">✦ 核心功能工作台</h2>
+              <span class="panel-subtitle">10 个核心自动化作业流 · 极速直达</span>
+            </div>
+            <div class="panel-header-right">
+              <span class="active-node-count">10 模块就绪</span>
+            </div>
           </div>
 
-          <div class="queue-tabs" role="tablist">
-            <button :class="{ active: queueTabs === 'all' }" @click="queueTabs = 'all'">全部任务</button>
-            <button :class="{ active: queueTabs === 'running' }" @click="queueTabs = 'running'">进行中</button>
-            <button :class="{ active: queueTabs === 'warning' }" @click="queueTabs = 'warning'">风控隔离</button>
-          </div>
-
-          <div class="queue-groups">
-            <article
-              v-for="(grp, gIdx) in taskGroups"
-              :key="grp.name"
-              class="queue-group"
-              :class="{ open: openGroups[gIdx] }"
+          <div class="glass-modules-grid">
+            <div
+              v-for="(mod, idx) in modules"
+              :key="mod.id"
+              class="glass-module-card"
+              @click="executeModule(mod)"
+              :title="`前往：${mod.title}`"
             >
-              <button
-                class="group-head"
-                :style="{ '--group-color': grp.color }"
-                @click="toggleGroup(gIdx)"
-              >
-                <span>
-                  <i></i>{{ grp.name }} <b>{{ grp.count }}</b>
-                </span>
-                <el-icon class="group-chevron"><ArrowRight /></el-icon>
-              </button>
-
-              <div class="group-items">
-                <button
-                  v-for="item in grp.items"
-                  :key="item.title"
-                  class="queue-item"
-                  @click="router.push(item.path)"
-                >
-                  <span>{{ item.title }}</span>
-                  <em :class="{ reading: item.isRunning }">{{ item.badge }}</em>
-                  <small>{{ item.desc }}</small>
-                </button>
-              </div>
-            </article>
-          </div>
-        </section>
-
-        <!-- ───── 中间栏: 系统旗舰中枢看板 / 全景架构矩阵 (Hero Mission Control & Architecture Matrix) ───── -->
-        <section class="carousel-panel panel" aria-label="核心模块交互大屏">
-          <!-- 顶部工具栏 -->
-          <div class="carousel-toolbar">
-            <div class="toolbar-left-btns">
-              <button
-                class="pill-btn"
-                :class="{ active: viewMode === 'hero', quiet: viewMode !== 'hero' }"
-                @click="setViewMode('hero')"
-              >
-                <span class="btn-sparkle">✦</span>
-                <span>旗舰中枢</span>
-              </button>
-              <button
-                class="pill-btn"
-                :class="{ active: viewMode === 'matrix', quiet: viewMode !== 'matrix' }"
-                @click="setViewMode('matrix')"
-              >
-                <el-icon><Operation /></el-icon>
-                <span>架构矩阵</span>
-              </button>
-              <button
-                class="pill-btn"
-                :class="{ active: isPlaying, playing: isPlaying }"
-                @click="togglePlay"
-              >
-                <span class="play-icon">{{ isPlaying ? '⏸' : '▶' }}</span>
-                <span class="play-label">{{ isPlaying ? '巡航中' : '自动巡航' }}</span>
-              </button>
-            </div>
-
-            <div class="toolbar-right-btns">
-              <span class="index-indicator">
-                <span class="hud-mono-tag">SYS // 0{{ selectedIndex + 1 }}</span>
-                <small>/ 09</small>
-              </span>
-              <button class="pill-btn quiet" @click="nextCard(-1)" title="上一个模块">‹ 前项</button>
-              <button class="icon-btn" @click="nextCard(1)" title="下一个模块">›</button>
-            </div>
-          </div>
-
-          <!-- 视口容器: 两种模式切换 -->
-          <div
-            class="carousel-viewport"
-            :class="`view-${viewMode}`"
-            tabindex="0"
-            @wheel="handleSceneWheel"
-          >
-            <!-- 模式 1: 旗舰中枢控制台 (Hero Mission Control Console) - 绝对整洁、奢华呼吸感、零堆叠重影 -->
-            <div v-if="viewMode === 'hero'" class="hero-stage-container">
-              <!-- 空间全息柔光底座 (Holographic Ambient Sanctuary) -->
-              <div class="hero-ambient-glow" aria-hidden="true"></div>
-              <div class="hero-orbital-halo" aria-hidden="true"></div>
-
-              <!-- 旗舰控制台卡片 (单一聚焦，尊享奢华玉润质感) -->
-              <transition :name="slideDirection === 'right' ? 'hero-slide-right' : 'hero-slide-left'" mode="out-in">
-                <div :key="activeModule.id" class="hero-console-card">
-                  <!-- 顶层高光与四角科技折角 -->
-                  <div class="card-specular-shine"></div>
-                  <div class="cyber-corner-bracket tl"></div>
-                  <div class="cyber-corner-bracket tr"></div>
-                  <div class="cyber-corner-bracket bl"></div>
-                  <div class="cyber-corner-bracket br"></div>
-
-                  <!-- 1. 卡片顶栏: 微晶勋章 + 序列编号 + 实时动态雷达 -->
-                  <header class="console-card-header">
-                    <div class="console-brand">
-                      <div class="console-gem-icon">
-                        <component :is="getModuleIcon(selectedIndex)" class="gem-icon-svg" />
-                      </div>
-                      <div class="console-brand-text">
-                        <div class="console-id-line">
-                          <span class="console-sys-id">{{ activeModule.id }}</span>
-                          <span class="console-priority-badge">{{ activeModule.priority }}级调度</span>
-                        </div>
-                        <span class="console-folder-name">{{ activeModule.folder }}</span>
-                      </div>
-                    </div>
-
-                    <div class="console-status-pill">
-                      <span class="radar-ping-dot"></span>
-                      <i class="live-dot-solid"></i>
-                      <em>{{ activeModule.state }}</em>
-                    </div>
-                  </header>
-
-                  <!-- 2. 卡片主信息: 标题 + 调度节律 + 描述 -->
-                  <div class="console-card-body">
-                    <div class="console-title-row">
-                      <h2 class="console-main-title">{{ activeModule.title }}</h2>
-                      <span class="console-short-badge">{{ activeModule.short }}</span>
-                    </div>
-                    <p class="console-subtitle">{{ activeModule.subtitle }} · <em>{{ activeModule.date }}</em></p>
-                    <p class="console-description">{{ activeModule.description }}</p>
-                  </div>
-
-                  <!-- 3. 三维遥测数据中枢 (Telemetry Grid) -->
-                  <div class="console-telemetry-grid">
-                    <!-- 指标 1: Sentinel 就绪度 -->
-                    <div class="telemetry-box telemetry-readiness">
-                      <div class="telemetry-top">
-                        <span class="telemetry-label">
-                          <el-icon><Opportunity /></el-icon> Sentinel 守护
-                        </span>
-                        <strong class="telemetry-number">{{ activeModule.completion }}<em>%</em></strong>
-                      </div>
-                      <div class="telemetry-energy-track">
-                        <div class="telemetry-energy-fill" :style="{ width: `${activeModule.completion}%` }">
-                          <span class="telemetry-spark"></span>
-                        </div>
-                      </div>
-                    </div>
-
-                    <!-- 指标 2: 运行状态 -->
-                    <div class="telemetry-box telemetry-status">
-                      <span class="telemetry-label">
-                        <el-icon><CircleCheckFilled /></el-icon> 实时运行
-                      </span>
-                      <strong class="telemetry-value-text">{{ activeModule.status }}</strong>
-                    </div>
-
-                    <!-- 指标 3: 调度节拍 -->
-                    <div class="telemetry-box telemetry-cycle">
-                      <span class="telemetry-label">
-                        <el-icon><Timer /></el-icon> 调度拓扑
-                      </span>
-                      <strong class="telemetry-value-text">{{ activeModule.date }}</strong>
-                    </div>
-                  </div>
-
-                  <!-- 4. 核心标签芯片流 -->
-                  <div class="console-tags-flow">
-                    <span v-for="tag in activeModule.tags" :key="tag" class="console-tag-capsule">
-                      <i>✦</i>{{ tag }}
-                    </span>
-                  </div>
-
-                  <!-- 5. 卡片底栏: 轮巡步进器 + 旗舰直达操作按钮 -->
-                  <footer class="console-card-footer">
-                    <div class="console-stepper">
-                      <button class="step-nav-btn" @click.stop="nextCard(-1)" title="上一个模块">‹</button>
-                      <div class="step-dots">
-                        <span
-                          v-for="(_, dIdx) in modules"
-                          :key="dIdx"
-                          class="step-dot"
-                          :class="{ active: dIdx === selectedIndex }"
-                          @click.stop="selectCard(dIdx)"
-                        ></span>
-                      </div>
-                      <button class="step-nav-btn" @click.stop="nextCard(1)" title="下一个模块">›</button>
-                    </div>
-
-                    <button class="console-launch-btn" @click.stop="executeCurrentModule">
-                      <span>直达该功能中枢</span>
-                      <el-icon class="launch-arrow"><ArrowRight /></el-icon>
-                    </button>
-                  </footer>
+              <div class="module-card-specular"></div>
+              <div class="liquid-caustic-flare"></div>
+              <div class="module-card-top">
+                <div class="module-icon-box" :class="`accent-${mod.accent || 'ice'}`">
+                  <component :is="getModuleIcon(idx)" />
                 </div>
-              </transition>
-            </div>
-
-            <!-- 模式 2: 全景架构矩阵 (Matrix Grid) 3×3 赛博中枢看板 -->
-            <div v-else class="matrix-grid-container">
-              <div
-                v-for="(mod, idx) in modules"
-                :key="mod.id"
-                class="matrix-card"
-                :class="{ active: idx === selectedIndex }"
-                @click="selectCard(idx)"
-                @dblclick="executeCurrentModule"
-              >
-                <div class="card-specular-shine"></div>
-                <div class="cyber-corner-bracket tl"></div>
-                <div class="cyber-corner-bracket tr"></div>
-                <div class="cyber-corner-bracket bl"></div>
-                <div class="cyber-corner-bracket br"></div>
-
-                <div class="matrix-card-head">
-                  <span class="matrix-code-chip">{{ mod.id.replace('SYS-', '') }}</span>
-                  <span class="matrix-state-badge">
+                <div class="module-top-pills">
+                  <span class="module-num-pill">{{ mod.num }}</span>
+                  <span class="module-state-pill">
                     <i class="state-dot"></i>
                     {{ mod.state }}
                   </span>
                 </div>
+              </div>
 
-                <div class="matrix-card-body">
-                  <div class="matrix-icon-box">
-                    <component :is="getModuleIcon(idx)" class="matrix-icon" />
-                  </div>
-                  <div class="matrix-info">
-                    <h3 class="matrix-title">{{ mod.title }}</h3>
-                    <p class="matrix-subtitle">{{ mod.subtitle }}</p>
-                  </div>
-                </div>
-
-                <div class="matrix-card-foot">
-                  <div class="matrix-progress-row">
-                    <span>就绪度</span>
-                    <strong>{{ mod.completion }}%</strong>
-                  </div>
-                  <div class="matrix-progress-track">
-                    <div class="matrix-progress-bar" :style="{ width: `${mod.completion}%` }">
-                      <span class="energy-particle"></span>
-                    </div>
-                  </div>
-                  <div class="matrix-tags">
-                    <span v-for="tag in mod.tags.slice(0, 2)" :key="tag" class="matrix-tag">{{ tag }}</span>
-                  </div>
-                </div>
-
-                <div class="matrix-hover-action">
-                  <span>直达</span>
-                  <el-icon><ArrowRight /></el-icon>
+              <div class="module-card-mid">
+                <h3 class="module-title">{{ mod.title }}</h3>
+                <p class="module-desc">{{ mod.subtitle }}</p>
+                <div class="module-tag-row">
+                  <span v-for="tag in mod.tags.slice(0, 2)" :key="tag" class="glass-tag">{{ tag }}</span>
                 </div>
               </div>
+
+              <div class="module-card-bottom">
+                <span class="module-metric-hint">{{ mod.short }}</span>
+                <span class="module-enter-btn"><el-icon><ArrowRight /></el-icon></span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 右侧：实时系统雷达 & 智能风控建议 (Glass Health Radar & Advisory) -->
+        <div class="glass-side-panel">
+          <!-- 卡片 1: 实时算力与网络健康 -->
+          <div class="glass-subcard">
+            <div class="card-glass-specular"></div>
+            <div class="liquid-caustic-flare"></div>
+            <div class="subcard-head">
+              <h3><el-icon><Histogram /></el-icon> 实时防御雷达</h3>
+              <span class="subcard-badge">LIVE</span>
             </div>
 
-            <!-- 悬浮 HUD 导航指示条 -->
-            <div class="scroll-tip">
-              <span class="mouse-icon"><i></i></span>
-              <p v-if="viewMode === 'hero'">
-                ✦ 旗舰控制台 · 滚动滚轮或点击下方时间轴即刻平滑切换 · 点击右下角直达中枢
-              </p>
-              <p v-else>
-                ✦ 架构矩阵全景 · 点击联动右侧参数建议 · 双击直达功能模块
-              </p>
-              <strong>{{ activeModule.title }}</strong>
+            <div class="radar-stat-item">
+              <div class="stat-item-label">
+                <span>PoW 预计算池深度</span>
+                <b>{{ sentinelStats.current_size }} / {{ sentinelStats.target_size }} 槽</b>
+              </div>
+              <div class="glass-progress-bar">
+                <div
+                  class="progress-fill cyan-fill"
+                  :style="{ width: `${Math.min(100, Math.round((sentinelStats.current_size / Math.max(1, sentinelStats.target_size)) * 100))}%` }"
+                ></div>
+              </div>
+            </div>
+
+            <div class="radar-stat-item">
+              <div class="stat-item-label">
+                <span>住宅代理健康度</span>
+                <b>{{ proxyHealthStats.healthy_count }} / {{ Math.max(1, proxyHealthStats.total_tracked) }} 正常</b>
+              </div>
+              <div class="glass-progress-bar">
+                <div
+                  class="progress-fill green-fill"
+                  :style="{ width: `${Math.min(100, Math.round(((proxyHealthStats.healthy_count || 1) / Math.max(1, proxyHealthStats.total_tracked || 1)) * 100))}%` }"
+                ></div>
+              </div>
             </div>
           </div>
 
-          <!-- 底部出号时间轴与操作栏 -->
-          <div class="timeline-panel">
-            <div class="timeline-head">
-              <b>出号全链路中枢节律</b>
-              <span><el-icon><Calendar /></el-icon> 24 小时全自动调度流</span>
-              <div class="timeline-head-actions">
-                <button @click="showToast('已切换为实时节律')">实时⌄</button>
-                <button @click="showToast('查看今日出号计划')">今日</button>
-              </div>
+          <!-- 卡片 2: AI 智能风控策略 -->
+          <div class="glass-subcard advisory-card">
+            <div class="card-glass-specular"></div>
+            <div class="liquid-caustic-flare"></div>
+            <div class="subcard-head">
+              <h3><el-icon><Opportunity /></el-icon> 智能调度策略建议</h3>
             </div>
-
-            <div class="timeline-dates">
-              <button
-                v-for="(m, mIdx) in modules"
-                :key="m.id"
-                class="timeline-node"
-                :class="{ active: mIdx === selectedIndex }"
-                @click="selectCard(mIdx)"
-                :title="m.title"
-              >
-                <span class="node-idx">0{{ mIdx + 1 }}</span>
-                <span class="node-name">{{ m.short.split(' · ')[0] }}</span>
-              </button>
-            </div>
-
-            <div class="timeline-track">
-              <i :style="{ width: `${11.11 * (selectedIndex + 1)}%` }"></i>
-            </div>
-
-            <div class="scene-actions">
-              <button @click="openMaterialDrawer(selectedMetricIndex)">
-                <el-icon><Filter /></el-icon>
-                <span>护眼材质</span>
-              </button>
-              <button class="primary" @click="router.push('/auto')">
-                <el-icon><Compass /></el-icon>
-                <span>启动跑号</span>
-              </button>
-              <button @click="router.push('/registered')">
-                <el-icon><Files /></el-icon>
-                <span>导出资产</span>
-              </button>
-              <button class="action-highlight" @click="executeCurrentModule">
-                <span>进入当前模块</span>
-                <el-icon><ArrowRight /></el-icon>
-              </button>
-            </div>
-          </div>
-        </section>
-
-        <!-- ───── 右侧栏: 模块运行详情 (Details Panel) ───── -->
-        <aside class="details-panel panel">
-          <div class="details-heading">
-            <h2>✦ 模块运行详情</h2>
-            <button title="前往该模块" @click="executeCurrentModule">
-              <el-icon><Folder /></el-icon>
-            </button>
+            <ul class="glass-advice-list">
+              <li>号池库存充沛，推荐开启 <b>5~10 并发 Worker</b> 持续批量作业。</li>
+              <li>连续 409 限流时系统已自动启用 <b>15min 智能冷冻隔离</b>，防风控熔断。</li>
+              <li>已注册账号支持<b>一键批量补设强密码</b>，可免手机验证码顺畅登入。</li>
+            </ul>
           </div>
 
-          <div class="details-content">
-            <code>{{ activeModule.id }}</code>
-            <div class="detail-title-row">
-              <h2>{{ activeModule.title }}</h2>
-              <span>{{ activeModule.status }}</span>
-            </div>
-            <p class="detail-description">{{ activeModule.description }}</p>
-
-            <dl class="metadata">
-              <div>
-                <dt>负责人</dt>
-                <dd><span class="mini-avatar">GPT</span>yhm / 管理员</dd>
-              </div>
-              <div>
-                <dt>所属目录</dt>
-                <dd><el-icon><Folder /></el-icon><span>{{ activeModule.folder }}</span></dd>
-              </div>
-              <div>
-                <dt>调度节点</dt>
-                <dd><el-icon><Calendar /></el-icon><span>{{ activeModule.date }}</span></dd>
-              </div>
-              <div>
-                <dt>当前状态</dt>
-                <dd><i class="status-dot"></i><span>{{ activeModule.state }}</span></dd>
-              </div>
-              <div>
-                <dt>优先级</dt>
-                <dd><i class="priority-dot"></i><span>{{ activeModule.priority }}</span></dd>
-              </div>
-              <div>
-                <dt>核心标签</dt>
-                <dd class="tag-list">
-                  <span v-for="tag in activeModule.tags" :key="tag">{{ tag }}</span>
-                </dd>
-              </div>
-            </dl>
-
-            <article class="ai-note">
-              <h3>🛡️ 智能风控策略建议</h3>
-              <ul>
-                <li v-for="(adv, aIdx) in activeModule.advice" :key="aIdx">{{ adv }}</li>
-              </ul>
-              <button @click="executeCurrentModule">打开该功能工作台</button>
-            </article>
+          <!-- 卡片 3: 快捷出号行动流 -->
+          <div class="glass-subcard quick-action-subcard">
+            <div class="card-glass-specular"></div>
+            <div class="liquid-caustic-flare"></div>
+            <button class="glass-action-btn primary" @click="router.push('/auto')">
+              <el-icon><Compass /></el-icon>
+              <span>启动全自动并发舰队</span>
+            </button>
+            <button class="glass-action-btn secondary" @click="router.push('/registered')">
+              <el-icon><Download /></el-icon>
+              <span>导出已注册账号资产</span>
+            </button>
           </div>
+        </div>
+      </section>
 
-          <footer class="detail-actions">
-            <button @click="openMaterialDrawer(selectedMetricIndex)">
-              <el-icon><Edit /></el-icon> 调整配置
-            </button>
-            <button class="primary" @click="executeCurrentModule">
-              <el-icon><Check /></el-icon> 立即执行
-            </button>
-            <button class="more" @click="showToast('已激活高级调试')">
-              <el-icon><MoreFilled /></el-icon>
-            </button>
-          </footer>
-        </aside>
-      </div>
+      <!-- ════════════════ 4. 底部毛玻璃状态栏 (Glass Status Bar) ════════════════ -->
+      <footer class="glass-status-footer">
+        <div class="card-glass-specular"></div>
+        <div class="liquid-caustic-flare"></div>
+        <div class="footer-left-status">
+          <span class="live-pulse-dot"></span>
+          <span>调度常驻引擎已启动 · 今日已产出 <b>{{ autoStatus.registered_ok || summaryData.pool.done || 0 }}</b> 个账号</span>
+        </div>
+        <div class="footer-right-shortcuts">
+          <button class="status-shortcut-btn" @click="router.push('/pool')">号池入库</button>
+          <button class="status-shortcut-btn" @click="router.push('/proxy-pool')">代理检测</button>
+          <button class="status-shortcut-btn" @click="router.push('/shipment-import')">发货转换</button>
+          <button class="status-shortcut-btn" @click="openMaterialDrawer(0)">护眼材质</button>
+        </div>
+      </footer>
     </main>
+
+      <!-- 战术技术档案抽屉 (在全景蓝图模式下点击卡片随时划出查看) -->
+      <el-drawer
+        v-model="inspectorDrawerOpen"
+        :title="`NODE // ${activeModule.num} · ${activeModule.title}`"
+        direction="rtl"
+        size="380px"
+      >
+        <div class="details-content drawer-details">
+          <code>{{ activeModule.id }}</code>
+          <div class="detail-title-row">
+            <h2>{{ activeModule.title }}</h2>
+            <span>{{ activeModule.status }}</span>
+          </div>
+          <p class="detail-description">{{ activeModule.description }}</p>
+
+          <dl class="metadata">
+            <div>
+              <dt>负责人</dt>
+              <dd><span class="mini-avatar">GPT</span>yhm / 管理员</dd>
+            </div>
+            <div>
+              <dt>所属目录</dt>
+              <dd><el-icon><Folder /></el-icon><span>{{ activeModule.folder }}</span></dd>
+            </div>
+            <div>
+              <dt>调度节点</dt>
+              <dd><el-icon><Calendar /></el-icon><span>{{ activeModule.date }}</span></dd>
+            </div>
+            <div>
+              <dt>当前状态</dt>
+              <dd><i class="status-dot"></i><span>{{ activeModule.state }}</span></dd>
+            </div>
+            <div>
+              <dt>优先级</dt>
+              <dd><i class="priority-dot"></i><span>{{ activeModule.priority }}</span></dd>
+            </div>
+            <div>
+              <dt>核心标签</dt>
+              <dd class="tag-list">
+                <span v-for="tag in activeModule.tags" :key="tag">{{ tag }}</span>
+              </dd>
+            </div>
+          </dl>
+
+          <article class="ai-note">
+            <h3>🛡️ 智能风控策略建议</h3>
+            <ul>
+              <li v-for="(adv, aIdx) in activeModule.advice" :key="aIdx">{{ adv }}</li>
+            </ul>
+            <button @click="executeCurrentModule">打开该功能工作台</button>
+          </article>
+
+          <div style="margin-top: 20px; display: flex; gap: 10px;">
+            <button class="primary scan-btn" style="flex: 1; height: 36px;" @click="executeCurrentModule">
+              <el-icon><Compass /></el-icon>
+              <span>立即进入该模块</span>
+            </button>
+          </div>
+        </div>
+      </el-drawer>
 
     <!-- ════════════════ 3. 材质与强调色设置抽屉 (Material Overlay) ════════════════ -->
     <div class="material-overlay" :class="{ open: materialDrawerOpen }">
@@ -1195,191 +1022,307 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-/* ──────────── 天水碧 × 凝脂/冷白玉润 现代极简护眼体系 ──────────── */
-.octopus-app-wrapper {
-  --bg: #f4f7f6;
-  --panel: #ffffff;
-  --panel-2: #fbfdfd;
-  --panel-soft: #edf6f8;
-  --line: rgba(93, 164, 177, 0.18);
-  --line-bright: rgba(93, 164, 177, 0.28);
-  --text: #1a3c42;
-  --muted: #657e82;
-  --accent-h: 189;
-  --accent-s: 36%;
-  --accent-rgb: 93 164 177;
-  --accent-foreground: #ffffff;
-  --accent-300: #7ebbc5;
-  --accent-500: #5da4b1;
-  --accent-600: #488793;
-  --accent-700: #396e78;
-  --accent-800: #295159;
-  --accent-900: #1a3c42;
-  --green: #5da4b1;
-  --danger: #c7564d;
-  --radius: 12px;
-  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+/* ──────────── 3D实体液态水晶玻璃拟态 (Liquid Glass / Crystal Glassmorphism) ──────────── */
+.octopus-app-wrapper.glass-dashboard-app {
+  --glass-bg: linear-gradient(135deg, rgba(255, 255, 255, 0.82) 0%, rgba(255, 255, 255, 0.52) 50%, rgba(248, 250, 252, 0.68) 100%);
+  --glass-border: rgba(255, 255, 255, 0.92);
+  --glass-border-light: #ffffff;
+  --glass-shadow:
+    0 22px 48px -10px rgba(15, 23, 42, 0.08),
+    0 8px 18px -4px rgba(15, 23, 42, 0.04);
+  --glass-inset:
+    inset 0 2px 2px 0 #ffffff,
+    inset 1.5px 0 2px 0 rgba(255, 255, 255, 0.85),
+    inset -1.5px 0 2px 0 rgba(255, 255, 255, 0.55),
+    inset 0 -2px 3px 0 rgba(148, 163, 184, 0.18);
+  --accent-primary: #0284c7;
+  --accent-hover: #0369a1;
+  --text-main: #0f172a;
+  --text-muted: #475569;
+  --text-sub: #64748b;
 
-  font-family: var(--font);
-  color: var(--text);
+  position: relative;
+  width: 100%;
   height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  /* 摄影棚哑光台面 + 极细透气网格底纹 (如图片 29/31/32) */
+  background-color: #f6f8fb;
+  background-image:
+    radial-gradient(ellipse at 50% -12%, rgba(255, 255, 255, 0.98) 0%, transparent 65%),
+    radial-gradient(ellipse at 88% 18%, rgba(56, 189, 248, 0.12) 0%, transparent 45%),
+    radial-gradient(ellipse at 12% 82%, rgba(249, 115, 22, 0.09) 0%, transparent 45%),
+    linear-gradient(to right, rgba(203, 213, 225, 0.32) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(203, 213, 225, 0.32) 1px, transparent 1px);
+  background-size: 100% 100%, 100% 100%, 100% 100%, 32px 32px, 32px 32px;
+  background-attachment: fixed;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  color: var(--text-main);
+}
+
+/* ════════ 背景环境微光球 (柔和摄影棚漫射光晕) ════════ */
+.glass-ambient-sphere {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(75px);
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0.65;
+}
+.sphere-1 {
+  top: 0%;
+  left: 18%;
+  width: 420px;
+  height: 420px;
+  background: radial-gradient(circle, rgba(56, 189, 248, 0.55) 0%, rgba(14, 165, 233, 0.05) 70%);
+  animation: floatOrb1 15s ease-in-out infinite alternate;
+}
+.sphere-2 {
+  top: 25%;
+  right: 12%;
+  width: 450px;
+  height: 450px;
+  background: radial-gradient(circle, rgba(168, 85, 247, 0.45) 0%, rgba(99, 102, 241, 0.05) 70%);
+  animation: floatOrb2 19s ease-in-out infinite alternate-reverse;
+}
+.sphere-3 {
+  bottom: 0%;
+  left: 32%;
+  width: 480px;
+  height: 480px;
+  background: radial-gradient(circle, rgba(16, 185, 129, 0.4) 0%, rgba(5, 150, 105, 0.05) 70%);
+  animation: floatOrb1 17s ease-in-out infinite alternate;
+}
+@keyframes floatOrb1 {
+  0% { transform: translate(0, 0) scale(1); }
+  100% { transform: translate(25px, 15px) scale(1.06); }
+}
+@keyframes floatOrb2 {
+  0% { transform: translate(0, 0) scale(1); }
+  100% { transform: translate(-20px, 20px) scale(1.05); }
+}
+
+/* ════════ 核心精髓：彩虹棱镜色散高光 (Prismatic Caustic Dispersion Flare) ════════ */
+.liquid-caustic-flare {
+  position: absolute;
+  bottom: 0px;
+  left: 12%;
+  right: 12%;
+  height: 2px;
+  border-radius: 9999px;
+  background: linear-gradient(90deg,
+    transparent 0%,
+    rgba(249, 115, 22, 0.65) 15%,
+    rgba(251, 191, 36, 0.85) 32%,
+    rgba(255, 255, 255, 1) 50%,
+    rgba(56, 189, 248, 0.9) 66%,
+    rgba(168, 85, 247, 0.7) 84%,
+    transparent 100%
+  );
+  filter: blur(0.5px);
+  box-shadow: 0 3px 12px rgba(251, 191, 36, 0.42), 0 4px 14px rgba(56, 189, 248, 0.38);
+  pointer-events: none;
+  z-index: 3;
+}
+
+/* ════════ 核心精髓：顶部水滴凸透镜反光 (Curved Specular Liquid Sheen) ════════ */
+.card-glass-specular,
+.module-card-specular {
+  position: absolute;
+  top: 1px;
+  left: 2px;
+  right: 2px;
+  height: 48%;
+  border-radius: 15px 15px 42% 42% / 15px 15px 18px 18px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.92) 0%, rgba(255, 255, 255, 0.28) 55%, transparent 100%);
+  pointer-events: none;
+  z-index: 2;
+}
+
+/* ════════ 主工作台容器 ════════ */
+.glass-workbench-shell {
+  position: relative;
+  z-index: 1;
+  flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
-  position: relative;
-  background: var(--bg);
-}
-
-.octopus-workbench-shell {
-  flex: 1;
-  min-height: 0;
-  display: grid;
-  grid-template-rows: 54px 150px minmax(0, 1fr);
-  gap: 12px;
-  padding: 12px 18px;
+  gap: 8px;
+  padding: 10px 16px;
   overflow: hidden;
   transition: filter 0.34s ease, transform 0.46s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-.material-open .octopus-workbench-shell {
+.material-open .glass-workbench-shell {
   filter: blur(2px) saturate(0.85);
   transform: scale(0.996);
 }
 
-.panel {
-  background: #ffffff;
-  border: 1px solid rgba(93, 164, 177, 0.2);
-  border-radius: var(--radius);
-  box-shadow: 0 4px 16px -2px rgba(35, 75, 82, 0.05), 0 1px 3px rgba(35, 75, 82, 0.03);
-}
-
-/* ════════════════ Topbar ════════════════ */
-.topbar {
-  display: grid;
-  grid-template-columns: minmax(270px, 0.9fr) minmax(320px, 1.2fr) auto;
-  gap: 16px;
+/* ════════ 1. 顶部悬浮水晶毛玻璃导航栏 ════════ */
+.glass-navbar {
+  position: relative;
+  height: 46px;
+  flex-shrink: 0;
+  background: var(--glass-bg);
+  backdrop-filter: blur(28px) saturate(200%);
+  -webkit-backdrop-filter: blur(28px) saturate(200%);
+  border: 1.5px solid var(--glass-border);
+  border-top: 2px solid var(--glass-border-light);
+  border-radius: 16px;
+  box-shadow: var(--glass-shadow), var(--glass-inset);
+  display: flex;
   align-items: center;
+  justify-content: space-between;
+  padding: 0 14px;
 }
 
-.page-title h1 {
-  margin: 0;
-  font-size: 20px;
-  font-weight: 700;
-  letter-spacing: -0.02em;
-  color: #1a3c42;
-}
-.page-title p {
-  margin: 3px 0 0;
-  color: #657e82;
-  font-size: 11.5px;
-  letter-spacing: 0.01em;
-}
-
-.search-box {
-  height: 38px;
-  min-width: 0;
+.nav-brand-group {
+  position: relative;
+  z-index: 4;
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 0 14px;
-  border: 1px solid rgba(93, 164, 177, 0.25);
-  background: #ffffff;
-  border-radius: 20px;
-  box-shadow: 0 1px 4px rgba(35, 75, 82, 0.04);
-  transition: all 0.16s ease;
 }
-.search-box:focus-within {
-  border-color: #5da4b1;
-  box-shadow: 0 0 0 2px rgba(93, 164, 177, 0.2);
+.brand-orb-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 11px;
+  background: linear-gradient(180deg, #38bdf8 0%, #0284c7 100%);
+  border: 1.5px solid rgba(255, 255, 255, 0.95);
+  color: #ffffff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  box-shadow: 0 8px 18px -2px rgba(2, 132, 199, 0.45), inset 0 2px 2px rgba(255, 255, 255, 0.9), inset 0 -2px 3px rgba(0, 0, 0, 0.2);
 }
-.search-box .el-icon {
-  color: #657e82;
+.brand-titles {
+  display: flex;
+  flex-direction: column;
+}
+.brand-main-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.brand-title {
+  margin: 0;
   font-size: 15px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: var(--text-main);
+  line-height: 1.2;
 }
-.search-box input {
+.glass-pulse-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 9.5px;
+  font-weight: 700;
+  color: #047857;
+  background: rgba(16, 185, 129, 0.15);
+  border: 1px solid rgba(16, 185, 129, 0.35);
+  border-radius: 9999px;
+  padding: 2px 8px;
+  box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.8);
+}
+.pulse-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #10b981;
+  box-shadow: 0 0 8px #10b981;
+  animation: pulseLight 1.8s infinite ease-in-out;
+}
+@keyframes pulseLight {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.45; transform: scale(0.8); }
+}
+.brand-subtitle {
+  margin: 1px 0 0 0;
+  font-size: 10px;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+/* 水晶搜索胶囊 (对齐图片 31/32 的 Search Capsule) */
+.nav-search-slot {
+  position: relative;
+  z-index: 4;
+  height: 32px;
+  width: 290px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  background: rgba(255, 255, 255, 0.75);
+  border: 1.5px solid rgba(255, 255, 255, 0.95);
+  border-radius: 9999px;
+  box-shadow: inset 0 1.5px 3px rgba(15, 23, 42, 0.05), 0 2px 8px rgba(15, 23, 42, 0.03);
+  transition: all 0.2s ease;
+}
+.nav-search-slot:focus-within {
+  background: #ffffff;
+  border-color: #38bdf8;
+  box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.25), 0 6px 16px rgba(15, 23, 42, 0.06);
+}
+.nav-search-slot .el-icon {
+  color: #64748b;
+  font-size: 13px;
+}
+.nav-search-slot input {
   flex: 1;
-  min-width: 0;
   border: 0;
   outline: 0;
-  color: #1a3c42;
   background: transparent;
-  font-size: 12.5px;
+  font-size: 11px;
+  color: var(--text-main);
+  font-weight: 500;
 }
-.search-box input::placeholder {
-  color: #8c9ea0;
+.nav-search-slot input::placeholder {
+  color: #94a3b8;
 }
-.search-box kbd {
-  color: #21474e;
-  background: #edf6f8;
-  border: 1px solid rgba(93, 164, 177, 0.25);
-  padding: 2px 6px;
+.nav-search-slot kbd {
+  font-size: 9px;
+  color: #64748b;
+  background: rgba(241, 245, 249, 0.95);
+  border: 1px solid rgba(203, 213, 225, 0.9);
   border-radius: 4px;
-  font-size: 10.5px;
+  padding: 1px 5px;
   font-family: var(--el-font-family-monospace, monospace);
+  font-weight: 700;
 }
 
-.top-actions {
+.nav-actions-group {
+  position: relative;
+  z-index: 4;
   display: flex;
   align-items: center;
   gap: 8px;
 }
-
-.round-btn, .scan-btn {
-  border: 1px solid rgba(93, 164, 177, 0.28);
-  background: #ffffff;
-  cursor: pointer;
-  color: #21474e;
-  transition: all 0.16s ease;
-}
-.round-btn {
-  width: 36px;
-  height: 36px;
-  border-radius: 50%;
+.glass-icon-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  border: 1.5px solid rgba(255, 255, 255, 0.95);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.9) 0%, rgba(241, 245, 249, 0.65) 100%);
+  backdrop-filter: blur(16px);
+  color: #475569;
   display: grid;
   place-items: center;
+  cursor: pointer;
+  transition: all 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+  box-shadow: 0 4px 10px rgba(15, 23, 42, 0.05), inset 0 1.5px 1px #ffffff;
 }
-.round-btn:hover {
-  border-color: #5da4b1;
-  background: #edf6f8;
-  color: #1a3c42;
-  transform: translateY(-1px);
+.glass-icon-btn:hover {
+  background: #ffffff;
+  border-color: #0284c7;
+  color: #0284c7;
+  transform: translateY(-2px);
+  box-shadow: 0 8px 18px -2px rgba(2, 132, 199, 0.25), inset 0 1.5px 1px #ffffff;
 }
-.round-btn.active {
-  color: #ffffff;
-  border-color: #5da4b1;
-  background: #5da4b1;
-  box-shadow: 0 2px 6px rgba(93, 164, 177, 0.3);
-}
-
-.theme-toggle-icon {
-  font-size: 15px;
-  font-weight: 700;
-  color: #5da4b1;
-}
-.round-btn.active .theme-toggle-icon {
-  color: #ffffff;
-}
-
-.scan-btn {
-  height: 36px;
-  border-radius: 18px;
-  padding: 0 16px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: #ffffff;
-  background: #5da4b1;
-  border-color: #488793;
-  font-size: 12.5px;
-  font-weight: 600;
-  box-shadow: 0 2px 8px rgba(93, 164, 177, 0.25);
-}
-.scan-btn:hover {
-  background: #488793;
-  box-shadow: 0 4px 14px rgba(93, 164, 177, 0.35);
-}
-
 .is-spinning {
   animation: spin 1s linear infinite;
 }
@@ -1388,1511 +1331,619 @@ onUnmounted(() => {
   to { transform: rotate(360deg); }
 }
 
-/* ════════════════ 1. Metric Grid ════════════════ */
-.metric-grid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 12px;
-}
-
-.metric-card {
-  --metric-rx: 0deg;
-  --metric-ry: 0deg;
-  --metric-lift: 0px;
-  --metric-scale: 1;
-  position: relative;
-  overflow: hidden;
-  border-radius: 14px;
-  padding: 16px 20px;
-  border: 1px solid rgba(93, 164, 177, 0.22);
-  background: #ffffff;
-  isolation: isolate;
-  box-shadow: 0 2px 8px rgba(35, 75, 82, 0.04);
-  cursor: pointer;
-  user-select: none;
-  transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.2s ease, box-shadow 0.25s ease;
-}
-
-.metric-card::before {
-  content: "";
-  position: absolute;
-  inset: -27%;
-  z-index: -2;
-  filter: blur(var(--material-blur, 20px));
-  opacity: var(--material-opacity, 0.9);
-  animation: metricFluidDrift var(--flow-duration, 8s) cubic-bezier(0.45, 0.05, 0.55, 0.95) infinite alternate;
-  will-change: transform;
-  transform: translateZ(0);
-}
-
-.metric-card::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  z-index: -1;
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.85) 0%, rgba(255, 255, 255, 0.6) 100%);
-  opacity: 0.88;
-}
-
-.metric-card:hover {
-  transform: translateY(-2px);
-  border-color: #5da4b1;
-  box-shadow: 0 8px 24px rgba(35, 75, 82, 0.08);
-}
-
-.metric-card.selected {
-  border-color: #5da4b1;
-  box-shadow: 0 0 0 1.5px #5da4b1, 0 8px 24px rgba(93, 164, 177, 0.16);
-}
-
-.metric-select-mark {
-  position: absolute;
-  z-index: 3;
-  top: 12px;
-  right: 12px;
+/* 果冻水晶药丸按钮 (对齐图片 31/32/33 的 Create Workspace / Start project 按钮) */
+.glass-cta-btn {
+  height: 32px;
+  padding: 0 14px;
+  border-radius: 9999px;
+  border: 1.8px solid rgba(255, 255, 255, 0.95);
+  background: linear-gradient(180deg, #38bdf8 0%, #0284c7 100%);
+  color: #ffffff;
+  font-size: 11.5px;
+  font-weight: 800;
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 2px 8px;
-  border-radius: 999px;
+  gap: 6px;
+  cursor: pointer;
+  box-shadow: 0 10px 24px -2px rgba(2, 132, 199, 0.48), 0 3px 8px rgba(15, 23, 42, 0.08), inset 0 2px 2px rgba(255, 255, 255, 0.9), inset 0 -2px 3px rgba(0, 0, 0, 0.2);
+  transition: all 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.glass-cta-btn:hover {
+  transform: translateY(-2px) scale(1.02);
+  box-shadow: 0 14px 30px -2px rgba(2, 132, 199, 0.6), 0 4px 10px rgba(15, 23, 42, 0.1), inset 0 2px 2px rgba(255, 255, 255, 0.95);
+}
+
+/* ════════ 2. 四大核心遥测厚水晶指标卡 ════════ */
+.glass-metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  flex-shrink: 0;
+  height: 84px;
+}
+.glass-metric-card {
+  position: relative;
+  background: var(--glass-bg);
+  backdrop-filter: blur(28px) saturate(200%);
+  -webkit-backdrop-filter: blur(28px) saturate(200%);
+  border: 1.5px solid var(--glass-border);
+  border-top: 2px solid var(--glass-border-light);
+  border-radius: 16px;
+  box-shadow: var(--glass-shadow), var(--glass-inset);
+  padding: 9px 13px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  cursor: pointer;
+  user-select: none;
+  overflow: hidden;
+  transition: all 0.24s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.glass-metric-card:hover {
+  transform: translateY(-3.5px) scale(1.012);
+  border-color: rgba(56, 189, 248, 0.6);
+  box-shadow: 0 20px 40px -6px rgba(2, 132, 199, 0.18), 0 8px 18px rgba(15, 23, 42, 0.05), var(--glass-inset);
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.92) 0%, rgba(255, 255, 255, 0.65) 100%);
+}
+
+.metric-top-row {
+  position: relative;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.metric-icon-orb {
+  width: 26px;
+  height: 26px;
+  border-radius: 9px;
+  border: 1.2px solid rgba(255, 255, 255, 0.95);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
   color: #ffffff;
-  background: #5da4b1;
-  font-size: 9px;
-  font-weight: 600;
-  box-shadow: 0 1px 4px rgba(93, 164, 177, 0.3);
+  box-shadow: inset 0 1.5px 1.5px rgba(255, 255, 255, 0.9), inset 0 -1.5px 2px rgba(0, 0, 0, 0.18);
 }
+.blue-orb { background: linear-gradient(180deg, #38bdf8 0%, #0284c7 100%); box-shadow: 0 6px 14px -2px rgba(2, 132, 199, 0.45); }
+.emerald-orb { background: linear-gradient(180deg, #34d399 0%, #059669 100%); box-shadow: 0 6px 14px -2px rgba(5, 150, 105, 0.45); }
+.cyan-orb { background: linear-gradient(180deg, #22d3ee 0%, #0891b2 100%); box-shadow: 0 6px 14px -2px rgba(8, 145, 178, 0.45); }
+.violet-orb { background: linear-gradient(180deg, #c084fc 0%, #7c3aed 100%); box-shadow: 0 6px 14px -2px rgba(124, 58, 237, 0.45); }
 
-/* 4 种东方纯雅流体卡片底色 (温润如玉、绝无深黑杂色) */
-.metric-card[data-material="cyan"] { background: #f0f7f8; color: #1a3c42; }
-.metric-card[data-material="cyan"]::before {
-  background: radial-gradient(circle at 76% 28%, #7ebbc5 0 14%, transparent 35%),
-              radial-gradient(circle at 45% 73%, #5da4b1 0 12%, transparent 35%),
-              radial-gradient(circle at 25% 30%, #bfe3e8 0 10%, transparent 32%), #f0f7f8;
+.metric-tag {
+  font-size: 11.5px;
+  font-weight: 800;
+  color: var(--text-main);
+  flex: 1;
+  margin-left: 8px;
 }
-
-.metric-card[data-material="original"] { background: #fbf9f5; color: #1a3c42; }
-.metric-card[data-material="original"]::before {
-  background: radial-gradient(circle at 86% 36%, rgba(238, 201, 168, 0.7) 0 14%, transparent 35%),
-              radial-gradient(circle at 68% 78%, rgba(240, 213, 190, 0.7) 0 12%, transparent 34%),
-              radial-gradient(circle at 91% 20%, rgba(228, 182, 147, 0.6) 0 10%, transparent 30%);
+.metric-link-hint {
+  font-size: 11px;
+  color: #94a3b8;
+  opacity: 0.6;
+  transition: all 0.15s ease;
 }
-
-.metric-card[data-material="rain"] { background: #f2f8f6; color: #1a3c42; }
-.metric-card[data-material="rain"]::before {
-  background: radial-gradient(circle at 75% 70%, #88d4c3 0 14%, transparent 36%),
-              radial-gradient(circle at 43% 24%, #6ec5b8 0 12%, transparent 35%),
-              radial-gradient(circle at 18% 74%, #a7e5d8 0 10%, transparent 35%), #f2f8f6;
+.glass-metric-card:hover .metric-link-hint {
+  color: #0284c7;
+  opacity: 1;
+  transform: translateX(2px);
 }
-
-.metric-card[data-material="chrome"] { background: #f4f7f8; color: #1a3c42; }
-.metric-card[data-material="chrome"]::before {
-  background: radial-gradient(circle at 74% 28%, #c2e1e7 0 12%, transparent 34%),
-              radial-gradient(circle at 47% 74%, #9ec8d0 0 12%, transparent 36%),
-              radial-gradient(circle at 22% 28%, #7eaebb 0 10%, transparent 34%), #f4f7f8;
-}
-
-.metric-card > span {
-  font-size: 10px;
-  font-weight: 600;
-  font-family: var(--el-font-family-monospace, monospace);
-  color: #657e82;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-.metric-card h3 {
-  margin: 4px 0 6px;
-  font-size: 15px;
-  font-weight: 700;
-  color: #1a3c42;
-}
-.metric-card strong {
+.metric-value-row {
+  position: relative;
+  z-index: 4;
   display: flex;
   align-items: baseline;
-  gap: 6px;
-  font-size: 32px;
-  font-weight: 700;
-  font-family: var(--el-font-family-monospace, monospace);
-  line-height: 1;
-  color: #1a3c42;
-}
-.metric-card strong small {
-  font-size: 11px;
-  font-weight: 500;
-  color: #657e82;
-}
-.metric-card p {
-  margin: 6px 0 0;
-  font-size: 11px;
-  color: #5a767b;
-}
-.metric-card em {
-  color: #28646e;
-  font-style: normal;
-  font-weight: 600;
-}
-.metric-card .danger {
-  color: #c7564d;
-}
-
-@keyframes metricFluidDrift {
-  0% { transform: scale(1) rotate(0deg); }
-  100% { transform: scale(1.08) rotate(6deg); }
-}
-
-/* ════════════════ 2. Workspace Grid ════════════════ */
-.workspace-grid {
-  display: grid;
-  grid-template-columns: 290px minmax(500px, 1fr) 340px;
-  gap: 12px;
-  min-height: 0;
-  overflow: hidden;
-}
-
-/* ── 左侧栏: 任务队列 ── */
-.queue-pane {
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-}
-
-.section-heading {
-  height: 34px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-.section-heading h2 {
-  margin: 0;
-  font-size: 15px;
-  font-weight: 700;
-  letter-spacing: -0.02em;
-  color: #1a3c42;
-}
-.section-heading span {
-  color: #7b9498;
-  font-size: 11px;
-}
-
-.queue-tabs {
-  display: flex;
-  gap: 6px;
-  height: 34px;
-  border-bottom: 1px solid rgba(93, 164, 177, 0.16);
-}
-.queue-tabs button {
-  height: 28px;
-  padding: 0 10px;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  background: transparent;
-  color: #657e82;
-  font-size: 11.5px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.15s ease;
-}
-.queue-tabs button.active {
-  color: #1a3c42;
-  font-weight: 600;
-  background: #ffffff;
-  border-color: rgba(93, 164, 177, 0.28);
-  box-shadow: 0 1px 3px rgba(35, 75, 82, 0.05);
-}
-
-.queue-groups {
-  margin-top: 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  overflow-y: auto;
-  scrollbar-width: none;
-}
-.queue-groups::-webkit-scrollbar { display: none; }
-
-.queue-group {
-  border-radius: 8px;
-  border: 1px solid rgba(93, 164, 177, 0.18);
-  background: #ffffff;
-  overflow: hidden;
-  box-shadow: 0 2px 6px rgba(35, 75, 82, 0.02);
-}
-
-.group-head {
-  width: 100%;
-  height: 36px;
-  padding: 0 12px;
-  border: 0;
-  background: #f8faf9;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  color: #1a3c42;
-  font-weight: 600;
-  cursor: pointer;
-  font-size: 12px;
-}
-.group-head > span {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-}
-.group-head i {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--group-color);
-  box-shadow: 0 0 6px var(--group-color);
-}
-.group-head b {
-  color: #657e82;
-  font-weight: 500;
-  font-size: 11px;
-}
-.group-chevron {
-  font-size: 12px;
-  color: #7b9498;
-  transition: transform 0.2s ease;
-}
-.queue-group.open .group-chevron {
-  transform: rotate(90deg);
-}
-
-.group-items {
-  display: none;
-}
-.queue-group.open .group-items {
-  display: block;
-}
-
-.queue-item {
-  position: relative;
-  width: 100%;
-  height: 44px;
-  border: 0;
-  border-top: 1px solid rgba(93, 164, 177, 0.08);
-  padding: 0 12px;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  background: #ffffff;
-  color: #324e53;
-  text-align: left;
-  cursor: pointer;
-  transition: background 0.15s ease;
-}
-.queue-item:hover {
-  background: #edf6f8;
-  color: #1a3c42;
-}
-.queue-item span {
-  font-size: 11px;
-  font-weight: 500;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-.queue-item em {
-  justify-self: end;
-  color: #21474e;
-  background: #edf6f8;
-  border: 1px solid rgba(93, 164, 177, 0.3);
-  border-radius: 4px;
-  font-size: 9.5px;
-  padding: 2px 6px;
-  font-style: normal;
-  font-weight: 600;
-}
-.queue-item em.reading {
-  color: #1a454d;
-  background: rgba(93, 164, 177, 0.18);
-  border-color: #5da4b1;
-}
-.queue-item small {
-  position: absolute;
-  right: 12px;
-  bottom: 2px;
-  color: #7b9498;
-  font-size: 8.5px;
-}
-
-/* ── 中间栏: 3D 全息星轨 / 架构矩阵 (Spatial 3D Holo-Deck) ── */
-.carousel-panel {
-  position: relative;
-  min-height: 0;
-  overflow: hidden;
-  border-radius: 12px;
-  display: flex;
-  flex-direction: column;
-  background: #ffffff;
-  border: 1px solid rgba(93, 164, 177, 0.22);
-  box-shadow: 0 4px 20px rgba(35, 75, 82, 0.04);
-}
-
-.carousel-toolbar {
-  height: 44px;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 0 14px;
-  border-bottom: 1px solid rgba(93, 164, 177, 0.14);
-  background: linear-gradient(180deg, #ffffff 0%, #f9fbfb 100%);
-  flex-shrink: 0;
-  z-index: 10;
-}
-.toolbar-left-btns, .toolbar-right-btns {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.pill-btn, .icon-btn {
-  height: 28px;
-  border: 1px solid rgba(93, 164, 177, 0.25);
-  border-radius: 6px;
-  background: #ffffff;
-  color: #21474e;
-  font-size: 11px;
-  font-weight: 500;
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 0 10px;
-  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
-}
-.pill-btn:hover, .icon-btn:hover {
-  background: #edf6f8;
-  border-color: #5da4b1;
-  color: #1a3c42;
-  transform: translateY(-1px);
-}
-.pill-btn.active {
-  color: #ffffff;
-  background: linear-gradient(135deg, #7ebbc5 0%, #5da4b1 60%, #468c99 100%);
-  border-color: #5da4b1;
-  font-weight: 600;
-  box-shadow: 0 2px 10px rgba(93, 164, 177, 0.35), inset 0 1px 1px rgba(255, 255, 255, 0.4);
-}
-.pill-btn .btn-sparkle {
-  color: #ffe082;
-  font-size: 12px;
-}
-.pill-btn.active .btn-sparkle {
-  color: #fff9c4;
-}
-.pill-btn.playing {
-  animation: pulseGentle 2s infinite ease-in-out;
-}
-@keyframes pulseGentle {
-  0%, 100% { box-shadow: 0 2px 8px rgba(93, 164, 177, 0.3); }
-  50% { box-shadow: 0 2px 16px rgba(93, 164, 177, 0.6); }
-}
-
-.pill-btn.quiet {
-  color: #657e82;
-}
-.icon-btn {
-  width: 28px;
-  padding: 0;
-  justify-content: center;
-  font-size: 14px;
-}
-
-.index-indicator {
-  display: flex;
-  align-items: center;
   gap: 4px;
-  margin-right: 6px;
 }
-.hud-mono-tag {
-  font-family: var(--el-font-family-monospace, monospace);
-  font-size: 10.5px;
-  font-weight: 700;
-  color: #356e78;
-  background: rgba(93, 164, 177, 0.12);
-  border: 1px solid rgba(93, 164, 177, 0.25);
-  border-radius: 4px;
-  padding: 1px 6px;
-  letter-spacing: 0.5px;
+.metric-number {
+  font: 800 22px/1 var(--el-font-family-monospace, monospace);
+  color: var(--text-main);
+  letter-spacing: -0.02em;
 }
-.index-indicator small {
-  color: #7b9498;
+.metric-unit {
   font-size: 10px;
+  color: var(--text-muted);
+  font-weight: 600;
 }
-
-.live-badge {
-  position: absolute;
-  z-index: 30;
-  right: 14px;
-  top: 52px;
-  height: 22px;
+.metric-footer-row {
+  position: relative;
+  z-index: 4;
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 0 8px;
-  border-radius: 5px;
-  background: rgba(255, 255, 255, 0.92);
-  border: 1px solid rgba(93, 164, 177, 0.3);
-  color: #1a454d;
-  font-size: 9px;
-  font-weight: 700;
-  box-shadow: 0 2px 8px rgba(35, 75, 82, 0.05);
-  backdrop-filter: blur(8px);
-  pointer-events: none;
+  justify-content: space-between;
+  font-size: 9.5px;
+  color: var(--text-muted);
+  font-weight: 600;
 }
-.badge-ping {
-  position: absolute;
-  left: 6px;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: #5da4b1;
-  animation: radarPing 2s infinite cubic-bezier(0, 0, 0.2, 1);
+.metric-highlight {
+  font-weight: 800;
+  color: #0284c7;
 }
-.live-badge i {
-  position: relative;
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: #5da4b1;
-  box-shadow: 0 0 6px #5da4b1;
-}
+.metric-highlight.emerald { color: #059669; }
+.metric-highlight.violet { color: #7c3aed; }
 
-/* ── 视口区域 ── */
-.carousel-viewport {
+/* ════════ 3. 核心工作区 (Liquid Glass Workspace) ════════ */
+.glass-workspace-layout {
   flex: 1;
   min-height: 0;
-  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 280px;
+  gap: 8px;
   overflow: hidden;
-  outline: 0;
-  background: radial-gradient(ellipse at 50% 20%, rgba(93, 164, 177, 0.09) 0%, rgba(246, 251, 252, 0.6) 45%, #f4f8f8 100%);
+}
+
+/* 主面板：10 模块厚水晶玻璃卡片阵列 */
+.glass-main-panel {
+  position: relative;
+  background: var(--glass-bg);
+  backdrop-filter: blur(28px) saturate(200%);
+  -webkit-backdrop-filter: blur(28px) saturate(200%);
+  border: 1.5px solid var(--glass-border);
+  border-top: 2px solid var(--glass-border-light);
+  border-radius: 16px;
+  box-shadow: var(--glass-shadow), var(--glass-inset);
+  padding: 10px 12px;
   display: flex;
   flex-direction: column;
-}
-
-/* ════════ 模式 1: 旗舰中枢控制台 (Hero Mission Control) ════════ */
-.hero-stage-container {
-  flex: 1;
   min-height: 0;
-  position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 10px 18px 36px;
   overflow: hidden;
 }
 
-/* 空间全息柔光底座与星轨光晕 */
-.hero-ambient-glow {
-  position: absolute;
-  left: 50%;
-  top: 48%;
-  width: 460px;
-  height: 220px;
-  transform: translate(-50%, -50%);
-  background: radial-gradient(ellipse at center, rgba(93, 164, 177, 0.25) 0%, rgba(126, 187, 197, 0.08) 50%, transparent 72%);
-  filter: blur(28px);
-  border-radius: 50%;
-  pointer-events: none;
-  animation: heroGlowPulse 4s infinite ease-in-out alternate;
-}
-@keyframes heroGlowPulse {
-  0% { opacity: 0.7; transform: translate(-50%, -50%) scale(0.95); }
-  100% { opacity: 1; transform: translate(-50%, -50%) scale(1.06); }
-}
-
-.hero-orbital-halo {
-  position: absolute;
-  left: 50%;
-  bottom: 15px;
-  width: 520px;
-  height: 160px;
-  transform: translateX(-50%) rotateX(68deg);
-  border-radius: 50%;
-  border: 1.5px dashed rgba(93, 164, 177, 0.26);
-  box-shadow: 0 0 20px rgba(93, 164, 177, 0.12);
-  pointer-events: none;
-}
-
-/* 旗舰控制台卡片 (独占聚焦、尊享玉润微晶质感、绝无杂乱重叠) */
-.hero-console-card {
+.glass-panel-header {
   position: relative;
-  width: 100%;
-  max-width: 480px;
-  background: linear-gradient(155deg, rgba(255, 255, 255, 0.98) 0%, rgba(246, 251, 252, 0.94) 100%);
-  border: 1px solid rgba(93, 164, 177, 0.35);
+  z-index: 4;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+  flex-shrink: 0;
+}
+.panel-header-left {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.panel-title {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 800;
+  color: var(--text-main);
+  letter-spacing: -0.01em;
+}
+.panel-subtitle {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+.active-node-count {
+  font: 800 9.5px/1 var(--el-font-family-monospace, monospace);
+  color: #0284c7;
+  background: rgba(2, 132, 199, 0.12);
+  border: 1px solid rgba(2, 132, 199, 0.28);
+  border-radius: 9999px;
+  padding: 2px 8px;
+}
+
+.glass-modules-grid {
+  position: relative;
+  z-index: 4;
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  grid-template-rows: repeat(2, 1fr);
+  gap: 6px;
+}
+
+/* 10 个独立厚水晶玻璃小组件 (如图片 31/32/33 中的 Tabs / Card 小面板) */
+.glass-module-card {
+  position: relative;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.82) 0%, rgba(255, 255, 255, 0.5) 50%, rgba(248, 250, 252, 0.65) 100%);
+  backdrop-filter: blur(24px) saturate(200%);
+  -webkit-backdrop-filter: blur(24px) saturate(200%);
+  border: 1.5px solid rgba(255, 255, 255, 0.95);
+  border-top: 2px solid #ffffff;
   border-radius: 14px;
-  padding: 16px 20px 14px 20px;
   box-shadow:
-    inset 0 1px 1.5px rgba(255, 255, 255, 1),
-    inset 0 0 24px rgba(93, 164, 177, 0.08),
-    0 16px 40px -10px rgba(35, 75, 82, 0.14),
-    0 0 0 1px rgba(93, 164, 177, 0.25);
-  backdrop-filter: blur(20px);
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-  gap: 10px;
-  z-index: 20;
-}
-
-/* 顶层高光与四角科技折角 */
-.card-specular-shine {
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  background: linear-gradient(130deg, rgba(255, 255, 255, 0.6) 0%, rgba(255, 255, 255, 0.05) 30%, transparent 60%);
-  pointer-events: none;
-}
-.cyber-corner-bracket {
-  position: absolute;
-  width: 8px;
-  height: 8px;
-  border-color: #5da4b1;
-  pointer-events: none;
-}
-.cyber-corner-bracket.tl { top: 6px; left: 6px; border-top: 1.5px solid; border-left: 1.5px solid; }
-.cyber-corner-bracket.tr { top: 6px; right: 6px; border-top: 1.5px solid; border-right: 1.5px solid; }
-.cyber-corner-bracket.bl { bottom: 6px; left: 6px; border-bottom: 1.5px solid; border-left: 1.5px solid; }
-.cyber-corner-bracket.br { bottom: 6px; right: 6px; border-bottom: 1.5px solid; border-right: 1.5px solid; }
-
-/* 1. 卡片顶栏 */
-.console-card-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-.console-brand {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-.console-gem-icon {
-  width: 38px;
-  height: 38px;
-  border-radius: 9px;
-  background: linear-gradient(135deg, #7ebbc5 0%, #5da4b1 60%, #3e818d 100%);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #ffffff;
-  box-shadow: 0 4px 12px rgba(93, 164, 177, 0.35), inset 0 1px 1.5px rgba(255, 255, 255, 0.6);
-  font-size: 19px;
-  flex-shrink: 0;
-}
-.console-brand-text {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.console-id-line {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.console-sys-id {
-  font: 700 10.5px/1 var(--el-font-family-monospace, monospace);
-  color: #26555d;
-  letter-spacing: 0.5px;
-}
-.console-priority-badge {
-  font-size: 8.5px;
-  color: #488793;
-  background: rgba(93, 164, 177, 0.12);
-  border: 1px solid rgba(93, 164, 177, 0.25);
-  border-radius: 3px;
-  padding: 1px 5px;
-  font-weight: 600;
-}
-.console-folder-name {
-  font-size: 9.5px;
-  color: #657e82;
-}
-
-.console-status-pill {
-  position: relative;
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  padding: 2.5px 9px;
-  border-radius: 999px;
-  background: rgba(93, 164, 177, 0.1);
-  border: 1px solid rgba(93, 164, 177, 0.3);
-  color: #174249;
-  font-size: 10px;
-  font-weight: 700;
-}
-.radar-ping-dot {
-  position: absolute;
-  left: 8px;
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: #5da4b1;
-  animation: radarPing 2.2s infinite cubic-bezier(0, 0, 0.2, 1);
-}
-.live-dot-solid {
-  position: relative;
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: #39b596;
-  box-shadow: 0 0 6px #39b596;
-}
-
-/* 2. 主体信息 */
-.console-card-body {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-.console-title-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.console-main-title {
-  font-size: 17px;
-  font-weight: 800;
-  color: #133339;
-  letter-spacing: -0.02em;
-  margin: 0;
-}
-.console-short-badge {
-  font-size: 9.5px;
-  font-weight: 600;
-  color: #488793;
-  background: #edf6f8;
-  border: 1px solid rgba(93, 164, 177, 0.25);
-  border-radius: 4px;
-  padding: 1px 6px;
-}
-.console-subtitle {
-  font-size: 11px;
-  color: #4f7379;
-  font-weight: 600;
-  margin: 0;
-}
-.console-subtitle em {
-  color: #7b9498;
-  font-style: normal;
-  font-weight: 500;
-}
-.console-description {
-  font-size: 10px;
-  color: #657e82;
-  line-height: 1.55;
-  margin: 2px 0 0 0;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-
-/* 3. 三维遥测数据中枢 (Telemetry Grid) */
-.console-telemetry-grid {
-  display: grid;
-  grid-template-columns: 1.3fr 1fr 1fr;
-  gap: 8px;
-  margin: 2px 0;
-}
-.telemetry-box {
-  background: #f8fafb;
-  border: 1px solid rgba(93, 164, 177, 0.2);
-  border-radius: 8px;
-  padding: 6px 9px;
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-}
-.telemetry-readiness {
-  background: linear-gradient(145deg, #f3f9fa 0%, #eaf4f5 100%);
-  border-color: rgba(93, 164, 177, 0.32);
-}
-.telemetry-top {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-.telemetry-label {
-  font-size: 9px;
-  color: #657e82;
-  display: flex;
-  align-items: center;
-  gap: 3px;
-}
-.telemetry-number {
-  font-size: 14px;
-  font-weight: 800;
-  color: #1a3c42;
-  font-family: var(--el-font-family-monospace, monospace);
-}
-.telemetry-number em {
-  font-size: 9px;
-  color: #5da4b1;
-  font-style: normal;
-  margin-left: 1px;
-}
-.telemetry-energy-track {
-  height: 4px;
-  background: rgba(93, 164, 177, 0.18);
-  border-radius: 4px;
-  overflow: hidden;
-  position: relative;
-  margin-top: 5px;
-}
-.telemetry-energy-fill {
-  height: 100%;
-  background: linear-gradient(90deg, #7ebbc5 0%, #5da4b1 85%, #bfe3e8 100%);
-  border-radius: 4px;
-  box-shadow: 0 0 6px rgba(93, 164, 177, 0.4);
-  position: relative;
-  transition: width 0.4s ease;
-}
-.telemetry-spark {
-  position: absolute;
-  right: 0;
-  top: 0;
-  bottom: 0;
-  width: 5px;
-  background: #ffffff;
-  border-radius: 4px;
-  box-shadow: 0 0 4px #ffffff, 0 0 8px #5da4b1;
-}
-.telemetry-value-text {
-  font-size: 10.5px;
-  font-weight: 700;
-  color: #1a3c42;
-  margin-top: 3px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* 4. 核心标签芯片流 */
-.console-tags-flow {
-  display: flex;
-  gap: 5px;
-  flex-wrap: wrap;
-}
-.console-tag-capsule {
-  font-size: 9px;
-  color: #496b71;
-  background: rgba(93, 164, 177, 0.08);
-  border: 1px solid rgba(93, 164, 177, 0.2);
-  border-radius: 4px;
-  padding: 2px 7px;
-  display: flex;
-  align-items: center;
-  gap: 3px;
-  font-weight: 500;
-}
-.console-tag-capsule i {
-  color: #5da4b1;
-  font-style: normal;
-  font-size: 8px;
-}
-
-/* 5. 卡片底栏 */
-.console-card-footer {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding-top: 10px;
-  border-top: 1px solid rgba(93, 164, 177, 0.14);
-}
-.console-stepper {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.step-nav-btn {
-  width: 22px;
-  height: 22px;
-  border-radius: 4px;
-  border: 1px solid rgba(93, 164, 177, 0.25);
-  background: #ffffff;
-  color: #488793;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 12px;
-  font-weight: 700;
-  transition: all 0.15s ease;
-}
-.step-nav-btn:hover {
-  background: #5da4b1;
-  color: #ffffff;
-  border-color: #5da4b1;
-}
-.step-dots {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-.step-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: rgba(93, 164, 177, 0.25);
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-.step-dot:hover {
-  background: #7ebbc5;
-  transform: scale(1.2);
-}
-.step-dot.active {
-  width: 14px;
-  border-radius: 4px;
-  background: #5da4b1;
-  box-shadow: 0 0 6px rgba(93, 164, 177, 0.5);
-}
-
-.console-launch-btn {
-  border: 1px solid #488793;
-  background: linear-gradient(135deg, #7ebbc5 0%, #5da4b1 60%, #488793 100%);
-  color: #ffffff;
-  border-radius: 7px;
-  padding: 6px 14px;
-  font-size: 11px;
-  font-weight: 700;
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  transition: all 0.2s ease;
-  box-shadow: 0 3px 10px rgba(93, 164, 177, 0.35);
-}
-.console-launch-btn:hover {
-  filter: brightness(1.05);
-  box-shadow: 0 4px 16px rgba(93, 164, 177, 0.5);
-  transform: translateY(-1px);
-}
-.console-launch-btn .launch-arrow {
-  transition: transform 0.2s ease;
-}
-.console-launch-btn:hover .launch-arrow {
-  transform: translateX(3px);
-}
-
-/* 旗舰控制台极速丝滑平移过渡 (Slide Transitions) */
-.hero-slide-right-enter-active,
-.hero-slide-right-leave-active,
-.hero-slide-left-enter-active,
-.hero-slide-left-leave-active {
-  transition: transform 0.28s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.24s ease;
-}
-.hero-slide-right-enter-from {
-  opacity: 0;
-  transform: translateX(30px) scale(0.97);
-}
-.hero-slide-right-leave-to {
-  opacity: 0;
-  transform: translateX(-30px) scale(0.97);
-}
-.hero-slide-left-enter-from {
-  opacity: 0;
-  transform: translateX(-30px) scale(0.97);
-}
-.hero-slide-left-leave-to {
-  opacity: 0;
-  transform: translateX(30px) scale(0.97);
-}
-
-/* ════════ 模式 2: 全景架构矩阵 (Matrix Grid) ════════ */
-.matrix-grid-container {
-  flex: 1;
-  min-height: 0;
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  grid-template-rows: repeat(3, minmax(0, 1fr));
-  gap: 8px;
-  padding: 10px 12px 38px 12px;
-  overflow-y: auto;
-  box-sizing: border-box;
-}
-
-.matrix-card {
-  position: relative;
-  background: linear-gradient(150deg, rgba(255, 255, 255, 0.95) 0%, rgba(246, 251, 252, 0.88) 100%);
-  border: 1px solid rgba(93, 164, 177, 0.22);
-  border-radius: 8px;
-  padding: 8px 10px;
+    0 8px 22px -4px rgba(15, 23, 42, 0.05),
+    inset 0 1.5px 1.5px #ffffff,
+    inset 1px 0 1.5px rgba(255, 255, 255, 0.8),
+    inset -1px 0 1.5px rgba(255, 255, 255, 0.5),
+    inset 0 -1.5px 2px rgba(148, 163, 184, 0.15);
+  padding: 9px 11px;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
   cursor: pointer;
-  transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.2s ease, box-shadow 0.2s ease;
-  box-shadow: 0 1px 4px rgba(35, 75, 82, 0.03);
   user-select: none;
   overflow: hidden;
-}
-.matrix-card:hover {
-  transform: translateY(-2px);
-  border-color: #5da4b1;
-  box-shadow: 0 6px 16px rgba(35, 75, 82, 0.08);
-}
-.matrix-card.active {
-  background: linear-gradient(150deg, #ffffff 0%, #edf7f8 100%);
-  border-color: #5da4b1;
-  box-shadow: 0 0 0 1.5px #5da4b1, 0 6px 18px rgba(93, 164, 177, 0.16);
-}
-.matrix-card.active .cyber-corner-bracket {
-  border-color: #5da4b1;
+  transition: all 0.24s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-.matrix-card-head {
+.glass-module-card:hover {
+  transform: translateY(-4px) scale(1.015);
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.95) 0%, rgba(255, 255, 255, 0.7) 100%);
+  border-color: rgba(56, 189, 248, 0.7);
+  box-shadow:
+    0 18px 36px -4px rgba(2, 132, 199, 0.22),
+    0 6px 14px rgba(15, 23, 42, 0.06),
+    inset 0 2px 2px #ffffff;
+}
+
+.module-card-top {
+  position: relative;
+  z-index: 4;
   display: flex;
+  align-items: center;
   justify-content: space-between;
-  align-items: center;
-  margin-bottom: 4px;
-}
-.matrix-code-chip {
-  font: 700 8.5px/1 var(--el-font-family-monospace, monospace);
-  color: #31626a;
-  background: #edf6f8;
-  border: 1px solid rgba(93, 164, 177, 0.25);
-  border-radius: 3px;
-  padding: 1.5px 4px;
-}
-.matrix-state-badge {
-  font-size: 8.5px;
-  color: #235058;
-  font-weight: 600;
-  display: flex;
-  align-items: center;
-  gap: 3px;
 }
 
-.matrix-card-body {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.matrix-icon-box {
-  width: 28px;
-  height: 28px;
-  border-radius: 6px;
-  background: linear-gradient(135deg, #7ebbc5 0%, #5da4b1 100%);
+/* 3D 拟态水晶图标球 (如图片 31/32/33 中的圆形/圆角凸起图标) */
+.module-icon-box {
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  border: 1.5px solid rgba(255, 255, 255, 0.95);
   display: flex;
   align-items: center;
   justify-content: center;
+  font-size: 16px;
   color: #ffffff;
-  flex-shrink: 0;
-  font-size: 14px;
-  box-shadow: 0 2px 6px rgba(93, 164, 177, 0.25);
+  box-shadow: inset 0 2px 2px rgba(255, 255, 255, 0.92), inset 0 -2px 3px rgba(0, 0, 0, 0.2);
+}
+.module-icon-box.accent-ice {
+  background: linear-gradient(180deg, #38bdf8 0%, #0284c7 100%);
+  box-shadow: 0 8px 18px -2px rgba(2, 132, 199, 0.45), inset 0 2px 2px rgba(255, 255, 255, 0.9);
+}
+.module-icon-box.accent-green {
+  background: linear-gradient(180deg, #34d399 0%, #059669 100%);
+  box-shadow: 0 8px 18px -2px rgba(5, 150, 105, 0.45), inset 0 2px 2px rgba(255, 255, 255, 0.9);
+}
+.module-icon-box.accent-silver {
+  background: linear-gradient(180deg, #c084fc 0%, #7c3aed 100%);
+  box-shadow: 0 8px 18px -2px rgba(124, 58, 237, 0.45), inset 0 2px 2px rgba(255, 255, 255, 0.9);
+}
+.module-icon-box.accent-warm {
+  background: linear-gradient(180deg, #fb923c 0%, #ea580c 100%);
+  box-shadow: 0 8px 18px -2px rgba(234, 88, 12, 0.45), inset 0 2px 2px rgba(255, 255, 255, 0.9);
+}
+.module-icon-box.accent-mist {
+  background: linear-gradient(180deg, #2dd4bf 0%, #0891b2 100%);
+  box-shadow: 0 8px 18px -2px rgba(8, 145, 178, 0.45), inset 0 2px 2px rgba(255, 255, 255, 0.9);
 }
 
-.matrix-info {
-  min-width: 0;
-  flex: 1;
-}
-.matrix-title {
-  font-size: 11.5px;
-  font-weight: 700;
-  color: #14353b;
-  margin: 0;
-  line-height: 1.2;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.matrix-subtitle {
-  font-size: 8.5px;
-  color: #657e82;
-  margin: 1px 0 0 0;
-  line-height: 1.2;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.matrix-card-foot {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  margin-top: 4px;
-}
-.matrix-progress-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  font-size: 8px;
-  color: #657e82;
-}
-.matrix-progress-row strong {
-  color: #1a3c42;
-  font-weight: 700;
-  font-family: var(--el-font-family-monospace, monospace);
-}
-.matrix-progress-track {
-  height: 3px;
-  background: rgba(93, 164, 177, 0.14);
-  border-radius: 3px;
-  overflow: hidden;
-  position: relative;
-}
-.matrix-progress-bar {
-  height: 100%;
-  background: #5da4b1;
-  border-radius: 3px;
-  transition: width 0.3s ease;
-  position: relative;
-}
-.matrix-tags {
-  display: flex;
-  gap: 3px;
-  overflow: hidden;
-}
-.matrix-tag {
-  font-size: 8px;
-  color: #5a767b;
-  background: rgba(93, 164, 177, 0.08);
-  border: 1px solid rgba(93, 164, 177, 0.16);
-  border-radius: 3px;
-  padding: 0 4px;
-  white-space: nowrap;
-}
-
-.matrix-hover-action {
-  position: absolute;
-  right: 6px;
-  bottom: 5px;
-  font-size: 9px;
-  font-weight: 600;
-  color: #5da4b1;
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  opacity: 0;
-  transform: translateX(-4px);
-  transition: all 0.18s ease;
-}
-.matrix-card:hover .matrix-hover-action {
-  opacity: 1;
-  transform: translateX(0);
-}
-
-/* ── 底部提示浮条 ── */
-.scroll-tip {
-  position: absolute;
-  z-index: 25;
-  left: 50%;
-  bottom: 4px;
-  transform: translateX(-50%);
-  min-width: 260px;
-  max-width: 90%;
-  height: 28px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 0 10px;
-  border-radius: 6px;
-  border: 1px solid rgba(93, 164, 177, 0.22);
-  background: rgba(255, 255, 255, 0.96);
-  box-shadow: 0 2px 8px rgba(35, 75, 82, 0.04);
-  backdrop-filter: blur(10px);
-}
-.scroll-tip p {
-  margin: 0;
-  color: #657e82;
-  font-size: 8.5px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.scroll-tip strong {
-  padding-left: 6px;
-  border-left: 1px solid rgba(93, 164, 177, 0.2);
-  font-size: 9px;
-  color: #1a3c42;
-  white-space: nowrap;
-}
-.mouse-icon {
-  width: 12px;
-  height: 16px;
-  border: 1px solid rgba(93, 164, 177, 0.4);
-  border-radius: 6px;
-  display: grid;
-  place-items: start center;
-  padding-top: 1.5px;
-  flex-shrink: 0;
-}
-.mouse-icon i {
-  width: 2px;
-  height: 3px;
-  border-radius: 2px;
-  background: #5da4b1;
-}
-
-/* ── 底部出号时间轴与操作栏 (Timeline Panel) ── */
-.timeline-panel {
-  position: relative;
-  padding: 8px 14px 10px 14px;
-  border-top: 1px solid rgba(93, 164, 177, 0.14);
-  background: #ffffff;
-  flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.timeline-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  font-size: 10px;
-}
-.timeline-head b {
-  font-size: 11px;
-  color: #1a3c42;
-  font-weight: 700;
-}
-.timeline-head > span {
-  color: #657e82;
+.module-top-pills {
   display: flex;
   align-items: center;
   gap: 4px;
 }
-.timeline-head-actions button {
-  border: 1px solid rgba(93, 164, 177, 0.25);
-  background: #edf6f8;
-  color: #21474e;
+.module-num-pill {
+  font: 800 9px/1 var(--el-font-family-monospace, monospace);
+  color: #475569;
+  background: rgba(255, 255, 255, 0.8);
+  border: 1px solid rgba(255, 255, 255, 0.95);
   border-radius: 4px;
-  cursor: pointer;
-  height: 20px;
-  margin-left: 4px;
-  padding: 0 6px;
-  font-size: 9px;
-  transition: all 0.15s ease;
+  padding: 2px 5px;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04);
 }
-.timeline-head-actions button:hover {
-  background: #5da4b1;
-  color: #ffffff;
-  border-color: #5da4b1;
-}
-
-.timeline-dates {
-  display: grid;
-  grid-template-columns: repeat(9, 1fr);
-  gap: 4px;
-}
-.timeline-node {
-  height: 28px;
-  border-radius: 6px;
-  border: 1px solid rgba(93, 164, 177, 0.18);
-  background: #f8faf9;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  transition: all 0.15s ease;
-  padding: 0;
-}
-.timeline-node .node-idx {
-  font: 700 8.5px/1 var(--el-font-family-monospace, monospace);
-  color: #7b9498;
-}
-.timeline-node .node-name {
-  font-size: 8.5px;
-  color: #5a767b;
-  margin-top: 1px;
-}
-.timeline-node:hover {
-  border-color: #5da4b1;
-  background: #edf6f8;
-}
-.timeline-node.active {
-  background: #5da4b1;
-  border-color: #488793;
-  box-shadow: 0 2px 6px rgba(93, 164, 177, 0.3);
-}
-.timeline-node.active .node-idx,
-.timeline-node.active .node-name {
-  color: #ffffff;
-  font-weight: 700;
-}
-
-.timeline-track {
-  height: 3px;
-  background: rgba(93, 164, 177, 0.14);
-  border-radius: 3px;
-  overflow: hidden;
-}
-.timeline-track i {
-  display: block;
-  height: 100%;
-  border-radius: inherit;
-  background: #5da4b1;
-  box-shadow: 0 0 6px rgba(93, 164, 177, 0.4);
-  transition: width 0.3s ease;
-}
-
-.scene-actions {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  margin-top: 2px;
-}
-.scene-actions button {
-  height: 28px;
-  padding: 0 10px;
-  border-radius: 6px;
-  border: 1px solid rgba(93, 164, 177, 0.25);
-  background: #edf6f8;
-  color: #21474e;
-  font-size: 10px;
-  font-weight: 500;
-  cursor: pointer;
+.module-state-pill {
   display: inline-flex;
   align-items: center;
+  gap: 3px;
+  font-size: 8.5px;
+  font-weight: 700;
+  color: #0369a1;
+  background: rgba(2, 132, 199, 0.12);
+  border: 1px solid rgba(2, 132, 199, 0.22);
+  border-radius: 9999px;
+  padding: 1.5px 6px;
+}
+.state-dot {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: #0284c7;
+  box-shadow: 0 0 5px #0284c7;
+}
+
+.module-card-mid {
+  position: relative;
+  z-index: 4;
+  margin: 3px 0 2px 0;
+}
+.module-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 800;
+  color: #0f172a;
+  letter-spacing: -0.01em;
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.module-desc {
+  margin: 2px 0 4px 0;
+  font-size: 9.5px;
+  color: #475569;
+  font-weight: 500;
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.module-tag-row {
+  display: flex;
   gap: 4px;
-  transition: all 0.15s ease;
+  flex-wrap: wrap;
+}
+.glass-tag {
+  font-size: 8.5px;
+  font-weight: 600;
+  color: #475569;
+  background: rgba(255, 255, 255, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.9);
+  padding: 1.5px 6px;
+  border-radius: 4px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
   white-space: nowrap;
 }
-.scene-actions button:hover {
-  background: #edf6f8;
-  border-color: #5da4b1;
-  transform: translateY(-1px);
-}
-.scene-actions button.primary {
-  color: #ffffff;
-  background: #5da4b1;
-  border-color: #488793;
-  font-weight: 600;
-  box-shadow: 0 2px 6px rgba(93, 164, 177, 0.25);
-}
-.scene-actions button.primary:hover {
-  background: #488793;
-}
-.scene-actions button.action-highlight {
-  background: #ffffff;
-  border-color: #5da4b1;
-  color: #488793;
-  font-weight: 600;
-}
-.scene-actions button.action-highlight:hover {
-  background: #5da4b1;
-  color: #ffffff;
-}
 
-/* ── 右侧栏: 模块详情面板 (Details Panel) ── */
-.details-panel {
-  min-height: 0;
-  display: grid;
-  grid-template-rows: 50px minmax(0, 1fr) 56px;
-  overflow: hidden;
-  background: #ffffff;
-}
-
-.details-heading {
+.module-card-bottom {
+  position: relative;
+  z-index: 4;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 16px;
-  border-bottom: 1px solid rgba(93, 164, 177, 0.14);
-  background: #ffffff;
+  padding-top: 4px;
+  border-top: 1px solid rgba(255, 255, 255, 0.65);
 }
-.details-heading h2 {
-  margin: 0;
-  font-size: 14.5px;
-  font-weight: 700;
-  color: #1a3c42;
-}
-.details-heading button {
-  border: 0;
-  background: transparent;
-  color: #657e82;
-  cursor: pointer;
-  font-size: 16px;
-  transition: color 0.15s ease;
-}
-.details-heading button:hover {
-  color: #5da4b1;
-}
-
-.details-content {
-  padding: 14px 16px;
-  overflow-y: auto;
-  scrollbar-width: none;
-}
-.details-content::-webkit-scrollbar { display: none; }
-
-.details-content code {
-  display: block;
-  color: #657e82;
-  font: 9.5px/1.2 var(--el-font-family-monospace, monospace);
-  letter-spacing: 0.04em;
-  margin-bottom: 10px;
-}
-
-.detail-title-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.detail-title-row h2 {
-  margin: 0;
-  font-size: 17px;
-  font-weight: 700;
-  letter-spacing: -0.02em;
-  color: #1a3c42;
-}
-.detail-title-row span {
-  color: #21474e;
-  background: #edf6f8;
-  border: 1px solid rgba(93, 164, 177, 0.3);
-  padding: 1px 7px;
-  border-radius: 4px;
-  font-size: 9.5px;
-  font-weight: 600;
-  white-space: nowrap;
-}
-
-.detail-description {
-  margin: 8px 0 14px;
-  color: #324e53;
-  font-size: 11.5px;
-  line-height: 1.6;
-}
-
-.metadata {
-  display: flex;
-  flex-direction: column;
-  gap: 9px;
-  margin: 0;
-}
-.metadata > div {
-  display: grid;
-  grid-template-columns: 65px 1fr;
-  align-items: center;
-  font-size: 11px;
-}
-.metadata dt { color: #657e82; font-weight: 500; }
-.metadata dd { margin: 0; display: flex; align-items: center; gap: 6px; color: #1a3c42; }
-.metadata .el-icon { font-size: 12px; color: #7b9498; }
-
-.mini-avatar {
-  width: 18px;
-  height: 18px;
-  display: grid;
-  place-items: center;
-  border-radius: 50%;
-  background: #edf6f8;
-  border: 1px solid rgba(93, 164, 177, 0.3);
-  color: #21474e;
-  font-size: 8px;
-  font-weight: 700;
-}
-.status-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: #5da4b1;
-  box-shadow: 0 0 6px #5da4b1;
-}
-.priority-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: #c7564d;
-  box-shadow: 0 0 6px #c7564d;
-}
-.tag-list {
-  flex-wrap: wrap;
-  gap: 4px;
-}
-.tag-list span {
-  padding: 2px 7px;
-  border-radius: 4px;
-  background: #edf6f8;
-  border: 1px solid rgba(93, 164, 177, 0.25);
-  color: #21474e;
+.module-metric-hint {
   font-size: 9px;
-  font-weight: 500;
+  font-weight: 700;
+  color: #0284c7;
 }
-
-.ai-note {
-  margin-top: 16px;
-  padding: 12px;
-  border: 1px solid rgba(93, 164, 177, 0.22);
-  border-left: 3px solid #5da4b1;
-  border-radius: 8px;
-  background: #fbfdfd;
-}
-.ai-note h3 {
-  margin: 0 0 6px;
-  font-size: 12px;
-  font-weight: 600;
-  color: #1a3c42;
-}
-.ai-note ul {
-  margin: 0 0 10px;
-  padding-left: 14px;
-  color: #324e53;
-  font-size: 10.5px;
-  line-height: 1.65;
-}
-.ai-note button {
-  height: 24px;
-  padding: 0 9px;
-  border: 1px solid rgba(93, 164, 177, 0.3);
-  border-radius: 4px;
-  background: #edf6f8;
-  color: #21474e;
-  font-size: 9.5px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.15s ease;
-}
-.ai-note button:hover {
-  background: #5da4b1;
-  color: #ffffff;
-  border-color: #5da4b1;
-}
-
-.detail-actions {
-  display: grid;
-  grid-template-columns: 1fr 1.2fr 36px;
-  gap: 6px;
-  align-items: center;
-  padding: 0 14px;
-  border-top: 1px solid rgba(93, 164, 177, 0.14);
-  background: #ffffff;
-}
-.detail-actions button {
-  height: 34px;
-  border-radius: 6px;
-  border: 1px solid rgba(93, 164, 177, 0.28);
-  background: #ffffff;
-  color: #21474e;
-  cursor: pointer;
+.module-enter-btn {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.95);
   display: flex;
   align-items: center;
   justify-content: center;
+  font-size: 10px;
+  color: #475569;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.06);
+  transition: all 0.18s ease;
+}
+.glass-module-card:hover .module-enter-btn {
+  background: #0284c7;
+  border-color: #0284c7;
+  color: #ffffff;
+  transform: translateX(2px);
+  box-shadow: 0 4px 10px rgba(2, 132, 199, 0.4);
+}
+
+/* 右侧：实时系统雷达 & 智能风控 */
+.glass-side-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 0;
+  overflow: hidden;
+}
+.glass-subcard {
+  position: relative;
+  background: var(--glass-bg);
+  backdrop-filter: blur(28px) saturate(200%);
+  -webkit-backdrop-filter: blur(28px) saturate(200%);
+  border: 1.5px solid var(--glass-border);
+  border-top: 2px solid var(--glass-border-light);
+  border-radius: 16px;
+  box-shadow: var(--glass-shadow), var(--glass-inset);
+  padding: 10px 12px;
+  overflow: hidden;
+}
+.subcard-head {
+  position: relative;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.subcard-head h3 {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--text-main);
+  display: flex;
+  align-items: center;
   gap: 5px;
-  font-size: 11px;
+}
+.subcard-badge {
+  font: 800 8.5px/1 var(--el-font-family-monospace, monospace);
+  color: #059669;
+  background: rgba(16, 185, 129, 0.15);
+  border: 1px solid rgba(16, 185, 129, 0.35);
+  padding: 2px 6px;
+  border-radius: 9999px;
+}
+.radar-stat-item {
+  position: relative;
+  z-index: 4;
+  margin-bottom: 8px;
+}
+.radar-stat-item:last-child {
+  margin-bottom: 0;
+}
+.stat-item-label {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+  color: var(--text-muted);
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+.stat-item-label b {
+  color: var(--text-main);
+  font-family: var(--el-font-family-monospace, monospace);
+}
+.glass-progress-bar {
+  height: 6px;
+  border-radius: 9999px;
+  background: rgba(203, 213, 225, 0.6);
+  box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.1);
+  overflow: hidden;
+}
+.progress-fill {
+  height: 100%;
+  border-radius: 9999px;
+  transition: width 0.35s ease;
+}
+.cyan-fill {
+  background: linear-gradient(90deg, #38bdf8 0%, #0284c7 100%);
+  box-shadow: 0 0 10px rgba(2, 132, 199, 0.6);
+}
+.green-fill {
+  background: linear-gradient(90deg, #34d399 0%, #059669 100%);
+  box-shadow: 0 0 10px rgba(5, 150, 105, 0.6);
+}
+
+.advisory-card {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+.glass-advice-list {
+  position: relative;
+  z-index: 4;
+  margin: 0;
+  padding-left: 14px;
+  font-size: 9.5px;
+  color: var(--text-muted);
   font-weight: 500;
+  line-height: 1.55;
+}
+.glass-advice-list li {
+  margin-bottom: 4px;
+}
+.glass-advice-list li b {
+  color: #0284c7;
+  font-weight: 700;
+}
+
+.quick-action-subcard {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+}
+.glass-action-btn {
+  position: relative;
+  z-index: 4;
+  height: 30px;
+  border-radius: 9999px;
+  border: 1.5px solid transparent;
+  font-size: 11px;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  cursor: pointer;
+  transition: all 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.glass-action-btn.primary {
+  background: linear-gradient(180deg, #38bdf8 0%, #0284c7 100%);
+  color: #ffffff;
+  border-color: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 8px 20px -2px rgba(2, 132, 199, 0.45), inset 0 1.5px 1.5px rgba(255, 255, 255, 0.9);
+}
+.glass-action-btn.primary:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 12px 26px -2px rgba(2, 132, 199, 0.55);
+}
+.glass-action-btn.secondary {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.9) 0%, rgba(241, 245, 249, 0.7) 100%);
+  border-color: rgba(255, 255, 255, 0.95);
+  color: #334155;
+  box-shadow: 0 4px 10px rgba(15, 23, 42, 0.05), inset 0 1.5px 1px #ffffff;
+}
+.glass-action-btn.secondary:hover {
+  background: #ffffff;
+  border-color: #0284c7;
+  color: #0284c7;
+  transform: translateY(-2px);
+}
+
+/* ════════ 4. 底部厚水晶状态栏 ════════ */
+.glass-status-footer {
+  position: relative;
+  height: 32px;
+  flex-shrink: 0;
+  background: var(--glass-bg);
+  backdrop-filter: blur(28px) saturate(200%);
+  -webkit-backdrop-filter: blur(28px) saturate(200%);
+  border: 1.5px solid var(--glass-border);
+  border-top: 2px solid var(--glass-border-light);
+  border-radius: 12px;
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.04), var(--glass-inset);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 12px;
+  font-size: 10px;
+  color: var(--text-muted);
+  font-weight: 500;
+  overflow: hidden;
+}
+.footer-left-status {
+  position: relative;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.live-pulse-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #10b981;
+  box-shadow: 0 0 8px #10b981;
+}
+.footer-left-status b {
+  color: #0284c7;
+  font-weight: 800;
+}
+.footer-right-shortcuts {
+  position: relative;
+  z-index: 4;
+  display: flex;
+  gap: 4px;
+}
+.status-shortcut-btn {
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.9);
+  background: rgba(255, 255, 255, 0.7);
+  color: #475569;
+  font-size: 9.5px;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.03);
   transition: all 0.15s ease;
 }
-.detail-actions button:hover {
-  background: #edf6f8;
-  border-color: #5da4b1;
-  color: #1a3c42;
-}
-.detail-actions button.primary {
-  color: #ffffff;
-  border-color: #488793;
-  background: #5da4b1;
-  font-weight: 600;
-  box-shadow: 0 2px 6px rgba(93, 164, 177, 0.25);
-}
-.detail-actions button.primary:hover {
-  background: #488793;
+.status-shortcut-btn:hover {
+  background: #ffffff;
+  border-color: #0284c7;
+  color: #0284c7;
+  transform: translateY(-1px);
 }
 
 /* ════════════════ 3. 材质设置抽屉 (Material Overlay) ════════════════ */
