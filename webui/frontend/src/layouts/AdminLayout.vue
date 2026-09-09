@@ -461,21 +461,26 @@ html.dark .macos-menu-item:hover {
   border-color: rgba(56, 189, 248, 0.3) !important;
 }
 
-/* 选中激活态：3D 蓝宝石果冻药丸 (对齐素材 2ac2e3a9c1fd2371a185add9ac5a345a.jpg 的 Search projects 纯净蓝宝石玻璃) */
+/* 选中激活态：3D 冰海蓝宝石微晶药丸 (对齐素材 2ac2e3a9c1fd2371a185add9ac5a345a.jpg 的清透琉璃) */
 .macos-menu-item.is-active {
-  background: linear-gradient(180deg, #38bdf8 0%, #0284c7 60%, #0369a1 100%) !important;
-  color: #ffffff !important;
-  font-weight: 800 !important;
-  border: 1.8px solid rgba(255, 255, 255, 0.95) !important;
-  border-top: 2.2px solid #ffffff !important;
-  box-shadow: 0 8px 20px -3px rgba(2, 132, 199, 0.45), 0 3px 8px rgba(2, 132, 199, 0.25), inset 0 2px 2px rgba(255, 255, 255, 0.95), inset 0 -2px 3px rgba(0, 0, 0, 0.22) !important;
+  background: linear-gradient(180deg, rgba(224, 242, 254, 0.96) 0%, rgba(186, 230, 253, 0.9) 50%, rgba(125, 211, 252, 0.82) 100%) !important;
+  color: #0284c7 !important;
+  font-weight: 700 !important;
+  border: 1.5px solid rgba(255, 255, 255, 0.98) !important;
+  border-top: 2px solid #ffffff !important;
+  border-bottom: 1.5px solid rgba(56, 189, 248, 0.65) !important;
+  box-shadow:
+    0 6px 16px -2px rgba(2, 132, 199, 0.28),
+    0 2px 5px rgba(15, 23, 42, 0.04),
+    inset 0 1.8px 2px #ffffff,
+    inset 0 -1.5px 2px rgba(2, 132, 199, 0.15) !important;
   transform: translateY(-1px) !important;
 }
 html.dark .macos-menu-item.is-active {
-  background: linear-gradient(180deg, #0284c7 0%, #0369a1 100%) !important;
+  background: linear-gradient(180deg, rgba(2, 132, 199, 0.6) 0%, rgba(3, 105, 161, 0.75) 100%) !important;
   color: #ffffff !important;
-  border-color: #38bdf8 !important;
-  box-shadow: 0 8px 20px -3px rgba(2, 132, 199, 0.5), inset 0 1.5px 1px rgba(255, 255, 255, 0.4) !important;
+  border-color: rgba(56, 189, 248, 0.7) !important;
+  box-shadow: 0 6px 18px -2px rgba(2, 132, 199, 0.4), inset 0 1.5px 1px rgba(255, 255, 255, 0.35) !important;
 }
 
 /* 菜单图标通透微晶座舱 */
@@ -507,10 +512,11 @@ html.dark .menu-icon {
   box-shadow: 0 2px 6px rgba(2, 132, 199, 0.18) !important;
 }
 .macos-menu-item.is-active .menu-icon {
-  color: #ffffff !important;
-  background: rgba(255, 255, 255, 0.25) !important;
-  border-color: rgba(255, 255, 255, 0.65) !important;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15), inset 0 1px 1px rgba(255, 255, 255, 0.7) !important;
+  color: #0284c7 !important;
+  background: rgba(255, 255, 255, 0.92) !important;
+  border-color: rgba(255, 255, 255, 0.98) !important;
+  border-top-color: #ffffff !important;
+  box-shadow: 0 2px 6px rgba(2, 132, 199, 0.18), inset 0 1px 1px #ffffff !important;
 }
 html.dark .macos-menu-item.is-active .menu-icon {
   color: #ffffff !important;

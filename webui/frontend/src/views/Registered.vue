@@ -9883,17 +9883,19 @@ onUnmounted(() => {
   box-shadow: 0 4px 12px rgba(2, 132, 199, 0.18), inset 0 1.5px 1px #ffffff;
 }
 .segmented-tab.is-active {
-  font-weight: 800;
+  font-weight: 700;
   position: relative;
   overflow: hidden;
-  background: linear-gradient(180deg, #60a5fa 0%, #3b82f6 25%, #2563eb 60%, #1d4ed8 100%) !important;
-  color: #ffffff !important;
-  border: 1.8px solid rgba(255, 255, 255, 0.95) !important;
-  border-top: 2.2px solid #ffffff !important;
+  background: linear-gradient(180deg, rgba(224, 242, 254, 0.96) 0%, rgba(186, 230, 253, 0.9) 50%, rgba(125, 211, 252, 0.82) 100%) !important;
+  color: #0369a1 !important;
+  border: 1.5px solid rgba(255, 255, 255, 0.98) !important;
+  border-top: 2px solid #ffffff !important;
+  border-bottom: 1.5px solid rgba(56, 189, 248, 0.65) !important;
   box-shadow:
-    0 6px 18px -2px rgba(37, 99, 235, 0.48),
-    inset 0 2px 2px rgba(255, 255, 255, 0.95),
-    inset 0 -2px 3px rgba(0, 0, 0, 0.25) !important;
+    0 4px 14px -1px rgba(2, 132, 199, 0.28),
+    0 2px 5px rgba(15, 23, 42, 0.04),
+    inset 0 1.5px 1.5px #ffffff,
+    inset 0 -1.5px 2px rgba(2, 132, 199, 0.15) !important;
   transform: translateY(-1px);
 }
 .segmented-tab.is-active::before {
@@ -9904,15 +9906,15 @@ onUnmounted(() => {
   right: 8%;
   height: 42%;
   border-radius: 9999px 9999px 40% 40%;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.85) 0%, rgba(255, 255, 255, 0.15) 80%, transparent 100%);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.92) 0%, rgba(255, 255, 255, 0.25) 80%, transparent 100%);
   pointer-events: none;
 }
 .segmented-tab.is-active .tab-count-badge {
-  background: rgba(255, 255, 255, 0.28);
-  color: #ffffff;
-  border: 1px solid rgba(255, 255, 255, 0.7);
-  box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.8);
-  font-weight: 800;
+  background: rgba(255, 255, 255, 0.9);
+  color: #0284c7;
+  border: 1px solid rgba(255, 255, 255, 0.95);
+  box-shadow: 0 1px 3px rgba(2, 132, 199, 0.12), inset 0 1px 1px #ffffff;
+  font-weight: 700;
 }
 
 /* 激活标签右上角微型取消小叉 */
@@ -10404,22 +10406,22 @@ onUnmounted(() => {
   height: 33px;
   box-sizing: border-box;
   border-radius: 9999px;
-  border: 2px solid rgba(255, 255, 255, 0.95) !important;
-  border-top: 2.5px solid #ffffff !important;
-  border-bottom: 2px solid rgba(30, 58, 138, 0.8) !important;
-  background: linear-gradient(180deg, #60a5fa 0%, #3b82f6 25%, #2563eb 60%, #1d4ed8 100%) !important;
+  border: 1.5px solid rgba(255, 255, 255, 0.95) !important;
+  border-top: 2px solid #ffffff !important;
+  border-bottom: 1.8px solid rgba(2, 132, 199, 0.6) !important;
+  background: linear-gradient(180deg, #38bdf8 0%, #0284c7 50%, #0369a1 100%) !important;
   color: #ffffff !important;
   font-size: 12px;
-  font-weight: 800;
+  font-weight: 700;
   cursor: pointer;
   position: relative;
   overflow: hidden;
-  transition: all 0.16s ease;
+  transition: all 0.18s ease;
   box-shadow:
-    0 10px 24px -3px rgba(37, 99, 235, 0.5),
-    0 4px 10px rgba(37, 99, 235, 0.25),
-    inset 0 2.5px 2.5px rgba(255, 255, 255, 0.95),
-    inset 0 -2.5px 3.5px rgba(0, 0, 0, 0.3) !important;
+    0 6px 18px -2px rgba(2, 132, 199, 0.38),
+    0 2px 6px rgba(15, 23, 42, 0.05),
+    inset 0 1.8px 2px rgba(255, 255, 255, 0.9),
+    inset 0 -1.8px 2.5px rgba(0, 0, 0, 0.18) !important;
 }
 .primary-export-btn::before {
   content: '';
@@ -10429,15 +10431,15 @@ onUnmounted(() => {
   right: 8%;
   height: 42%;
   border-radius: 9999px 9999px 40% 40%;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.85) 0%, rgba(255, 255, 255, 0.15) 80%, transparent 100%);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.9) 0%, rgba(255, 255, 255, 0.2) 80%, transparent 100%);
   pointer-events: none;
 }
 .primary-export-btn:hover:not(:disabled) {
   transform: translateY(-1px) scale(1.02);
   box-shadow:
-    0 14px 28px -3px rgba(37, 99, 235, 0.65),
-    0 6px 14px rgba(37, 99, 235, 0.35),
-    inset 0 2.5px 2.5px #ffffff !important;
+    0 8px 22px -2px rgba(2, 132, 199, 0.5),
+    0 3px 8px rgba(2, 132, 199, 0.25),
+    inset 0 2px 2px #ffffff !important;
 }
 
 /* ════════════════ 核心工作区 (Workspace Body) ════════════════ */
@@ -15712,56 +15714,60 @@ onUnmounted(() => {
   transform: translateY(-1px);
 }
 
-/* 密码✓ 3D 薄荷/海盐绿液态果冻 (1:1 复刻素材 2ac2e3a9c1fd2371a185add9ac5a345a.jpg 的微晶多选) */
+/* 密码✓ 3D 薄荷/海盐绿液态果冻 (1:1 复刻素材 3c96dc7ad762c523c88e687794b9c39a.jpg 的微晶胶囊) */
 .sec-pwd-ok {
-  background: linear-gradient(180deg, #6ee7b7 0%, #34d399 35%, #10b981 70%, #059669 100%) !important;
-  color: #ffffff !important;
+  background: linear-gradient(180deg, rgba(236, 253, 245, 0.96) 0%, rgba(209, 250, 229, 0.9) 50%, rgba(167, 243, 208, 0.78) 100%) !important;
+  color: #065f46 !important;
   border-color: rgba(255, 255, 255, 0.95) !important;
   border-top-color: #ffffff !important;
-  box-shadow: 0 3px 8px rgba(16, 185, 129, 0.4), inset 0 1.5px 1.5px rgba(255, 255, 255, 0.95), inset 0 -1.5px 2px rgba(0, 0, 0, 0.22) !important;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+  border-bottom-color: rgba(167, 243, 208, 0.85) !important;
+  box-shadow: 0 2px 6px rgba(16, 185, 129, 0.22), inset 0 1.2px 1.5px #ffffff, inset 0 -1px 1.5px rgba(5, 150, 105, 0.12) !important;
 }
 .sec-pwd-ok:hover {
-  box-shadow: 0 5px 12px rgba(16, 185, 129, 0.55), inset 0 1.5px 1.5px #ffffff !important;
+  background: linear-gradient(180deg, rgba(236, 253, 245, 1) 0%, rgba(209, 250, 229, 0.95) 100%) !important;
+  box-shadow: 0 4px 10px rgba(16, 185, 129, 0.35), inset 0 1.5px 1.5px #ffffff !important;
 }
 
 /* 密码× 3D 珊瑚红微晶 */
 .sec-pwd-no {
-  background: linear-gradient(180deg, #fca5a5 0%, #f87171 35%, #ef4444 70%, #dc2626 100%) !important;
-  color: #ffffff !important;
+  background: linear-gradient(180deg, rgba(254, 242, 242, 0.96) 0%, rgba(254, 226, 226, 0.9) 50%, rgba(254, 205, 211, 0.78) 100%) !important;
+  color: #991b1b !important;
   border-color: rgba(255, 255, 255, 0.95) !important;
   border-top-color: #ffffff !important;
-  box-shadow: 0 3px 8px rgba(239, 68, 68, 0.4), inset 0 1.5px 1.5px rgba(255, 255, 255, 0.95), inset 0 -1.5px 2px rgba(0, 0, 0, 0.22) !important;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+  border-bottom-color: rgba(254, 205, 211, 0.85) !important;
+  box-shadow: 0 2px 6px rgba(239, 68, 68, 0.18), inset 0 1.2px 1.5px #ffffff, inset 0 -1px 1.5px rgba(220, 38, 38, 0.1) !important;
 }
 .sec-pwd-no:hover {
-  box-shadow: 0 5px 12px rgba(239, 68, 68, 0.55), inset 0 1.5px 1.5px #ffffff !important;
+  background: linear-gradient(180deg, rgba(254, 242, 242, 1) 0%, rgba(254, 226, 226, 0.95) 100%) !important;
+  box-shadow: 0 4px 10px rgba(239, 68, 68, 0.3), inset 0 1.5px 1.5px #ffffff !important;
 }
 
-/* 2FA✓ 3D 薄荷/海盐绿液态果冻 (1:1 复刻素材 2ac2e3a9c1fd2371a185add9ac5a345a.jpg 的微晶多选) */
+/* 2FA✓ 3D 薄荷/海盐绿液态果冻 (1:1 复刻素材 3c96dc7ad762c523c88e687794b9c39a.jpg 的微晶胶囊) */
 .sec-2fa-ok {
-  background: linear-gradient(180deg, #6ee7b7 0%, #34d399 35%, #10b981 70%, #059669 100%) !important;
-  color: #ffffff !important;
+  background: linear-gradient(180deg, rgba(236, 253, 245, 0.96) 0%, rgba(209, 250, 229, 0.9) 50%, rgba(167, 243, 208, 0.78) 100%) !important;
+  color: #065f46 !important;
   border-color: rgba(255, 255, 255, 0.95) !important;
   border-top-color: #ffffff !important;
-  box-shadow: 0 3px 8px rgba(16, 185, 129, 0.4), inset 0 1.5px 1.5px rgba(255, 255, 255, 0.95), inset 0 -1.5px 2px rgba(0, 0, 0, 0.22) !important;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+  border-bottom-color: rgba(167, 243, 208, 0.85) !important;
+  box-shadow: 0 2px 6px rgba(16, 185, 129, 0.22), inset 0 1.2px 1.5px #ffffff, inset 0 -1px 1.5px rgba(5, 150, 105, 0.12) !important;
 }
 .sec-2fa-ok:hover {
-  box-shadow: 0 5px 12px rgba(16, 185, 129, 0.55), inset 0 1.5px 1.5px #ffffff !important;
+  background: linear-gradient(180deg, rgba(236, 253, 245, 1) 0%, rgba(209, 250, 229, 0.95) 100%) !important;
+  box-shadow: 0 4px 10px rgba(16, 185, 129, 0.35), inset 0 1.5px 1.5px #ffffff !important;
 }
 
 /* 2FA× 3D 珊瑚红微晶 */
 .sec-2fa-no {
-  background: linear-gradient(180deg, #fca5a5 0%, #f87171 35%, #ef4444 70%, #dc2626 100%) !important;
-  color: #ffffff !important;
+  background: linear-gradient(180deg, rgba(254, 242, 242, 0.96) 0%, rgba(254, 226, 226, 0.9) 50%, rgba(254, 205, 211, 0.78) 100%) !important;
+  color: #991b1b !important;
   border-color: rgba(255, 255, 255, 0.95) !important;
   border-top-color: #ffffff !important;
-  box-shadow: 0 3px 8px rgba(239, 68, 68, 0.4), inset 0 1.5px 1.5px rgba(255, 255, 255, 0.95), inset 0 -1.5px 2px rgba(0, 0, 0, 0.22) !important;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+  border-bottom-color: rgba(254, 205, 211, 0.85) !important;
+  box-shadow: 0 2px 6px rgba(239, 68, 68, 0.18), inset 0 1.2px 1.5px #ffffff, inset 0 -1px 1.5px rgba(220, 38, 38, 0.1) !important;
 }
 .sec-2fa-no:hover {
-  box-shadow: 0 5px 12px rgba(239, 68, 68, 0.55), inset 0 1.5px 1.5px #ffffff !important;
+  background: linear-gradient(180deg, rgba(254, 242, 242, 1) 0%, rgba(254, 226, 226, 0.95) 100%) !important;
+  box-shadow: 0 4px 10px rgba(239, 68, 68, 0.3), inset 0 1.5px 1.5px #ffffff !important;
 }
 
 /* ──────────── 3. Token 凭据状态规范 (3D 水晶微胶囊，对齐素材 2ac2e3a9c1fd2371a185add9ac5a345a.jpg) ──────────── */
@@ -15855,7 +15861,7 @@ onUnmounted(() => {
   border-radius: 9999px;
   font-size: 10.5px;
   font-family: var(--el-font-family-monospace, monospace);
-  font-weight: 700;
+  font-weight: 600;
   cursor: pointer;
   position: relative;
   overflow: hidden;
@@ -15866,65 +15872,68 @@ onUnmounted(() => {
   border: 1.2px solid rgba(255, 255, 255, 0.95);
   border-top: 1.8px solid #ffffff;
   border-bottom: 1.2px solid rgba(203, 213, 225, 0.6);
-  box-shadow: 0 3px 8px -1px rgba(15, 23, 42, 0.08), inset 0 1.2px 1.2px #ffffff, inset 0 -1.2px 1.5px rgba(0, 0, 0, 0.06);
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.04), inset 0 1.2px 1.2px #ffffff;
 }
 .at-expiry-modern-badge::before {
   content: '';
   position: absolute;
   top: 1px;
-  left: 10%;
-  right: 10%;
-  height: 40%;
-  border-radius: 9999px 9999px 38% 38%;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.85) 0%, rgba(255, 255, 255, 0.15) 75%, transparent 100%);
+  left: 8%;
+  right: 8%;
+  height: 42%;
+  border-radius: 9999px 9999px 40% 40%;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.92) 0%, rgba(255, 255, 255, 0.2) 75%, transparent 100%);
   pointer-events: none;
 }
 .at-expiry-modern-badge.at-exp-ok {
-  background: linear-gradient(180deg, rgba(236, 253, 245, 0.98) 0%, rgba(209, 250, 229, 0.92) 100%) !important;
-  border-color: rgba(52, 211, 153, 0.65) !important;
+  background: linear-gradient(180deg, rgba(236, 253, 245, 0.96) 0%, rgba(209, 250, 229, 0.88) 100%) !important;
+  border-color: rgba(167, 243, 208, 0.85) !important;
   border-top-color: #ffffff !important;
   color: #065f46 !important;
-  box-shadow: 0 3px 8px rgba(16, 185, 129, 0.25), inset 0 1.5px 1.5px #ffffff, inset 0 -1.2px 1.8px rgba(5, 150, 105, 0.15) !important;
+  box-shadow: 0 2px 8px -1px rgba(16, 185, 129, 0.22), inset 0 1.2px 1.5px #ffffff, inset 0 -1px 1.5px rgba(5, 150, 105, 0.1) !important;
 }
 .at-expiry-modern-badge.at-exp-ok .expiry-status-dot {
   background: #10b981;
   box-shadow: 0 0 5px #34d399;
 }
 .at-expiry-modern-badge.at-exp-ok:hover {
+  background: linear-gradient(180deg, rgba(236, 253, 245, 1) 0%, rgba(209, 250, 229, 0.95) 100%) !important;
   transform: translateY(-1px);
-  box-shadow: 0 5px 12px rgba(16, 185, 129, 0.38), inset 0 1.5px 1.5px #ffffff !important;
+  box-shadow: 0 4px 12px rgba(16, 185, 129, 0.35), inset 0 1.5px 1.5px #ffffff !important;
 }
 
 .at-expiry-modern-badge.at-exp-warn {
-  background: linear-gradient(180deg, rgba(254, 243, 199, 0.98) 0%, rgba(253, 230, 138, 0.92) 100%) !important;
-  border-color: rgba(245, 158, 11, 0.65) !important;
+  background: linear-gradient(180deg, rgba(255, 251, 235, 0.96) 0%, rgba(254, 243, 199, 0.88) 100%) !important;
+  border-color: rgba(253, 230, 138, 0.85) !important;
   border-top-color: #ffffff !important;
   color: #92400e !important;
-  box-shadow: 0 3px 8px rgba(245, 158, 11, 0.25), inset 0 1.5px 1.5px #ffffff, inset 0 -1.2px 1.8px rgba(217, 119, 6, 0.15) !important;
+  box-shadow: 0 2px 8px -1px rgba(245, 158, 11, 0.22), inset 0 1.2px 1.5px #ffffff, inset 0 -1px 1.5px rgba(217, 119, 6, 0.1) !important;
 }
 .at-expiry-modern-badge.at-exp-warn .expiry-status-dot {
   background: #f59e0b;
   box-shadow: 0 0 5px #fbbf24;
 }
 .at-expiry-modern-badge.at-exp-warn:hover {
+  background: linear-gradient(180deg, rgba(255, 251, 235, 1) 0%, rgba(254, 243, 199, 0.95) 100%) !important;
   transform: translateY(-1px);
-  box-shadow: 0 5px 12px rgba(245, 158, 11, 0.38), inset 0 1.5px 1.5px #ffffff !important;
+  box-shadow: 0 4px 12px rgba(245, 158, 11, 0.35), inset 0 1.5px 1.5px #ffffff !important;
 }
 
 .at-expiry-modern-badge.at-exp-dead {
-  background: linear-gradient(180deg, rgba(254, 242, 242, 0.98) 0%, rgba(254, 226, 226, 0.92) 100%) !important;
-  border-color: rgba(239, 68, 68, 0.65) !important;
+  background: linear-gradient(180deg, rgba(254, 242, 242, 0.96) 0%, rgba(254, 226, 226, 0.88) 100%) !important;
+  border-color: rgba(254, 205, 211, 0.85) !important;
   border-top-color: #ffffff !important;
   color: #991b1b !important;
-  box-shadow: 0 3px 8px rgba(239, 68, 68, 0.25), inset 0 1.5px 1.5px #ffffff, inset 0 -1.2px 1.8px rgba(185, 28, 28, 0.15) !important;
+  box-shadow: 0 2px 8px -1px rgba(239, 68, 68, 0.2), inset 0 1.2px 1.5px #ffffff, inset 0 -1px 1.5px rgba(185, 28, 28, 0.1) !important;
 }
 .at-expiry-modern-badge.at-exp-dead .expiry-status-dot {
   background: #ef4444;
   box-shadow: 0 0 5px #f87171;
 }
 .at-expiry-modern-badge.at-exp-dead:hover {
+  background: linear-gradient(180deg, rgba(254, 242, 242, 1) 0%, rgba(254, 226, 226, 0.95) 100%) !important;
   transform: translateY(-1px);
-  box-shadow: 0 5px 12px rgba(239, 68, 68, 0.38), inset 0 1.5px 1.5px #ffffff !important;
+  box-shadow: 0 4px 12px rgba(239, 68, 68, 0.32), inset 0 1.5px 1.5px #ffffff !important;
 }
 
 .at-expiry-modern-badge.at-exp-none,
@@ -16142,16 +16151,16 @@ onUnmounted(() => {
   flex-wrap: nowrap;
 }
 .octopus-row-btn {
-  height: 25px;
-  padding: 0 9px;
+  height: 26px;
+  padding: 0 10px;
   border-radius: 9999px;
-  font-size: 11px;
-  font-weight: 700;
-  border: 1.5px solid rgba(255, 255, 255, 0.95);
-  border-top: 2px solid #ffffff;
+  font-size: 11.5px;
+  font-weight: 600;
+  border: 1.2px solid rgba(255, 255, 255, 0.95);
+  border-top: 1.8px solid #ffffff;
   border-bottom: 1.5px solid rgba(203, 213, 225, 0.6);
   cursor: pointer;
-  transition: all 0.16s ease;
+  transition: all 0.18s cubic-bezier(0.4, 0, 0.2, 1);
   user-select: none;
   position: relative;
   overflow: hidden;
@@ -16160,85 +16169,110 @@ onUnmounted(() => {
   justify-content: center;
   white-space: nowrap;
   flex-shrink: 0;
-  box-shadow: 0 3px 8px -1px rgba(15, 23, 42, 0.1), inset 0 1.5px 1.5px #ffffff, inset 0 -1.5px 2px rgba(0, 0, 0, 0.08);
+  box-shadow:
+    0 3px 8px -1px rgba(15, 23, 42, 0.05),
+    inset 0 1.5px 1.5px #ffffff,
+    inset 0 -1.2px 1.5px rgba(15, 23, 42, 0.04);
 }
 .octopus-row-btn::before {
   content: '';
   position: absolute;
   top: 1px;
-  left: 10%;
-  right: 10%;
-  height: 40%;
-  border-radius: 9999px 9999px 38% 38%;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.85) 0%, rgba(255, 255, 255, 0.15) 75%, transparent 100%);
+  left: 8%;
+  right: 8%;
+  height: 42%;
+  border-radius: 9999px 9999px 40% 40%;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.95) 0%, rgba(255, 255, 255, 0.25) 75%, transparent 100%);
   pointer-events: none;
+  z-index: 2;
 }
 .octopus-row-btn:hover {
   transform: translateY(-1px);
 }
-/* 凭证: 1:1 复刻素材图 row 2 的 "Text" 微晶按键 */
+/* 凭证: 1:1 复刻素材 3c96dc7ad762c523c88e687794b9c39a.jpg 的 "Upgrade plan" / "Text" 微晶白玉药丸 */
 .octopus-row-btn.btn-cred {
-  background: linear-gradient(180deg, #ffffff 0%, rgba(241, 245, 249, 0.95) 100%);
-  color: #1e293b;
-  border-color: rgba(255, 255, 255, 0.95);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96) 0%, rgba(248, 250, 252, 0.88) 100%) !important;
+  color: #1e293b !important;
+  border-color: rgba(255, 255, 255, 0.95) !important;
+  border-bottom-color: rgba(203, 213, 225, 0.65) !important;
 }
 .octopus-row-btn.btn-cred:hover {
-  background: #ffffff;
-  color: #0284c7;
-  border-color: #38bdf8;
-  box-shadow: 0 4px 12px rgba(2, 132, 199, 0.25), inset 0 1.5px 1.5px #ffffff;
+  background: #ffffff !important;
+  color: #0284c7 !important;
+  border-color: rgba(56, 189, 248, 0.6) !important;
+  border-top-color: #ffffff !important;
+  box-shadow: 0 5px 14px rgba(2, 132, 199, 0.18), inset 0 1.5px 1.5px #ffffff !important;
 }
-/* 2FA: 1:1 复刻素材图 row 3 的薄荷晶体 (带翠绿光晕) */
+/* 2FA: 1:1 复刻素材 3c96dc7ad762c523c88e687794b9c39a.jpg 的 "Primary button" 清透翠玉琉璃 */
 .octopus-row-btn.btn-2fa {
-  background: linear-gradient(180deg, #6ee7b7 0%, #34d399 35%, #10b981 70%, #059669 100%) !important;
+  background: linear-gradient(180deg, rgba(236, 253, 245, 0.95) 0%, rgba(209, 250, 229, 0.88) 50%, rgba(167, 243, 208, 0.75) 100%) !important;
   border-color: rgba(255, 255, 255, 0.95) !important;
   border-top-color: #ffffff !important;
-  color: #ffffff !important;
-  box-shadow: 0 4px 12px rgba(16, 185, 129, 0.45), inset 0 1.8px 1.8px rgba(255, 255, 255, 0.95), inset 0 -1.8px 2.5px rgba(0, 0, 0, 0.25) !important;
+  border-bottom-color: rgba(167, 243, 208, 0.85) !important;
+  color: #065f46 !important;
+  box-shadow:
+    0 3px 10px -1px rgba(16, 185, 129, 0.28),
+    0 1px 3px rgba(15, 23, 42, 0.03),
+    inset 0 1.5px 1.5px #ffffff,
+    inset 0 -1.2px 1.8px rgba(5, 150, 105, 0.12) !important;
 }
 .octopus-row-btn.btn-2fa:hover {
-  box-shadow: 0 6px 16px rgba(16, 185, 129, 0.6), inset 0 1.8px 1.8px #ffffff !important;
+  background: linear-gradient(180deg, rgba(236, 253, 245, 1) 0%, rgba(209, 250, 229, 0.95) 100%) !important;
+  box-shadow: 0 6px 16px rgba(16, 185, 129, 0.42), inset 0 1.8px 1.8px #ffffff !important;
 }
-/* 刷Token: 1:1 复刻素材图 row 1 的 "Search projects..." 蓝宝石晶体 */
+/* 刷Token: 1:1 复刻素材 3c96dc7ad762c523c88e687794b9c39a.jpg 的 "Create workspace" 冰海蓝宝琉璃 */
 .octopus-row-btn.btn-refresh {
-  background: linear-gradient(180deg, #60a5fa 0%, #3b82f6 30%, #2563eb 65%, #1d4ed8 100%) !important;
+  background: linear-gradient(180deg, rgba(240, 249, 255, 0.95) 0%, rgba(224, 242, 254, 0.88) 50%, rgba(186, 230, 253, 0.75) 100%) !important;
   border-color: rgba(255, 255, 255, 0.95) !important;
   border-top-color: #ffffff !important;
-  color: #ffffff !important;
-  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.45), inset 0 1.8px 1.8px rgba(255, 255, 255, 0.95), inset 0 -1.8px 2.5px rgba(0, 0, 0, 0.25) !important;
+  border-bottom-color: rgba(186, 230, 253, 0.85) !important;
+  color: #0369a1 !important;
+  box-shadow:
+    0 3px 10px -1px rgba(2, 132, 199, 0.28),
+    0 1px 3px rgba(15, 23, 42, 0.03),
+    inset 0 1.5px 1.5px #ffffff,
+    inset 0 -1.2px 1.8px rgba(2, 132, 199, 0.12) !important;
 }
 .octopus-row-btn.btn-refresh:hover {
-  box-shadow: 0 6px 16px rgba(37, 99, 235, 0.6), inset 0 1.8px 1.8px #ffffff !important;
+  background: linear-gradient(180deg, rgba(240, 249, 255, 1) 0%, rgba(224, 242, 254, 0.95) 100%) !important;
+  box-shadow: 0 6px 16px rgba(2, 132, 199, 0.42), inset 0 1.8px 1.8px #ffffff !important;
 }
-/* 查码: 1:1 复刻素材图 row 1 的 "Create workspace" 暖珊瑚/琥珀晶体 */
+/* 查码: 1:1 复刻素材 3c96dc7ad762c523c88e687794b9c39a.jpg 的 "Search button" 蜜糖香槟琉璃 */
 .octopus-row-btn.btn-mail {
-  background: linear-gradient(180deg, #fb7185 0%, #f97316 35%, #ea580c 70%, #c2410c 100%) !important;
+  background: linear-gradient(180deg, rgba(255, 251, 235, 0.95) 0%, rgba(254, 243, 199, 0.88) 50%, rgba(253, 230, 138, 0.75) 100%) !important;
   border-color: rgba(255, 255, 255, 0.95) !important;
   border-top-color: #ffffff !important;
-  color: #ffffff !important;
-  box-shadow: 0 4px 12px rgba(234, 88, 12, 0.45), inset 0 1.8px 1.8px rgba(255, 255, 255, 0.95), inset 0 -1.8px 2.5px rgba(0, 0, 0, 0.25) !important;
+  border-bottom-color: rgba(253, 230, 138, 0.85) !important;
+  color: #92400e !important;
+  box-shadow:
+    0 3px 10px -1px rgba(245, 158, 11, 0.28),
+    0 1px 3px rgba(15, 23, 42, 0.03),
+    inset 0 1.5px 1.5px #ffffff,
+    inset 0 -1.2px 1.8px rgba(217, 119, 6, 0.12) !important;
 }
 .octopus-row-btn.btn-mail:hover {
-  box-shadow: 0 6px 16px rgba(234, 88, 12, 0.6), inset 0 1.8px 1.8px #ffffff !important;
+  background: linear-gradient(180deg, rgba(255, 251, 235, 1) 0%, rgba(254, 243, 199, 0.95) 100%) !important;
+  box-shadow: 0 6px 16px rgba(245, 158, 11, 0.42), inset 0 1.8px 1.8px #ffffff !important;
 }
 .octopus-row-btn.btn-more {
-  width: 25px;
-  height: 25px;
+  width: 26px;
+  height: 26px;
   padding: 0;
   border-radius: 50%;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(180deg, #ffffff 0%, rgba(241, 245, 249, 0.9) 100%);
-  color: #475569;
-  border: 1.5px solid rgba(255, 255, 255, 0.95);
-  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.06), inset 0 1.2px 1.2px #ffffff;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.95) 0%, rgba(241, 245, 249, 0.85) 100%) !important;
+  color: #64748b !important;
+  border: 1.2px solid rgba(255, 255, 255, 0.95) !important;
+  border-top: 1.8px solid #ffffff !important;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.05), inset 0 1.2px 1.2px #ffffff !important;
 }
 .octopus-row-btn.btn-more:hover {
-  background: #ffffff;
-  color: #0284c7;
-  border-color: #38bdf8;
-  box-shadow: 0 4px 10px rgba(2, 132, 199, 0.25);
+  background: #ffffff !important;
+  color: #0284c7 !important;
+  border-color: #38bdf8 !important;
+  box-shadow: 0 4px 10px rgba(2, 132, 199, 0.22) !important;
 }
 
 /* ──────────── 9. 状态指示小圆点 (果冻水晶微光) ──────────── */
