@@ -573,7 +573,7 @@ def _do_register(
                 "expires_at": meta.get("expires_at", 0.0),
             })
 
-        sms_cb = _build_sms_callback(run_id)
+        sms_cb = _build_sms_callback(run_id, account.get("email") or "")
         flow = AuthFlow(
             cfg,
             sms_callback=sms_cb,
@@ -995,7 +995,7 @@ def _save_password_early(email: str, password: str) -> None:
         log.warning(f"[register] 密码落盘失败，仅剩日志兜底: {e}")
 
 
-def _build_sms_callback(run_id: str) -> Optional[PhoneCallbackController]:
+def _build_sms_callback(run_id: str, email: str = "") -> Optional[PhoneCallbackController]:
     """根据 webui 配置创建 SMS 接码 controller。
 
     未启用接码或未配置 API key 时返回 None，flow 会回退到环境变量路径。
@@ -1026,6 +1026,9 @@ def _build_sms_callback(run_id: str) -> Optional[PhoneCallbackController]:
             pass
 
     try:
+        cfg = dict(cfg)
+        cfg["sms_lease_email"] = (email or "").strip()
+        cfg["sms_lease_source"] = "register"
         return PhoneCallbackController(
             provider_key=kind,
             config=cfg,

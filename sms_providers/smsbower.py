@@ -1028,21 +1028,39 @@ class SmsBowerProvider(BaseSmsProvider):
     # ---- 状态报告 ----
 
     def cancel(self, activation_id: str) -> bool:
+        def _cancel_ok(resp) -> bool:
+            if resp is None:
+                return False
+            text = (resp.text or "").upper()
+            # 已经关掉的号（二次 cancel / 兜底扫到已释放）视为成功，避免空耗 3 次。
+            return (
+                resp.status_code == 204
+                or "ACCESS_CANCEL" in text
+                or "NO_ACTIVATION" in text
+            )
+
+        last_text = ""
         try:
             resp = self._request({"action": "cancelActivation", "id": activation_id})
-            ok = resp.status_code == 204 or "ACCESS_CANCEL" in resp.text
-        except Exception:
+            last_text = getattr(resp, "text", "") or ""
+            ok = _cancel_ok(resp)
+        except Exception as e:
+            last_text = str(e)
             ok = False
         if not ok:
             try:
                 resp = self._request({"action": "setStatus", "id": activation_id, "status": 8})
-                ok = "ACCESS_CANCEL" in resp.text
-            except Exception:
+                last_text = getattr(resp, "text", "") or last_text
+                ok = _cancel_ok(resp)
+            except Exception as e:
+                last_text = str(e) or last_text
                 ok = False
         with _SMS_CACHE_LOCK:
             cache = _SMS_CACHE
             if cache and str(cache.get("activation_id")) == str(activation_id):
                 self._clear_cache()
+        if not ok and "EARLY_CANCEL" in last_text.upper():
+            raise RuntimeError("EARLY_CANCEL_DENIED")
         return ok
 
     def report_success(self, activation_id: str) -> bool:

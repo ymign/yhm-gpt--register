@@ -1056,6 +1056,7 @@ def execute_codex_oauth_flow(
     skip_sms: bool = True,
     timeout: float = 45.0,
     trace: Optional[dict] = None,
+    stop_fn: Optional[Callable[[], bool]] = None,
 ) -> dict:
     """独立且纯净的 Codex OAuth 授权与 Token 获取协议流。
 
@@ -1074,6 +1075,12 @@ def execute_codex_oauth_flow(
     def _step(step_key: str, step_text: str):
         if step_fn:
             step_fn(step_key, step_text)
+
+    def _should_stop() -> bool:
+        try:
+            return bool(stop_fn and stop_fn())
+        except Exception:
+            return False
 
     account_info = account_info or {}
     device_id = str(account_info.get("device_id") or "").strip() or str(uuid.uuid4())
@@ -1606,6 +1613,9 @@ def execute_codex_oauth_flow(
                 "sms_except_provider_ids": except_provider_ids,
                 "sms_per_phone_timeout": str(per_phone_timeout),
                 "sms_max_phone_attempts": str(max_attempts),
+                "sms_idle_cancel_sec": str(sms_cfg.get("sms_idle_cancel_sec") or ""),
+                "sms_lease_email": email,
+                "sms_lease_source": "oauth",
             },
             service="dr",
             country=primary_country,
@@ -1619,6 +1629,9 @@ def execute_codex_oauth_flow(
         tried_phones = 0
         try:
             for attempt in range(1, max_attempts + 1):
+                if _should_stop():
+                    ctrl.mark_send_failed("task_cancelled")
+                    raise RuntimeError("任务已停止，已取消未完成的接码号码")
                 remain_cnt = max_attempts - attempt
                 _step("5_sms_rent", f"[5/6] 租号中 ({attempt}/{max_attempts} 剩{remain_cnt})")
                 _log(f"[sms] 🔁 正在租用手机号 (第 {attempt}/{max_attempts} 个，剩余备选 {remain_cnt} 次)...")
@@ -1678,7 +1691,14 @@ def execute_codex_oauth_flow(
                     )
 
                 _log(f"[5/6] 🌐 [OpenAI REQ] POST /api/accounts/add-phone/send (phone_number={phone}, channel=sms)")
-                send_resp = _send_phone()
+                try:
+                    send_resp = _send_phone()
+                except Exception as e:
+                    last_sms_err = f"add-phone/send 网络异常: {e}"
+                    _log(f"[sms] {last_sms_err}，取消本号")
+                    ctrl.mark_send_failed(last_sms_err)
+                    time.sleep(1)
+                    continue
                 full_resp_text = send_resp.text or ""
                 _log(f"[5/6] 🌐 [OpenAI RESP] HTTP {send_resp.status_code} 完整响应: {full_resp_text[:300]}")
                 err_msg = full_resp_text[:180]
@@ -1737,15 +1757,22 @@ def execute_codex_oauth_flow(
 
                 sms_code = ""
                 try:
-                    sms_code = ctrl.get_code(timeout=per_phone_timeout)
+                    sms_code = ctrl.get_code(
+                        timeout=per_phone_timeout,
+                        stop_check=_should_stop,
+                    )
                 except Exception as e:
                     _log(f"[sms] ⏱️ 等待短信超时或异常: {e}，立即取消并极速换号...")
                     ctrl.mark_send_failed("timeout_no_sms")
                     time.sleep(1)
                     continue
 
+                if _should_stop():
+                    ctrl.mark_send_failed("task_cancelled")
+                    raise RuntimeError("任务已停止，已取消未完成的接码号码")
+
                 if not sms_code:
-                    _log(f"[sms] ⏱️ 未在 {per_phone_timeout}s 内收到短信，已申请更换新号码")
+                    _log(f"[sms] ⏱️ 未在 {per_phone_timeout}s 内收到短信，已申请取消退款")
                     ctrl.mark_send_failed("timeout_no_sms")
                     last_sms_err = "未收到短信"
                     # 当号码已发送且进入 phone_otp_verification 后，OpenAI 锁死在等待当前号验证码状态。
@@ -2138,6 +2165,7 @@ def _run_one_oauth_export(task: OAuthExportTask, email: str) -> None:
                 skip_sms=not sms_enabled,
                 timeout=float(task.config.get("timeout") or 45.0),
                 trace=flow_trace,
+                stop_fn=lambda: task.cancelled,
             )
             break
         except Exception as e:

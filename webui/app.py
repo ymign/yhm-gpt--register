@@ -65,6 +65,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger("webui")
 
+try:
+    from .sms_idle_sweeper import start as _start_sms_idle_sweeper
+    _start_sms_idle_sweeper()
+except Exception as _e:
+    logging.getLogger("webui").warning(f"[startup] 接码超时兜底启动失败: {_e}")
+
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 app = FastAPI(title="GPT Outlook Register WebUI", docs_url=None, redoc_url=None)
@@ -1120,12 +1126,56 @@ class SaveSmsConfigReq(BaseModel):
     sms_auto_max_price: Optional[str] = None
     sms_max_phone_attempts: Optional[str] = None   # 空 = 用 provider 默认；>0 = 自定义
     sms_per_phone_timeout: Optional[str] = None    # 单号等待秒数（默认 80）
+    sms_idle_cancel_sec: Optional[str] = None      # 超时未成功自动取消（默认 300）
 
 
 @app.post("/api/settings/sms")
 def api_save_sms_config(req: SaveSmsConfigReq):
     db.save_sms_config(req.model_dump(exclude_none=True))
     return {"ok": True, "config": db.get_sms_config()}
+
+
+@app.get("/api/sms/idle_sweeper")
+def api_sms_idle_sweeper():
+    from .sms_idle_sweeper import snapshot
+    return {"ok": True, "task": snapshot()}
+
+
+class SmsIdleSweeperReq(BaseModel):
+    idle_sec: Optional[int] = None
+
+
+@app.post("/api/sms/idle_sweeper")
+def api_sms_idle_sweeper_save(req: SmsIdleSweeperReq):
+    """只改超时阈值，不动各平台密钥/国家 profile。"""
+    from .sms_idle_sweeper import snapshot
+    if req.idle_sec is not None:
+        n = max(30, min(3600, int(req.idle_sec)))
+        db.set_setting("sms_idle_cancel_sec", str(n))
+    return {"ok": True, "task": snapshot()}
+
+
+@app.get("/api/sms/activations")
+def api_sms_activations(
+    status: str = "",
+    limit: int = Query(200, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+):
+    return {"ok": True, **db.list_sms_activations(status=status, limit=limit, offset=offset)}
+
+
+class SmsCancelReq(BaseModel):
+    provider: str
+    activation_id: str
+
+
+@app.post("/api/sms/activations/cancel")
+def api_sms_activation_cancel(req: SmsCancelReq):
+    from .sms_idle_sweeper import cancel_one
+    res = cancel_one(req.provider, req.activation_id)
+    if not res.get("ok"):
+        raise HTTPException(400, res.get("error") or "取消失败")
+    return {"ok": True}
 
 
 @app.post("/api/settings/sms/test")

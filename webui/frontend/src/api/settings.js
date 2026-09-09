@@ -36,3 +36,8 @@ export const updateSmsCdk = (id, payload) => http.post(`/api/settings/sms/cdk_po
 export const deleteSmsCdk = (id) => http.delete(`/api/settings/sms/cdk_pool/${id}`)
 export const clearSmsCdkPool = (payload) => http.post('/api/settings/sms/cdk_pool/clear', payload)
 
+export const getSmsIdleSweeper = () => http.get('/api/sms/idle_sweeper')
+export const saveSmsIdleSweeper = (payload) => http.post('/api/sms/idle_sweeper', payload)
+export const listSmsActivations = (params = {}) => http.get('/api/sms/activations', { params })
+export const cancelSmsActivation = (payload) => http.post('/api/sms/activations/cancel', payload)
+

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Callable, Optional
 
 from .base import BaseSmsProvider, SmsActivation, create_sms_provider
@@ -40,6 +41,8 @@ class PhoneCallbackController:
         self.activation: Optional[SmsActivation] = None
         self.completed = False
         self._verify_lock_acquired = False
+        self._open_ids: list[str] = []
+        self._released_ids: set[str] = set()
 
     def _provider(self) -> BaseSmsProvider:
         if self.provider is None:
@@ -48,6 +51,8 @@ class PhoneCallbackController:
 
     def get_phone(self) -> str:
         """阶段 1：租手机号（已带 +）。"""
+        if self.activation and self.activation.activation_id not in self._released_ids and not self.completed:
+            self.mark_send_failed("rent_next_number")
         provider = self._provider()
         is_cdk = bool(getattr(provider, "uses_cdk_pool", False))
 
@@ -81,6 +86,7 @@ class PhoneCallbackController:
                 f"(项目: {meta.get('project_name', 'OpenAI/ChatGPT')}, 地区: {region}, "
                 f"剩余免费换号: {rem_changes}次{expiry_tip})"
             )
+            self._track_activation()
             return phone
 
         if (
@@ -152,10 +158,86 @@ class PhoneCallbackController:
             f"✅ 已租到号码{'(复用)' if reused else ''}: {self.activation.phone_number} "
             f"国家={used_country_label}{cost_tip}{op_tip} (activation_id={self.activation.activation_id})"
         )
+        self._track_activation()
         return self.activation.phone_number
 
-    def get_code(self, timeout: int = 180) -> str:
-        """阶段 2：等待 SMS 验证码。"""
+    def _track_activation(self) -> None:
+        aid = str(getattr(self.activation, "activation_id", "") or "").strip()
+        if aid and aid not in self._open_ids:
+            self._open_ids.append(aid)
+        self._lease_record("open")
+
+    def _idle_and_wait(self) -> tuple[int, int]:
+        try:
+            idle = int(float(self.config.get("sms_idle_cancel_sec") or 0))
+        except Exception:
+            idle = 0
+        if idle <= 0:
+            try:
+                from webui.db import _sms_idle_cancel_sec
+                idle = _sms_idle_cancel_sec()
+            except Exception:
+                idle = 300
+        idle = max(30, min(3600, idle))
+        try:
+            wait = int(float(self.config.get("sms_per_phone_timeout") or 80))
+        except Exception:
+            wait = 80
+        wait = max(15, min(300, wait))
+        return idle, wait
+
+    def _lease_record(self, event: str, error: str = "", wait_sec: int | None = None) -> None:
+        act = self.activation
+        if not act or getattr(self.provider, "uses_cdk_pool", False):
+            return
+        aid = str(act.activation_id or "").strip()
+        if not aid:
+            return
+        kind = str(self.provider_key or "")
+        try:
+            from webui import db
+        except Exception:
+            return
+        try:
+            if event == "open":
+                idle, wait = self._idle_and_wait()
+                now = time.time()
+                meta = act.metadata or {}
+                db.record_sms_activation({
+                    "provider": kind,
+                    "activation_id": aid,
+                    "phone": act.phone_number or "",
+                    "country": act.country or "",
+                    "cost": meta.get("cost"),
+                    "email": str(self.config.get("sms_lease_email") or ""),
+                    "source": str(self.config.get("sms_lease_source") or ""),
+                    "rented_at": now,
+                    "protect_until": now + max(idle, wait + 15),
+                })
+            elif event == "verified":
+                db.close_sms_activation(kind, aid, "verified")
+            elif event == "cancelled":
+                db.close_sms_activation(kind, aid, "cancelled", error=error)
+            elif event == "waiting":
+                _idle, wait = self._idle_and_wait()
+                if wait_sec is not None:
+                    try:
+                        wait = max(15, min(300, int(wait_sec)))
+                    except Exception:
+                        pass
+                db.touch_sms_activation(kind, aid, protect_until=time.time() + wait + 15)
+        except Exception as e:
+            logger.warning("sms lease record %s 失败: %s", event, e)
+
+    def _mark_released(self, aid: str) -> None:
+        aid = str(aid or "").strip()
+        if not aid:
+            return
+        self._released_ids.add(aid)
+        self._open_ids = [x for x in self._open_ids if x != aid]
+
+    def get_code(self, timeout: int = 180, stop_check: Optional[Callable[[], bool]] = None) -> str:
+        """阶段 2：等待 SMS 验证码。未通过业务校验前不算成功，避免收尾跳过退号。"""
         if not self.activation:
             raise RuntimeError("PhoneCallbackController: 未先 get_phone")
         provider = self._provider()
@@ -164,8 +246,14 @@ class PhoneCallbackController:
 
         if not is_cdk:
             self.log(f"⏳ 等待 SMS 验证码... (activation_id={self.activation.activation_id} timeout={timeout}s)")
+        self._lease_record("waiting", wait_sec=timeout)
 
-        code = provider.get_code(self.activation.activation_id, timeout=timeout)
+        try:
+            code = provider.get_code(
+                self.activation.activation_id, timeout=timeout, stop_check=stop_check
+            )
+        except TypeError:
+            code = provider.get_code(self.activation.activation_id, timeout=timeout)
         if code:
             if not is_cdk:
                 self.log(f"✅ 收到 SMS 验证码: {code}")
@@ -191,6 +279,7 @@ class PhoneCallbackController:
                 self.log(f"🎉 CDK [{cdk}] 本轮接码已成功完成并已安全记账！")
             else:
                 self.log(f"🎉 已标记号码成功完成: activation_id={self.activation.activation_id}")
+            self._lease_record("verified")
         self._release_lock()
 
     def mark_code_failed(self, reason: str = "") -> None:
@@ -212,14 +301,26 @@ class PhoneCallbackController:
             is_cdk = bool(getattr(self.provider, "uses_cdk_pool", False))
             aid = self.activation.activation_id
             cdk = (self.activation.metadata or {}).get("cdk") or aid
+            if aid in self._released_ids:
+                return
             if is_cdk:
                 self.log(f"🔄 手机号已被 OpenAI 拒绝 ({reason})，正在为 CDK [{cdk}] 申请更换新号码...")
             try:
                 self.provider.mark_send_failed(aid, reason=reason)
-                self.log(f"🗑️ 已向接码平台申请取消退款: activation_id={aid} reason={reason or '-'}")
-                self._released_id = aid
+            except Exception as e:
+                self.log(f"⚠️ mark_send_failed 异常: activation_id={aid} err={e}")
+            ok = False
+            try:
+                ok = bool(self.provider.cancel(aid))
             except Exception as e:
                 self.log(f"⚠️ 取消退款失败: activation_id={aid} err={e}")
+                ok = False
+            if ok:
+                self.log(f"🗑️ 已向接码平台取消退款: activation_id={aid} reason={reason or '-'}")
+                self._mark_released(aid)
+                self._lease_record("cancelled", error=reason or "")
+            else:
+                self.log(f"⚠️ 取消退款未确认，收尾还会再试: activation_id={aid} reason={reason or '-'}")
 
     def set_resend_callback(self, callback: Optional[Callable[[], None]]) -> None:
         try:
@@ -228,17 +329,34 @@ class PhoneCallbackController:
             pass
 
     def cleanup(self) -> None:
-        if self.activation and not self.completed and self.provider:
-            aid = self.activation.activation_id
-            if getattr(self, "_released_id", None) == aid:
-                self._release_lock()
-                return
+        success_id = ""
+        if self.completed and self.activation:
+            success_id = str(self.activation.activation_id or "")
+        ids = list(self._open_ids)
+        if self.activation and self.activation.activation_id:
+            aid = str(self.activation.activation_id)
+            if aid not in ids:
+                ids.append(aid)
+        for aid in ids:
+            if not aid or aid in self._released_ids or aid == success_id:
+                continue
+            if not self.provider:
+                break
             try:
-                self.provider.cancel(aid)
-                self.log(f"🗑️ 已释放未使用号码: activation_id={aid}")
-                self._released_id = aid
+                ok = bool(self.provider.cancel(aid))
             except Exception as e:
                 self.log(f"⚠️ 释放未使用号码失败: activation_id={aid} err={e}")
+                continue
+            if ok:
+                self.log(f"🗑️ 已释放未使用号码: activation_id={aid}")
+                self._mark_released(aid)
+                try:
+                    from webui.db import close_sms_activation
+                    close_sms_activation(str(self.provider_key or ""), aid, "cancelled")
+                except Exception:
+                    pass
+            else:
+                self.log(f"⚠️ 释放未使用号码未确认: activation_id={aid}")
         self._release_lock()
 
     def _release_lock(self) -> None:

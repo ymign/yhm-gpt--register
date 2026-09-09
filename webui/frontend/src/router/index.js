@@ -88,6 +88,12 @@ const routes = [
     meta: { title: '接码配置', icon: 'Iphone', group: '配置' },
   },
   {
+    path: '/settings/sms-idle',
+    name: 'sms_idle',
+    component: () => import('@/views/SmsIdleCancel.vue'),
+    meta: { title: '超时退号', icon: 'Timer', group: '配置' },
+  },
+  {
     path: '/settings/export',
     name: 'export',
     component: () => import('@/views/ExportConfig.vue'),

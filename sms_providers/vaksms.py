@@ -137,7 +137,7 @@ class VakSmsProvider(BaseSmsProvider):
     recommended_timeout = 80
     max_timeout = 90
     timeout_hint = "推荐 60~85 秒。超过 90 秒容易导致 OpenAI 授权会话过期。"
-    auto_report_success_on_code = True
+    auto_report_success_on_code = False
     config_fields = [
         ConfigField("sms_api_key", "API Key", type="password", required=True,
                     placeholder="vak-sms.com 个人中心的 apiKey",
@@ -213,13 +213,23 @@ class VakSmsProvider(BaseSmsProvider):
                     proxies=self._proxies,
                     headers={"Accept": "application/json"},
                 )
-                data = resp.json() if resp.content else {}
+                try:
+                    data = resp.json() if resp.content else {}
+                except Exception:
+                    data = {}
                 if not isinstance(data, dict):
-                    last_err = RuntimeError(f"Vak-SMS 非 JSON 响应: {resp.text[:180]}")
+                    last_err = RuntimeError(f"Vak-SMS 非 JSON 响应: {(resp.text or '')[:180]}")
                     continue
                 err = str(data.get("error") or "").strip()
                 if err:
                     raise RuntimeError(VAK_ERRORS.get(err, err))
+                # 404 页面是 {statusCode:404,message:...}，没有 error 字段。
+                # 以前当成功返回，取消号码会假成功、号一直挂到超时扣费。
+                if resp.status_code >= 400:
+                    msg = str(data.get("message") or data.get("code") or "").strip()
+                    last_err = RuntimeError(msg or f"HTTP {resp.status_code} {path}")
+                    logger.warning("Vak-SMS %s %s HTTP %s: %s", base, path, resp.status_code, last_err)
+                    continue
                 self._base_url = base
                 return data
             except RuntimeError:
@@ -322,10 +332,19 @@ class VakSmsProvider(BaseSmsProvider):
             f"Vak-SMS 依次尝试 {len(mapped)} 个国家全失败: {last_err}"
         ) from last_err
 
-    def get_code(self, activation_id: str, *, timeout: int = 180) -> str:
+    def get_code(self, activation_id: str, *, timeout: int = 180, stop_check: Optional[Callable[[], bool]] = None) -> str:
         deadline = time.time() + max(15, int(timeout))
         last_sms = ""
+        started = time.time()
+        resend_count = 0
         while time.time() < deadline:
+            if stop_check:
+                try:
+                    if stop_check():
+                        logger.info("Vak-SMS 等待被中止 idNum=%s", activation_id)
+                        return ""
+                except Exception:
+                    pass
             try:
                 data = self._request("/api/getSmsCode/", {"idNum": activation_id})
                 sms = data.get("smsCode")
@@ -339,6 +358,15 @@ class VakSmsProvider(BaseSmsProvider):
                     last_sms = str(sms)
             except Exception as e:
                 logger.debug("Vak-SMS getSmsCode: %s", e)
+            elapsed = int(time.time() - started)
+            expected = min(2, int(elapsed // 20))
+            if expected > resend_count and self._resend_callback:
+                resend_count = expected
+                try:
+                    logger.info("Vak-SMS 等待 %ss 未收码，触发 OpenAI 补发 idNum=%s", elapsed, activation_id)
+                    self._resend_callback()
+                except Exception as e:
+                    logger.debug("Vak-SMS resend_callback: %s", e)
             remaining = deadline - time.time()
             if remaining <= 0:
                 break
@@ -348,26 +376,42 @@ class VakSmsProvider(BaseSmsProvider):
         return ""
 
     def cancel(self, activation_id: str) -> bool:
-        try:
-            data = self._request("/api/setStatus", {"idNum": activation_id, "status": "end"})
-            logger.info("Vak-SMS 取消退款 idNum=%s resp=%s", activation_id, data)
-            return True
-        except Exception as e:
-            logger.warning("Vak-SMS cancel idNum=%s 失败: %s", activation_id, e)
+        aid = str(activation_id or "").strip()
+        if not aid:
             return False
+        last_err = None
+        for attempt in range(3):
+            for path in ("/api/setStatus/", "/api/setStatus"):
+                try:
+                    data = self._request(path, {"idNum": aid, "status": "end"})
+                    logger.info("Vak-SMS 取消退款 idNum=%s path=%s resp=%s", aid, path, data)
+                    return True
+                except Exception as e:
+                    last_err = e
+                    msg = str(e).lower().replace("_", "").replace(" ", "")
+                    if "noactivation" in msg:
+                        logger.info("Vak-SMS 激活已关闭 idNum=%s，视为取消成功", aid)
+                        return True
+            time.sleep(0.6 * (attempt + 1))
+        logger.warning("Vak-SMS cancel idNum=%s 失败: %s", aid, last_err)
+        return False
 
     def report_success(self, activation_id: str) -> bool:
-        # vak-sms 没有单独的「完成」状态；成功后不必 cancel（cancel=end 会退款但号已用）
+        # 已用于 OpenAI 校验成功：不要 end（end=取消退款）。号会在平台侧到期自动结束。
         return True
 
     def mark_send_failed(self, activation_id: str, reason: str = "") -> None:
-        self.cancel(activation_id)
+        ok = self.cancel(activation_id)
+        if not ok:
+            logger.warning("Vak-SMS mark_send_failed 取消未成功 idNum=%s reason=%s", activation_id, reason or "-")
 
     def mark_code_failed(self, activation_id: str, reason: str = "") -> None:
-        try:
-            self._request("/api/setStatus", {"idNum": activation_id, "status": "send"})
-        except Exception:
-            pass
+        for path in ("/api/setStatus/", "/api/setStatus"):
+            try:
+                self._request(path, {"idNum": activation_id, "status": "send"})
+                break
+            except Exception:
+                continue
         if self._resend_callback:
             try:
                 self._resend_callback()

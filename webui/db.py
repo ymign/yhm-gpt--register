@@ -472,6 +472,32 @@ def init_db():
         con.execute("ALTER TABLE remail_recycle_pool ADD COLUMN fail_count INTEGER NOT NULL DEFAULT 0")
         con.commit()
 
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS sms_activations (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            provider        TEXT NOT NULL,
+            activation_id   TEXT NOT NULL,
+            phone           TEXT DEFAULT '',
+            country         TEXT DEFAULT '',
+            cost            TEXT DEFAULT '',
+            email           TEXT DEFAULT '',
+            source          TEXT DEFAULT '',
+            status          TEXT NOT NULL DEFAULT 'open',
+            cancel_tries    INTEGER NOT NULL DEFAULT 0,
+            last_error      TEXT DEFAULT '',
+            rented_at       REAL NOT NULL,
+            protect_until   REAL NOT NULL,
+            last_seen_at    REAL NOT NULL,
+            closed_at       REAL,
+            UNIQUE(provider, activation_id)
+        );
+    """)
+    con.execute(
+        "CREATE INDEX IF NOT EXISTS idx_sms_act_open "
+        "ON sms_activations(status, rented_at, protect_until);"
+    )
+    con.commit()
+
     # 默认开箱即用设置预置（新电脑 clone 后自动就绪，无需手动配置）
     default_kvs = {
         "mail_source": "remail",
@@ -490,6 +516,7 @@ def init_db():
         "sms_max_price": "0.008",
         "sms_max_phone_attempts": "3",
         "sms_per_phone_timeout": "120",
+        "sms_idle_cancel_sec": "300",
         "sms_enabled": "0",
         "sms_api_key": "NnsAKSMAA7IhyTNQXk0J4I2om6bpdb1Q",
         "sms_provider_ids": "3237",
@@ -3381,6 +3408,7 @@ def _compose_sms_config(provider: Optional[str] = None) -> dict:
         "sms_auto_max_price":      pick("sms_auto_max_price", ""),
         "sms_max_phone_attempts":  get_setting("sms_max_phone_attempts", ""),
         "sms_per_phone_timeout":   get_setting("sms_per_phone_timeout", "80"),
+        "sms_idle_cancel_sec":     get_setting("sms_idle_cancel_sec", "300") or "300",
         "sms_cdk_url":             get_setting("sms_cdk_url", "https://ndk.cc.cd"),
     }
 
@@ -3402,7 +3430,7 @@ def save_sms_config(data: dict) -> None:
         "sms_country", "sms_service", "sms_max_price",
         "sms_provider_ids", "sms_except_provider_ids",
         "sms_phone_success_max", "sms_auto_min_stock", "sms_auto_max_price",
-        "sms_max_phone_attempts", "sms_per_phone_timeout",
+        "sms_max_phone_attempts", "sms_per_phone_timeout", "sms_idle_cancel_sec",
         "sms_allowed_countries", "sms_cdk_url",
     ):
         if key in data:
@@ -3419,21 +3447,24 @@ def save_sms_config(data: dict) -> None:
             keys[p] = incoming
             set_setting("sms_api_keys", json.dumps(keys, ensure_ascii=False))
 
-    profiles = _json_dict_setting("sms_provider_profiles")
-    prof = dict(profiles.get(p) or {})
-    for key in _SMS_PROFILE_FIELDS:
-        if key in data:
-            if key in _SMS_BOOL_FIELDS:
-                prof[key] = _bool01(data[key])
-            else:
-                prof[key] = str(data[key]).strip()
-        elif key not in prof:
-            if key == "sms_provider_ids":
-                prof[key] = get_setting(key, get_setting("sms_operator", ""))
-            else:
-                prof[key] = get_setting(key, "")
-    profiles[p] = prof
-    set_setting("sms_provider_profiles", json.dumps(profiles, ensure_ascii=False))
+    # 只改超时秒数这类全局项时不要回写当前平台 profile，
+    # 否则会用全局默认值填进别的平台配置。
+    if any(k in data for k in _SMS_PROFILE_FIELDS):
+        profiles = _json_dict_setting("sms_provider_profiles")
+        prof = dict(profiles.get(p) or {})
+        for key in _SMS_PROFILE_FIELDS:
+            if key in data:
+                if key in _SMS_BOOL_FIELDS:
+                    prof[key] = _bool01(data[key])
+                else:
+                    prof[key] = str(data[key]).strip()
+            elif key not in prof:
+                if key == "sms_provider_ids":
+                    prof[key] = get_setting(key, get_setting("sms_operator", ""))
+                else:
+                    prof[key] = get_setting(key, "")
+        profiles[p] = prof
+        set_setting("sms_provider_profiles", json.dumps(profiles, ensure_ascii=False))
 
 
 # ──────────────────────── Remail 已购未用邮箱智能复用池 ────────────────────────
@@ -3692,7 +3723,199 @@ def get_sms_internal_config(provider: Optional[str] = None) -> dict:
         "sms_auto_max_price":      cfg.get("sms_auto_max_price") or "",
         "sms_max_phone_attempts":  cfg.get("sms_max_phone_attempts") or "",
         "sms_per_phone_timeout":   cfg.get("sms_per_phone_timeout") or "80",
+        "sms_idle_cancel_sec":     cfg.get("sms_idle_cancel_sec") or "300",
         "sms_cdk_url":             cfg.get("sms_cdk_url") or "https://ndk.cc.cd",
+    }
+
+
+def _sms_idle_cancel_sec() -> int:
+    try:
+        n = int(float(get_setting("sms_idle_cancel_sec", "300") or 300))
+    except Exception:
+        n = 300
+    return max(30, min(3600, n))
+
+
+def record_sms_activation(row: dict) -> None:
+    """租号成功立刻落库，供超时兜底取消。"""
+    provider = str(row.get("provider") or "").strip()
+    aid = str(row.get("activation_id") or "").strip()
+    if not provider or not aid:
+        return
+    now = float(row.get("rented_at") or time.time())
+    protect = float(row.get("protect_until") or (now + _sms_idle_cancel_sec()))
+    with _lock:
+        con = _conn()
+        con.execute(
+            "INSERT INTO sms_activations("
+            "provider, activation_id, phone, country, cost, email, source, status, "
+            "cancel_tries, last_error, rented_at, protect_until, last_seen_at, closed_at"
+            ") VALUES(?,?,?,?,?,?,?,'open',0,'',?,?,?,NULL) "
+            "ON CONFLICT(provider, activation_id) DO UPDATE SET "
+            "phone=excluded.phone, country=excluded.country, cost=excluded.cost, "
+            "email=excluded.email, source=excluded.source, status='open', "
+            "cancel_tries=0, last_error='', rented_at=excluded.rented_at, "
+            "protect_until=excluded.protect_until, last_seen_at=excluded.last_seen_at, "
+            "closed_at=NULL",
+            (
+                provider, aid,
+                str(row.get("phone") or ""),
+                str(row.get("country") or ""),
+                str(row.get("cost") if row.get("cost") is not None else ""),
+                str(row.get("email") or ""),
+                str(row.get("source") or ""),
+                now, protect, now,
+            ),
+        )
+        con.commit()
+
+
+def touch_sms_activation(provider: str, activation_id: str, protect_until: float = 0) -> None:
+    provider = str(provider or "").strip()
+    aid = str(activation_id or "").strip()
+    if not provider or not aid:
+        return
+    now = time.time()
+    with _lock:
+        con = _conn()
+        if protect_until and protect_until > 0:
+            con.execute(
+                "UPDATE sms_activations SET last_seen_at=?, protect_until=MAX(protect_until, ?) "
+                "WHERE provider=? AND activation_id=? AND status='open'",
+                (now, float(protect_until), provider, aid),
+            )
+        else:
+            con.execute(
+                "UPDATE sms_activations SET last_seen_at=? "
+                "WHERE provider=? AND activation_id=? AND status='open'",
+                (now, provider, aid),
+            )
+        con.commit()
+
+
+def close_sms_activation(
+    provider: str,
+    activation_id: str,
+    status: str,
+    error: str = "",
+    from_statuses: tuple[str, ...] = ("open",),
+) -> None:
+    provider = str(provider or "").strip()
+    aid = str(activation_id or "").strip()
+    st = str(status or "").strip() or "cancelled"
+    allowed = tuple(str(x).strip() for x in (from_statuses or ("open",)) if str(x).strip())
+    if not provider or not aid or not allowed:
+        return
+    placeholders = ",".join("?" * len(allowed))
+    with _lock:
+        con = _conn()
+        con.execute(
+            "UPDATE sms_activations SET status=?, last_error=?, last_seen_at=?, closed_at=? "
+            f"WHERE provider=? AND activation_id=? AND status IN ({placeholders})",
+            (st, str(error or "")[:240], time.time(), time.time(), provider, aid, *allowed),
+        )
+        con.commit()
+
+
+def get_sms_activation(provider: str, activation_id: str) -> Optional[dict]:
+    provider = str(provider or "").strip()
+    aid = str(activation_id or "").strip()
+    if not provider or not aid:
+        return None
+    con = _conn()
+    row = con.execute(
+        "SELECT provider, activation_id, phone, country, cost, email, source, "
+        "status, cancel_tries, last_error, rented_at, protect_until, last_seen_at, closed_at "
+        "FROM sms_activations WHERE provider=? AND activation_id=?",
+        (provider, aid),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def bump_sms_cancel_try(provider: str, activation_id: str, error: str = "") -> int:
+    provider = str(provider or "").strip()
+    aid = str(activation_id or "").strip()
+    if not provider or not aid:
+        return 0
+    with _lock:
+        con = _conn()
+        con.execute(
+            "UPDATE sms_activations SET cancel_tries=COALESCE(cancel_tries,0)+1, "
+            "last_error=?, last_seen_at=? "
+            "WHERE provider=? AND activation_id=? AND status='open'",
+            (str(error or "")[:240], time.time(), provider, aid),
+        )
+        con.commit()
+        row = con.execute(
+            "SELECT cancel_tries FROM sms_activations WHERE provider=? AND activation_id=?",
+            (provider, aid),
+        ).fetchone()
+        return int(row["cancel_tries"] if row else 0)
+
+
+def list_stale_sms_activations(now: float | None = None, idle_sec: int | None = None) -> list[dict]:
+    """超过 idle_sec 仍 open、且已过保护窗、取消次数 < 3 的号。"""
+    ts = float(now if now is not None else time.time())
+    idle = int(idle_sec if idle_sec is not None else _sms_idle_cancel_sec())
+    con = _conn()
+    cur = con.execute(
+        "SELECT provider, activation_id, phone, country, email, source, "
+        "status, cancel_tries, rented_at, protect_until "
+        "FROM sms_activations "
+        "WHERE status='open' AND cancel_tries < 3 "
+        "AND rented_at <= ? AND protect_until <= ? "
+        "ORDER BY rented_at ASC LIMIT 80",
+        (ts - idle, ts),
+    )
+    return [dict(r) for r in cur.fetchall()]
+
+
+def sms_activation_counts() -> dict:
+    con = _conn()
+    rows = con.execute(
+        "SELECT status, COUNT(*) AS n FROM sms_activations GROUP BY status"
+    ).fetchall()
+    out = {"open": 0, "verified": 0, "cancelled": 0, "cancel_failed": 0, "total": 0}
+    for r in rows:
+        st = str(r["status"] or "")
+        n = int(r["n"] or 0)
+        out["total"] += n
+        if st in out:
+            out[st] = n
+        else:
+            out[st] = n
+    return out
+
+
+def list_sms_activations(status: str = "", limit: int = 200, offset: int = 0) -> dict:
+    st = str(status or "").strip()
+    limit = max(1, min(500, int(limit or 200)))
+    offset = max(0, int(offset or 0))
+    con = _conn()
+    if st:
+        total = con.execute(
+            "SELECT COUNT(*) AS n FROM sms_activations WHERE status=?", (st,)
+        ).fetchone()["n"]
+        cur = con.execute(
+            "SELECT provider, activation_id, phone, country, cost, email, source, "
+            "status, cancel_tries, last_error, rented_at, protect_until, last_seen_at, closed_at "
+            "FROM sms_activations WHERE status=? "
+            "ORDER BY rented_at DESC LIMIT ? OFFSET ?",
+            (st, limit, offset),
+        )
+    else:
+        total = con.execute("SELECT COUNT(*) AS n FROM sms_activations").fetchone()["n"]
+        cur = con.execute(
+            "SELECT provider, activation_id, phone, country, cost, email, source, "
+            "status, cancel_tries, last_error, rented_at, protect_until, last_seen_at, closed_at "
+            "FROM sms_activations "
+            "ORDER BY rented_at DESC LIMIT ? OFFSET ?",
+            (limit, offset),
+        )
+    return {
+        "total": int(total or 0),
+        "items": [dict(r) for r in cur.fetchall()],
+        "counts": sms_activation_counts(),
     }
 
 

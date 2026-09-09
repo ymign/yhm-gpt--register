@@ -1,5 +1,6 @@
 <script setup>
 import { computed, onActivated, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   Setting,
@@ -37,6 +38,8 @@ import {
   clearSmsCdkPool,
 } from '@/api/settings'
 import FooterToolbar from '@/components/FooterToolbar.vue'
+
+const router = useRouter()
 
 const DEFAULT_SMS_PROVIDERS = [
   {
@@ -129,6 +132,7 @@ const autoMaxPrice = ref('')
 const allowed = ref([])
 const maxPhoneAttempts = ref('')
 const perPhoneTimeout = ref('80')
+const idleCancelSec = ref('300')
 
 const allCountries = ref([])
 const countriesLoading = ref(false)
@@ -538,6 +542,7 @@ function applyConfig(config) {
   allowed.value = splitIds(config.sms_allowed_countries).filter((id) => countryFits(id, meta))
   maxPhoneAttempts.value = config.sms_max_phone_attempts || ''
   perPhoneTimeout.value = config.sms_per_phone_timeout || '80'
+  idleCancelSec.value = config.sms_idle_cancel_sec || '300'
 }
 
 async function onCountryChange() {
@@ -600,6 +605,7 @@ async function save(notify = true, { reload = true } = {}) {
       sms_auto_max_price: autoMaxPrice.value.trim(),
       sms_max_phone_attempts: maxPhoneAttempts.value.trim(),
       sms_per_phone_timeout: perPhoneTimeout.value.trim() || '80',
+      sms_idle_cancel_sec: idleCancelSec.value.trim() || '300',
     })
     if (seq !== saveSeq) return false
     if (res?.config) {
@@ -1238,6 +1244,15 @@ load()
                   <el-input v-model="perPhoneTimeout" type="number" placeholder="默认 80 秒" />
                 </el-form-item>
               </el-col>
+              <el-col :xs="24" :sm="12">
+                <el-form-item label="超时未成功自动取消 (秒)">
+                  <el-input v-model="idleCancelSec" type="number" placeholder="默认 300 秒" />
+                  <div class="form-tip">
+                    后台每 20 秒扫描一次。超过此时长仍未校验成功则取消退款，同一号码最多试 3 次。正在等短信的号不会被提前杀掉。
+                    <el-button type="primary" link @click="router.push('/settings/sms-idle')">打开超时退号任务</el-button>
+                  </div>
+                </el-form-item>
+              </el-col>
             </el-row>
           </div>
 
@@ -1874,6 +1889,12 @@ html.dark code {
   border-color: #007aff;
   border-radius: 6px;
   font-weight: 600;
+}
+.form-tip {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--el-text-color-secondary);
 }
 
 /* ──────────────── CDK 号池工作台专属样式 ──────────────── */
