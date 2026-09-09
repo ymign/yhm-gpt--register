@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, reactive, ref, shallowRef, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
@@ -106,6 +106,7 @@ import { useFormStore, proxyText, COUNTRY_OPTIONS, COUNTRY_NAME_MAP, formatCount
 import { useProxyStore } from '@/stores/proxy'
 import { useRuntimeStore } from '@/stores/runtime'
 import StatusDot from '@/components/StatusDot.vue'
+import ElapsedTimer from '@/components/ElapsedTimer.vue'
 import ExtractTaskModal from '@/components/ExtractTaskModal.vue'
 import TokenRefreshStudio from '@/components/TokenRefreshStudio.vue'
 
@@ -1797,8 +1798,9 @@ const oauthTaskId = ref('')
 const oauthEs = ref(null)
 const oauthConfigCollapsed = ref(true)
 const oauthTargetEmails = ref([])
-const oauthItems = ref({})
-const oauthLogs = ref([])
+const oauthItems = shallowRef({})
+const oauthTick = ref(0)
+const oauthTableRef = ref(null)
 const oauthPage = ref(1)
 const oauthPageSize = ref(50)
 const oauthFilter = ref('all')
@@ -1806,7 +1808,24 @@ const oauthSearch = ref('')
 
 let oauthUpdateTimer = null
 let oauthPendingUpdates = Object.create(null)
-let oauthPendingLogs = []
+
+function bumpOAuthTick() {
+  oauthTick.value++
+}
+
+function stripOAuthItemLogs(raw) {
+  if (!raw || typeof raw !== 'object') return {}
+  const slim = Object.create(null)
+  for (const em of Object.keys(raw)) {
+    const it = raw[em] || {}
+    const row = { ...it }
+    delete row.logs
+    row.email = row.email || em
+    if (!row._providerMeta) row._providerMeta = getEmailProviderMeta(row.email)
+    slim[em] = row
+  }
+  return slim
+}
 
 function flushOAuthUpdates() {
   if (oauthUpdateTimer) {
@@ -1816,23 +1835,33 @@ function flushOAuthUpdates() {
   const patches = oauthPendingUpdates
   oauthPendingUpdates = Object.create(null)
   const emails = Object.keys(patches)
-  if (emails.length) {
-    const map = oauthItems.value
-    for (const em of emails) {
-      const up = patches[em]
-      const cur = map[em]
-      if (!cur) map[em] = { email: em, status: 'pending', result: null, elapsed: 0, ...up }
-      else Object.assign(cur, up)
+  if (!emails.length) return
+  const map = oauthItems.value
+  for (const em of emails) {
+    const up = patches[em]
+    const cur = map[em]
+    if (!cur) {
+      map[em] = {
+        email: em,
+        status: 'pending',
+        result: null,
+        elapsed: 0,
+        _providerMeta: getEmailProviderMeta(em),
+        ...up,
+      }
+    } else {
+      Object.assign(cur, up)
     }
   }
-  if (oauthPendingLogs.length) {
-    oauthLogs.value.push(...oauthPendingLogs)
-    if (oauthLogs.value.length > 400) {
-      oauthLogs.value = oauthLogs.value.slice(-400)
-    }
-    oauthPendingLogs = []
-    nextTick(scrollOAuthLog)
-  }
+  oauthItems.value = { ...map }
+  bumpOAuthTick()
+  layoutOAuthTable()
+}
+
+function layoutOAuthTable() {
+  nextTick(() => {
+    oauthTableRef.value?.doLayout?.()
+  })
 }
 
 function scheduleOAuthUpdate() {
@@ -1840,7 +1869,7 @@ function scheduleOAuthUpdate() {
   oauthUpdateTimer = window.setTimeout(() => {
     oauthUpdateTimer = null
     flushOAuthUpdates()
-  }, 50)
+  }, 250)
 }
 
 function resetOAuthListView() {
@@ -2163,8 +2192,6 @@ async function onFeatOutcome(v) {
 }
 
 const oauthActiveTab = ref('network')
-const oauthNowTime = ref(Date.now())
-let oauthLiveTimer = null
 
 // ──────────── 表格自定义列显示配置 (持久化到 localStorage) ────────────
 const DEFAULT_COLUMN_VISIBILITY = {
@@ -2247,25 +2274,6 @@ function handleGlobalKeydown(e) {
   }
 }
 
-function syncOAuthLiveTimer() {
-  const need = oauthVisible.value && oauthRunning.value
-  if (need) {
-    if (!oauthLiveTimer) {
-      oauthNowTime.value = Date.now()
-      oauthLiveTimer = setInterval(() => {
-        if (!oauthLogModalVisible.value) oauthNowTime.value = Date.now()
-      }, 1000)
-    }
-    return
-  }
-  if (oauthLiveTimer) {
-    clearInterval(oauthLiveTimer)
-    oauthLiveTimer = null
-  }
-}
-
-watch([oauthVisible, oauthRunning], syncOAuthLiveTimer)
-
 onMounted(() => {
   load()
   loadDomains()
@@ -2277,24 +2285,10 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
-  if (oauthLiveTimer) clearInterval(oauthLiveTimer)
+  stopOAuthLogPoll()
   flushOAuthUpdates()
   window.removeEventListener('keydown', handleGlobalKeydown)
 })
-
-function getOAuthRowElapsed(row) {
-  if (!row) return '—'
-  if (row.status === 'running') {
-    const st = row.started_at || (Date.now() / 1000)
-    const now = oauthNowTime.value / 1000
-    const sec = Math.max(0, Math.floor(now - st))
-    return `${sec}s`
-  }
-  if (row.elapsed !== undefined && row.elapsed !== null && row.elapsed > 0) {
-    return `${row.elapsed}s`
-  }
-  return '—'
-}
 
 function saveOAuthFormDefault() {
   try {
@@ -2459,8 +2453,15 @@ const oauthLogModalVisible = ref(false)
 const currentOAuthLogItem = ref(null)
 const oauthLogLines = ref([])
 const oauthLogLoading = ref(false)
+const oauthLogView = computed(() =>
+  oauthLogLines.value.map((line, idx) => {
+    const p = formatTerminalLine(line)
+    return { idx, cls: getLogClass(line), time: p.time, text: p.text }
+  }),
+)
 
 const oauthStats = computed(() => {
+  const _tick = oauthTick.value
   const map = oauthItems.value
   const tot = oauthTargetEmails.value.length || Object.keys(map).length
   let done = 0
@@ -2495,6 +2496,7 @@ const oauthStats = computed(() => {
 })
 
 const oauthFilteredRows = computed(() => {
+  const _tick = oauthTick.value
   const map = oauthItems.value
   const kw = oauthSearch.value.trim().toLowerCase()
   const f = oauthFilter.value
@@ -2527,8 +2529,11 @@ watch(
   ([len, size]) => {
     const maxPage = Math.max(1, Math.ceil((len || 0) / (size || 50)))
     if (oauthPage.value > maxPage) oauthPage.value = maxPage
+    layoutOAuthTable()
   },
 )
+
+watch(oauthConfigCollapsed, () => layoutOAuthTable())
 
 const oauthBatchHint = computed(() => {
   const n = oauthStats.value.total
@@ -2539,10 +2544,12 @@ const oauthBatchHint = computed(() => {
 function setOAuthFilter(f) {
   oauthFilter.value = f
   oauthPage.value = 1
+  layoutOAuthTable()
 }
 
 // 失败或未成功的账号邮箱列表 (用于批量重新授权)
 const failedOAuthEmails = computed(() => {
+  const _tick = oauthTick.value
   const map = oauthItems.value
   const out = []
   for (const em in map) {
@@ -2586,7 +2593,6 @@ async function openOAuthExport(target = 'selected') {
 
   if (!oauthRunning.value) {
     oauthTaskId.value = ''
-    oauthLogs.value = []
     oauthConfigCollapsed.value = true
     resetOAuthListView()
     const initMap = {}
@@ -2594,6 +2600,7 @@ async function openOAuthExport(target = 'selected') {
     for (const em of emails) {
       const r = rowMap.get(em)
       const hasOauth = r && (r.oauth_status === 'success' || (r.refresh_token && r.refresh_token.length > 10))
+      const meta = getEmailProviderMeta(em)
       if (hasOauth) {
         initMap[em] = {
           email: em,
@@ -2601,12 +2608,14 @@ async function openOAuthExport(target = 'selected') {
           step_text: '已拥有 OAuth 凭证',
           result: { status: 'success', label: '已授权' },
           elapsed: 0,
+          _providerMeta: meta,
         }
       } else {
-        initMap[em] = { email: em, status: 'pending', result: null, elapsed: 0 }
+        initMap[em] = { email: em, status: 'pending', result: null, elapsed: 0, _providerMeta: meta }
       }
     }
     oauthItems.value = initMap
+    bumpOAuthTick()
   }
 
   oauthVisible.value = true
@@ -2684,16 +2693,16 @@ async function startOAuthExportTask() {
 
   flushOAuthUpdates()
   oauthRunning.value = true
-  oauthLogs.value = []
   oauthConfigCollapsed.value = true
   oauthPage.value = 1
   oauthSearch.value = ''
 
   const initMap = {}
   for (const em of emails) {
-    initMap[em] = { email: em, status: 'pending', result: null, elapsed: 0 }
+    initMap[em] = { email: em, status: 'pending', result: null, elapsed: 0, _providerMeta: getEmailProviderMeta(em) }
   }
   oauthItems.value = initMap
+  bumpOAuthTick()
 
   let proxiesParam = ''
   let proxyParam = ''
@@ -2750,7 +2759,10 @@ function connectOAuthStream(taskId) {
     init: (ev) => {
       try {
         const snap = JSON.parse(ev.data)
-        if (snap.items) oauthItems.value = snap.items
+        if (snap.items) {
+          oauthItems.value = stripOAuthItemLogs(snap.items)
+          bumpOAuthTick()
+        }
       } catch (_) {}
     },
     progress: (ev) => {
@@ -2772,28 +2784,10 @@ function connectOAuthStream(taskId) {
         scheduleOAuthUpdate()
       } catch (_) {}
     },
-    log: (ev) => {
-      try {
-        const msg = JSON.parse(ev.data)
-        if (msg.line) {
-          oauthPendingLogs.push(msg.line)
-          scheduleOAuthUpdate()
-          if (oauthLogModalVisible.value && currentOAuthLogItem.value) {
-            const targetEmail = currentOAuthLogItem.value.email
-            if (msg.email ? msg.email === targetEmail : String(msg.line || '').includes(targetEmail)) {
-              oauthLogLines.value.push(msg.line)
-              if (oauthLogLines.value.length > 400) {
-                oauthLogLines.value = oauthLogLines.value.slice(-400)
-              }
-              scrollOAuthModalLog()
-            }
-          }
-        }
-      } catch (_) {}
-    },
     end: () => {
       flushOAuthUpdates()
       oauthRunning.value = false
+      stopOAuthLogPoll()
       if (oauthEs.value) {
         oauthEs.value.close()
         oauthEs.value = null
@@ -2876,6 +2870,7 @@ async function retryOAuthExportRunner(targetEmails = null) {
       }
     }
     oauthItems.value = copy
+    bumpOAuthTick()
     oauthPage.value = 1
 
     oauthRunning.value = true
@@ -2889,6 +2884,8 @@ async function retryOAuthExportRunner(targetEmails = null) {
 
 const oauthModalLogBoxRef = ref(null)
 let oauthModalScrollRaf = 0
+let oauthLogPollTimer = 0
+
 function scrollOAuthModalLog() {
   if (oauthModalScrollRaf) return
   oauthModalScrollRaf = requestAnimationFrame(() => {
@@ -2899,17 +2896,17 @@ function scrollOAuthModalLog() {
   })
 }
 
-function scrollOAuthLog() {
-  const box = document.getElementById('oauth-log-box')
-  if (box) box.scrollTop = box.scrollHeight
+function stopOAuthLogPoll() {
+  if (oauthLogPollTimer) {
+    clearInterval(oauthLogPollTimer)
+    oauthLogPollTimer = 0
+  }
 }
 
-async function openOAuthItemLog(row) {
-  currentOAuthLogItem.value = row
-  oauthLogLines.value = []
-  oauthLogModalVisible.value = true
-  oauthLogLoading.value = true
-
+async function refreshOAuthItemLog(silent = false) {
+  const row = currentOAuthLogItem.value
+  if (!row) return
+  if (!silent) oauthLogLoading.value = true
   try {
     if (oauthTaskId.value) {
       const res = await getOAuthExportLog(oauthTaskId.value, row.email)
@@ -2917,11 +2914,31 @@ async function openOAuthItemLog(row) {
     } else {
       oauthLogLines.value = row.logs || ['暂无日志']
     }
+    scrollOAuthModalLog()
   } catch (e) {
-    oauthLogLines.value = ['读取日志失败: ' + (e.response?.data?.detail || e.message)]
+    if (!silent) oauthLogLines.value = ['读取日志失败: ' + (e.response?.data?.detail || e.message)]
   } finally {
-    oauthLogLoading.value = false
+    if (!silent) oauthLogLoading.value = false
   }
+}
+
+function startOAuthLogPoll() {
+  stopOAuthLogPoll()
+  if (!oauthLogModalVisible.value || !oauthRunning.value || !oauthTaskId.value) return
+  oauthLogPollTimer = window.setInterval(() => refreshOAuthItemLog(true), 1000)
+}
+
+watch([oauthLogModalVisible, oauthRunning], () => {
+  if (oauthLogModalVisible.value && oauthRunning.value) startOAuthLogPoll()
+  else stopOAuthLogPoll()
+})
+
+async function openOAuthItemLog(row) {
+  currentOAuthLogItem.value = row
+  oauthLogLines.value = []
+  oauthLogModalVisible.value = true
+  await refreshOAuthItemLog(false)
+  startOAuthLogPoll()
 }
 
 async function downloadCpaJson() {
@@ -5129,6 +5146,7 @@ function cleanupResources() {
     oauthEs.value.close()
     oauthEs.value = null
   }
+  stopOAuthLogPoll()
   if (securityEs.value) {
     securityEs.value.close()
     securityEs.value = null
@@ -5763,7 +5781,10 @@ onUnmounted(() => {
           </div>
 
           <!-- 核心数据网格 (Table) -->
-          <div class="table-scroll-wrap">
+          <div
+            class="table-scroll-wrap"
+            v-memo="[rows, loading, selected, focusedRow, tableDensity, page, pageSize, columnVisibility.security, columnVisibility.tokens, columnVisibility.atExp, columnVisibility.status, columnVisibility.export, columnVisibility.time]"
+          >
             <el-skeleton v-if="loading && !rows.length" :rows="8" animated style="padding: 16px" />
             <el-table
               v-else
@@ -7066,7 +7087,9 @@ onUnmounted(() => {
     <el-dialog
       v-model="oauthVisible" width="900px" top="3vh"
       class="oa-custom-dialog plus-dialog oauth-dialog oauth-modern-modal"
-      :close-on-click-modal="false" @closed="closeOAuthExport"
+      append-to-body
+      :lock-scroll="false"
+      :close-on-click-modal="false" @opened="layoutOAuthTable" @closed="closeOAuthExport"
     >
       <template #header>
         <div class="oa-header">
@@ -7451,20 +7474,16 @@ onUnmounted(() => {
             title="查看全部账号"
             @click="setOAuthFilter('all')"
           >
-            <div class="card-glass-specular"></div>
-            <div class="liquid-caustic-flare"></div>
             <span class="kpi-label">已处理 / 总数</span>
             <span class="kpi-num">{{ oauthStats.done }} / {{ oauthStats.total }}</span>
           </div>
           <div
-            class="plus-kpi-card oa-kpi-card hit-active clickable-card"
+            class="plus-kpi-card oa-kpi-card clickable-card"
             :class="{ 'is-filter-active': oauthFilter === 'success' }"
             title="只看授权成功"
             @click="setOAuthFilter('success')"
           >
-            <div class="card-glass-specular"></div>
-            <div class="liquid-caustic-flare"></div>
-            <span class="kpi-label">✅ OAuth 成功</span>
+            <span class="kpi-label">OAuth 成功</span>
             <span class="kpi-num text-success">{{ oauthStats.success }}</span>
           </div>
           <div
@@ -7473,9 +7492,7 @@ onUnmounted(() => {
             title="只看需接码"
             @click="setOAuthFilter('phone')"
           >
-            <div class="card-glass-specular"></div>
-            <div class="liquid-caustic-flare"></div>
-            <span class="kpi-label">📱 需手机接码</span>
+            <span class="kpi-label">需手机接码</span>
             <span class="kpi-num text-warning">{{ oauthStats.need_phone }}</span>
           </div>
           <div
@@ -7484,8 +7501,6 @@ onUnmounted(() => {
             :title="failedOAuthEmails.length > 0 ? `点击筛选失败账号，可再点「批量重新授权」` : '只看失败'"
             @click="setOAuthFilter('fail')"
           >
-            <div class="card-glass-specular"></div>
-            <div class="liquid-caustic-flare"></div>
             <div style="display: flex; justify-content: space-between; align-items: center">
               <span class="kpi-label">❌ 失败 / 异常</span>
               <span
@@ -7538,17 +7553,18 @@ onUnmounted(() => {
 
         <div class="plus-table-wrap oauth-table-wrap">
           <el-table
+            ref="oauthTableRef"
             :data="oauthDisplayRows"
             row-key="email"
             size="small"
             stripe
-            :height="oauthConfigCollapsed ? '340px' : '220px'"
+            :max-height="oauthConfigCollapsed ? 380 : 240"
             class="plus-table"
             :highlight-current-row="false"
           >
             <el-table-column prop="email" label="账号" min-width="200" show-overflow-tooltip>
               <template #default="{ row }">
-                <div class="oa-email-line" title="点击复制邮箱" @click="copyText(row.email)">
+                <div class="oa-email-line" title="点击复制邮箱" @click.stop="copyText(row.email, '已复制')">
                   <span class="provider-avatar-badge" :style="{ background: (row._providerMeta || getEmailProviderMeta(row.email)).bg, color: (row._providerMeta || getEmailProviderMeta(row.email)).color }">
                     {{ (row._providerMeta || getEmailProviderMeta(row.email)).icon }}
                   </span>
@@ -7590,9 +7606,7 @@ onUnmounted(() => {
 
             <el-table-column label="耗时" width="85" align="right">
               <template #default="{ row }">
-                <span class="mono hint" :style="{ color: row.status === 'running' ? 'var(--el-color-primary)' : '' }">
-                  {{ getOAuthRowElapsed(row) }}
-                </span>
+                <ElapsedTimer :status="row.status" :started-at="row.started_at" :elapsed="row.elapsed" />
               </template>
             </el-table-column>
 
@@ -7851,13 +7865,13 @@ onUnmounted(() => {
       <div class="modal-terminal-wrap">
         <div ref="oauthModalLogBoxRef" class="modal-terminal-body">
           <div
-            v-for="(line, idx) in oauthLogLines"
-            :key="idx"
+            v-for="row in oauthLogView"
+            :key="row.idx"
             class="terminal-line"
-            :class="getLogClass(line)"
+            :class="row.cls"
           >
-            <span v-if="formatTerminalLine(line).time" class="terminal-time mono">{{ formatTerminalLine(line).time }}</span>
-            <span class="terminal-text">{{ formatTerminalLine(line).text }}</span>
+            <span v-if="row.time" class="terminal-time mono">{{ row.time }}</span>
+            <span class="terminal-text">{{ row.text }}</span>
           </div>
           <div v-if="!oauthLogLines.length" class="terminal-empty">
             {{ oauthLogLoading ? '正在加载日志...' : '暂无详细日志' }}
@@ -13019,28 +13033,23 @@ onUnmounted(() => {
 }
 .oa-kpi-card {
   position: relative !important;
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.88) 0%, rgba(255, 255, 255, 0.58) 50%, rgba(248, 250, 252, 0.75) 100%) !important;
-  backdrop-filter: blur(24px) saturate(200%) !important;
-  -webkit-backdrop-filter: blur(24px) saturate(200%) !important;
-  border: 1.5px solid rgba(255, 255, 255, 0.95) !important;
-  border-top: 2px solid #ffffff !important;
-  border-radius: 14px !important;
+  background: #ffffff !important;
+  border: 1px solid #e5e7eb !important;
+  border-radius: 12px !important;
   padding: 8px 14px !important;
   display: flex !important;
   flex-direction: column !important;
   justify-content: center !important;
   height: 64px !important;
   box-sizing: border-box !important;
-  transition: all 0.22s cubic-bezier(0.16, 1, 0.3, 1) !important;
   cursor: pointer !important;
-  box-shadow: 0 8px 22px -4px rgba(15, 23, 42, 0.06), inset 0 1.5px 1.5px #ffffff, inset 0 -1.5px 2px rgba(148, 163, 184, 0.15) !important;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04) !important;
   overflow: hidden !important;
 }
 .oa-kpi-card:hover {
-  border-color: rgba(56, 189, 248, 0.6) !important;
-  transform: translateY(-2.5px) scale(1.015);
-  box-shadow: 0 16px 36px -4px rgba(2, 132, 199, 0.22), inset 0 1.5px 1.5px #ffffff !important;
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.95) 0%, rgba(255, 255, 255, 0.75) 100%) !important;
+  border-color: #38bdf8 !important;
+  box-shadow: 0 0 0 1px rgba(56, 189, 248, 0.25) !important;
+  background: #ffffff !important;
 }
 .oa-kpi-card.is-filter-active {
   border-color: #38bdf8 !important;
@@ -13140,29 +13149,36 @@ onUnmounted(() => {
 .oauth-table-wrap {
   border-radius: 14px;
   overflow: hidden;
-  border: 1.5px solid rgba(255, 255, 255, 0.95);
-  background: rgba(255, 255, 255, 0.5);
+  border: 1px solid var(--app-border, #e5e7eb);
+  background: #ffffff;
   box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.04);
 }
 .oauth-table-wrap :deep(.el-table) {
-  background: transparent !important;
+  background: #ffffff !important;
+}
+.oauth-table-wrap :deep(.el-table__inner-wrapper),
+.oauth-table-wrap :deep(.el-table__body-wrapper),
+.oauth-table-wrap :deep(.el-table__header-wrapper) {
+  background: #ffffff !important;
 }
 .oauth-table-wrap :deep(.el-table__header th.el-table__cell) {
-  background: rgba(255, 255, 255, 0.8) !important;
-  backdrop-filter: blur(16px);
+  background: #f8fafc !important;
   color: var(--text-main) !important;
   font-size: 11.5px !important;
   font-weight: 800 !important;
   padding: 8px !important;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.85) !important;
+  border-bottom: 1px solid #e5e7eb !important;
 }
 .oauth-table-wrap :deep(.el-table__row td.el-table__cell) {
   padding: 6px 8px !important;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.5) !important;
-  background: rgba(255, 255, 255, 0.3) !important;
+  border-bottom: 1px solid #f1f5f9 !important;
+  background: #ffffff !important;
+}
+.oauth-table-wrap :deep(.el-table--striped .el-table__body tr.el-table__row--striped td.el-table__cell) {
+  background: #f8fafc !important;
 }
 .oauth-table-wrap :deep(.el-table__row:hover > td.el-table__cell) {
-  background: rgba(255, 255, 255, 0.75) !important;
+  background: #eff6ff !important;
 }
 
 .oa-email-line {

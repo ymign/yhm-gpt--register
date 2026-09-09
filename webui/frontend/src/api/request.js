@@ -61,7 +61,7 @@ export function createSSE(path, handlers = {}, onError) {
 }
 
 /** 复制文本到剪贴板（带降级） */
-export async function copyText(text) {
+export async function copyText(text, msg = '已复制') {
   try {
     if (navigator.clipboard?.writeText) {
       await navigator.clipboard.writeText(text)
@@ -74,7 +74,9 @@ export async function copyText(text) {
       document.execCommand('copy')
       document.body.removeChild(ta)
     }
-    ElMessage.success('已复制到剪贴板')
+    if (msg !== false && msg !== '') {
+      ElMessage({ message: String(msg), type: 'success', duration: 900, offset: 16 })
+    }
     return true
   } catch (e) {
     ElMessage.error('复制失败: ' + e.message)

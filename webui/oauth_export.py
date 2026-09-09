@@ -768,10 +768,8 @@ class OAuthExportTask:
                 self.items[email]["logs"].append(formatted)
                 if len(self.items[email]["logs"]) > 200:
                     self.items[email]["logs"] = self.items[email]["logs"][-200:]
-        try:
-            self.queue.put({"kind": "log", "email": email, "line": f"{formatted} [{email}]"})
-        except Exception:
-            pass
+        # 日志只落在账号条目里，不进 SSE。50 路并发把每行推到前端会把授权弹窗打卡。
+        # 界面进度靠 progress/step_text；点「日志」再按需拉取。
 
     def set_running(self, email: str, step_text: str = "[1/6] 建立会话") -> None:
         now = time.time()
@@ -2459,6 +2457,10 @@ def snapshot(task_id: str) -> Optional[dict]:
         if not task:
             return None
         with task._lock:
+            slim_items = {}
+            for k, v in task.items.items():
+                row = {kk: vv for kk, vv in v.items() if kk != "logs"}
+                slim_items[k] = row
             return {
                 "task_id": task.task_id,
                 "started_at": task.started_at,
@@ -2467,7 +2469,7 @@ def snapshot(task_id: str) -> Optional[dict]:
                 "done_count": task.done_count,
                 "total": len(task.items),
                 "stats": dict(task.stats),
-                "items": {k: dict(v) for k, v in task.items.items()},
+                "items": slim_items,
             }
 
 
@@ -2483,7 +2485,14 @@ def get_logs(task_id: str, email: str) -> list[str]:
         if not task:
             return []
         with task._lock:
-            it = task.items.get(email.lower().strip())
+            key = (email or "").strip()
+            it = task.items.get(key) or task.items.get(key.lower())
+            if it is None:
+                want = key.lower()
+                for k, v in task.items.items():
+                    if str(k).lower() == want:
+                        it = v
+                        break
             return list(it["logs"]) if it else []
 
 
