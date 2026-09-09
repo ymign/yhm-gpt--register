@@ -1090,11 +1090,11 @@ load()
                   v-for="t in priceTiers"
                   :key="t.id || t.price_str"
                   class="tier-pill-card"
-                  :class="{ 'is-selected': providerIds === t.id || maxPrice === t.price_str }"
-                  @click="() => { maxPrice = t.price_str; if (currentProvider?.uses_provider_ids && t.id) providerIds = t.id }"
+                  :class="{ 'is-selected': providerIds === t.id || maxPrice === t.price_str || maxPrice === t.price_key }"
+                  @click="() => { maxPrice = t.price_key || t.price_str; if (currentProvider?.uses_provider_ids && t.id) providerIds = t.id }"
                 >
                   <span class="tier-pill-name">{{ t.label }}</span>
-                  <el-icon v-if="providerIds === t.id || maxPrice === t.price_str" class="tier-check-icon">
+                  <el-icon v-if="providerIds === t.id || maxPrice === t.price_str || maxPrice === t.price_key" class="tier-check-icon">
                     <CircleCheckFilled />
                   </el-icon>
                 </div>

@@ -941,7 +941,7 @@ async function startPlusCheckTask() {
             nextTick(scrollPlusLog)
             if (plusLogModalVisible.value && currentPlusLogItem.value) {
               const targetEmail = currentPlusLogItem.value.email
-              if (!msg.email || msg.email === targetEmail || msg.line.includes(targetEmail)) {
+              if (msg.email ? msg.email === targetEmail : String(msg.line || '').includes(targetEmail)) {
                 plusLogLines.value.push(msg.line)
                 scrollPlusModalLog()
               }
@@ -1347,7 +1347,7 @@ async function startHealthCheckTask() {
             scheduleHealthUpdate()
             if (healthLogModalVisible.value && currentHealthLogItem.value) {
               const targetEmail = currentHealthLogItem.value.email
-              if (!msg.email || msg.email === targetEmail || msg.line.includes(targetEmail)) {
+              if (msg.email ? msg.email === targetEmail : String(msg.line || '').includes(targetEmail)) {
                 healthLogLines.value.push(msg.line)
                 scrollHealthModalLog()
               }
@@ -1731,7 +1731,7 @@ async function startOA() {
             nextTick(scrollOaLog)
             if (oaLogModalVisible.value && currentOaLogItem.value) {
               const targetEmail = currentOaLogItem.value.email
-              if (!msg.email || msg.email === targetEmail || msg.line.includes(targetEmail)) {
+              if (msg.email ? msg.email === targetEmail : String(msg.line || '').includes(targetEmail)) {
                 oaLogLines.value.push(msg.line)
                 scrollOaModalLog()
               }
@@ -1804,14 +1804,13 @@ function flushOAuthUpdates() {
   oauthPendingUpdates = Object.create(null)
   const emails = Object.keys(patches)
   if (emails.length) {
-    const copy = { ...oauthItems.value }
+    const map = oauthItems.value
     for (const em of emails) {
       const up = patches[em]
-      const cur = copy[em]
-      if (!cur) copy[em] = { email: em, status: 'pending', result: null, elapsed: 0, ...up }
+      const cur = map[em]
+      if (!cur) map[em] = { email: em, status: 'pending', result: null, elapsed: 0, ...up }
       else Object.assign(cur, up)
     }
-    oauthItems.value = copy
   }
   if (oauthPendingLogs.length) {
     oauthLogs.value.push(...oauthPendingLogs)
@@ -2241,7 +2240,7 @@ function syncOAuthLiveTimer() {
     if (!oauthLiveTimer) {
       oauthNowTime.value = Date.now()
       oauthLiveTimer = setInterval(() => {
-        oauthNowTime.value = Date.now()
+        if (!oauthLogModalVisible.value) oauthNowTime.value = Date.now()
       }, 1000)
     }
     return
@@ -2768,8 +2767,11 @@ function connectOAuthStream(taskId) {
           scheduleOAuthUpdate()
           if (oauthLogModalVisible.value && currentOAuthLogItem.value) {
             const targetEmail = currentOAuthLogItem.value.email
-            if (!msg.email || msg.email === targetEmail || msg.line.includes(targetEmail)) {
+            if (msg.email ? msg.email === targetEmail : String(msg.line || '').includes(targetEmail)) {
               oauthLogLines.value.push(msg.line)
+              if (oauthLogLines.value.length > 400) {
+                oauthLogLines.value = oauthLogLines.value.slice(-400)
+              }
               scrollOAuthModalLog()
             }
           }
@@ -2873,8 +2875,11 @@ async function retryOAuthExportRunner(targetEmails = null) {
 }
 
 const oauthModalLogBoxRef = ref(null)
+let oauthModalScrollRaf = 0
 function scrollOAuthModalLog() {
-  nextTick(() => {
+  if (oauthModalScrollRaf) return
+  oauthModalScrollRaf = requestAnimationFrame(() => {
+    oauthModalScrollRaf = 0
     if (oauthModalLogBoxRef.value) {
       oauthModalLogBoxRef.value.scrollTop = oauthModalLogBoxRef.value.scrollHeight
     }
@@ -4671,7 +4676,7 @@ async function startSecurityTaskRunner() {
             scheduleSecurityUpdate()
             if (securityLogModalVisible.value && currentSecurityLogItem.value) {
               const targetEmail = currentSecurityLogItem.value.email
-              if (!msg.email || msg.email === targetEmail || msg.line.includes(targetEmail)) {
+              if (msg.email ? msg.email === targetEmail : String(msg.line || '').includes(targetEmail)) {
                 securityLogLines.value.push(msg.line)
                 scrollSecurityModalLog()
               }
@@ -7313,11 +7318,11 @@ onUnmounted(() => {
                               v-for="t in oauthPriceTiers"
                               :key="t.id || t.price_str"
                               class="oa-tier-pill"
-                              :class="{ 'is-active': oauthForm.smsProviderIds === t.id || oauthForm.smsMaxPrice === t.price_str }"
-                              @click="() => { oauthForm.smsMaxPrice = t.price_str; if (oauthSmsMeta?.uses_provider_ids && t.id) oauthForm.smsProviderIds = t.id }"
+                              :class="{ 'is-active': oauthForm.smsProviderIds === t.id || oauthForm.smsMaxPrice === t.price_str || oauthForm.smsMaxPrice === t.price_key }"
+                              @click="() => { oauthForm.smsMaxPrice = t.price_key || t.price_str; if (oauthSmsMeta?.uses_provider_ids && t.id) oauthForm.smsProviderIds = t.id }"
                             >
                               <span>{{ t.label }}</span>
-                              <el-icon v-if="oauthForm.smsProviderIds === t.id || oauthForm.smsMaxPrice === t.price_str" class="oa-check-icon">
+                              <el-icon v-if="oauthForm.smsProviderIds === t.id || oauthForm.smsMaxPrice === t.price_str || oauthForm.smsMaxPrice === t.price_key" class="oa-check-icon">
                                 <CircleCheckFilled />
                               </el-icon>
                             </div>
@@ -7809,6 +7814,7 @@ onUnmounted(() => {
       width="780px"
       top="8vh"
       class="macos-terminal-dialog"
+      append-to-body
       :close-on-click-modal="false"
     >
       <template #header>

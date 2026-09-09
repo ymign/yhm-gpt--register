@@ -1434,6 +1434,10 @@ class AuthFlow:
             except Exception as e:
                 last_err = e
                 logger.warning("[sms] 第 %d 个号租号失败: %s", phone_attempt, e)
+                err_s = str(e)
+                if any(x in err_s for x in ("无货", "无号", "暂无号码")) or "nonumber" in err_s.lower():
+                    logger.warning("[sms] 当前国家/档位没有号码，停止换号空转")
+                    break
                 continue
             if not phone:
                 last_err = RuntimeError("SMS 接码 controller 未返回手机号")

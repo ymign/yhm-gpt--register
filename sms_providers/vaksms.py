@@ -115,6 +115,51 @@ def _extract_otp6(text: str) -> str:
     return m.group(1) if m else ""
 
 
+def _fmt_vak_price(p: float) -> str:
+    """官网 priceMap 的 key 是四位小数，如 0.0214 / 0.0200。"""
+    return f"{float(p):.4f}"
+
+
+def _iter_live_prices(price_map: dict) -> list[tuple[float, int, str]]:
+    live = []
+    for raw_k, raw_c in (price_map or {}).items():
+        try:
+            p = float(raw_k)
+            c = int(raw_c or 0)
+        except (TypeError, ValueError):
+            continue
+        if p > 0 and c > 0:
+            live.append((p, c, str(raw_k)))
+    live.sort(key=lambda x: x[0])
+    return live
+
+
+def _resolve_vak_max_price(price_map: dict, cap: float, lock_exact: bool) -> tuple[str | None, str]:
+    """把界面金额对到官网正在卖的 priceMap key。
+
+    点选锁定时：优先原样 key / 极近档（0.0215 vs 0.0214），否则用不超过目标价的最高在售档。
+    只填上限时：仍发四位小数字符串，不锁死。
+    """
+    live = _iter_live_prices(price_map)
+    if cap <= 0:
+        return None, ""
+    want = _fmt_vak_price(cap)
+    if not live:
+        return (None, "该国暂无在售 openai.com 档位") if lock_exact else (want, "")
+    for p, _c, k in live:
+        if k == want or k == str(cap).strip() or abs(p - cap) <= 0.00015:
+            return k, ""
+    if not lock_exact:
+        return want, ""
+    below = [x for x in live if x[0] <= cap + 1e-9]
+    if below:
+        p, c, k = below[-1]
+        if cap - p <= 0.002:
+            return k, f"锁定档 {want} 当前无货，改用在售 {k}（余{c}）"
+    shown = "、".join(f"{k}×{c}" for _p, c, k in live[:8])
+    return None, f"锁定档 {want} 无货。当前在售: {shown}"
+
+
 @register
 class VakSmsProvider(BaseSmsProvider):
     kind = "vaksms"
@@ -281,12 +326,26 @@ class VakSmsProvider(BaseSmsProvider):
             }
             if self.operator and not str(self.operator).replace(".", "", 1).isdigit():
                 params["operator"] = self.operator.split(",")[0].strip()
-            # 官方 v1：maxPrice=float 上限；fixedPrice=boolean 锁死该价（点选档位）。
+            # 官方 v1：maxPrice 必须和 priceMap 的 key 一致（四位小数）；fixedPrice=true 锁死该档。
             cap = self.max_price if self.max_price and self.max_price > 0 else -1
+            offer = {}
+            try:
+                offer = self._offer_blob(iso, service_code)
+            except Exception as e:
+                logger.debug("Vak-SMS 拉报价失败 country=%s: %s", iso, e)
+            price_map = offer.get("priceMap") if isinstance(offer, dict) else {}
             if cap > 0:
-                params["maxPrice"] = cap
-            if self.lock_exact and cap > 0:
-                params["fixedPrice"] = "true"
+                send_price, note = _resolve_vak_max_price(price_map, cap, self.lock_exact)
+                if self.lock_exact and not send_price:
+                    last_err = RuntimeError(f"{iso}: {note}")
+                    logger.warning("Vak-SMS getNumber country=%s 失败: %s", iso, last_err)
+                    continue
+                if send_price:
+                    params["maxPrice"] = send_price
+                if self.lock_exact and send_price:
+                    params["fixedPrice"] = "true"
+                if note:
+                    logger.info("Vak-SMS %s country=%s", note, iso)
             params["price"] = "true"
             try:
                 logger.info(
@@ -527,12 +586,14 @@ class VakSmsProvider(BaseSmsProvider):
                 continue
             if c <= 0 or p <= 0:
                 continue
+            price_key = str(raw_price)
             price_str = f"{p:.4f}".rstrip("0").rstrip(".")
             c_str = f"{round(c / 10000, 2)}万" if c >= 10000 else str(c)
             tiers.append({
                 "id": "",
                 "provider_id": "",
                 "price": p,
+                "price_key": price_key,
                 "price_str": price_str,
                 "count": c,
                 "label": f"{price_str}$ · 余{c_str}",

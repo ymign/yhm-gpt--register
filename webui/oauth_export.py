@@ -1641,6 +1641,10 @@ def execute_codex_oauth_flow(
                 except Exception as e:
                     last_sms_err = str(e)
                     _log(f"[sms] 租号失败: {e}")
+                    err_l = last_sms_err.lower()
+                    if any(x in last_sms_err for x in ("无货", "无号", "暂无号码")) or "nonumber" in err_l:
+                        _log("[sms] 当前国家/档位没有号码，不再用同一价格空转换号")
+                        break
                     time.sleep(2)
                     continue
                 if not phone:
