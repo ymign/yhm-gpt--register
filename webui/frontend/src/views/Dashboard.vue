@@ -215,184 +215,86 @@ function toggleGroup(idx) {
   openGroups.value[idx] = !openGroups.value[idx]
 }
 
-// ════════════════ 3D Carousel & Fan-View 场景数学与交互控制 ════════════════
-const viewMode = ref('orbit') // 'orbit' | 'fan'
+// ════════════════ 系统模块中枢交互控制 (旗舰中枢看板 × 架构矩阵) ════════════════
+const viewMode = ref('hero') // 'hero' (旗舰中枢控制台) | 'matrix' (架构矩阵)
 const selectedIndex = ref(0)
-const isPlaying = ref(false) // 默认静止，降低能耗与内存开销；用户可随时一键播放
-const speed = ref(2)
-let animFrame = null
-let visualPosition = 0
-let targetPosition = 0
-let lastFrameTime = 0
-let lastWheelDirection = 1
-let isDragging = ref(false)
-let dragStartX = 0
-let dragOriginPos = 0
+const slideDirection = ref('right') // 'right' | 'left' 用于卡片平滑流体过渡
+const isPlaying = ref(false) // 自动巡航展示开关
+let cruiseTimer = null
+let wheelThrottle = false
 
 const activeModule = computed(() => modules[selectedIndex.value] || modules[0])
 
-function modulo(value, length = modules.length) {
-  return ((value % length) + length) % length
+const moduleIconMap = [
+  Compass,      // 0: 全自动并发跑号
+  Files,        // 1: 账号资产管理中枢
+  Opportunity,  // 2: Sentinel PoW 预计算池
+  Connection,   // 3: 动态住宅代理池
+  Message,      // 4: Remail & 邮箱配置
+  Key,          // 5: Codex OAuth 授权导出
+  CreditCard,   // 6: 全渠道提链出码代付
+  CircleCheck,  // 7: 账号批量并发验活
+  Sunny,        // 8: 账号自动化保温保鲜
+]
+
+function getModuleIcon(idx) {
+  return moduleIconMap[idx] || Compass
 }
 
-function relativePosition(index, position = visualPosition) {
-  let delta = index - modulo(position)
-  const half = modules.length / 2
-  if (delta > half) delta -= modules.length
-  if (delta < -half) delta += modules.length
-  return delta
-}
-
-function getCardStyle(index) {
-  const delta = relativePosition(index, visualPosition)
-  const absolute = Math.abs(delta)
-  const isFan = viewMode.value === 'fan'
-
-  const x = isFan ? -12 + delta * 46 : 85 + Math.sin(delta * 0.6) * 270
-  const z = isFan ? (absolute < 0.08 ? 105 : 58 - Math.min(absolute, 4.5) * 7) : 80 - Math.min(absolute, 2.5) * 70
-  const y = isFan ? 2 + Math.min(absolute, 4.5) * 2.5 : Math.min(absolute, 2.5) * 7
-  const rotation = isFan
-    ? (absolute < 0.08 ? -34 : -Math.min(64, 56 + absolute * 1.8))
-    : -Math.sign(delta) * Math.min(22, absolute * 11)
-  const scale = isFan ? (absolute < 0.08 ? 1.02 : Math.max(0.88, 0.98 - absolute * 0.018)) : Math.max(0.72, 1.02 - absolute * 0.12)
-
-  const depthOpacity = isFan ? Math.max(0.52, 1 - absolute * 0.105) : Math.max(0.46, 1 - absolute * 0.22)
-  const wrapFade = isFan ? (absolute > 3.8 ? Math.max(0.46, 1 - (absolute - 3.8) * 0.7) : 1) : (absolute > 2.15 ? Math.max(0, (2.5 - absolute) / 0.35) : 1)
-  const cardOpacity = depthOpacity * wrapFade
-
-  const zIndex = isFan && absolute < 0.08 ? 90 : Math.round(isFan ? 58 + delta * 2 : 30 - absolute * 8)
-
-  return {
-    transform: `translate3d(${x}px, ${y}px, ${z}px) rotateY(${rotation}deg) scale(${scale})`,
-    opacity: cardOpacity,
-    zIndex: String(zIndex),
-    pointerEvents: cardOpacity < 0.08 ? 'none' : 'auto',
-  }
-}
-
-function stopAnimation() {
-  if (animFrame !== null) {
-    cancelAnimationFrame(animFrame)
-    animFrame = null
-  }
-  lastFrameTime = 0
-}
-
-function runLoop(now) {
-  if (!lastFrameTime) lastFrameTime = now
-  const elapsed = Math.min(34, now - lastFrameTime)
-  lastFrameTime = now
-
-  let needContinue = false
-
-  // 1. 自动轮播推进（非拖拽状态下）
-  if (isPlaying.value && !isDragging.value) {
-    targetPosition -= elapsed * 0.00018 * speed.value
-    needContinue = true
-  }
-
-  // 2. 指数缓动平滑跟踪
-  const distance = targetPosition - visualPosition
-  if (Math.abs(distance) > 0.002) {
-    const smoothing = 1 - Math.exp(-elapsed / 170)
-    visualPosition += distance * smoothing
-    needContinue = true
-  } else if (!isPlaying.value) {
-    visualPosition = targetPosition
-  }
-
-  const visualIndex = modulo(Math.round(visualPosition))
-  if (visualIndex !== selectedIndex.value) {
-    selectedIndex.value = visualIndex
-  }
-
-  // 3. 按需递归，静止时自动休眠（零 CPU/GPU 开销）
-  if (needContinue) {
-    animFrame = requestAnimationFrame(runLoop)
-  } else {
-    animFrame = null
-    lastFrameTime = 0
-  }
-}
-
-function requestTick() {
-  if (animFrame === null) {
-    lastFrameTime = performance.now()
-    animFrame = requestAnimationFrame(runLoop)
-  }
-}
-
-function selectCard(idx, requestedDirection = 0) {
-  const norm = modulo(idx)
-  const delta = requestedDirection || relativePosition(norm, visualPosition)
-  if (Math.abs(delta) < 0.001) {
-    selectedIndex.value = norm
-    visualPosition = norm
-    targetPosition = norm
-    return
-  }
-  targetPosition = visualPosition + delta
-  requestTick()
+function selectCard(idx) {
+  const target = ((idx % modules.length) + modules.length) % modules.length
+  slideDirection.value = target >= selectedIndex.value ? 'right' : 'left'
+  selectedIndex.value = target
 }
 
 function nextCard(dir = 1) {
-  targetPosition = Math.round(targetPosition) + dir
-  lastWheelDirection = dir
-  requestTick()
+  slideDirection.value = dir > 0 ? 'right' : 'left'
+  selectedIndex.value = (selectedIndex.value + dir + modules.length) % modules.length
+}
+
+function setViewMode(mode) {
+  viewMode.value = mode
+  showToast(mode === 'hero' ? '已切换至旗舰中枢看板' : '已切换至架构矩阵看板')
+}
+
+function startCruiseTimer() {
+  stopCruiseTimer()
+  cruiseTimer = setInterval(() => {
+    nextCard(1)
+  }, 3400)
+}
+
+function stopCruiseTimer() {
+  if (cruiseTimer) {
+    clearInterval(cruiseTimer)
+    cruiseTimer = null
+  }
 }
 
 function togglePlay() {
   isPlaying.value = !isPlaying.value
   if (isPlaying.value) {
-    requestTick()
-    showToast('已开启 3D 自动轮播')
+    startCruiseTimer()
+    showToast('已开启旗舰中枢自动巡航')
   } else {
-    stopAnimation()
-    showToast('已暂停轮播')
+    stopCruiseTimer()
+    showToast('已暂停巡航')
   }
 }
 
-function toggleSpeed() {
-  speed.value = speed.value === 2 ? 1 : 2
-  showToast(`轮播速度已切换为 ${speed.value}×`)
-}
-
-function setViewMode(mode) {
-  viewMode.value = mode
-  showToast(mode === 'fan' ? '已切换为侧向层叠视图' : '已切换为 3D 环绕视图')
-}
-
-// 滚轮交互
+// 滚轮交互 (在旗舰看板模式下平滑节流轮转卡片)
 function handleSceneWheel(e) {
+  if (viewMode.value !== 'hero') return
   e.preventDefault()
+  if (wheelThrottle) return
+  wheelThrottle = true
   const delta = Math.sign(e.deltaY || e.deltaX)
   if (delta !== 0) {
-    targetPosition += delta * 0.8
-    lastWheelDirection = delta
-    requestTick()
+    nextCard(delta > 0 ? 1 : -1)
   }
-}
-
-// 拖拽手势交互
-function handlePointerDown(e) {
-  isDragging.value = true
-  dragStartX = e.clientX || (e.touches && e.touches[0].clientX) || 0
-  dragOriginPos = targetPosition
-}
-
-function handlePointerMove(e) {
-  if (!isDragging.value) return
-  const currentX = e.clientX || (e.touches && e.touches[0].clientX) || 0
-  const diff = currentX - dragStartX
-  targetPosition = dragOriginPos - diff * 0.005
-  requestTick()
-}
-
-function handlePointerUp() {
-  if (!isDragging.value) return
-  isDragging.value = false
-  targetPosition = Math.round(targetPosition)
-  requestTick()
+  setTimeout(() => {
+    wheelThrottle = false
+  }, 260)
 }
 
 // ════════════════ 材质与强调色设置抽屉 (Material Overlay) ════════════════
@@ -526,7 +428,7 @@ onActivated(() => {
     if (isDashboardActive) loadDashboardSummary()
   }, 12000)
   if (isPlaying.value) {
-    requestTick()
+    startCruiseTimer()
   }
 })
 
@@ -536,7 +438,7 @@ onDeactivated(() => {
     clearInterval(timer)
     timer = null
   }
-  stopAnimation()
+  stopCruiseTimer()
   if (toastTimer) {
     clearTimeout(toastTimer)
     toastTimer = null
@@ -549,7 +451,7 @@ onUnmounted(() => {
     clearInterval(timer)
     timer = null
   }
-  stopAnimation()
+  stopCruiseTimer()
   if (toastTimer) {
     clearTimeout(toastTimer)
     toastTimer = null
@@ -759,93 +661,233 @@ onUnmounted(() => {
           </div>
         </section>
 
-        <!-- ───── 中间栏: 3D 环绕 / 侧向层叠模块演示 (Carousel Panel) ───── -->
+        <!-- ───── 中间栏: 系统旗舰中枢看板 / 全景架构矩阵 (Hero Mission Control & Architecture Matrix) ───── -->
         <section class="carousel-panel panel" aria-label="核心模块交互大屏">
+          <!-- 顶部工具栏 -->
           <div class="carousel-toolbar">
             <div class="toolbar-left-btns">
               <button
                 class="pill-btn"
-                :class="{ active: viewMode === 'orbit', quiet: viewMode !== 'orbit' }"
-                @click="setViewMode('orbit')"
+                :class="{ active: viewMode === 'hero', quiet: viewMode !== 'hero' }"
+                @click="setViewMode('hero')"
               >
-                <span>✦</span> 3D 环绕
+                <span class="btn-sparkle">✦</span>
+                <span>旗舰中枢</span>
+              </button>
+              <button
+                class="pill-btn"
+                :class="{ active: viewMode === 'matrix', quiet: viewMode !== 'matrix' }"
+                @click="setViewMode('matrix')"
+              >
+                <el-icon><Operation /></el-icon>
+                <span>架构矩阵</span>
               </button>
               <button
                 class="pill-btn"
                 :class="{ active: isPlaying, playing: isPlaying }"
                 @click="togglePlay"
               >
-                <span>▶</span>
-                <span class="play-label">{{ isPlaying ? '自动播放中' : '自动播放' }}</span>
-              </button>
-              <button
-                class="pill-btn"
-                :class="{ active: viewMode === 'fan', quiet: viewMode !== 'fan' }"
-                @click="setViewMode('fan')"
-              >
-                <span>▥</span> 侧向层叠
+                <span class="play-icon">{{ isPlaying ? '⏸' : '▶' }}</span>
+                <span class="play-label">{{ isPlaying ? '巡航中' : '自动巡航' }}</span>
               </button>
             </div>
 
             <div class="toolbar-right-btns">
-              <button class="pill-btn" :class="{ active: speed === 2 }" @click="toggleSpeed">
-                速度 {{ speed }}×
-              </button>
-              <button class="pill-btn quiet" @click="nextCard(-1)">‹ 前项</button>
-              <button class="icon-btn" @click="nextCard(1)">›</button>
+              <span class="index-indicator">
+                <span class="hud-mono-tag">SYS // 0{{ selectedIndex + 1 }}</span>
+                <small>/ 09</small>
+              </span>
+              <button class="pill-btn quiet" @click="nextCard(-1)" title="上一个模块">‹ 前项</button>
+              <button class="icon-btn" @click="nextCard(1)" title="下一个模块">›</button>
             </div>
           </div>
 
-          <div class="live-badge"><i></i>实时交互</div>
-
-          <!-- 3D 视口 -->
+          <!-- 视口容器: 两种模式切换 -->
           <div
             class="carousel-viewport"
-            :class="{ 'fan-view': viewMode === 'fan' }"
+            :class="`view-${viewMode}`"
             tabindex="0"
             @wheel="handleSceneWheel"
-            @mousedown="handlePointerDown"
-            @mousemove="handlePointerMove"
-            @mouseup="handlePointerUp"
-            @touchstart="handlePointerDown"
-            @touchmove="handlePointerMove"
-            @touchend="handlePointerUp"
           >
-            <div class="ambient-glow"></div>
-            <div class="card-aura" aria-hidden="true"><i></i><b></b></div>
+            <!-- 模式 1: 旗舰中枢控制台 (Hero Mission Control Console) - 绝对整洁、奢华呼吸感、零堆叠重影 -->
+            <div v-if="viewMode === 'hero'" class="hero-stage-container">
+              <!-- 空间全息柔光底座 (Holographic Ambient Sanctuary) -->
+              <div class="hero-ambient-glow" aria-hidden="true"></div>
+              <div class="hero-orbital-halo" aria-hidden="true"></div>
 
-            <!-- 悬浮健康度小卡 -->
-            <div class="completion-card">
-              <span>模块就绪度</span>
-              <strong>{{ activeModule.completion }}%</strong>
-              <small>Sentinel 守护</small>
-              <i><b :style="{ width: `${activeModule.completion}%` }"></b></i>
+              <!-- 旗舰控制台卡片 (单一聚焦，尊享奢华玉润质感) -->
+              <transition :name="slideDirection === 'right' ? 'hero-slide-right' : 'hero-slide-left'" mode="out-in">
+                <div :key="activeModule.id" class="hero-console-card">
+                  <!-- 顶层高光与四角科技折角 -->
+                  <div class="card-specular-shine"></div>
+                  <div class="cyber-corner-bracket tl"></div>
+                  <div class="cyber-corner-bracket tr"></div>
+                  <div class="cyber-corner-bracket bl"></div>
+                  <div class="cyber-corner-bracket br"></div>
+
+                  <!-- 1. 卡片顶栏: 微晶勋章 + 序列编号 + 实时动态雷达 -->
+                  <header class="console-card-header">
+                    <div class="console-brand">
+                      <div class="console-gem-icon">
+                        <component :is="getModuleIcon(selectedIndex)" class="gem-icon-svg" />
+                      </div>
+                      <div class="console-brand-text">
+                        <div class="console-id-line">
+                          <span class="console-sys-id">{{ activeModule.id }}</span>
+                          <span class="console-priority-badge">{{ activeModule.priority }}级调度</span>
+                        </div>
+                        <span class="console-folder-name">{{ activeModule.folder }}</span>
+                      </div>
+                    </div>
+
+                    <div class="console-status-pill">
+                      <span class="radar-ping-dot"></span>
+                      <i class="live-dot-solid"></i>
+                      <em>{{ activeModule.state }}</em>
+                    </div>
+                  </header>
+
+                  <!-- 2. 卡片主信息: 标题 + 调度节律 + 描述 -->
+                  <div class="console-card-body">
+                    <div class="console-title-row">
+                      <h2 class="console-main-title">{{ activeModule.title }}</h2>
+                      <span class="console-short-badge">{{ activeModule.short }}</span>
+                    </div>
+                    <p class="console-subtitle">{{ activeModule.subtitle }} · <em>{{ activeModule.date }}</em></p>
+                    <p class="console-description">{{ activeModule.description }}</p>
+                  </div>
+
+                  <!-- 3. 三维遥测数据中枢 (Telemetry Grid) -->
+                  <div class="console-telemetry-grid">
+                    <!-- 指标 1: Sentinel 就绪度 -->
+                    <div class="telemetry-box telemetry-readiness">
+                      <div class="telemetry-top">
+                        <span class="telemetry-label">
+                          <el-icon><Opportunity /></el-icon> Sentinel 守护
+                        </span>
+                        <strong class="telemetry-number">{{ activeModule.completion }}<em>%</em></strong>
+                      </div>
+                      <div class="telemetry-energy-track">
+                        <div class="telemetry-energy-fill" :style="{ width: `${activeModule.completion}%` }">
+                          <span class="telemetry-spark"></span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <!-- 指标 2: 运行状态 -->
+                    <div class="telemetry-box telemetry-status">
+                      <span class="telemetry-label">
+                        <el-icon><CircleCheckFilled /></el-icon> 实时运行
+                      </span>
+                      <strong class="telemetry-value-text">{{ activeModule.status }}</strong>
+                    </div>
+
+                    <!-- 指标 3: 调度节拍 -->
+                    <div class="telemetry-box telemetry-cycle">
+                      <span class="telemetry-label">
+                        <el-icon><Timer /></el-icon> 调度拓扑
+                      </span>
+                      <strong class="telemetry-value-text">{{ activeModule.date }}</strong>
+                    </div>
+                  </div>
+
+                  <!-- 4. 核心标签芯片流 -->
+                  <div class="console-tags-flow">
+                    <span v-for="tag in activeModule.tags" :key="tag" class="console-tag-capsule">
+                      <i>✦</i>{{ tag }}
+                    </span>
+                  </div>
+
+                  <!-- 5. 卡片底栏: 轮巡步进器 + 旗舰直达操作按钮 -->
+                  <footer class="console-card-footer">
+                    <div class="console-stepper">
+                      <button class="step-nav-btn" @click.stop="nextCard(-1)" title="上一个模块">‹</button>
+                      <div class="step-dots">
+                        <span
+                          v-for="(_, dIdx) in modules"
+                          :key="dIdx"
+                          class="step-dot"
+                          :class="{ active: dIdx === selectedIndex }"
+                          @click.stop="selectCard(dIdx)"
+                        ></span>
+                      </div>
+                      <button class="step-nav-btn" @click.stop="nextCard(1)" title="下一个模块">›</button>
+                    </div>
+
+                    <button class="console-launch-btn" @click.stop="executeCurrentModule">
+                      <span>直达该功能中枢</span>
+                      <el-icon class="launch-arrow"><ArrowRight /></el-icon>
+                    </button>
+                  </footer>
+                </div>
+              </transition>
             </div>
 
-            <!-- 3D 卡片场景 -->
-            <div class="card-scene">
-              <button
+            <!-- 模式 2: 全景架构矩阵 (Matrix Grid) 3×3 赛博中枢看板 -->
+            <div v-else class="matrix-grid-container">
+              <div
                 v-for="(mod, idx) in modules"
                 :key="mod.id"
-                class="doc-card"
-                :class="[mod.accent, { selected: idx === selectedIndex }]"
-                :style="getCardStyle(idx)"
+                class="matrix-card"
+                :class="{ active: idx === selectedIndex }"
                 @click="selectCard(idx)"
+                @dblclick="executeCurrentModule"
               >
-                <span class="paper-shine"></span>
-                <span class="doc-kicker">{{ mod.short }}</span>
-                <span class="doc-lines"><i></i><i></i><i></i><i></i><i></i></span>
-                <span class="doc-symbol">{{ mod.symbol }}</span>
-                <span class="doc-copy">
-                  <strong>{{ mod.title }}</strong>
-                  <small>{{ mod.subtitle }} · {{ mod.state }}</small>
-                </span>
-              </button>
+                <div class="card-specular-shine"></div>
+                <div class="cyber-corner-bracket tl"></div>
+                <div class="cyber-corner-bracket tr"></div>
+                <div class="cyber-corner-bracket bl"></div>
+                <div class="cyber-corner-bracket br"></div>
+
+                <div class="matrix-card-head">
+                  <span class="matrix-code-chip">{{ mod.id.replace('SYS-', '') }}</span>
+                  <span class="matrix-state-badge">
+                    <i class="state-dot"></i>
+                    {{ mod.state }}
+                  </span>
+                </div>
+
+                <div class="matrix-card-body">
+                  <div class="matrix-icon-box">
+                    <component :is="getModuleIcon(idx)" class="matrix-icon" />
+                  </div>
+                  <div class="matrix-info">
+                    <h3 class="matrix-title">{{ mod.title }}</h3>
+                    <p class="matrix-subtitle">{{ mod.subtitle }}</p>
+                  </div>
+                </div>
+
+                <div class="matrix-card-foot">
+                  <div class="matrix-progress-row">
+                    <span>就绪度</span>
+                    <strong>{{ mod.completion }}%</strong>
+                  </div>
+                  <div class="matrix-progress-track">
+                    <div class="matrix-progress-bar" :style="{ width: `${mod.completion}%` }">
+                      <span class="energy-particle"></span>
+                    </div>
+                  </div>
+                  <div class="matrix-tags">
+                    <span v-for="tag in mod.tags.slice(0, 2)" :key="tag" class="matrix-tag">{{ tag }}</span>
+                  </div>
+                </div>
+
+                <div class="matrix-hover-action">
+                  <span>直达</span>
+                  <el-icon><ArrowRight /></el-icon>
+                </div>
+              </div>
             </div>
 
+            <!-- 悬浮 HUD 导航指示条 -->
             <div class="scroll-tip">
               <span class="mouse-icon"><i></i></span>
-              <p>连续滚动或拖拽切换核心模块；点击卡片展开详情</p>
+              <p v-if="viewMode === 'hero'">
+                ✦ 旗舰控制台 · 滚动滚轮或点击下方时间轴即刻平滑切换 · 点击右下角直达中枢
+              </p>
+              <p v-else>
+                ✦ 架构矩阵全景 · 点击联动右侧参数建议 · 双击直达功能模块
+              </p>
               <strong>{{ activeModule.title }}</strong>
             </div>
           </div>
@@ -853,9 +895,9 @@ onUnmounted(() => {
           <!-- 底部出号时间轴与操作栏 -->
           <div class="timeline-panel">
             <div class="timeline-head">
-              <b>出号全链路节拍</b>
-              <span><el-icon><Calendar /></el-icon> 24 小时出号节律</span>
-              <div>
+              <b>出号全链路中枢节律</b>
+              <span><el-icon><Calendar /></el-icon> 24 小时全自动调度流</span>
+              <div class="timeline-head-actions">
                 <button @click="showToast('已切换为实时节律')">实时⌄</button>
                 <button @click="showToast('查看今日出号计划')">今日</button>
               </div>
@@ -865,23 +907,37 @@ onUnmounted(() => {
               <button
                 v-for="(m, mIdx) in modules"
                 :key="m.id"
+                class="timeline-node"
                 :class="{ active: mIdx === selectedIndex }"
                 @click="selectCard(mIdx)"
+                :title="m.title"
               >
-                <i v-if="mIdx === selectedIndex">{{ m.symbol }}</i>
-                0{{ mIdx + 1 }}
+                <span class="node-idx">0{{ mIdx + 1 }}</span>
+                <span class="node-name">{{ m.short.split(' · ')[0] }}</span>
               </button>
             </div>
 
             <div class="timeline-track">
-              <i :style="{ width: `${25 + selectedIndex * (56 / Math.max(1, modules.length - 1))}%` }"></i>
+              <i :style="{ width: `${11.11 * (selectedIndex + 1)}%` }"></i>
             </div>
 
             <div class="scene-actions">
-              <button @click="openMaterialDrawer(selectedMetricIndex)">配置策略</button>
-              <button class="primary" @click="router.push('/auto')">启动跑号</button>
-              <button @click="router.push('/registered')">导出资产</button>
-              <button @click="executeCurrentModule">进入当前模块</button>
+              <button @click="openMaterialDrawer(selectedMetricIndex)">
+                <el-icon><Filter /></el-icon>
+                <span>护眼材质</span>
+              </button>
+              <button class="primary" @click="router.push('/auto')">
+                <el-icon><Compass /></el-icon>
+                <span>启动跑号</span>
+              </button>
+              <button @click="router.push('/registered')">
+                <el-icon><Files /></el-icon>
+                <span>导出资产</span>
+              </button>
+              <button class="action-highlight" @click="executeCurrentModule">
+                <span>进入当前模块</span>
+                <el-icon><ArrowRight /></el-icon>
+              </button>
             </div>
           </div>
         </section>
@@ -1659,27 +1715,33 @@ onUnmounted(() => {
   font-size: 8.5px;
 }
 
-/* ── 中间栏: 3D 环绕 / 侧向层叠 (Carousel Panel) ── */
+/* ── 中间栏: 3D 全息星轨 / 架构矩阵 (Spatial 3D Holo-Deck) ── */
 .carousel-panel {
   position: relative;
   min-height: 0;
   overflow: hidden;
   border-radius: 12px;
-  display: grid;
-  grid-template-rows: 48px minmax(260px, 1fr) 110px;
+  display: flex;
+  flex-direction: column;
   background: #ffffff;
+  border: 1px solid rgba(93, 164, 177, 0.22);
+  box-shadow: 0 4px 20px rgba(35, 75, 82, 0.04);
 }
 
 .carousel-toolbar {
+  height: 44px;
   display: flex;
   justify-content: space-between;
   align-items: center;
   padding: 0 14px;
   border-bottom: 1px solid rgba(93, 164, 177, 0.14);
-  background: #ffffff;
+  background: linear-gradient(180deg, #ffffff 0%, #f9fbfb 100%);
+  flex-shrink: 0;
+  z-index: 10;
 }
 .toolbar-left-btns, .toolbar-right-btns {
   display: flex;
+  align-items: center;
   gap: 6px;
 }
 
@@ -1696,20 +1758,36 @@ onUnmounted(() => {
   align-items: center;
   gap: 5px;
   padding: 0 10px;
-  transition: all 0.15s ease;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
 .pill-btn:hover, .icon-btn:hover {
   background: #edf6f8;
   border-color: #5da4b1;
   color: #1a3c42;
+  transform: translateY(-1px);
 }
 .pill-btn.active {
   color: #ffffff;
-  background: #5da4b1;
+  background: linear-gradient(135deg, #7ebbc5 0%, #5da4b1 60%, #468c99 100%);
   border-color: #5da4b1;
   font-weight: 600;
-  box-shadow: 0 2px 6px rgba(93, 164, 177, 0.25);
+  box-shadow: 0 2px 10px rgba(93, 164, 177, 0.35), inset 0 1px 1px rgba(255, 255, 255, 0.4);
 }
+.pill-btn .btn-sparkle {
+  color: #ffe082;
+  font-size: 12px;
+}
+.pill-btn.active .btn-sparkle {
+  color: #fff9c4;
+}
+.pill-btn.playing {
+  animation: pulseGentle 2s infinite ease-in-out;
+}
+@keyframes pulseGentle {
+  0%, 100% { box-shadow: 0 2px 8px rgba(93, 164, 177, 0.3); }
+  50% { box-shadow: 0 2px 16px rgba(93, 164, 177, 0.6); }
+}
+
 .pill-btn.quiet {
   color: #657e82;
 }
@@ -1720,25 +1798,59 @@ onUnmounted(() => {
   font-size: 14px;
 }
 
+.index-indicator {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: 6px;
+}
+.hud-mono-tag {
+  font-family: var(--el-font-family-monospace, monospace);
+  font-size: 10.5px;
+  font-weight: 700;
+  color: #356e78;
+  background: rgba(93, 164, 177, 0.12);
+  border: 1px solid rgba(93, 164, 177, 0.25);
+  border-radius: 4px;
+  padding: 1px 6px;
+  letter-spacing: 0.5px;
+}
+.index-indicator small {
+  color: #7b9498;
+  font-size: 10px;
+}
+
 .live-badge {
   position: absolute;
   z-index: 30;
-  right: 16px;
-  top: 56px;
-  height: 24px;
+  right: 14px;
+  top: 52px;
+  height: 22px;
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 0 9px;
-  border-radius: 6px;
-  background: #ffffff;
+  padding: 0 8px;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.92);
   border: 1px solid rgba(93, 164, 177, 0.3);
   color: #1a454d;
-  font-size: 10px;
-  font-weight: 600;
+  font-size: 9px;
+  font-weight: 700;
   box-shadow: 0 2px 8px rgba(35, 75, 82, 0.05);
+  backdrop-filter: blur(8px);
+  pointer-events: none;
+}
+.badge-ping {
+  position: absolute;
+  left: 6px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #5da4b1;
+  animation: radarPing 2s infinite cubic-bezier(0, 0, 0.2, 1);
 }
 .live-badge i {
+  position: relative;
   width: 5px;
   height: 5px;
   border-radius: 50%;
@@ -1746,199 +1858,717 @@ onUnmounted(() => {
   box-shadow: 0 0 6px #5da4b1;
 }
 
+/* ── 视口区域 ── */
 .carousel-viewport {
-  position: relative;
+  flex: 1;
   min-height: 0;
+  position: relative;
   overflow: hidden;
   outline: 0;
-  cursor: grab;
-  background: radial-gradient(ellipse at 50% 60%, rgba(93, 164, 177, 0.08), transparent 50%), #f8faf9;
-  perspective: 1050px;
-  user-select: none;
-}
-.carousel-viewport:active {
-  cursor: grabbing;
-}
-.carousel-viewport::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background-image: linear-gradient(rgba(93, 164, 177, 0.05) 1px, transparent 1px), linear-gradient(90deg, rgba(93, 164, 177, 0.05) 1px, transparent 1px);
-  background-size: 32px 32px;
-  mask-image: linear-gradient(to bottom, transparent, black 24%, black 75%, transparent);
+  background: radial-gradient(ellipse at 50% 20%, rgba(93, 164, 177, 0.09) 0%, rgba(246, 251, 252, 0.6) 45%, #f4f8f8 100%);
+  display: flex;
+  flex-direction: column;
 }
 
-.ambient-glow {
-  position: absolute;
-  z-index: 0;
-  left: 50%;
-  bottom: 25px;
-  width: 320px;
-  height: 60px;
-  transform: translateX(-50%);
-  background: rgba(93, 164, 177, 0.2);
-  filter: blur(50px);
-  border-radius: 50%;
+/* ════════ 模式 1: 旗舰中枢控制台 (Hero Mission Control) ════════ */
+.hero-stage-container {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px 18px 36px;
+  overflow: hidden;
 }
 
-.completion-card {
-  position: absolute;
-  z-index: 26;
-  left: 6%;
-  top: 10%;
-  width: 115px;
-  height: 125px;
-  padding: 14px 12px;
-  border-radius: 10px;
-  color: #1a3c42;
-  transform: rotate(-5deg);
-  background: rgba(255, 255, 255, 0.94);
-  border: 1px solid rgba(93, 164, 177, 0.28);
-  box-shadow: 0 8px 24px rgba(35, 75, 82, 0.08);
-  backdrop-filter: blur(12px);
-}
-.completion-card span, .completion-card small { display: block; font-size: 9px; color: #657e82; }
-.completion-card strong { display: block; margin-top: 4px; font: 700 26px/1 var(--el-font-family-monospace, monospace); color: #1a3c42; }
-.completion-card small { margin-top: 3px; color: #7b9498; }
-.completion-card > i { display: block; height: 4px; margin-top: 10px; background: rgba(93, 164, 177, 0.15); border-radius: 4px; overflow: hidden; }
-.completion-card b { display: block; height: 100%; background: #5da4b1; box-shadow: 0 0 6px #5da4b1; transition: width 0.5s ease; }
-
-.card-scene {
+/* 空间全息柔光底座与星轨光晕 */
+.hero-ambient-glow {
   position: absolute;
   left: 50%;
   top: 48%;
-  width: 600px;
+  width: 460px;
   height: 220px;
-  transform: translate(-50%, -45%);
-  transform-style: preserve-3d;
+  transform: translate(-50%, -50%);
+  background: radial-gradient(ellipse at center, rgba(93, 164, 177, 0.25) 0%, rgba(126, 187, 197, 0.08) 50%, transparent 72%);
+  filter: blur(28px);
+  border-radius: 50%;
+  pointer-events: none;
+  animation: heroGlowPulse 4s infinite ease-in-out alternate;
+}
+@keyframes heroGlowPulse {
+  0% { opacity: 0.7; transform: translate(-50%, -50%) scale(0.95); }
+  100% { opacity: 1; transform: translate(-50%, -50%) scale(1.06); }
 }
 
-.doc-card {
+.hero-orbital-halo {
   position: absolute;
-  left: calc(50% - 65px);
-  top: 10px;
-  width: 130px;
-  height: 188px;
-  border-radius: 12px;
-  padding: 0;
-  overflow: hidden;
-  transform-origin: center bottom;
-  background: linear-gradient(150deg, #ffffff, #edf5f6);
-  border: 1px solid rgba(93, 164, 177, 0.28);
-  box-shadow: 0 16px 32px rgba(35, 75, 82, 0.1);
-  color: #1a3c42;
-  cursor: pointer;
-  backface-visibility: hidden;
-  transition: opacity 0.3s ease, filter 0.3s ease, border-color 0.25s ease, box-shadow 0.3s ease;
-  will-change: transform;
-  transform-style: preserve-3d;
-}
-.doc-card.selected {
-  color: #ffffff;
-  background: linear-gradient(145deg, #7ebbc5 0%, #5da4b1 55%, #488793 100%);
-  border-color: #bfe3e8;
-  box-shadow: 0 20px 42px rgba(35, 75, 82, 0.22), 0 0 28px rgba(93, 164, 177, 0.35);
+  left: 50%;
+  bottom: 15px;
+  width: 520px;
+  height: 160px;
+  transform: translateX(-50%) rotateX(68deg);
+  border-radius: 50%;
+  border: 1.5px dashed rgba(93, 164, 177, 0.26);
+  box-shadow: 0 0 20px rgba(93, 164, 177, 0.12);
+  pointer-events: none;
 }
 
-.paper-shine {
-  position: absolute;
-  inset: 0;
-  background: radial-gradient(circle at 78% 9%, rgba(255, 255, 255, 0.6) 0 2px, transparent 3px), linear-gradient(120deg, rgba(255, 255, 255, 0.25), transparent 28%);
-}
-.doc-kicker {
-  position: absolute;
-  top: 10px;
-  left: 12px;
-  font: 600 8.5px/1.2 var(--el-font-family-monospace, monospace);
-  opacity: 0.75;
-}
-.doc-lines {
-  position: absolute;
-  top: 38px;
-  left: 16px;
-  right: 16px;
+/* 旗舰控制台卡片 (独占聚焦、尊享玉润微晶质感、绝无杂乱重叠) */
+.hero-console-card {
+  position: relative;
+  width: 100%;
+  max-width: 480px;
+  background: linear-gradient(155deg, rgba(255, 255, 255, 0.98) 0%, rgba(246, 251, 252, 0.94) 100%);
+  border: 1px solid rgba(93, 164, 177, 0.35);
+  border-radius: 14px;
+  padding: 16px 20px 14px 20px;
+  box-shadow:
+    inset 0 1px 1.5px rgba(255, 255, 255, 1),
+    inset 0 0 24px rgba(93, 164, 177, 0.08),
+    0 16px 40px -10px rgba(35, 75, 82, 0.14),
+    0 0 0 1px rgba(93, 164, 177, 0.25);
+  backdrop-filter: blur(20px);
   display: flex;
   flex-direction: column;
+  justify-content: space-between;
+  gap: 10px;
+  z-index: 20;
+}
+
+/* 顶层高光与四角科技折角 */
+.card-specular-shine {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(130deg, rgba(255, 255, 255, 0.6) 0%, rgba(255, 255, 255, 0.05) 30%, transparent 60%);
+  pointer-events: none;
+}
+.cyber-corner-bracket {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  border-color: #5da4b1;
+  pointer-events: none;
+}
+.cyber-corner-bracket.tl { top: 6px; left: 6px; border-top: 1.5px solid; border-left: 1.5px solid; }
+.cyber-corner-bracket.tr { top: 6px; right: 6px; border-top: 1.5px solid; border-right: 1.5px solid; }
+.cyber-corner-bracket.bl { bottom: 6px; left: 6px; border-bottom: 1.5px solid; border-left: 1.5px solid; }
+.cyber-corner-bracket.br { bottom: 6px; right: 6px; border-bottom: 1.5px solid; border-right: 1.5px solid; }
+
+/* 1. 卡片顶栏 */
+.console-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.console-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.console-gem-icon {
+  width: 38px;
+  height: 38px;
+  border-radius: 9px;
+  background: linear-gradient(135deg, #7ebbc5 0%, #5da4b1 60%, #3e818d 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #ffffff;
+  box-shadow: 0 4px 12px rgba(93, 164, 177, 0.35), inset 0 1px 1.5px rgba(255, 255, 255, 0.6);
+  font-size: 19px;
+  flex-shrink: 0;
+}
+.console-brand-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.console-id-line {
+  display: flex;
+  align-items: center;
   gap: 6px;
-  opacity: 0.22;
 }
-.doc-lines i { height: 2px; border-radius: 2px; background: currentColor; }
-.doc-lines i:nth-child(2) { width: 88%; }
-.doc-lines i:nth-child(3) { width: 70%; }
-.doc-lines i:nth-child(4) { margin-top: 8px; }
-.doc-lines i:nth-child(5) { width: 76%; }
+.console-sys-id {
+  font: 700 10.5px/1 var(--el-font-family-monospace, monospace);
+  color: #26555d;
+  letter-spacing: 0.5px;
+}
+.console-priority-badge {
+  font-size: 8.5px;
+  color: #488793;
+  background: rgba(93, 164, 177, 0.12);
+  border: 1px solid rgba(93, 164, 177, 0.25);
+  border-radius: 3px;
+  padding: 1px 5px;
+  font-weight: 600;
+}
+.console-folder-name {
+  font-size: 9.5px;
+  color: #657e82;
+}
 
-.doc-symbol {
+.console-status-pill {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2.5px 9px;
+  border-radius: 999px;
+  background: rgba(93, 164, 177, 0.1);
+  border: 1px solid rgba(93, 164, 177, 0.3);
+  color: #174249;
+  font-size: 10px;
+  font-weight: 700;
+}
+.radar-ping-dot {
   position: absolute;
-  top: 76px;
-  left: 0;
+  left: 8px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #5da4b1;
+  animation: radarPing 2.2s infinite cubic-bezier(0, 0, 0.2, 1);
+}
+.live-dot-solid {
+  position: relative;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #39b596;
+  box-shadow: 0 0 6px #39b596;
+}
+
+/* 2. 主体信息 */
+.console-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.console-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.console-main-title {
+  font-size: 17px;
+  font-weight: 800;
+  color: #133339;
+  letter-spacing: -0.02em;
+  margin: 0;
+}
+.console-short-badge {
+  font-size: 9.5px;
+  font-weight: 600;
+  color: #488793;
+  background: #edf6f8;
+  border: 1px solid rgba(93, 164, 177, 0.25);
+  border-radius: 4px;
+  padding: 1px 6px;
+}
+.console-subtitle {
+  font-size: 11px;
+  color: #4f7379;
+  font-weight: 600;
+  margin: 0;
+}
+.console-subtitle em {
+  color: #7b9498;
+  font-style: normal;
+  font-weight: 500;
+}
+.console-description {
+  font-size: 10px;
+  color: #657e82;
+  line-height: 1.55;
+  margin: 2px 0 0 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* 3. 三维遥测数据中枢 (Telemetry Grid) */
+.console-telemetry-grid {
+  display: grid;
+  grid-template-columns: 1.3fr 1fr 1fr;
+  gap: 8px;
+  margin: 2px 0;
+}
+.telemetry-box {
+  background: #f8fafb;
+  border: 1px solid rgba(93, 164, 177, 0.2);
+  border-radius: 8px;
+  padding: 6px 9px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+.telemetry-readiness {
+  background: linear-gradient(145deg, #f3f9fa 0%, #eaf4f5 100%);
+  border-color: rgba(93, 164, 177, 0.32);
+}
+.telemetry-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.telemetry-label {
+  font-size: 9px;
+  color: #657e82;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+.telemetry-number {
+  font-size: 14px;
+  font-weight: 800;
+  color: #1a3c42;
+  font-family: var(--el-font-family-monospace, monospace);
+}
+.telemetry-number em {
+  font-size: 9px;
+  color: #5da4b1;
+  font-style: normal;
+  margin-left: 1px;
+}
+.telemetry-energy-track {
+  height: 4px;
+  background: rgba(93, 164, 177, 0.18);
+  border-radius: 4px;
+  overflow: hidden;
+  position: relative;
+  margin-top: 5px;
+}
+.telemetry-energy-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #7ebbc5 0%, #5da4b1 85%, #bfe3e8 100%);
+  border-radius: 4px;
+  box-shadow: 0 0 6px rgba(93, 164, 177, 0.4);
+  position: relative;
+  transition: width 0.4s ease;
+}
+.telemetry-spark {
+  position: absolute;
   right: 0;
-  text-align: center;
-  font: 700 20px/1 var(--el-font-family-monospace, monospace);
-  opacity: 0.85;
+  top: 0;
+  bottom: 0;
+  width: 5px;
+  background: #ffffff;
+  border-radius: 4px;
+  box-shadow: 0 0 4px #ffffff, 0 0 8px #5da4b1;
 }
-.doc-copy {
-  position: absolute;
-  left: 10px;
-  right: 10px;
-  bottom: 12px;
-  text-align: center;
+.telemetry-value-text {
+  font-size: 10.5px;
+  font-weight: 700;
+  color: #1a3c42;
+  margin-top: 3px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
-.doc-copy strong { display: block; font-size: 11px; }
-.doc-copy small { display: block; margin-top: 3px; font-size: 8px; opacity: 0.75; }
 
+/* 4. 核心标签芯片流 */
+.console-tags-flow {
+  display: flex;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+.console-tag-capsule {
+  font-size: 9px;
+  color: #496b71;
+  background: rgba(93, 164, 177, 0.08);
+  border: 1px solid rgba(93, 164, 177, 0.2);
+  border-radius: 4px;
+  padding: 2px 7px;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  font-weight: 500;
+}
+.console-tag-capsule i {
+  color: #5da4b1;
+  font-style: normal;
+  font-size: 8px;
+}
+
+/* 5. 卡片底栏 */
+.console-card-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-top: 10px;
+  border-top: 1px solid rgba(93, 164, 177, 0.14);
+}
+.console-stepper {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.step-nav-btn {
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  border: 1px solid rgba(93, 164, 177, 0.25);
+  background: #ffffff;
+  color: #488793;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 700;
+  transition: all 0.15s ease;
+}
+.step-nav-btn:hover {
+  background: #5da4b1;
+  color: #ffffff;
+  border-color: #5da4b1;
+}
+.step-dots {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.step-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: rgba(93, 164, 177, 0.25);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+.step-dot:hover {
+  background: #7ebbc5;
+  transform: scale(1.2);
+}
+.step-dot.active {
+  width: 14px;
+  border-radius: 4px;
+  background: #5da4b1;
+  box-shadow: 0 0 6px rgba(93, 164, 177, 0.5);
+}
+
+.console-launch-btn {
+  border: 1px solid #488793;
+  background: linear-gradient(135deg, #7ebbc5 0%, #5da4b1 60%, #488793 100%);
+  color: #ffffff;
+  border-radius: 7px;
+  padding: 6px 14px;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  transition: all 0.2s ease;
+  box-shadow: 0 3px 10px rgba(93, 164, 177, 0.35);
+}
+.console-launch-btn:hover {
+  filter: brightness(1.05);
+  box-shadow: 0 4px 16px rgba(93, 164, 177, 0.5);
+  transform: translateY(-1px);
+}
+.console-launch-btn .launch-arrow {
+  transition: transform 0.2s ease;
+}
+.console-launch-btn:hover .launch-arrow {
+  transform: translateX(3px);
+}
+
+/* 旗舰控制台极速丝滑平移过渡 (Slide Transitions) */
+.hero-slide-right-enter-active,
+.hero-slide-right-leave-active,
+.hero-slide-left-enter-active,
+.hero-slide-left-leave-active {
+  transition: transform 0.28s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.24s ease;
+}
+.hero-slide-right-enter-from {
+  opacity: 0;
+  transform: translateX(30px) scale(0.97);
+}
+.hero-slide-right-leave-to {
+  opacity: 0;
+  transform: translateX(-30px) scale(0.97);
+}
+.hero-slide-left-enter-from {
+  opacity: 0;
+  transform: translateX(-30px) scale(0.97);
+}
+.hero-slide-left-leave-to {
+  opacity: 0;
+  transform: translateX(30px) scale(0.97);
+}
+
+/* ════════ 模式 2: 全景架构矩阵 (Matrix Grid) ════════ */
+.matrix-grid-container {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-rows: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  padding: 10px 12px 38px 12px;
+  overflow-y: auto;
+  box-sizing: border-box;
+}
+
+.matrix-card {
+  position: relative;
+  background: linear-gradient(150deg, rgba(255, 255, 255, 0.95) 0%, rgba(246, 251, 252, 0.88) 100%);
+  border: 1px solid rgba(93, 164, 177, 0.22);
+  border-radius: 8px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  cursor: pointer;
+  transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.2s ease, box-shadow 0.2s ease;
+  box-shadow: 0 1px 4px rgba(35, 75, 82, 0.03);
+  user-select: none;
+  overflow: hidden;
+}
+.matrix-card:hover {
+  transform: translateY(-2px);
+  border-color: #5da4b1;
+  box-shadow: 0 6px 16px rgba(35, 75, 82, 0.08);
+}
+.matrix-card.active {
+  background: linear-gradient(150deg, #ffffff 0%, #edf7f8 100%);
+  border-color: #5da4b1;
+  box-shadow: 0 0 0 1.5px #5da4b1, 0 6px 18px rgba(93, 164, 177, 0.16);
+}
+.matrix-card.active .cyber-corner-bracket {
+  border-color: #5da4b1;
+}
+
+.matrix-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 4px;
+}
+.matrix-code-chip {
+  font: 700 8.5px/1 var(--el-font-family-monospace, monospace);
+  color: #31626a;
+  background: #edf6f8;
+  border: 1px solid rgba(93, 164, 177, 0.25);
+  border-radius: 3px;
+  padding: 1.5px 4px;
+}
+.matrix-state-badge {
+  font-size: 8.5px;
+  color: #235058;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.matrix-card-body {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.matrix-icon-box {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  background: linear-gradient(135deg, #7ebbc5 0%, #5da4b1 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #ffffff;
+  flex-shrink: 0;
+  font-size: 14px;
+  box-shadow: 0 2px 6px rgba(93, 164, 177, 0.25);
+}
+
+.matrix-info {
+  min-width: 0;
+  flex: 1;
+}
+.matrix-title {
+  font-size: 11.5px;
+  font-weight: 700;
+  color: #14353b;
+  margin: 0;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.matrix-subtitle {
+  font-size: 8.5px;
+  color: #657e82;
+  margin: 1px 0 0 0;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.matrix-card-foot {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 4px;
+}
+.matrix-progress-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 8px;
+  color: #657e82;
+}
+.matrix-progress-row strong {
+  color: #1a3c42;
+  font-weight: 700;
+  font-family: var(--el-font-family-monospace, monospace);
+}
+.matrix-progress-track {
+  height: 3px;
+  background: rgba(93, 164, 177, 0.14);
+  border-radius: 3px;
+  overflow: hidden;
+  position: relative;
+}
+.matrix-progress-bar {
+  height: 100%;
+  background: #5da4b1;
+  border-radius: 3px;
+  transition: width 0.3s ease;
+  position: relative;
+}
+.matrix-tags {
+  display: flex;
+  gap: 3px;
+  overflow: hidden;
+}
+.matrix-tag {
+  font-size: 8px;
+  color: #5a767b;
+  background: rgba(93, 164, 177, 0.08);
+  border: 1px solid rgba(93, 164, 177, 0.16);
+  border-radius: 3px;
+  padding: 0 4px;
+  white-space: nowrap;
+}
+
+.matrix-hover-action {
+  position: absolute;
+  right: 6px;
+  bottom: 5px;
+  font-size: 9px;
+  font-weight: 600;
+  color: #5da4b1;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  opacity: 0;
+  transform: translateX(-4px);
+  transition: all 0.18s ease;
+}
+.matrix-card:hover .matrix-hover-action {
+  opacity: 1;
+  transform: translateX(0);
+}
+
+/* ── 底部提示浮条 ── */
 .scroll-tip {
   position: absolute;
-  z-index: 27;
+  z-index: 25;
   left: 50%;
-  bottom: 6px;
+  bottom: 4px;
   transform: translateX(-50%);
-  min-width: 280px;
-  height: 36px;
-  display: grid;
-  grid-template-columns: 24px minmax(150px, 1fr) auto;
+  min-width: 260px;
+  max-width: 90%;
+  height: 28px;
+  display: flex;
   align-items: center;
   gap: 8px;
   padding: 0 10px;
-  border-radius: 12px;
-  border: 1px solid rgba(93, 164, 177, 0.25);
-  background: rgba(255, 255, 255, 0.94);
-  box-shadow: 0 4px 16px rgba(35, 75, 82, 0.06);
-  backdrop-filter: blur(12px);
+  border-radius: 6px;
+  border: 1px solid rgba(93, 164, 177, 0.22);
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 2px 8px rgba(35, 75, 82, 0.04);
+  backdrop-filter: blur(10px);
 }
-.scroll-tip p { margin: 0; color: #657e82; font-size: 9px; }
-.scroll-tip strong { padding-left: 8px; border-left: 1px solid rgba(93, 164, 177, 0.2); font-size: 9.5px; color: #1a3c42; }
-.mouse-icon { width: 16px; height: 20px; border: 1px solid rgba(93, 164, 177, 0.4); border-radius: 8px; display: grid; place-items: start center; padding-top: 2px; }
-.mouse-icon i { width: 2px; height: 4px; border-radius: 2px; background: #5da4b1; }
+.scroll-tip p {
+  margin: 0;
+  color: #657e82;
+  font-size: 8.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.scroll-tip strong {
+  padding-left: 6px;
+  border-left: 1px solid rgba(93, 164, 177, 0.2);
+  font-size: 9px;
+  color: #1a3c42;
+  white-space: nowrap;
+}
+.mouse-icon {
+  width: 12px;
+  height: 16px;
+  border: 1px solid rgba(93, 164, 177, 0.4);
+  border-radius: 6px;
+  display: grid;
+  place-items: start center;
+  padding-top: 1.5px;
+  flex-shrink: 0;
+}
+.mouse-icon i {
+  width: 2px;
+  height: 3px;
+  border-radius: 2px;
+  background: #5da4b1;
+}
 
-/* ── 底部时间轴 (Timeline) ── */
+/* ── 底部出号时间轴与操作栏 (Timeline Panel) ── */
 .timeline-panel {
   position: relative;
-  padding: 8px 14px 0;
+  padding: 8px 14px 10px 14px;
   border-top: 1px solid rgba(93, 164, 177, 0.14);
   background: #ffffff;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
+
 .timeline-head {
-  display: grid;
-  grid-template-columns: 1fr 1fr auto;
+  display: flex;
+  justify-content: space-between;
   align-items: center;
   font-size: 10px;
 }
-.timeline-head b { font-size: 11.5px; color: #1a3c42; }
-.timeline-head > span { color: #657e82; text-align: center; }
-.timeline-head button, .scene-actions button {
+.timeline-head b {
+  font-size: 11px;
+  color: #1a3c42;
+  font-weight: 700;
+}
+.timeline-head > span {
+  color: #657e82;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.timeline-head-actions button {
   border: 1px solid rgba(93, 164, 177, 0.25);
   background: #edf6f8;
   color: #21474e;
-  border-radius: 6px;
+  border-radius: 4px;
   cursor: pointer;
-  height: 24px;
+  height: 20px;
   margin-left: 4px;
-  padding: 0 8px;
-  font-size: 9.5px;
+  padding: 0 6px;
+  font-size: 9px;
   transition: all 0.15s ease;
 }
-.timeline-head button:hover, .scene-actions button:hover {
+.timeline-head-actions button:hover {
   background: #5da4b1;
   color: #ffffff;
   border-color: #5da4b1;
@@ -1947,47 +2577,49 @@ onUnmounted(() => {
 .timeline-dates {
   display: grid;
   grid-template-columns: repeat(9, 1fr);
-  align-items: end;
-  margin-top: 6px;
+  gap: 4px;
 }
-.timeline-dates button {
-  position: relative;
-  height: 20px;
-  border: 0;
-  background: none;
-  color: #7b9498;
-  font: 9px/1 var(--el-font-family-monospace, monospace);
+.timeline-node {
+  height: 28px;
+  border-radius: 6px;
+  border: 1px solid rgba(93, 164, 177, 0.18);
+  background: #f8faf9;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
   cursor: pointer;
+  transition: all 0.15s ease;
+  padding: 0;
 }
-.timeline-dates button.active {
-  color: #1a3c42;
-  font-weight: 700;
+.timeline-node .node-idx {
+  font: 700 8.5px/1 var(--el-font-family-monospace, monospace);
+  color: #7b9498;
 }
-.timeline-dates button i {
-  position: absolute;
-  left: 50%;
-  top: -10px;
-  transform: translateX(-50%);
-  width: 16px;
-  height: 16px;
-  display: grid;
-  place-items: center;
-  border-radius: 50%;
-  color: #ffffff;
+.timeline-node .node-name {
+  font-size: 8.5px;
+  color: #5a767b;
+  margin-top: 1px;
+}
+.timeline-node:hover {
+  border-color: #5da4b1;
+  background: #edf6f8;
+}
+.timeline-node.active {
   background: #5da4b1;
-  border: 1px solid #7ebbc5;
-  font-size: 8px;
-  font-style: normal;
+  border-color: #488793;
+  box-shadow: 0 2px 6px rgba(93, 164, 177, 0.3);
+}
+.timeline-node.active .node-idx,
+.timeline-node.active .node-name {
+  color: #ffffff;
+  font-weight: 700;
 }
 
 .timeline-track {
-  position: absolute;
-  left: 18px;
-  right: 18px;
-  bottom: 5px;
-  height: 4px;
+  height: 3px;
   background: rgba(93, 164, 177, 0.14);
-  border-radius: 6px;
+  border-radius: 3px;
   overflow: hidden;
 }
 .timeline-track i {
@@ -1995,31 +2627,37 @@ onUnmounted(() => {
   height: 100%;
   border-radius: inherit;
   background: #5da4b1;
-  box-shadow: 0 0 8px rgba(93, 164, 177, 0.4);
-  transition: width 0.5s ease;
+  box-shadow: 0 0 6px rgba(93, 164, 177, 0.4);
+  transition: width 0.3s ease;
 }
 
 .scene-actions {
-  position: absolute;
-  z-index: 40;
-  left: 50%;
-  bottom: -6px;
-  transform: translateX(-50%);
-  height: 42px;
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
-  padding: 0 8px;
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.96);
-  border: 1px solid rgba(93, 164, 177, 0.28);
-  box-shadow: 0 8px 24px rgba(35, 75, 82, 0.08);
+  margin-top: 2px;
 }
 .scene-actions button {
   height: 28px;
   padding: 0 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(93, 164, 177, 0.25);
+  background: #edf6f8;
+  color: #21474e;
   font-size: 10px;
+  font-weight: 500;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  transition: all 0.15s ease;
   white-space: nowrap;
+}
+.scene-actions button:hover {
+  background: #edf6f8;
+  border-color: #5da4b1;
+  transform: translateY(-1px);
 }
 .scene-actions button.primary {
   color: #ffffff;
@@ -2030,6 +2668,16 @@ onUnmounted(() => {
 }
 .scene-actions button.primary:hover {
   background: #488793;
+}
+.scene-actions button.action-highlight {
+  background: #ffffff;
+  border-color: #5da4b1;
+  color: #488793;
+  font-weight: 600;
+}
+.scene-actions button.action-highlight:hover {
+  background: #5da4b1;
+  color: #ffffff;
 }
 
 /* ── 右侧栏: 模块详情面板 (Details Panel) ── */
