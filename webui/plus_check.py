@@ -329,8 +329,75 @@ def parse_account_plan(data: dict, body: str = "") -> dict:
 
 
 def _looks_deactivated(body: str) -> bool:
-    b_lower = body.lower()
-    return any(m in b_lower for m in _DEACTIVATED_MARKERS)
+    """封号只认官方注销原文，不用 HTTP 码或单词 banned/disabled 误判。"""
+    try:
+        from auth_flow import is_official_account_dead
+        return is_official_account_dead(body)
+    except Exception:
+        b_lower = (body or "").lower()
+        return any(m in b_lower for m in (
+            "account_deactivated",
+            "accountdeactivated",
+            "has been deactivated",
+            "this account has been deactivated",
+            "user is banned",
+            "your account has been disabled",
+        ))
+
+
+def classify_openai_auth_http(status_code: int, body: str) -> dict:
+    """分类 401/403：明确封号 / 明确凭证失效 / 含糊网关错误。
+
+    persist=False 时不要回写 plus_check，避免把风控页打成「失效」。
+    """
+    text = str(body or "")
+    low = text.lower()
+    snip = text.replace("\n", " ")[:240]
+    htmlish = (
+        text.lstrip().startswith("<")
+        or "<html" in low
+        or "cloudflare" in low
+        or "cf-ray" in low
+        or "just a moment" in low
+        or "attention required" in low
+    )
+    if _looks_deactivated(text):
+        return {
+            "status": "banned",
+            "label": "封号",
+            "error": f"HTTP {status_code} 官方确认封禁: {snip}",
+            "persist": True,
+        }
+    tokenish = (
+        not htmlish
+        and (
+            "invalid_token" in low
+            or "invalid access token" in low
+            or "access token has expired" in low
+            or "token is expired" in low
+            or "jwt expired" in low
+            or (
+                text.lstrip().startswith("{")
+                and ("unauthorized" in low or "unauthenticated" in low)
+            )
+        )
+    )
+    if status_code == 401 and tokenish:
+        return {
+            "status": "token_invalid",
+            "label": "凭证失效",
+            "error": f"HTTP 401: {snip}",
+            "persist": True,
+        }
+    return {
+        "status": "error",
+        "label": f"HTTP {status_code}",
+        "error": (
+            f"HTTP {status_code}: {snip}"
+            + ("（网关/风控页，未记为失效或封号）" if htmlish else "（未确认为封号或凭证失效，未回写）")
+        ),
+        "persist": False,
+    }
 
 
 def normalize_proxy(proxy: str) -> str:
@@ -564,18 +631,16 @@ def _check_one_account(task: PlusCheckTask, email: str) -> None:
         body = (resp.text or "").strip()
 
         if status_code in (401, 403):
-            if _looks_deactivated(body):
-                result = {"status": "banned", "label": "封号", "error": f"HTTP {status_code} 账号被禁用/封禁"}
-                task.add_email_log(email, f"【响应分析】HTTP {status_code} 命中封号标记: {body[:120]}")
-                task.add_email_log(email, f"检测结论: 封号 (HTTP {status_code})")
-            elif status_code == 401:
-                result = {"status": "token_invalid", "label": "凭证失效", "error": "401 Unauthorized (Token失效/被吊销)"}
-                task.add_email_log(email, f"【响应分析】HTTP 401 Unauthorized: access_token 已过期或被吊销")
-                task.add_email_log(email, f"检测结论: 凭证失效 (401)")
-            else:
-                result = {"status": "error", "label": f"HTTP {status_code}", "error": f"HTTP {status_code}: {body[:120]}"}
-                task.add_email_log(email, f"【响应分析】HTTP {status_code} 访问受限 -> {body[:120]}")
-                task.add_email_log(email, f"检测结论: HTTP {status_code}")
+            classified = classify_openai_auth_http(status_code, body)
+            result = {
+                "status": classified["status"],
+                "label": classified["label"],
+                "error": classified.get("error") or "",
+            }
+            task.add_email_log(email, f"【响应分析】{classified.get('error') or classified['label']}")
+            task.add_email_log(email, f"检测结论: {result['label']}")
+            if not classified.get("persist"):
+                task.add_email_log(email, "未回写账号状态：响应不是明确的官方封号或凭证失效")
         elif status_code == 200:
             try:
                 data = resp.json() or {}

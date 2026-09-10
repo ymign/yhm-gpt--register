@@ -42,7 +42,7 @@ try:
     from .plus_check import (
         CHECK_URL,
         DEFAULT_UA,
-        _looks_deactivated,
+        classify_openai_auth_http,
         _decode_jwt_payload,
         _get_auth,
         get_country_timezone_offset_min,
@@ -62,7 +62,7 @@ except ImportError:
     from plus_check import (
         CHECK_URL,
         DEFAULT_UA,
-        _looks_deactivated,
+        classify_openai_auth_http,
         _decode_jwt_payload,
         _get_auth,
         get_country_timezone_offset_min,
@@ -287,30 +287,23 @@ def _check_token_mode(task: HealthCheckTask, email: str, cred: dict, at: str, pr
 
         if status_code in (401, 403):
             task.add_email_log(email, f"【接口回参】HTTP {status_code} 原始响应: {body[:300]}")
-            if _looks_deactivated(body):
-                res = {
-                    "status": "banned",
-                    "label": "🚫 封号",
-                    "mode": "token",
-                    "error": f"HTTP {status_code} 账号已被禁用",
-                    "checked_at": time.time(),
-                }
-                task.add_email_log(email, f"【响应分析】HTTP {status_code} 命中封号标记: {body[:100]}")
-                task.add_email_log(email, f"检测结论: 封号 (HTTP {status_code})")
+            classified = classify_openai_auth_http(status_code, body)
+            res = {
+                "status": classified["status"],
+                "label": classified["label"] if classified["status"] != "banned" else "🚫 封号",
+                "mode": "token",
+                "error": classified.get("error") or "",
+                "checked_at": time.time(),
+            }
+            if classified["status"] == "token_invalid":
+                res["label"] = "❌ Token失效(401)"
+            task.add_email_log(email, f"【响应分析】{classified.get('error') or classified['label']}")
+            task.add_email_log(email, f"检测结论: {res['label']}")
+            if classified.get("persist"):
                 db.update_plus_check(email, res)
-                return res
-            if status_code == 401:
-                res = {
-                    "status": "token_invalid",
-                    "label": "❌ Token失效(401)",
-                    "mode": "token",
-                    "error": "401 Unauthorized",
-                    "checked_at": time.time(),
-                }
-                task.add_email_log(email, "【响应分析】HTTP 401 Unauthorized: access_token 已过期或被吊销")
-                task.add_email_log(email, "检测结论: Token 已失效/被吊销 (401)")
-                db.update_plus_check(email, res)
-                return res
+            else:
+                task.add_email_log(email, "未回写账号状态：响应不是明确的官方封号或凭证失效")
+            return res
 
         err_msg = f"HTTP {status_code}: {body[:100]}"
         task.add_email_log(email, f"检测异常: {err_msg}")
@@ -409,17 +402,19 @@ def _check_plan_mode(task: HealthCheckTask, email: str, cred: dict, at: str, pro
 
         if status_code in (401, 403):
             task.add_email_log(email, f"【接口回参】HTTP {status_code} 原始响应: {body[:300]}")
-            if _looks_deactivated(body):
-                res = {"status": "banned", "label": "封号", "error": f"HTTP {status_code} 账号被禁用"}
-                task.add_email_log(email, f"【响应分析】HTTP {status_code} 命中封号标记: {body[:100]}")
-            elif status_code == 401:
-                res = {"status": "token_invalid", "label": "凭证失效", "error": "401 Unauthorized"}
-                task.add_email_log(email, "【响应分析】HTTP 401 Unauthorized: access_token 已过期或被吊销")
-            else:
-                res = {"status": "error", "label": f"HTTP {status_code}", "error": f"HTTP {status_code}: {body[:100]}"}
-                task.add_email_log(email, f"【响应分析】HTTP {status_code} 访问受限: {body[:100]}")
+            classified = classify_openai_auth_http(status_code, body)
+            res = {
+                "status": classified["status"],
+                "label": classified["label"],
+                "error": classified.get("error") or "",
+                "checked_at": time.time(),
+            }
+            task.add_email_log(email, f"【响应分析】{classified.get('error') or classified['label']}")
             task.add_email_log(email, f"检测结论: {res.get('label')}")
-            db.update_plus_check(email, res)
+            if classified.get("persist"):
+                db.update_plus_check(email, res)
+            else:
+                task.add_email_log(email, "未回写账号状态：响应不是明确的官方封号或凭证失效")
             return res
 
         if status_code == 200:

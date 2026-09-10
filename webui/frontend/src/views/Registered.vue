@@ -1550,11 +1550,19 @@ watch([healthLogModalVisible, healthRunning], () => {
 })
 
 async function openHealthItemLog(row) {
+  if (!row || !row.email) {
+    ElMessage.warning('没有可查看的账号日志')
+    return
+  }
   currentHealthLogItem.value = row
   healthLogLines.value = []
   healthUserScrolledUp.value = false
   healthLogModalVisible.value = true
-  await refreshHealthItemLog(false)
+  try {
+    await refreshHealthItemLog(false)
+  } catch (e) {
+    healthLogLines.value = ['读取日志失败: ' + (e?.message || e)]
+  }
   nextTick(() => {
     scrollHealthModalLog(true)
   })
@@ -8405,7 +8413,6 @@ onUnmounted(() => {
             :max-height="healthConfigCollapsed ? 360 : 240"
             class="macos-table health-live-table"
             :highlight-current-row="false"
-            v-memo="[healthTick, healthFilter, healthPage, healthPageSize, healthSearch, healthRunning]"
           >
             <el-table-column prop="email" label="账号邮箱" min-width="220" show-overflow-tooltip>
               <template #default="{ row }">
@@ -8465,7 +8472,7 @@ onUnmounted(() => {
                 >
                   <el-icon><Refresh /></el-icon>验活
                 </el-button>
-                <el-button size="small" text type="primary" :disabled="row.status === 'pending'" @click="openHealthItemLog(row)">
+                <el-button size="small" text type="primary" :disabled="row.status === 'pending'" @click.stop="openHealthItemLog(row)">
                   <el-icon><Document /></el-icon>日志
                 </el-button>
               </template>
@@ -8530,12 +8537,14 @@ onUnmounted(() => {
       </template>
     </el-dialog>
 
-    <!-- 单账号专属验活日志弹窗 -->
+    <!-- 单账号专属验活日志弹窗：必须 append-to-body，否则会被验活弹窗遮罩盖住 -->
     <el-dialog
       v-model="healthLogModalVisible"
       width="780px"
       top="8vh"
       class="macos-terminal-dialog"
+      append-to-body
+      :lock-scroll="false"
       :close-on-click-modal="false"
     >
       <template #header>
