@@ -973,12 +973,25 @@ async function startPlusCheckTask() {
 }
 
 const plusModalLogBoxRef = ref(null)
-function scrollPlusModalLog() {
+const plusUserScrolledUp = ref(false)
+function onPlusLogScroll() {
+  const el = plusModalLogBoxRef.value
+  if (!el) return
+  const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight <= 45
+  plusUserScrolledUp.value = !isNearBottom
+}
+function scrollPlusModalLog(force = false) {
+  if (!force && plusUserScrolledUp.value) return
   nextTick(() => {
-    if (plusModalLogBoxRef.value) {
-      plusModalLogBoxRef.value.scrollTop = plusModalLogBoxRef.value.scrollHeight
+    const el = plusModalLogBoxRef.value
+    if (el && (force || !plusUserScrolledUp.value)) {
+      el.scrollTop = el.scrollHeight
     }
   })
+}
+function scrollToBottomPlusLog() {
+  plusUserScrolledUp.value = false
+  scrollPlusModalLog(true)
 }
 
 function scrollPlusLog() {
@@ -989,6 +1002,7 @@ function scrollPlusLog() {
 async function openPlusItemLog(row) {
   currentPlusLogItem.value = row
   plusLogLines.value = []
+  plusUserScrolledUp.value = false
   plusLogModalVisible.value = true
   plusLogLoading.value = true
 
@@ -999,6 +1013,7 @@ async function openPlusItemLog(row) {
     } else {
       plusLogLines.value = row.logs || ['暂无日志']
     }
+    scrollPlusModalLog(true)
   } catch (e) {
     plusLogLines.value = ['读取日志失败: ' + (e.response?.data?.detail || e.message)]
   } finally {
@@ -1381,12 +1396,25 @@ async function startHealthCheckTask() {
 }
 
 const healthModalLogBoxRef = ref(null)
-function scrollHealthModalLog() {
+const healthUserScrolledUp = ref(false)
+function onHealthLogScroll() {
+  const el = healthModalLogBoxRef.value
+  if (!el) return
+  const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight <= 45
+  healthUserScrolledUp.value = !isNearBottom
+}
+function scrollHealthModalLog(force = false) {
+  if (!force && healthUserScrolledUp.value) return
   nextTick(() => {
-    if (healthModalLogBoxRef.value) {
-      healthModalLogBoxRef.value.scrollTop = healthModalLogBoxRef.value.scrollHeight
+    const el = healthModalLogBoxRef.value
+    if (el && (force || !healthUserScrolledUp.value)) {
+      el.scrollTop = el.scrollHeight
     }
   })
+}
+function scrollToBottomHealthLog() {
+  healthUserScrolledUp.value = false
+  scrollHealthModalLog(true)
 }
 
 function scrollHealthLog() {
@@ -1397,6 +1425,7 @@ function scrollHealthLog() {
 async function openHealthItemLog(row) {
   currentHealthLogItem.value = row
   healthLogLines.value = []
+  healthUserScrolledUp.value = false
   healthLogModalVisible.value = true
   healthLogLoading.value = true
 
@@ -1407,6 +1436,7 @@ async function openHealthItemLog(row) {
     } else {
       healthLogLines.value = row.logs || ['暂无日志']
     }
+    scrollHealthModalLog(true)
   } catch (e) {
     healthLogLines.value = ['读取日志失败: ' + (e.response?.data?.detail || e.message)]
   } finally {
@@ -1560,6 +1590,7 @@ const oaLogLoading = ref(false)
 async function openOaItemLog(row) {
   currentOaLogItem.value = row
   oaLogLines.value = []
+  oaUserScrolledUp.value = false
   oaLogModalVisible.value = true
   oaLogLoading.value = true
 
@@ -1570,6 +1601,7 @@ async function openOaItemLog(row) {
     } else {
       oaLogLines.value = row.logs || ['暂无日志']
     }
+    scrollOaModalLog(true)
   } catch (e) {
     oaLogLines.value = ['读取日志失败: ' + (e.response?.data?.detail || e.message)]
   } finally {
@@ -1778,12 +1810,25 @@ async function startOA() {
 }
 
 const oaModalLogBoxRef = ref(null)
-function scrollOaModalLog() {
+const oaUserScrolledUp = ref(false)
+function onOaLogScroll() {
+  const el = oaModalLogBoxRef.value
+  if (!el) return
+  const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight <= 45
+  oaUserScrolledUp.value = !isNearBottom
+}
+function scrollOaModalLog(force = false) {
+  if (!force && oaUserScrolledUp.value) return
   nextTick(() => {
-    if (oaModalLogBoxRef.value) {
-      oaModalLogBoxRef.value.scrollTop = oaModalLogBoxRef.value.scrollHeight
+    const el = oaModalLogBoxRef.value
+    if (el && (force || !oaUserScrolledUp.value)) {
+      el.scrollTop = el.scrollHeight
     }
   })
+}
+function scrollToBottomOaLog() {
+  oaUserScrolledUp.value = false
+  scrollOaModalLog(true)
 }
 
 function scrollOaLog() {
@@ -2883,17 +2928,33 @@ async function retryOAuthExportRunner(targetEmails = null) {
 }
 
 const oauthModalLogBoxRef = ref(null)
+const oauthUserScrolledUp = ref(false)
 let oauthModalScrollRaf = 0
 let oauthLogPollTimer = 0
 
-function scrollOAuthModalLog() {
+function onOAuthLogScroll() {
+  const el = oauthModalLogBoxRef.value
+  if (!el) return
+  const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight <= 45
+  oauthUserScrolledUp.value = !isNearBottom
+}
+
+function scrollOAuthModalLog(force = false) {
+  if (!force && oauthUserScrolledUp.value) return
   if (oauthModalScrollRaf) return
   oauthModalScrollRaf = requestAnimationFrame(() => {
     oauthModalScrollRaf = 0
-    if (oauthModalLogBoxRef.value) {
-      oauthModalLogBoxRef.value.scrollTop = oauthModalLogBoxRef.value.scrollHeight
+    const el = oauthModalLogBoxRef.value
+    if (!el) return
+    if (force || !oauthUserScrolledUp.value) {
+      el.scrollTop = el.scrollHeight
     }
   })
+}
+
+function scrollToBottomOAuthLog() {
+  oauthUserScrolledUp.value = false
+  scrollOAuthModalLog(true)
 }
 
 function stopOAuthLogPoll() {
@@ -2914,7 +2975,7 @@ async function refreshOAuthItemLog(silent = false) {
     } else {
       oauthLogLines.value = row.logs || ['暂无日志']
     }
-    scrollOAuthModalLog()
+    scrollOAuthModalLog(false)
   } catch (e) {
     if (!silent) oauthLogLines.value = ['读取日志失败: ' + (e.response?.data?.detail || e.message)]
   } finally {
@@ -2936,8 +2997,12 @@ watch([oauthLogModalVisible, oauthRunning], () => {
 async function openOAuthItemLog(row) {
   currentOAuthLogItem.value = row
   oauthLogLines.value = []
+  oauthUserScrolledUp.value = false
   oauthLogModalVisible.value = true
   await refreshOAuthItemLog(false)
+  nextTick(() => {
+    scrollOAuthModalLog(true)
+  })
   startOAuthLogPoll()
 }
 
@@ -4804,23 +4869,37 @@ async function retrySecurityTaskRunner(targetEmails = null) {
   }
 }
 
-function scrollSecurityModalLog() {
+const securityUserScrolledUp = ref(false)
+function onSecurityLogScroll() {
+  const el = securityModalLogBoxRef.value
+  if (!el) return
+  const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight <= 45
+  securityUserScrolledUp.value = !isNearBottom
+}
+function scrollSecurityModalLog(force = false) {
+  if (!force && securityUserScrolledUp.value) return
   nextTick(() => {
-    if (securityModalLogBoxRef.value) {
-      securityModalLogBoxRef.value.scrollTop = securityModalLogBoxRef.value.scrollHeight
+    const el = securityModalLogBoxRef.value
+    if (el && (force || !securityUserScrolledUp.value)) {
+      el.scrollTop = el.scrollHeight
     }
   })
+}
+function scrollToBottomSecurityLog() {
+  securityUserScrolledUp.value = false
+  scrollSecurityModalLog(true)
 }
 
 async function openSecurityItemLog(row) {
   currentSecurityLogItem.value = row
   securityLogLines.value = []
+  securityUserScrolledUp.value = false
   securityLogModalVisible.value = true
   securityLogLoading.value = true
   try {
     const res = await getSecurityTaskLog(securityTaskId.value, row.email)
     securityLogLines.value = res.lines || []
-    scrollSecurityModalLog()
+    scrollSecurityModalLog(true)
   } catch (e) {
     securityLogLines.value = row.logs || ['暂无日志']
   } finally {
@@ -5113,19 +5192,37 @@ async function stopWarmingTaskRun() {
   }
 }
 
+const warmingUserScrolledUp = ref(false)
+function onWarmingLogScroll() {
+  const el = warmingModalLogBoxRef.value
+  if (!el) return
+  const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight <= 45
+  warmingUserScrolledUp.value = !isNearBottom
+}
+function scrollWarmingModalLog(force = false) {
+  if (!force && warmingUserScrolledUp.value) return
+  nextTick(() => {
+    const el = warmingModalLogBoxRef.value
+    if (el && (force || !warmingUserScrolledUp.value)) {
+      el.scrollTop = el.scrollHeight
+    }
+  })
+}
+function scrollToBottomWarmingLog() {
+  warmingUserScrolledUp.value = false
+  scrollWarmingModalLog(true)
+}
+
 async function openWarmingItemLog(row) {
   currentWarmingLogItem.value = row
   warmingLogLines.value = []
+  warmingUserScrolledUp.value = false
   warmingLogModalVisible.value = true
   warmingLogLoading.value = true
   try {
     const res = await getWarmingLog(warmingTaskId.value, row.email)
     warmingLogLines.value = res.lines || []
-    nextTick(() => {
-      if (warmingModalLogBoxRef.value) {
-        warmingModalLogBoxRef.value.scrollTop = warmingModalLogBoxRef.value.scrollHeight
-      }
-    })
+    scrollWarmingModalLog(true)
   } catch (e) {
     warmingLogLines.value = ['暂无日志']
   } finally {
@@ -6812,7 +6909,7 @@ onUnmounted(() => {
       </template>
 
       <div class="modal-terminal-wrap">
-        <div ref="plusModalLogBoxRef" class="modal-terminal-body">
+        <div ref="plusModalLogBoxRef" class="modal-terminal-body" @scroll="onPlusLogScroll">
           <div
             v-for="(line, idx) in plusLogLines"
             :key="idx"
@@ -6826,6 +6923,17 @@ onUnmounted(() => {
             {{ plusLogLoading ? '正在加载日志...' : '暂无详细日志' }}
           </div>
         </div>
+        <transition name="fade">
+          <button
+            v-if="plusUserScrolledUp"
+            class="terminal-scroll-bottom-pill"
+            title="检测到您正在查看历史日志，点击快速回到底部"
+            @click="scrollToBottomPlusLog"
+          >
+            <el-icon><ArrowDown /></el-icon>
+            <span>回到底部</span>
+          </button>
+        </transition>
       </div>
 
       <template #footer>
@@ -7071,7 +7179,7 @@ onUnmounted(() => {
       </template>
 
       <div class="modal-terminal-wrap">
-        <div ref="oaModalLogBoxRef" class="modal-terminal-body">
+        <div ref="oaModalLogBoxRef" class="modal-terminal-body" @scroll="onOaLogScroll">
           <div
             v-for="(line, idx) in oaLogLines"
             :key="idx"
@@ -7085,6 +7193,17 @@ onUnmounted(() => {
             {{ oaLogLoading ? '正在加载日志...' : '暂无详细日志' }}
           </div>
         </div>
+        <transition name="fade">
+          <button
+            v-if="oaUserScrolledUp"
+            class="terminal-scroll-bottom-pill"
+            title="检测到您正在查看历史日志，点击快速回到底部"
+            @click="scrollToBottomOaLog"
+          >
+            <el-icon><ArrowDown /></el-icon>
+            <span>回到底部</span>
+          </button>
+        </transition>
       </div>
 
       <template #footer>
@@ -7882,7 +8001,7 @@ onUnmounted(() => {
       </template>
 
       <div class="modal-terminal-wrap">
-        <div ref="oauthModalLogBoxRef" class="modal-terminal-body">
+        <div ref="oauthModalLogBoxRef" class="modal-terminal-body" @scroll="onOAuthLogScroll">
           <div
             v-for="row in oauthLogView"
             :key="row.idx"
@@ -7896,6 +8015,17 @@ onUnmounted(() => {
             {{ oauthLogLoading ? '正在加载日志...' : '暂无详细日志' }}
           </div>
         </div>
+        <transition name="fade">
+          <button
+            v-if="oauthUserScrolledUp"
+            class="terminal-scroll-bottom-pill"
+            title="检测到您正在查看历史日志，点击快速回到底部"
+            @click="scrollToBottomOAuthLog"
+          >
+            <el-icon><ArrowDown /></el-icon>
+            <span>回到底部</span>
+          </button>
+        </transition>
       </div>
 
       <template #footer>
@@ -8212,7 +8342,7 @@ onUnmounted(() => {
       </template>
 
       <div class="modal-terminal-wrap">
-        <div ref="healthModalLogBoxRef" class="modal-terminal-body">
+        <div ref="healthModalLogBoxRef" class="modal-terminal-body" @scroll="onHealthLogScroll">
           <div
             v-for="(line, idx) in healthLogLines"
             :key="idx"
@@ -8226,6 +8356,17 @@ onUnmounted(() => {
             {{ healthLogLoading ? '正在加载日志...' : '暂无详细日志' }}
           </div>
         </div>
+        <transition name="fade">
+          <button
+            v-if="healthUserScrolledUp"
+            class="terminal-scroll-bottom-pill"
+            title="检测到您正在查看历史日志，点击快速回到底部"
+            @click="scrollToBottomHealthLog"
+          >
+            <el-icon><ArrowDown /></el-icon>
+            <span>回到底部</span>
+          </button>
+        </transition>
       </div>
 
       <template #footer>
@@ -8571,7 +8712,7 @@ onUnmounted(() => {
       </template>
 
       <div class="modal-terminal-wrap">
-        <div ref="securityModalLogBoxRef" class="modal-terminal-body">
+        <div ref="securityModalLogBoxRef" class="modal-terminal-body" @scroll="onSecurityLogScroll">
           <div
             v-for="(line, idx) in securityLogLines"
             :key="idx"
@@ -8585,6 +8726,17 @@ onUnmounted(() => {
             {{ securityLogLoading ? '正在加载日志...' : '暂无详细日志' }}
           </div>
         </div>
+        <transition name="fade">
+          <button
+            v-if="securityUserScrolledUp"
+            class="terminal-scroll-bottom-pill"
+            title="检测到您正在查看历史日志，点击快速回到底部"
+            @click="scrollToBottomSecurityLog"
+          >
+            <el-icon><ArrowDown /></el-icon>
+            <span>回到底部</span>
+          </button>
+        </transition>
       </div>
 
       <template #footer>
@@ -8879,7 +9031,7 @@ onUnmounted(() => {
       </template>
 
       <div class="modal-terminal-wrap">
-        <div ref="warmingModalLogBoxRef" class="modal-terminal-body">
+        <div ref="warmingModalLogBoxRef" class="modal-terminal-body" @scroll="onWarmingLogScroll">
           <div
             v-for="(line, idx) in warmingLogLines"
             :key="idx"
@@ -8893,6 +9045,17 @@ onUnmounted(() => {
             {{ warmingLogLoading ? '正在加载日志...' : '暂无详细日志' }}
           </div>
         </div>
+        <transition name="fade">
+          <button
+            v-if="warmingUserScrolledUp"
+            class="terminal-scroll-bottom-pill"
+            title="检测到您正在查看历史日志，点击快速回到底部"
+            @click="scrollToBottomWarmingLog"
+          >
+            <el-icon><ArrowDown /></el-icon>
+            <span>回到底部</span>
+          </button>
+        </transition>
       </div>
 
       <template #footer>
@@ -12736,7 +12899,37 @@ onUnmounted(() => {
   overflow: hidden;
 }
 
-/* ──────────── 单账号详细日志终端弹窗 (统一对齐全局 3D 实体水晶日志终端规范) ──────────── */
+/* ──────────── 单账号详细日志终端弹窗 (与授权界面 oa-custom-dialog 玻璃拟态 100% 深度对齐) ──────────── */
+:deep(.macos-terminal-dialog) {
+  border-radius: 20px !important;
+  overflow: hidden !important;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.94) 0%, rgba(255, 255, 255, 0.78) 50%, rgba(248, 250, 252, 0.9) 100%) !important;
+  backdrop-filter: blur(32px) saturate(210%) !important;
+  -webkit-backdrop-filter: blur(32px) saturate(210%) !important;
+  border: 2px solid rgba(255, 255, 255, 0.95) !important;
+  border-top: 2.5px solid #ffffff !important;
+  box-shadow: 0 32px 72px -12px rgba(15, 23, 42, 0.22), 0 12px 28px rgba(15, 23, 42, 0.08), inset 0 2.5px 2px #ffffff !important;
+}
+:deep(.macos-terminal-dialog .el-dialog__header) {
+  padding: 16px 22px 14px !important;
+  margin-right: 0 !important;
+  border-bottom: 1.5px solid rgba(255, 255, 255, 0.85) !important;
+  background: rgba(255, 255, 255, 0.5) !important;
+  backdrop-filter: blur(16px) !important;
+  -webkit-backdrop-filter: blur(16px) !important;
+}
+:deep(.macos-terminal-dialog .el-dialog__body) {
+  padding: 16px 22px !important;
+  background: transparent !important;
+}
+:deep(.macos-terminal-dialog .el-dialog__footer) {
+  padding: 14px 22px !important;
+  border-top: 1.5px solid rgba(255, 255, 255, 0.85) !important;
+  background: rgba(255, 255, 255, 0.55) !important;
+  backdrop-filter: blur(16px) !important;
+  -webkit-backdrop-filter: blur(16px) !important;
+}
+
 .modal-header {
   display: flex;
   align-items: center;
@@ -12780,14 +12973,17 @@ onUnmounted(() => {
   color: #0f172a;
   font-family: var(--el-font-family-monospace, monospace);
   letter-spacing: -0.01em;
-  padding: 2px 8px;
+  padding: 3px 10px;
   border-radius: 6px;
+  background: rgba(255, 255, 255, 0.6);
+  border: 1px solid rgba(226, 232, 240, 0.85);
   transition: all 0.15s ease;
   cursor: pointer;
 }
 .modal-email:hover {
   color: #0284c7;
-  background: rgba(224, 242, 254, 0.6);
+  background: rgba(224, 242, 254, 0.7);
+  border-color: rgba(56, 189, 248, 0.6);
 }
 .modal-run-tag {
   display: inline-flex;
@@ -12807,26 +13003,31 @@ onUnmounted(() => {
   overflow: hidden;
 }
 
+/* 终端座舱：浅色清透微晶冰釉槽，与授权界面的浅色卡片/表格完美统一 */
 .modal-terminal-wrap {
-  border-radius: 16px;
+  position: relative;
+  border-radius: 14px;
   overflow: hidden;
   border: 1.5px solid rgba(255, 255, 255, 0.95);
   border-top: 2px solid #ffffff;
-  border-bottom: 1.5px solid rgba(203, 213, 225, 0.75);
+  border-bottom: 1.5px solid rgba(203, 213, 225, 0.65);
+  background: rgba(255, 255, 255, 0.62) !important;
+  backdrop-filter: blur(24px) saturate(180%) !important;
+  -webkit-backdrop-filter: blur(24px) saturate(180%) !important;
   box-shadow:
-    0 10px 30px -4px rgba(15, 23, 42, 0.15),
-    inset 0 2px 5px rgba(0, 0, 0, 0.5),
-    inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+    inset 0 2px 5px rgba(15, 23, 42, 0.04),
+    inset 0 -1.5px 2px #ffffff,
+    0 8px 24px -4px rgba(15, 23, 42, 0.05);
 }
 .modal-terminal-body {
   height: 390px;
-  background: radial-gradient(circle at 15% 0%, #162032 0%, #0b101d 55%, #060911 100%) !important;
-  padding: 16px 18px;
+  background: transparent !important;
+  padding: 16px 20px;
   overflow-y: auto;
   font-family: "JetBrains Mono", "SF Mono", Consolas, "Liberation Mono", Menlo, monospace !important;
-  font-size: 12px;
-  line-height: 1.75;
-  color: #cbd5e1;
+  font-size: 12.5px;
+  line-height: 1.8;
+  color: #334155;
   word-break: break-all;
   white-space: pre-wrap;
 }
@@ -12840,10 +13041,10 @@ onUnmounted(() => {
 .log-count-tip {
   display: inline-flex;
   align-items: center;
-  height: 26px;
-  padding: 0 11px;
+  height: 28px;
+  padding: 0 12px;
   border-radius: 9999px;
-  background: rgba(255, 255, 255, 0.7);
+  background: rgba(255, 255, 255, 0.75);
   border: 1.2px solid rgba(226, 232, 240, 0.9);
   border-top: 1.5px solid #ffffff;
   box-shadow: 0 1px 3px rgba(15, 23, 42, 0.03), inset 0 1px 1px #ffffff;
