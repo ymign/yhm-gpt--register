@@ -120,6 +120,14 @@ def _fmt_vak_price(p: float) -> str:
     return f"{float(p):.4f}"
 
 
+def _fmt_vak_count(c: int) -> str:
+    """和官网一样用 11.85K，不用 1.19万（看起来像差了 10 倍）。"""
+    n = int(c or 0)
+    if n >= 1000:
+        return f"{n / 1000:.2f}".rstrip("0").rstrip(".") + "K"
+    return str(n)
+
+
 def _iter_live_prices(price_map: dict) -> list[tuple[float, int, str]]:
     live = []
     for raw_k, raw_c in (price_map or {}).items():
@@ -319,70 +327,35 @@ class VakSmsProvider(BaseSmsProvider):
 
         last_err = None
         for iso in mapped:
-            params = {
-                "service": service_code,
-                "country": iso,
-                "rent": "false",
-            }
-            if self.operator and not str(self.operator).replace(".", "", 1).isdigit():
-                params["operator"] = self.operator.split(",")[0].strip()
-            # 官方 v1：maxPrice 必须和 priceMap 的 key 一致（四位小数）；fixedPrice=true 锁死该档。
-            cap = self.max_price if self.max_price and self.max_price > 0 else -1
             offer = {}
             try:
                 offer = self._offer_blob(iso, service_code)
             except Exception as e:
                 logger.debug("Vak-SMS 拉报价失败 country=%s: %s", iso, e)
             price_map = offer.get("priceMap") if isinstance(offer, dict) else {}
+            live = _iter_live_prices(price_map)
+            cap = self.max_price if self.max_price and self.max_price > 0 else -1
+            send_price = None
+            note = ""
             if cap > 0:
                 send_price, note = _resolve_vak_max_price(price_map, cap, self.lock_exact)
                 if self.lock_exact and not send_price:
                     last_err = RuntimeError(f"{iso}: {note}")
                     logger.warning("Vak-SMS getNumber country=%s 失败: %s", iso, last_err)
                     continue
-                if send_price:
-                    params["maxPrice"] = send_price
-                if self.lock_exact and send_price:
-                    params["fixedPrice"] = "true"
-                if note:
-                    logger.info("Vak-SMS %s country=%s", note, iso)
-            params["price"] = "true"
             try:
-                logger.info(
-                    "Vak-SMS getNumber country=%s maxPrice=%s fixedPrice=%s",
-                    iso, params.get("maxPrice"), params.get("fixedPrice"),
-                )
-                data = self._request("/api/getNumber/", params)
-                tel = str(data.get("tel") or data.get("number") or "").strip()
-                aid = str(data.get("idNum") or data.get("id") or "").strip()
-                if not tel or not aid:
-                    last_err = RuntimeError(f"{iso}: 返回缺号码 {data}")
-                    continue
-                phone = tel if tel.startswith("+") else f"+{tel.lstrip('+')}"
-                activation = SmsActivation(
-                    activation_id=aid,
-                    phone_number=phone,
-                    country=iso,
-                    metadata={
-                        "raw_tel": tel,
-                        "service": service_code,
-                        "cost": data.get("price"),
-                    },
-                )
-                self.current_activation = activation
-                logger.info("Vak-SMS 租到号 %s 国家=%s idNum=%s", phone, iso, aid)
+                activation = self._buy_number(iso, service_code, send_price, self.lock_exact and bool(send_price))
+                if note:
+                    activation.metadata["vak_note"] = note
                 return activation
             except Exception as e:
                 msg = str(e)
-                if cap > 0 and ("暂无号码" in msg or "noNumber" in msg.lower()):
-                    if self.lock_exact:
-                        last_err = RuntimeError(
-                            f"{iso}: 锁定档位 {cap} 无号。请换有库存的档位，或改填 <=价格 只限制最高价。"
-                        )
-                    else:
-                        last_err = RuntimeError(
-                            f"{iso}: 最高限价 {cap} 下暂无号码。请点更高一档，或把限价留空。"
-                        )
+                if "暂无号码" in msg or "nonumber" in msg.lower():
+                    shown = "、".join(f"{k}×{_fmt_vak_count(c)}" for _p, c, k in live[:6]) or "无"
+                    last_err = RuntimeError(
+                        f"{iso}: 锁定档位 {send_price or cap or '默认'} API 无号，不会改点其它档。"
+                        f"官网展示 {shown}（网页「台电脑」库存经常不能用 API 下单）。请改点有货的档，或填 <=价格。"
+                    )
                 else:
                     last_err = e
                 logger.warning("Vak-SMS getNumber country=%s 失败: %s", iso, last_err)
@@ -390,6 +363,43 @@ class VakSmsProvider(BaseSmsProvider):
         raise RuntimeError(
             f"Vak-SMS 依次尝试 {len(mapped)} 个国家全失败: {last_err}"
         ) from last_err
+
+    def _buy_number(self, iso: str, service_code: str, send_price: str | None, lock: bool) -> SmsActivation:
+        params = {
+            "service": service_code,
+            "country": iso,
+            "rent": "false",
+            "price": "true",
+        }
+        if self.operator and not str(self.operator).replace(".", "", 1).isdigit():
+            params["operator"] = self.operator.split(",")[0].strip()
+        if send_price:
+            params["maxPrice"] = send_price
+            if lock:
+                params["fixedPrice"] = "true"
+        logger.info(
+            "Vak-SMS getNumber country=%s maxPrice=%s fixedPrice=%s",
+            iso, params.get("maxPrice"), params.get("fixedPrice"),
+        )
+        data = self._request("/api/getNumber/", params)
+        tel = str(data.get("tel") or data.get("number") or "").strip()
+        aid = str(data.get("idNum") or data.get("id") or "").strip()
+        if not tel or not aid:
+            raise RuntimeError(f"{iso}: 返回缺号码 {data}")
+        phone = tel if tel.startswith("+") else f"+{tel.lstrip('+')}"
+        activation = SmsActivation(
+            activation_id=aid,
+            phone_number=phone,
+            country=iso,
+            metadata={
+                "raw_tel": tel,
+                "service": service_code,
+                "cost": data.get("price"),
+            },
+        )
+        self.current_activation = activation
+        logger.info("Vak-SMS 租到号 %s 国家=%s idNum=%s price=%s", phone, iso, aid, data.get("price"))
+        return activation
 
     def get_code(self, activation_id: str, *, timeout: int = 180, stop_check: Optional[Callable[[], bool]] = None) -> str:
         deadline = time.time() + max(15, int(timeout))
@@ -588,16 +598,16 @@ class VakSmsProvider(BaseSmsProvider):
                 continue
             price_key = str(raw_price)
             price_str = f"{p:.4f}".rstrip("0").rstrip(".")
-            c_str = f"{round(c / 10000, 2)}万" if c >= 10000 else str(c)
+            c_str = _fmt_vak_count(c)
             tiers.append({
-                "id": "",
+                "id": price_key,
                 "provider_id": "",
                 "price": p,
                 "price_key": price_key,
                 "price_str": price_str,
                 "count": c,
-                "label": f"{price_str}$ · 余{c_str}",
-                "tag_label": f"{price_str}$ · 余{c_str}",
+                "label": f"{price_str}$ · {c_str}",
+                "tag_label": f"{price_str}$ · {c_str}",
             })
         tiers.sort(key=lambda x: (x["price"], -x["count"]))
         return tiers

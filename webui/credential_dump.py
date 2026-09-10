@@ -501,12 +501,14 @@ def export_credential_dump(text: str, fmt_id: str, delimiter: str = "----") -> d
                 "没有可供导出为 Sub2 JSON 的账号数据。"
             )
         rows = tokened
+    rows, skipped_incomplete = export_formats.filter_rows_for_format(rows, fmt)
     filename = fmt.filename
     mime = fmt.mime
     delim = delimiter if delimiter is not None else "----"
     base = {
         "ok": True,
         "count": len(rows),
+        "skipped": len(skipped_incomplete),
         "filename": filename,
         "label": fmt.label,
         "format": fmt.id,

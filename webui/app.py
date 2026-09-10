@@ -761,6 +761,9 @@ def api_export_registered(req: ExportRegisteredReq):
     else:
         raise HTTPException(400, "需要 emails 或 all=true")
 
+    rows, skipped_rows = export_formats.filter_rows_for_format(rows, fmt)
+    skipped_n = len(skipped_rows)
+
     filename = fmt.filename
     mime = fmt.mime
     if req.format == "cpa_json":
@@ -775,16 +778,19 @@ def api_export_registered(req: ExportRegisteredReq):
 
     # 全格式导出留痕：无论导出何种格式（AT、账密2FA、CPA、Sub2API、Session等），均记录导出时间、格式与用户备注
     # 顶栏「导出状态」筛选器及表格徽章据此展示。留痕失败不影响导出本身。
-    try:
-        db.mark_exported([(r.get("email") or "") for r in rows], fmt_id=fmt.id, fmt_label=fmt.label, note=req.note)
-    except Exception as e:
-        logger.warning(f"导出留痕记录异常（导出不受影响）: {e}")
+    # 账密+2FA 被跳过的号不打导出印，避免半残号被标成已交付。
+    if rows:
+        try:
+            db.mark_exported([(r.get("email") or "") for r in rows], fmt_id=fmt.id, fmt_label=fmt.label, note=req.note)
+        except Exception as e:
+            logger.warning(f"导出留痕记录异常（导出不受影响）: {e}")
 
     delim = req.delimiter if req.delimiter is not None else "----"
 
     base = {
         "ok": True,
         "count": len(rows),
+        "skipped": skipped_n,
         "filename": filename,
         "label": fmt.label,
         "format": fmt.id,
@@ -796,7 +802,7 @@ def api_export_registered(req: ExportRegisteredReq):
         "emails": [(r.get("email") or "") for r in rows],
     }
 
-    if req.chunk_size > 0:
+    if req.chunk_size > 0 and rows:
         # 分卷导出：每 chunk_size 条一个文件，全部打进一个 zip 一次下载。
         # 覆盖 mode/filename/mime —— 前端照普通 download 分支存盘即可。
         blob = export_formats.render_chunked(rows, fmt, req.chunk_size, delimiter=delim)

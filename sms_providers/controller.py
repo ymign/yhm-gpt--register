@@ -158,6 +158,9 @@ class PhoneCallbackController:
             f"✅ 已租到号码{'(复用)' if reused else ''}: {self.activation.phone_number} "
             f"国家={used_country_label}{cost_tip}{op_tip} (activation_id={self.activation.activation_id})"
         )
+        vak_note = str(meta.get("vak_note") or "").strip()
+        if vak_note:
+            self.log(f"💡 {vak_note}")
         self._track_activation()
         return self.activation.phone_number
 

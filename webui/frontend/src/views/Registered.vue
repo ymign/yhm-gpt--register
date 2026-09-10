@@ -3460,6 +3460,11 @@ const isTextDelimiterFormat = computed(() => {
   return ['email_at', 'email_pw', 'email_pw_2fa', 'email_pw_2fa_relay'].includes(f)
 })
 
+const isPw2faExportFormat = computed(() => {
+  const f = exportTargetFmt.value?.id || ''
+  return f === 'email_pw_2fa' || f === 'email_pw_2fa_relay'
+})
+
 const effectiveExportDelimiter = computed(() => {
   if (!isTextDelimiterFormat.value) return '----'
   if (exportDelimiterMode.value === 'custom') {
@@ -3561,11 +3566,24 @@ async function submitExport() {
   try {
     const r = await exportRegistered(payload)
     exportedEmails.value = (r.emails || []).filter(Boolean)
+    const skipped = Number(r.skipped || 0)
+    const skipBit = skipped ? `，已跳过 ${skipped} 个缺少密码或 2FA` : ''
 
-    // 本地将已选中的账号就地标记为已导出（绝不触发 load(false) 重新请求，避免勾选被清空或被纯新未导视图过滤）
+    if (!r.count) {
+      ElMessage.warning(
+        skipped
+          ? `没有可导出的账号：已跳过 ${skipped} 个缺少密码或 2FA`
+          : '没有可导出的账号',
+      )
+      return
+    }
+
+    // 本地只把真正导出去的号标成已导出（缺密码/2FA 被跳过的不打印）
+    const exportedSet = new Set(exportedEmails.value.map((e) => String(e).toLowerCase()))
     const nowSec = Math.floor(Date.now() / 1000)
     if (isSelectedScope) {
       selected.value.forEach((row) => {
+        if (!exportedSet.has(String(row.email || '').toLowerCase())) return
         if (!row.exported_at) row.exported_at = nowSec
         if (note) row.export_note = note
         row.export_fmt_label = fmt.label
@@ -3576,6 +3594,7 @@ async function submitExport() {
       filename: r.filename || 'export.txt',
       format: fmt.label,
       count: r.count || 0,
+      skipped,
       time: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
     }
 
@@ -3584,9 +3603,9 @@ async function submitExport() {
       const parts = r.parts ? ` · 分卷打包 ${r.parts} 个文件` : ''
       const mark = ' · 已记录留痕'
       if (keepModalAfterExport.value) {
-        ElMessage.success(`🎉 已下载 ${r.filename}（${r.count} 个账号${parts}）${mark}！弹窗已保留，可继续选择其他格式导出`)
+        ElMessage.success(`🎉 已下载 ${r.filename}（${r.count} 个账号${parts}${skipBit}）${mark}！弹窗已保留，可继续选择其他格式导出`)
       } else {
-        ElMessage.success(`🎉 已下载 ${r.filename}（${r.count} 个账号${parts}）${mark}（未刷新界面，保留当前勾选）`)
+        ElMessage.success(`🎉 已下载 ${r.filename}（${r.count} 个账号${parts}${skipBit}）${mark}（未刷新界面，保留当前勾选）`)
       }
       return
     }
@@ -3595,7 +3614,7 @@ async function submitExport() {
     exportCount.value = r.count || 0
     exportFilename.value = r.filename || 'export.txt'
     exportLabel.value = r.label || fmt.label
-    ElMessage.success(`🎉 已成功生成 ${r.count} 个账号数据并记录导出留痕`)
+    ElMessage.success(`🎉 已成功生成 ${r.count} 个账号数据并记录导出留痕${skipBit}`)
     exportVisible.value = true
   } catch (e) {
     ElMessage.error('导出失败: ' + e.message)
@@ -7356,11 +7375,11 @@ onUnmounted(() => {
                               v-for="t in oauthPriceTiers"
                               :key="t.id || t.price_str"
                               class="oa-tier-pill"
-                              :class="{ 'is-active': oauthForm.smsProviderIds === t.id || oauthForm.smsMaxPrice === t.price_str || oauthForm.smsMaxPrice === t.price_key }"
+                              :class="{ 'is-active': oauthSmsMeta?.uses_provider_ids ? oauthForm.smsProviderIds === t.id : (oauthForm.smsMaxPrice === t.price_str || oauthForm.smsMaxPrice === t.price_key) }"
                               @click="() => { oauthForm.smsMaxPrice = t.price_key || t.price_str; if (oauthSmsMeta?.uses_provider_ids && t.id) oauthForm.smsProviderIds = t.id }"
                             >
                               <span>{{ t.label }}</span>
-                              <el-icon v-if="oauthForm.smsProviderIds === t.id || oauthForm.smsMaxPrice === t.price_str || oauthForm.smsMaxPrice === t.price_key" class="oa-check-icon">
+                              <el-icon v-if="oauthSmsMeta?.uses_provider_ids ? oauthForm.smsProviderIds === t.id : (oauthForm.smsMaxPrice === t.price_str || oauthForm.smsMaxPrice === t.price_key)" class="oa-check-icon">
                                 <CircleCheckFilled />
                               </el-icon>
                             </div>
@@ -8919,7 +8938,7 @@ onUnmounted(() => {
           <div class="banner-left">
             <span class="success-indicator-dot"></span>
             <span class="banner-msg">
-              已成功下载: <strong>{{ lastExportedInfo.filename }}</strong> ({{ lastExportedInfo.format }})
+              已成功下载: <strong>{{ lastExportedInfo.filename }}</strong> ({{ lastExportedInfo.format }} · {{ lastExportedInfo.count }} 个账号<span v-if="lastExportedInfo.skipped">，跳过 {{ lastExportedInfo.skipped }}</span>)
             </span>
           </div>
           <span class="banner-hint">✨ 弹窗与勾选已保留，可继续切换格式连续导出</span>
@@ -8953,6 +8972,9 @@ onUnmounted(() => {
           </el-select>
           <div v-if="exportTargetFmt?.note" class="field-desc-tip">
             💡 格式说明：{{ exportTargetFmt.note }}
+          </div>
+          <div v-if="isPw2faExportFormat" class="field-desc-tip">
+            ⚠️ 邮箱----密码----2FA：密码或 2FA 缺任一字段的账号整行不导出，也不会打导出留痕。
           </div>
         </div>
 

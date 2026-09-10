@@ -7,9 +7,9 @@
   - `text`     一行一条记录，前端弹窗预览 + 复制 + 下载（`render` 逐行）
   - `download` 整份文档，前端拿到直接下载、不弹预览（`render_all` 返回 bytes）
 
-约定（主人定的）：
-- **不跳行**。勾了几个号就出几行，字段为空就留空，
-  分隔符照样保留（`邮箱----`），方便主人自己在文本里对齐、补齐。
+约定：
+- 普通文本格式默认不跳行：勾了几个号就出几行，字段为空就留空，分隔符保留。
+- **账密+2FA**（`email_pw_2fa` / `email_pw_2fa_relay`）例外：密码或 2FA 缺任一字段，该号整行不导出。
 - 行序 = 「注册结果」表格里的顺序（created_at 倒序），好核对。
 
 注：CPA / SUB2API 的**手动导出已移除**（2026-08-06）。这两个面板都是
@@ -37,6 +37,7 @@ class ExportFormat:
     render: Optional[Callable[[dict], str]] = None          # mode=text：一行记录 -> 一行文本
     render_all: Optional[Callable[[list], bytes]] = None    # mode=download：整批 -> 文件字节
     note: str = ""                                # 下拉菜单里的灰色小字说明
+    require_fields: tuple[str, ...] = ()          # 缺任一字段则整行跳过，不导出
 
 
 def _s(row: dict, key: str) -> str:
@@ -419,8 +420,8 @@ FORMATS: list[ExportFormat] = [
         filename="账号密码.txt",
         render=lambda r, d="----": f'{_s(r, "email")}{d}{_s(r, "password")}',
     ),
-    # 2FA secret 只在绑定那一刻下发一次、服务端取不回，丢了这个号就永久锁死，
-    # 所以必须有能把它带出去的导出格式。没绑 2FA 的号照约定留空、分隔符保留。
+    # 2FA secret 只在绑定那一刻下发一次、服务端取不回，丢了这个号就永久锁死。
+    # 缺密码或缺 2FA 的号整行不导出，避免交出半残凭证。
     ExportFormat(
         id="email_pw_2fa",
         label="邮箱----密码----2FA",
@@ -428,13 +429,14 @@ FORMATS: list[ExportFormat] = [
         render=lambda r, d="----": (
             f'{_s(r, "email")}{d}{_s(r, "password")}{d}{_s(r, "totp_secret")}'
         ),
-        note="secret 仅下发一次，取不回，务必留存",
+        note="缺密码或缺 2FA 的号不导出。secret 仅下发一次，取不回，务必留存",
+        require_fields=("password", "totp_secret"),
     ),
     # 比上面那条多一段中转取件链接。
     # ⚠️ relay_url 不在 registered 表里，是 db.list_registered_full /
     #    list_registered_by_emails 从号池表（outlook_accounts）LEFT JOIN 带出来的。
     #    所以：① 只有 icloud_relay 这类「一号一条取件链接」的号有值；
-    #          ② 号池那行被删掉了就是空 —— 照约定留空、分隔符保留，不跳行。
+    #          ② 号池那行被删掉了取件 url 为空，但仍要求密码+2FA 齐全才导出。
     #    链接里嵌着 token，等于这个邮箱的收件权限，导出来的文件请当密码保管。
     ExportFormat(
         id="email_pw_2fa_relay",
@@ -444,7 +446,8 @@ FORMATS: list[ExportFormat] = [
             f'{_s(r, "email")}{d}{_s(r, "password")}{d}'
             f'{_s(r, "totp_secret")}{d}{_get_relay_or_pickup_url(r)}'
         ),
-        note="取件链接含 token，等同收件权限，妥善保管",
+        note="缺密码或缺 2FA 的号不导出。取件链接含 token，等同收件权限，妥善保管",
+        require_fields=("password", "totp_secret"),
     ),
     # 📦 面板 JSON 格式 (支持直接下载为 CPA / Sub2API 标准 JSON 认证文件)
     ExportFormat(
@@ -506,6 +509,7 @@ def list_formats() -> list[dict]:
             "mode": f.mode,
             "mime": f.mime,
             "note": f.note,
+            "require_fields": list(f.require_fields or ()),
         }
         for f in FORMATS
     ]
@@ -515,10 +519,29 @@ def get_format(fmt_id: str) -> Optional[ExportFormat]:
     return _BY_ID.get((fmt_id or "").strip())
 
 
+def filter_rows_for_format(rows: list, fmt: "ExportFormat | str") -> tuple[list, list]:
+    """按格式必填字段过滤。返回 (保留, 跳过)。
+
+    账密+2FA 要求 password 与 totp_secret 都非空，缺一则整行不导出。
+    """
+    f = get_format(fmt) if isinstance(fmt, str) else fmt
+    required = tuple(getattr(f, "require_fields", ()) or ()) if f is not None else ()
+    if not required:
+        return list(rows or []), []
+    kept, skipped = [], []
+    for r in rows or []:
+        if all(_s(r, k) for k in required):
+            kept.append(r)
+        else:
+            skipped.append(r)
+    return kept, skipped
+
+
 def render_text(rows: list, fmt: "ExportFormat | str", delimiter: str = "----") -> str:
     """mode=text：一行一条记录，支持自定义分割线/分隔符。
 
     单条渲染炸了不整体失败 —— 那一行留空，其余照常导出。
+    声明了 require_fields 的格式（账密+2FA）缺字段直接跳过，不写空行。
     """
     f = get_format(fmt) if isinstance(fmt, str) else fmt
     if f is None:
@@ -527,8 +550,11 @@ def render_text(rows: list, fmt: "ExportFormat | str", delimiter: str = "----") 
         raise RuntimeError(f"格式 {f.id} 不是文本格式")
 
     delim = delimiter if delimiter is not None else "----"
+    required = tuple(f.require_fields or ())
     lines = []
     for r in rows or []:
+        if required and any(not _s(r, k) for k in required):
+            continue
         try:
             lines.append(f.render(r, delim))
         except TypeError:
@@ -559,8 +585,8 @@ def render(rows: list, fmt: "ExportFormat | str", delimiter: str = "----") -> st
 def render_chunked(rows: list, fmt: "ExportFormat | str", chunk_size: int, delimiter: str = "----") -> bytes:
     """分卷导出：每 chunk_size 条一个文件，全部打进一个 zip 返回。
 
-    - text 格式按行分组（行序不变、不跳行），download 格式按行分组后整组
-      走 render_all（如 CPA zip 每卷仍是标准 zip 包，外层再套一层分卷 zip）。
+    - text 格式按行分组（行序不变；账密+2FA 已在调用前过滤掉缺字段的号），
+      download 格式按行分组后整组走 render_all（如 CPA zip 每卷仍是标准 zip 包，外层再套一层分卷 zip）。
     - 卷内文件名沿用格式 filename 的主干：`AT_001.txt`、`AT_002.txt` …
     """
     import io

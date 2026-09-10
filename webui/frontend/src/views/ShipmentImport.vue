@@ -59,14 +59,14 @@ const exportFormats = [
   {
     id: 'email_pw_2fa',
     title: '账号----密码----2FA',
-    desc: '一行一条，分隔符可改。没有 2FA 的号分隔符仍保留',
+    desc: '一行一条，分隔符可改。缺密码或缺 2FA 的号不导出',
     mode: 'text',
     filename: '账号密码2FA.txt',
   },
   {
     id: 'email_pw_2fa_relay',
     title: '账号----密码----2FA----取件url',
-    desc: '额外带 Remail 取件链接，等同收件权限',
+    desc: '额外带 Remail 取件链接。缺密码或缺 2FA 的号不导出',
     mode: 'text',
     filename: '账号密码2FA取件url.txt',
   },
@@ -241,16 +241,26 @@ async function doExport() {
       format: exportFmt.value,
       delimiter: effectiveDelimiter.value,
     })
+    const skipped = Number(r.skipped || 0)
+    const skipBit = skipped ? `，已跳过 ${skipped} 个缺少密码或 2FA` : ''
+    if (!r.count) {
+      ElMessage.warning(
+        skipped
+          ? `没有可导出的账号：已跳过 ${skipped} 个缺少密码或 2FA`
+          : '没有可导出的账号',
+      )
+      return
+    }
     if (r.mode === 'download') {
       saveBlob(b64ToBytes(r.b64), r.filename, r.mime)
-      ElMessage.success(`已下载 ${r.filename}（${r.count} 个账号）`)
+      ElMessage.success(`已下载 ${r.filename}（${r.count} 个账号${skipBit}）`)
       return
     }
     exportText.value = r.text || ''
     exportFilename.value = r.filename || 'export.txt'
     exportLabel.value = r.label || '导出'
     exportVisible.value = true
-    ElMessage.success(`已生成 ${r.count} 行`)
+    ElMessage.success(`已生成 ${r.count} 行${skipBit}`)
   } catch (e) {
     ElMessage.error(e.message || '导出失败')
   } finally {
