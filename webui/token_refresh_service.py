@@ -109,18 +109,11 @@ def refresh_token_fast(
 
 
 def persist_token_refresh_ban(email: str, error: str = "") -> None:
-    """Token 刷新确认官方注销/封禁后，回写账号表 plus_check，供列表筛选「封号」。"""
+    """Token 刷新确认官方注销/封禁后：回写封号，并作废 AT/ST/RT。"""
     em = (email or "").strip().lower()
     if not em:
         return
-    db.update_plus_check(em, {
-        "status": "banned",
-        "label": "封号",
-        "plus_type": "banned",
-        "error": (error or "账号已被 OpenAI 官方注销或封禁")[:240],
-        "source": "token_refresh",
-        "checked_at": time.time(),
-    })
+    db.mark_registered_banned(em, error, source="token_refresh")
 
 
 def refresh_session_token_fast(

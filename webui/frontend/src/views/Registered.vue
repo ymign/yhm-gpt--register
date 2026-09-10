@@ -737,9 +737,32 @@ function loadProxyListToPlus() {
   plusForm.proxies = proxyList.value.join('\n')
 }
 
-const plusRows = computed(() =>
-  Object.values(plusItems.value).map((item) => ({ ...item })),
-)
+const plusFilter = ref('all') // 'all' | 'dead' | 'banned' | 'token_invalid' | 'error' | 'plus_active' | 'plus_eligible' | 'free'
+
+function isPlusDeadRow(row) {
+  const st = String(row?.result?.status || '')
+  return ['banned', 'token_invalid', 'deactivated', 'account_deactivated'].includes(st)
+}
+
+function setPlusFilter(f) {
+  plusFilter.value = plusFilter.value === f ? 'all' : f
+}
+
+const plusRows = computed(() => {
+  const list = Object.values(plusItems.value).map((item) => ({ ...item }))
+  const f = plusFilter.value
+  if (f === 'all') return list
+  if (f === 'dead') return list.filter((i) => isPlusDeadRow(i))
+  if (f === 'banned') return list.filter((i) => i.result && i.result.status === 'banned')
+  if (f === 'token_invalid') return list.filter((i) => i.result && i.result.status === 'token_invalid')
+  if (f === 'error') {
+    return list.filter((i) => i.result && ['error', 'no_at', 'not_found'].includes(i.result.status))
+  }
+  if (f === 'plus_active') return list.filter((i) => i.result && i.result.status === 'plus_active')
+  if (f === 'plus_eligible') return list.filter((i) => i.result && i.result.status === 'plus_eligible')
+  if (f === 'free') return list.filter((i) => i.result && i.result.status === 'free')
+  return list
+})
 
 const plusStats = computed(() => {
   const items = Object.values(plusItems.value)
@@ -826,6 +849,7 @@ async function openPlusCheck(mode) {
   }
 
   plusTargetEmails.value = emails
+  plusFilter.value = 'all'
   if (!plusForm.proxyCountry && form.value.proxyCountry) {
     plusForm.proxyCountry = form.value.proxyCountry
   }
@@ -1028,8 +1052,10 @@ const healthTaskId = ref('')
 const healthEs = ref(null)
 const healthConfigCollapsed = ref(true)
 const healthTargetEmails = ref([])
-const healthItems = ref({})
-const healthLogs = ref([])
+const healthItems = shallowRef({})
+const healthTick = ref(0)
+const healthTableRef = ref(null)
+const healthNeedsReload = ref(false)
 const HEALTH_FORM_KEY = 'gpt_health_check_form_v1'
 const HEALTH_FORM_DEFAULTS = {
   mode: 'plan',
@@ -1072,6 +1098,7 @@ function persistHealthForm() {
 }
 
 watch(healthForm, persistHealthForm, { deep: true })
+watch(healthConfigCollapsed, () => layoutHealthTable())
 watch(
   () => healthForm.mode,
   (m) => {
@@ -1084,7 +1111,7 @@ watch(
         changed = true
       }
     }
-    if (changed) healthItems.value = copy
+    if (changed) setHealthItems(copy)
   },
 )
 
@@ -1097,20 +1124,45 @@ const healthLogLoading = ref(false)
 // ── 验活高性能分页、状态筛选与批量节流更新 (防万号卡死) ──
 const healthPage = ref(1)
 const healthPageSize = ref(50)
-const healthFilter = ref('all') // 'all' | 'running' | 'failed' | 'done' | 'pending'
+const healthFilter = ref('all') // 'all' | 'running' | 'failed' | 'done' | 'pending' | 'dead' | 'banned' | 'token_invalid' | 'plus_active' | 'plus_eligible' | 'free' | 'token_valid'
 const healthSearch = ref('')
 
+function isHealthDeadRow(row) {
+  const st = String(row?.result?.status || '')
+  return ['banned', 'token_invalid', 'deactivated', 'account_deactivated'].includes(st)
+}
+
+function healthResultStatus(row) {
+  return String(row?.result?.status || '')
+}
+
+function setHealthFilter(f) {
+  healthFilter.value = healthFilter.value === f ? 'all' : f
+  healthPage.value = 1
+}
+
 const healthFilteredRows = computed(() => {
+  const _tick = healthTick.value
   const list = Object.values(healthItems.value)
   const kw = healthSearch.value.trim().toLowerCase()
   const f = healthFilter.value
   return list.filter((item) => {
-    if (kw && !item.email.toLowerCase().includes(kw)) return false
+    if (kw && !String(item.email || '').toLowerCase().includes(kw)) return false
     if (f === 'all') return true
     if (f === 'running') return item.status === 'running'
     if (f === 'pending') return item.status === 'pending'
     if (f === 'failed') return isHealthFailedRow(item)
-    if (f === 'done') return item.status === 'done' && !isHealthFailedRow(item)
+    if (f === 'dead') return isHealthDeadRow(item)
+    if (f === 'banned') return healthResultStatus(item) === 'banned'
+    if (f === 'token_invalid') return healthResultStatus(item) === 'token_invalid'
+    if (f === 'plus_active') return healthResultStatus(item) === 'plus_active'
+    if (f === 'pro_active') return ['pro_active', 'pro_20x', 'pro_5x', 'pro_eligible'].includes(healthResultStatus(item))
+    if (f === 'plus_eligible') return healthResultStatus(item) === 'plus_eligible'
+    if (f === 'free') return healthResultStatus(item) === 'free'
+    if (f === 'token_valid') return healthResultStatus(item) === 'token_valid'
+    if (f === 'done') {
+      return item.status === 'done' && !isHealthFailedRow(item) && !isHealthDeadRow(item)
+    }
     return true
   })
 })
@@ -1121,67 +1173,115 @@ const healthDisplayRows = computed(() => {
   return rows.slice(start, start + healthPageSize.value)
 })
 
-const healthRows = computed(() =>
-  Object.values(healthItems.value).map((item) => ({ ...item })),
-)
-
 let healthUpdateTimer = null
-let healthPendingUpdates = {}
-let healthPendingLogs = []
+let healthPendingUpdates = Object.create(null)
+
+function bumpHealthTick() {
+  healthTick.value++
+}
+
+function setHealthItems(map) {
+  healthItems.value = map
+  bumpHealthTick()
+}
+
+function stripHealthItemLogs(raw) {
+  if (!raw || typeof raw !== 'object') return {}
+  const slim = Object.create(null)
+  for (const em of Object.keys(raw)) {
+    const it = raw[em] || {}
+    const row = { ...it }
+    delete row.logs
+    row.email = row.email || em
+    slim[em] = row
+  }
+  return slim
+}
+
+function layoutHealthTable() {
+  nextTick(() => {
+    healthTableRef.value?.doLayout?.()
+  })
+}
 
 function flushHealthUpdates() {
   if (healthUpdateTimer) {
-    cancelAnimationFrame(healthUpdateTimer)
+    clearTimeout(healthUpdateTimer)
     healthUpdateTimer = null
   }
-  if (Object.keys(healthPendingUpdates).length > 0) {
-    const copy = { ...healthItems.value }
-    for (const [em, up] of Object.entries(healthPendingUpdates)) {
-      if (!copy[em]) {
-        copy[em] = { email: em, mode: healthForm.mode, status: 'pending', step_text: '排队中...', result: null, elapsed: 0 }
+  const patches = healthPendingUpdates
+  healthPendingUpdates = Object.create(null)
+  const emails = Object.keys(patches)
+  if (!emails.length) return
+  const map = healthItems.value
+  for (const em of emails) {
+    const up = patches[em]
+    const cur = map[em]
+    if (!cur) {
+      map[em] = {
+        email: em,
+        mode: healthForm.mode,
+        status: 'pending',
+        step_text: '排队中...',
+        result: null,
+        elapsed: 0,
+        ...up,
       }
-      Object.assign(copy[em], up)
+    } else {
+      Object.assign(cur, up)
     }
-    healthItems.value = copy
-    healthPendingUpdates = {}
   }
-  if (healthPendingLogs.length > 0) {
-    healthLogs.value.push(...healthPendingLogs)
-    if (healthLogs.value.length > 200) {
-      healthLogs.value = healthLogs.value.slice(-200)
-    }
-    healthPendingLogs = []
-  }
+  setHealthItems({ ...map })
+  layoutHealthTable()
 }
 
 function scheduleHealthUpdate() {
   if (healthUpdateTimer) return
-  healthUpdateTimer = requestAnimationFrame(() => {
+  healthUpdateTimer = window.setTimeout(() => {
     healthUpdateTimer = null
     flushHealthUpdates()
-  })
+  }, 250)
 }
 
 const healthStats = computed(() => {
+  const _tick = healthTick.value
   const items = Object.values(healthItems.value)
   const tot = items.length || healthTargetEmails.value.length || 0
-  const done = items.filter((i) => i.status === 'done').length
-  const running = items.filter((i) => i.status === 'running').length
-  const pending = items.filter((i) => i.status === 'pending').length
-  const token_valid = items.filter((i) => i.result && i.result.status === 'token_valid').length
-  const plus_active = items.filter((i) => i.result && i.result.status === 'plus_active').length
-  const plus_eligible = items.filter((i) => i.result && i.result.status === 'plus_eligible').length
-  const pro_active = items.filter((i) => i.result && (i.result.status === 'pro_active' || i.result.status === 'pro_20x' || i.result.status === 'pro_5x' || i.result.status === 'pro_eligible')).length
-  const team_active = items.filter((i) => i.result && i.result.status === 'team_active').length
-  const free = items.filter((i) => i.result && i.result.status === 'free').length
-  const banned = items.filter((i) => i.result && i.result.status === 'banned').length
-  const token_invalid = items.filter((i) => i.result && i.result.status === 'token_invalid').length
-  const error = items.filter((i) => isHealthFailedRow(i)).length
-  const percent = tot > 0 ? Math.round((done / tot) * 100) : 0
+  let done = 0
+  let running = 0
+  let pending = 0
+  let token_valid = 0
+  let plus_active = 0
+  let plus_eligible = 0
+  let pro_active = 0
+  let team_active = 0
+  let free = 0
+  let banned = 0
+  let token_invalid = 0
+  let error = 0
+  let dead = 0
+  let doneOk = 0
+  for (const i of items) {
+    if (i.status === 'done') done++
+    else if (i.status === 'running') running++
+    else if (i.status === 'pending') pending++
+    const st = i.result && i.result.status
+    if (st === 'token_valid') token_valid++
+    else if (st === 'plus_active') plus_active++
+    else if (st === 'plus_eligible') plus_eligible++
+    else if (st === 'pro_active' || st === 'pro_20x' || st === 'pro_5x' || st === 'pro_eligible') pro_active++
+    else if (st === 'team_active') team_active++
+    else if (st === 'free') free++
+    else if (st === 'banned') banned++
+    else if (st === 'token_invalid') token_invalid++
+    if (isHealthFailedRow(i)) error++
+    if (isHealthDeadRow(i)) dead++
+    if (i.status === 'done' && !isHealthFailedRow(i) && !isHealthDeadRow(i)) doneOk++
+  }
   return {
-    total: tot, done, running, pending,
+    total: tot, done, running, pending, doneOk, dead,
     token_valid, plus_active, plus_eligible, pro_active, team_active, free, banned, token_invalid, error,
-    percent,
+    percent: tot > 0 ? Math.round((done / tot) * 100) : 0,
   }
 })
 
@@ -1235,14 +1335,13 @@ async function openHealthCheck(scope = 'selected', mode = '') {
 
   if (!healthRunning.value) {
     healthTaskId.value = ''
-    healthLogs.value = []
     healthConfigCollapsed.value = true
     const initMap = Object.create(null)
     const rowMode = healthForm.mode || 'plan'
     for (const em of emails) {
       initMap[em] = { email: em, mode: rowMode, status: 'pending', step_text: '排队中...', result: null, elapsed: 0 }
     }
-    healthItems.value = initMap
+    setHealthItems(initMap)
   }
 
   healthVisible.value = true
@@ -1259,6 +1358,7 @@ function handleHealthCheckCommand(cmd) {
 
 function closeHealthCheck() {
   flushHealthUpdates()
+  stopHealthLogPoll()
   if (healthRunning.value) {
     ElMessage.info('验活任务在后台继续运行，可随时重新打开查看进度')
   }
@@ -1267,6 +1367,10 @@ function closeHealthCheck() {
     healthEs.value = null
   }
   healthVisible.value = false
+  if (healthNeedsReload.value) {
+    healthNeedsReload.value = false
+    load(false)
+  }
 }
 
 async function stopHealthCheckTask() {
@@ -1299,7 +1403,7 @@ async function startHealthCheckTask() {
 
   flushHealthUpdates()
   healthRunning.value = true
-  healthLogs.value = []
+  healthNeedsReload.value = false
   healthPage.value = 1
   healthFilter.value = 'all'
   healthSearch.value = ''
@@ -1309,7 +1413,7 @@ async function startHealthCheckTask() {
   for (const em of emails) {
     initMap[em] = { email: em, mode: healthForm.mode, status: 'pending', step_text: '排队中...', result: null, elapsed: 0 }
   }
-  healthItems.value = initMap
+  setHealthItems(initMap)
 
   let proxiesParam = ''
   let proxyParam = ''
@@ -1338,7 +1442,7 @@ async function startHealthCheckTask() {
         try {
           const snap = JSON.parse(ev.data)
           if (snap.items) {
-            healthItems.value = snap.items
+            setHealthItems(stripHealthItemLogs(snap.items))
           }
         } catch (_) {}
       },
@@ -1348,26 +1452,11 @@ async function startHealthCheckTask() {
           if (msg.email) {
             if (!healthPendingUpdates[msg.email]) healthPendingUpdates[msg.email] = {}
             if (msg.status !== undefined) healthPendingUpdates[msg.email].status = msg.status
+            if (msg.started_at !== undefined) healthPendingUpdates[msg.email].started_at = msg.started_at
             if (msg.step_text !== undefined) healthPendingUpdates[msg.email].step_text = msg.step_text
             if (msg.result !== undefined) healthPendingUpdates[msg.email].result = msg.result
             if (msg.elapsed !== undefined) healthPendingUpdates[msg.email].elapsed = msg.elapsed
             scheduleHealthUpdate()
-          }
-        } catch (_) {}
-      },
-      log: (ev) => {
-        try {
-          const msg = JSON.parse(ev.data)
-          if (msg.line) {
-            healthPendingLogs.push(msg.line)
-            scheduleHealthUpdate()
-            if (healthLogModalVisible.value && currentHealthLogItem.value) {
-              const targetEmail = currentHealthLogItem.value.email
-              if (msg.email ? msg.email === targetEmail : String(msg.line || '').includes(targetEmail)) {
-                healthLogLines.value.push(msg.line)
-                scrollHealthModalLog()
-              }
-            }
           }
         } catch (_) {}
       },
@@ -1378,8 +1467,8 @@ async function startHealthCheckTask() {
           healthEs.value.close()
           healthEs.value = null
         }
+        healthNeedsReload.value = true
         ElMessage.success('批量验活任务已全部执行完成！')
-        load(false)
       },
     }, () => {
       if (!healthRunning.value && healthEs.value) {
@@ -1422,13 +1511,18 @@ function scrollHealthLog() {
   if (box) box.scrollTop = box.scrollHeight
 }
 
-async function openHealthItemLog(row) {
-  currentHealthLogItem.value = row
-  healthLogLines.value = []
-  healthUserScrolledUp.value = false
-  healthLogModalVisible.value = true
-  healthLogLoading.value = true
+let healthLogPollTimer = 0
+function stopHealthLogPoll() {
+  if (healthLogPollTimer) {
+    clearInterval(healthLogPollTimer)
+    healthLogPollTimer = 0
+  }
+}
 
+async function refreshHealthItemLog(silent = false) {
+  const row = currentHealthLogItem.value
+  if (!row) return
+  if (!silent) healthLogLoading.value = true
   try {
     if (healthTaskId.value) {
       const res = await getHealthCheckLog(healthTaskId.value, row.email)
@@ -1436,16 +1530,40 @@ async function openHealthItemLog(row) {
     } else {
       healthLogLines.value = row.logs || ['暂无日志']
     }
-    scrollHealthModalLog(true)
+    scrollHealthModalLog(false)
   } catch (e) {
-    healthLogLines.value = ['读取日志失败: ' + (e.response?.data?.detail || e.message)]
+    if (!silent) healthLogLines.value = ['读取日志失败: ' + (e.response?.data?.detail || e.message)]
   } finally {
-    healthLogLoading.value = false
+    if (!silent) healthLogLoading.value = false
   }
+}
+
+function startHealthLogPoll() {
+  stopHealthLogPoll()
+  if (!healthLogModalVisible.value || !healthRunning.value || !healthTaskId.value) return
+  healthLogPollTimer = window.setInterval(() => refreshHealthItemLog(true), 1000)
+}
+
+watch([healthLogModalVisible, healthRunning], () => {
+  if (healthLogModalVisible.value && healthRunning.value) startHealthLogPoll()
+  else stopHealthLogPoll()
+})
+
+async function openHealthItemLog(row) {
+  currentHealthLogItem.value = row
+  healthLogLines.value = []
+  healthUserScrolledUp.value = false
+  healthLogModalVisible.value = true
+  await refreshHealthItemLog(false)
+  nextTick(() => {
+    scrollHealthModalLog(true)
+  })
+  startHealthLogPoll()
 }
 
 // ── 验活异常重试相关计算与操作 (支持批量与单行重试) ──
 const failedHealthEmails = computed(() => {
+  const _tick = healthTick.value
   return Object.values(healthItems.value)
     .filter((i) => {
       if (i.status === 'error') return true
@@ -1474,16 +1592,16 @@ function retryFailedHealthCheck() {
   for (const em of fails) {
     newMap[em] = { email: em, mode: healthForm.mode, status: 'pending', step_text: '待重试...', result: null, elapsed: 0 }
   }
-  healthItems.value = newMap
+  setHealthItems(newMap)
   startHealthCheckTask()
 }
 
 function retrySingleHealthCheck(row) {
   healthTargetEmails.value = [row.email]
-  healthItems.value = {
+  setHealthItems({
     ...healthItems.value,
     [row.email]: { email: row.email, mode: healthForm.mode, status: 'pending', step_text: '准备重试...', result: null, elapsed: 0 },
-  }
+  })
   startHealthCheckTask()
 }
 
@@ -2132,6 +2250,7 @@ const FEAT_OUTCOME_META = {
   need_phone: { label: '需接码', tone: 'warn' },
   cancelled: { label: '取消', tone: 'mute' },
   not_found: { label: '未找到', tone: 'mute' },
+  banned: { label: '封号', tone: 'bad' },
 }
 
 const FEAT_ERROR_META = {
@@ -2146,6 +2265,7 @@ const FEAT_ERROR_META = {
   token_fail: '换 token 失败',
   cancelled: '取消',
   not_found: '未找到',
+  banned: '封号',
   other: '其他',
 }
 
@@ -2514,6 +2634,7 @@ const oauthStats = computed(() => {
   let pending = 0
   let success = 0
   let need_phone = 0
+  let banned = 0
   let error = 0
   for (const em in map) {
     const i = map[em]
@@ -2525,6 +2646,7 @@ const oauthStats = computed(() => {
       done++
       if (rs === 'success') success++
       else if (rs === 'need_phone') need_phone++
+      else if (rs === 'banned' || rs === 'deactivated') banned++
       else error++
     }
   }
@@ -2535,6 +2657,7 @@ const oauthStats = computed(() => {
     pending,
     success,
     need_phone,
+    banned,
     error,
     percent: tot > 0 ? Math.round((done / tot) * 100) : 0,
   }
@@ -2557,7 +2680,8 @@ const oauthFilteredRows = computed(() => {
     else if (f === 'pending' && st !== 'pending') continue
     else if (f === 'success' && rs !== 'success') continue
     else if (f === 'phone' && rs !== 'need_phone') continue
-    else if (f === 'fail' && !(st === 'done' && rs && rs !== 'success' && rs !== 'need_phone')) continue
+    else if (f === 'banned' && rs !== 'banned' && rs !== 'deactivated') continue
+    else if (f === 'fail' && !(st === 'done' && rs && rs !== 'success' && rs !== 'need_phone' && rs !== 'banned' && rs !== 'deactivated')) continue
     out.push(item)
   }
   return out
@@ -2599,7 +2723,7 @@ const failedOAuthEmails = computed(() => {
   const out = []
   for (const em in map) {
     const i = map[em]
-    if (i.status === 'done' && i.result && i.result.status !== 'success') out.push(i.email)
+    if (i.status === 'done' && i.result && i.result.status !== 'success' && i.result.status !== 'banned' && i.result.status !== 'deactivated') out.push(i.email)
   }
   return out
 })
@@ -5263,6 +5387,7 @@ function cleanupResources() {
     oauthEs.value = null
   }
   stopOAuthLogPoll()
+  stopHealthLogPoll()
   if (securityEs.value) {
     securityEs.value.close()
     securityEs.value = null
@@ -6755,9 +6880,14 @@ onUnmounted(() => {
           </div>
         </el-collapse-transition>
 
-        <!-- KPI 统计看板 -->
+        <!-- KPI 统计看板：点卡片即筛选表格 -->
         <div class="plus-kpi-grid">
-          <div class="plus-kpi-card">
+          <div
+            class="plus-kpi-card clickable-card"
+            :class="{ 'is-filter-active': plusFilter === 'all' }"
+            title="查看全部账号"
+            @click="setPlusFilter('all')"
+          >
             <span class="kpi-label">已检测 / 总数</span>
             <span class="kpi-num">{{ plusStats.done }} / {{ plusStats.total }}</span>
           </div>
@@ -6769,21 +6899,42 @@ onUnmounted(() => {
             <span class="kpi-label">💎 Team 团队版</span>
             <span class="kpi-num text-team">{{ plusStats.team_active }}</span>
           </div>
-          <div class="plus-kpi-card hit-active">
+          <div
+            class="plus-kpi-card hit-active clickable-card"
+            :class="{ 'is-filter-active': plusFilter === 'plus_active' }"
+            title="只看 Plus 生效"
+            @click="setPlusFilter('plus_active')"
+          >
             <span class="kpi-label">★ Plus 生效中</span>
             <span class="kpi-num text-primary">{{ plusStats.plus_active }}</span>
           </div>
-          <div class="plus-kpi-card hit-promo">
+          <div
+            class="plus-kpi-card hit-promo clickable-card"
+            :class="{ 'is-filter-active': plusFilter === 'plus_eligible' }"
+            title="只看 Plus 试用"
+            @click="setPlusFilter('plus_eligible')"
+          >
             <span class="kpi-label">◆ Plus 试用</span>
             <span class="kpi-num text-success">{{ plusStats.plus_eligible }}</span>
           </div>
-          <div class="plus-kpi-card">
+          <div
+            class="plus-kpi-card clickable-card"
+            :class="{ 'is-filter-active': plusFilter === 'free' }"
+            title="只看 Free"
+            @click="setPlusFilter('free')"
+          >
             <span class="kpi-label">Free 普通号</span>
             <span class="kpi-num">{{ plusStats.free }}</span>
           </div>
-          <div class="plus-kpi-card" :class="{ 'card-warn': plusStats.banned > 0 || plusStats.token_invalid > 0 }">
+          <div
+            class="plus-kpi-card clickable-card"
+            :class="{ 'card-warn': plusStats.banned > 0 || plusStats.token_invalid > 0, 'is-filter-active': plusFilter === 'dead' }"
+            title="点这里只看封号和凭证失效"
+            @click="setPlusFilter('dead')"
+          >
             <span class="kpi-label">封号 / 凭证失效</span>
             <span class="kpi-num text-danger">{{ plusStats.banned + plusStats.token_invalid }}</span>
+            <span v-if="plusStats.banned + plusStats.token_invalid > 0" class="kpi-sub-hint">封号 {{ plusStats.banned }} · 失效 {{ plusStats.token_invalid }}</span>
           </div>
           <div class="plus-progress-cell">
             <el-progress
@@ -7674,6 +7825,9 @@ onUnmounted(() => {
             <el-radio-button value="fail">
               <span :class="{ 'text-danger': oauthStats.error > 0 }">失败 ({{ oauthStats.error }})</span>
             </el-radio-button>
+            <el-radio-button value="banned">
+              <span :class="{ 'text-danger': oauthStats.banned > 0 }">封号 ({{ oauthStats.banned }})</span>
+            </el-radio-button>
             <el-radio-button value="phone">需接码 ({{ oauthStats.need_phone }})</el-radio-button>
           </el-radio-group>
           <div class="health-filter-right">
@@ -7725,6 +7879,9 @@ onUnmounted(() => {
                 </span>
                 <span v-else-if="row.result?.status === 'need_phone'" class="oa-status-badge is-warning">
                   📱 需接码 (已跳过)
+                </span>
+                <span v-else-if="row.result?.status === 'banned' || row.result?.status === 'deactivated'" class="oa-status-badge is-danger" :title="row.result?.error || ''">
+                  🚫 {{ row.result?.label || '封号' }}
                 </span>
                 <span v-else class="oa-status-badge is-danger" :title="row.result?.error || ''">
                   ❌ {{ row.result?.label || '失败' }}
@@ -8047,7 +8204,11 @@ onUnmounted(() => {
     <el-dialog
       v-model="healthVisible" width="880px" top="5vh"
       class="oa-custom-dialog plus-dialog health-dialog"
-      :close-on-click-modal="false" @closed="closeHealthCheck"
+      append-to-body
+      :lock-scroll="false"
+      :close-on-click-modal="false"
+      @opened="layoutHealthTable"
+      @closed="closeHealthCheck"
     >
       <template #header>
         <div class="oa-header">
@@ -8127,33 +8288,73 @@ onUnmounted(() => {
           </div>
         </el-collapse-transition>
 
-        <!-- KPI 统计看板 -->
+        <!-- KPI 统计看板：点卡片即筛选表格 -->
         <div class="plus-kpi-grid">
-          <div class="plus-kpi-card">
+          <div
+            class="plus-kpi-card clickable-card"
+            :class="{ 'is-filter-active': healthFilter === 'all' }"
+            title="查看全部账号"
+            @click="setHealthFilter('all')"
+          >
             <span class="kpi-label">已验活 / 总数</span>
             <span class="kpi-num">{{ healthStats.done }} / {{ healthStats.total }}</span>
           </div>
-          <div v-if="healthForm.mode === 'token'" class="plus-kpi-card hit-active">
+          <div
+            v-if="healthForm.mode === 'token'"
+            class="plus-kpi-card hit-active clickable-card"
+            :class="{ 'is-filter-active': healthFilter === 'token_valid' }"
+            title="只看 Token 仍然有效的账号"
+            @click="setHealthFilter('token_valid')"
+          >
             <span class="kpi-label">✅ Token 正常有效</span>
             <span class="kpi-num text-primary">{{ healthStats.token_valid }}</span>
           </div>
-          <div v-if="healthForm.mode === 'plan' && healthStats.pro_active > 0" class="plus-kpi-card hit-pro">
+          <div
+            v-if="healthForm.mode === 'plan' && healthStats.pro_active > 0"
+            class="plus-kpi-card hit-pro clickable-card"
+            :class="{ 'is-filter-active': healthFilter === 'pro_active' }"
+            title="只看 Pro"
+            @click="setHealthFilter('pro_active')"
+          >
             <span class="kpi-label">👑 Pro 账号</span>
             <span class="kpi-num text-pro">{{ healthStats.pro_active }}</span>
           </div>
-          <div v-if="healthForm.mode === 'plan'" class="plus-kpi-card hit-active">
+          <div
+            v-if="healthForm.mode === 'plan'"
+            class="plus-kpi-card hit-active clickable-card"
+            :class="{ 'is-filter-active': healthFilter === 'plus_active' }"
+            title="只看 Plus 订阅生效"
+            @click="setHealthFilter('plus_active')"
+          >
             <span class="kpi-label">★ Plus 订阅生效</span>
             <span class="kpi-num text-primary">{{ healthStats.plus_active }}</span>
           </div>
-          <div v-if="healthForm.mode === 'plan'" class="plus-kpi-card hit-promo">
+          <div
+            v-if="healthForm.mode === 'plan'"
+            class="plus-kpi-card hit-promo clickable-card"
+            :class="{ 'is-filter-active': healthFilter === 'plus_eligible' }"
+            title="只看 Plus 试用"
+            @click="setHealthFilter('plus_eligible')"
+          >
             <span class="kpi-label">◆ Plus 试用</span>
             <span class="kpi-num text-success">{{ healthStats.plus_eligible }}</span>
           </div>
-          <div class="plus-kpi-card" :class="{ 'card-warn': healthStats.banned > 0 || healthStats.token_invalid > 0 }">
+          <div
+            class="plus-kpi-card clickable-card"
+            :class="{ 'card-warn': healthStats.dead > 0, 'is-filter-active': healthFilter === 'dead' || healthFilter === 'banned' || healthFilter === 'token_invalid' }"
+            title="点这里只看封号和凭证失效，不会混在正常完成里"
+            @click="setHealthFilter('dead')"
+          >
             <span class="kpi-label">封号 / 凭证失效</span>
-            <span class="kpi-num text-danger">{{ healthStats.banned + healthStats.token_invalid }}</span>
+            <span class="kpi-num text-danger">{{ healthStats.dead }}</span>
+            <span v-if="healthStats.dead > 0" class="kpi-sub-hint">封号 {{ healthStats.banned }} · 失效 {{ healthStats.token_invalid }}</span>
           </div>
-          <div class="plus-kpi-card">
+          <div
+            class="plus-kpi-card clickable-card"
+            :class="{ 'card-warn': healthStats.error > 0, 'is-filter-active': healthFilter === 'failed' }"
+            title="只看探测异常/失败（网络、429 等），不含封号"
+            @click="setHealthFilter('failed')"
+          >
             <span class="kpi-label">异常 / 失败</span>
             <span class="kpi-num">{{ healthStats.error }}</span>
           </div>
@@ -8173,10 +8374,13 @@ onUnmounted(() => {
           <el-radio-group v-model="healthFilter" size="small" class="health-filter-radio" @change="healthPage = 1">
             <el-radio-button label="all">全部 ({{ healthStats.total }})</el-radio-button>
             <el-radio-button label="running">运行中 ({{ healthStats.running }})</el-radio-button>
+            <el-radio-button label="dead">
+              <span :class="{ 'text-danger': healthStats.dead > 0 }">封号/失效 ({{ healthStats.dead }})</span>
+            </el-radio-button>
             <el-radio-button label="failed">
               <span :class="{ 'text-danger': healthStats.error > 0 }">异常/失败 ({{ healthStats.error }})</span>
             </el-radio-button>
-            <el-radio-button label="done">正常完成 ({{ Math.max(0, healthStats.done - healthStats.error) }})</el-radio-button>
+            <el-radio-button label="done">正常完成 ({{ healthStats.doneOk }})</el-radio-button>
           </el-radio-group>
           <div class="health-filter-right">
             <el-input
@@ -8191,8 +8395,18 @@ onUnmounted(() => {
           </div>
         </div>
 
-        <div class="plus-table-box health-table-box">
-          <el-table :data="healthDisplayRows" size="small" stripe height="330" class="macos-table" :highlight-current-row="false">
+        <div class="plus-table-wrap health-table-wrap">
+          <el-table
+            ref="healthTableRef"
+            :data="healthDisplayRows"
+            row-key="email"
+            size="small"
+            stripe
+            :max-height="healthConfigCollapsed ? 360 : 240"
+            class="macos-table health-live-table"
+            :highlight-current-row="false"
+            v-memo="[healthTick, healthFilter, healthPage, healthPageSize, healthSearch, healthRunning]"
+          >
             <el-table-column prop="email" label="账号邮箱" min-width="220" show-overflow-tooltip>
               <template #default="{ row }">
                 <button
@@ -8224,7 +8438,8 @@ onUnmounted(() => {
                 <el-tag
                   v-else-if="row.result"
                   size="small"
-                  :type="row.result.status === 'token_valid' ? 'success' : row.result.status === 'plus_active' || row.result.status === 'team_active' ? 'primary' : row.result.status === 'plus_eligible' ? 'success' : row.result.status === 'pro_active' || row.result.status === 'pro_20x' || row.result.status === 'pro_5x' ? 'danger' : row.result.status === 'banned' || row.result.status === 'token_invalid' ? 'danger' : 'info'"
+                  :type="row.result.status === 'token_valid' ? 'success' : row.result.status === 'plus_active' || row.result.status === 'team_active' ? 'primary' : row.result.status === 'plus_eligible' ? 'success' : row.result.status === 'pro_active' || row.result.status === 'pro_20x' || row.result.status === 'pro_5x' ? 'danger' : isHealthDeadRow(row) || isHealthFailedRow(row) ? 'danger' : 'info'"
+                  :title="row.result.error || row.result.label || row.result.status"
                 >
                   {{ row.result.label || row.result.status }}
                 </el-tag>
@@ -8234,9 +8449,7 @@ onUnmounted(() => {
 
             <el-table-column label="耗时" width="80" align="center">
               <template #default="{ row }">
-                <span v-if="row.elapsed" class="mono text-muted">{{ row.elapsed }}s</span>
-                <span v-else-if="row.status === 'running'" class="mono text-primary">...</span>
-                <span v-else class="text-muted">—</span>
+                <ElapsedTimer :status="row.status" :started-at="row.started_at" :elapsed="row.elapsed" />
               </template>
             </el-table-column>
 
@@ -12699,6 +12912,12 @@ onUnmounted(() => {
   font-family: var(--el-font-family-monospace, monospace);
   line-height: 1.1;
 }
+.plus-kpi-card .kpi-sub-hint {
+  margin-top: 2px;
+  font-size: 10px;
+  color: var(--el-color-danger);
+  line-height: 1.2;
+}
 .plus-kpi-card.hit-active {
   border-color: var(--el-color-primary-light-5);
   background: var(--el-color-primary-light-9);
@@ -13369,6 +13588,7 @@ onUnmounted(() => {
   box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.3), inset 0 1.5px 3px rgba(15, 23, 42, 0.06) !important;
 }
 
+.health-table-wrap,
 .oauth-table-wrap {
   border-radius: 14px;
   overflow: hidden;
@@ -13376,14 +13596,19 @@ onUnmounted(() => {
   background: #ffffff;
   box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.04);
 }
+.health-table-wrap :deep(.el-table),
 .oauth-table-wrap :deep(.el-table) {
   background: #ffffff !important;
 }
+.health-table-wrap :deep(.el-table__inner-wrapper),
+.health-table-wrap :deep(.el-table__body-wrapper),
+.health-table-wrap :deep(.el-table__header-wrapper),
 .oauth-table-wrap :deep(.el-table__inner-wrapper),
 .oauth-table-wrap :deep(.el-table__body-wrapper),
 .oauth-table-wrap :deep(.el-table__header-wrapper) {
   background: #ffffff !important;
 }
+.health-table-wrap :deep(.el-table__header th.el-table__cell),
 .oauth-table-wrap :deep(.el-table__header th.el-table__cell) {
   background: #f8fafc !important;
   color: var(--text-main) !important;
@@ -13392,14 +13617,17 @@ onUnmounted(() => {
   padding: 8px !important;
   border-bottom: 1px solid #e5e7eb !important;
 }
+.health-table-wrap :deep(.el-table__row td.el-table__cell),
 .oauth-table-wrap :deep(.el-table__row td.el-table__cell) {
   padding: 6px 8px !important;
   border-bottom: 1px solid #f1f5f9 !important;
   background: #ffffff !important;
 }
+.health-table-wrap :deep(.el-table--striped .el-table__body tr.el-table__row--striped td.el-table__cell),
 .oauth-table-wrap :deep(.el-table--striped .el-table__body tr.el-table__row--striped td.el-table__cell) {
   background: #f8fafc !important;
 }
+.health-table-wrap :deep(.el-table__row:hover > td.el-table__cell),
 .oauth-table-wrap :deep(.el-table__row:hover > td.el-table__cell) {
   background: #eff6ff !important;
 }

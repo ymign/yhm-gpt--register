@@ -2090,6 +2090,72 @@ def update_plus_check(email: str, plus_info: dict) -> None:
         )
 
 
+def mark_registered_banned(email: str, error: str = "", source: str = "") -> bool:
+    """官方确认封号：账号状态改封号，并作废 AT / ST / RT / id_token / cookie。
+
+    列表「封号」筛选用 plus_check；AT 列用 access_token 是否为空显示「缺失失效」。
+    """
+    email = (email or "").strip().lower()
+    if not email:
+        return False
+    plus_info = {
+        "status": "banned",
+        "label": "封号",
+        "plus_type": "banned",
+        "error": (error or "账号已被 OpenAI 官方注销或封禁")[:240],
+        "source": source or "oauth",
+        "checked_at": time.time(),
+    }
+    old_pc = {}
+    extra: dict = {}
+    reg_country = ""
+    with _lock:
+        con = _conn()
+        row = con.execute(
+            "SELECT extra_json, reg_country FROM registered WHERE lower(email)=?",
+            (email,),
+        ).fetchone()
+        if not row:
+            return False
+        if row["extra_json"]:
+            try:
+                extra = json.loads(row["extra_json"])
+                if not isinstance(extra, dict):
+                    extra = {}
+            except Exception:
+                extra = {}
+        old_pc = extra.get("plus_check") or {}
+        extra["plus_check"] = plus_info
+        oauth_meta = extra.get("oauth_export") if isinstance(extra.get("oauth_export"), dict) else {}
+        oauth_meta["status"] = "banned"
+        oauth_meta["error"] = plus_info["error"]
+        oauth_meta["updated_at"] = time.time()
+        extra["oauth_export"] = oauth_meta
+        sess = extra.get("session_data")
+        if isinstance(sess, dict):
+            for k in ("accessToken", "sessionToken", "access_token", "session_token"):
+                if k in sess:
+                    sess[k] = ""
+            extra["session_data"] = sess
+        reg_country = row["reg_country"] or ""
+        con.execute(
+            "UPDATE registered SET access_token='', session_token='', refresh_token='', "
+            "id_token='', cookie_header='', at_expires_at=0, oauth_status=?, "
+            "oauth_updated_at=?, extra_json=? WHERE lower(email)=?",
+            ("banned", time.time(), json.dumps(extra, ensure_ascii=False), email),
+        )
+        con.commit()
+        invalidate_registered_caches()
+
+    def _is_dead(pc: dict) -> bool:
+        st = str((pc or {}).get("plus_type") or (pc or {}).get("status") or "").lower()
+        return st in ("banned", "token_invalid", "deactivated", "account_deactivated")
+
+    if _is_dead(plus_info) and not _is_dead(old_pc):
+        note_proxy_dead(str(extra.get("reg_proxy") or ""), reg_country)
+    return True
+
+
 # ──────────────────────── 代理健康度（死号反哺拉黑） ────────────────────────
 # 背景（2026-08 实测数据）：延迟封号按 IP 段连坐 —— US 出口死亡率 3.2% 是
 # JP/PH 的 10~32 倍，且同天同段批量死。按 (代理模板×国家) 记账，死亡率超阈值

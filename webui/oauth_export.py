@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 from urllib.parse import parse_qs, quote, urlencode, urljoin, urlparse
 
+from auth_flow import is_official_account_dead
 from config import Config
 from fingerprint import generate_fingerprint
 from http_client import create_http_session
@@ -382,6 +383,7 @@ def _submit_totp_if_needed(
     if log_fn:
         log_fn(f"[2/6] 🌐 [OpenAI RESP] HTTP {mfa_resp.status_code} {_describe_auth_page(page_type, continue_url, verify_mode)}")
     if mfa_resp.status_code != 200:
+        _raise_if_official_dead(mfa_resp.text or "", mfa_resp.status_code, "mfa/verify")
         raise RuntimeError(f"2FA 验证失败: HTTP {mfa_resp.status_code} - {(mfa_resp.text or '')[:180]}")
     if _is_password_page(page_type, continue_url):
         if log_fn:
@@ -739,6 +741,7 @@ class OAuthExportTask:
         self.stats = {
             "success": 0,
             "need_phone": 0,
+            "banned": 0,
             "error": 0,
             "token_invalid": 0,
         }
@@ -879,6 +882,18 @@ def _proxy_host_of(proxy: str) -> str:
         return p.split("@")[-1].split(":")[0]
 
 
+def _raise_if_official_dead(body: str, status_code: int = 0, where: str = "") -> None:
+    """响应体明确封号时立刻抛，外层回写封号并作废 AT。"""
+    text = str(body or "")
+    if not is_official_account_dead(text):
+        return
+    loc = f"{where} " if where else ""
+    code = f"HTTP {status_code} " if status_code else ""
+    raise RuntimeError(
+        f"账号已被官方封禁/注销 (account_deactivated): {loc}{code}{text[:400]}"
+    )
+
+
 def _phone_prefix(phone: str) -> str:
     digits = re.sub(r"\D+", "", phone or "")
     if not digits:
@@ -891,6 +906,13 @@ def _classify_oauth_error(err: str, status: str = "") -> str:
     st = (status or "").lower()
     if st == "need_phone" or "需接码" in (err or "") or "add_phone" in s:
         return "need_phone"
+    if (
+        st in ("banned", "deactivated")
+        or "account_deactivated" in s
+        or "已被官方封禁" in (err or "")
+        or "已被 openai 官方" in s
+    ):
+        return "banned"
     if "session is no longer valid" in s or "invalid_state" in s:
         return "session_expired"
     if "no_numbers" in s:
@@ -1203,6 +1225,7 @@ def execute_codex_oauth_flow(
     )
     if step_resp.status_code != 200:
         err_msg = (step_resp.text or "")[:200]
+        _raise_if_official_dead(step_resp.text or "", step_resp.status_code, "authorize/continue")
         # 如果遇到 409 invalid_state，自动切换至标准 AuthFlow.run_protocol_login 作为强健兜底
         if step_resp.status_code == 409 or "invalid_state" in err_msg:
             _log("[2/6] ⚠️ 触发 409 invalid_state：保持本号指纹，换同国新 IP 后走协议登录（不再同 IP 换皮）")
@@ -1334,6 +1357,7 @@ def execute_codex_oauth_flow(
             page_type, continue_url, verify_mode = _parse_auth_page(step_data)
             _log(f"[2/6] 🌐 [OpenAI RESP] HTTP {pw_resp.status_code} {_describe_auth_page(page_type, continue_url, verify_mode)}")
             if pw_resp.status_code != 200:
+                _raise_if_official_dead(pw_resp.text or "", pw_resp.status_code, "password/verify")
                 raise RuntimeError(
                     f"密码验证失败: HTTP {pw_resp.status_code} - {(pw_resp.text or '')[:180]}"
                 )
@@ -1446,6 +1470,7 @@ def execute_codex_oauth_flow(
         page_type, continue_url, verify_mode = _parse_auth_page(step_data)
         _log(f"[4/6] 🌐 [OpenAI RESP] HTTP {v_resp.status_code} {_describe_auth_page(page_type, continue_url, verify_mode)}")
         if v_resp.status_code != 200:
+            _raise_if_official_dead(v_resp.text or "", v_resp.status_code, "email-otp/validate")
             raise RuntimeError(f"邮箱 OTP 验证失败: HTTP {v_resp.status_code} - {(v_resp.text or '')[:150]}")
         if _is_otp_page(page_type, continue_url, verify_mode):
             raise RuntimeError("邮箱 OTP 已提交，但仍停在邮箱验证页，验证码可能无效")
@@ -1703,6 +1728,9 @@ def execute_codex_oauth_flow(
                     continue
                 full_resp_text = send_resp.text or ""
                 _log(f"[5/6] 🌐 [OpenAI RESP] HTTP {send_resp.status_code} 完整响应: {full_resp_text[:300]}")
+                if is_official_account_dead(full_resp_text):
+                    ctrl.mark_send_failed("account_banned")
+                    _raise_if_official_dead(full_resp_text, send_resp.status_code, "add-phone/send")
                 err_msg = full_resp_text[:180]
                 err_lc = err_msg.lower()
                 session_dead = (
@@ -1731,6 +1759,9 @@ def execute_codex_oauth_flow(
                         )
                     send_resp = _send_phone()
                     err_msg = (send_resp.text or "")[:180]
+                    if is_official_account_dead(send_resp.text or ""):
+                        ctrl.mark_send_failed("account_banned")
+                        _raise_if_official_dead(send_resp.text or "", send_resp.status_code, "add-phone/send")
                     err_lc = err_msg.lower()
                     session_dead = (
                         send_resp.status_code in (401, 403, 409)
@@ -1792,6 +1823,9 @@ def execute_codex_oauth_flow(
                 )
                 _log(f"[5/6] 🌐 [OpenAI RESP] HTTP {val_resp.status_code} 响应: {(val_resp.text or '')[:120]}")
                 if val_resp.status_code != 200:
+                    if is_official_account_dead(val_resp.text or ""):
+                        ctrl.mark_send_failed("account_banned")
+                        _raise_if_official_dead(val_resp.text or "", val_resp.status_code, "phone-otp/validate")
                     _log(f"[sms] ❌ 手机验证码校验失败 ({val_resp.status_code}): {(val_resp.text or '')[:120]}，取消并退款该号码...")
                     ctrl.mark_send_failed("validate_failed")  # 释放退款
                     time.sleep(2)
@@ -2194,6 +2228,13 @@ def _run_one_oauth_export(task: OAuthExportTask, email: str) -> None:
                 time.sleep(2)
                 continue
             req_ms = int((time.time() - started_ts) * 1000)
+            if is_official_account_dead(err_text):
+                task.add_email_log(email, f"❌ 官方确认账号已封禁/注销 ({req_ms}ms): {err_text[:300]}")
+                db.mark_registered_banned(email, err_text, source="oauth")
+                res = {"status": "banned", "label": "🚫 封号", "error": err_text[:500], "req_ms": req_ms}
+                _persist_oauth_feat("banned", err_text, req_ms, flow_trace)
+                task.mark_done(email, res)
+                return
             task.add_email_log(email, f"OAuth 授权失败 ({req_ms}ms): {err_text}")
             res = {"status": "failed", "label": "授权失败", "error": err_text, "req_ms": req_ms}
             db.update_registered_oauth_status(email, "failed", err_text[:300])
@@ -2222,6 +2263,17 @@ def _run_one_oauth_export(task: OAuthExportTask, email: str) -> None:
     if flow_res.get("status") not in ("success", None, "") and not flow_res.get("access_token") and not flow_res.get("refresh_token"):
         st = str(flow_res.get("status") or "error")
         err = str(flow_res.get("error") or flow_res.get("label") or st)
+        if is_official_account_dead(err) or st in ("banned", "deactivated"):
+            db.mark_registered_banned(email, err, source="oauth")
+            _persist_oauth_feat("banned", err, req_ms, flow_res.get("trace"))
+            task.mark_done(email, {
+                **flow_res,
+                "status": "banned",
+                "label": "🚫 封号",
+                "error": err[:500],
+                "req_ms": req_ms,
+            })
+            return
         _persist_oauth_feat(st, err, req_ms, flow_res.get("trace"))
         task.mark_done(email, {**flow_res, "req_ms": req_ms})
         return

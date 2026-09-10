@@ -133,12 +133,17 @@ class HealthCheckTask:
         with self._lock:
             if email in self.items:
                 self.items[email]["logs"].append(formatted)
-                if len(self.items[email]["logs"]) > 500:
-                    self.items[email]["logs"] = self.items[email]["logs"][-500:]
-        try:
-            self.queue.put({"kind": "log", "email": email, "line": f"[{email}] {line}"})
-        except Exception:
-            pass
+                if len(self.items[email]["logs"]) > 200:
+                    self.items[email]["logs"] = self.items[email]["logs"][-200:]
+        # 日志只落账号条目，不进 SSE。500 号 × 套餐 JSON 逐行推流会把验活弹窗打卡。
+
+    def snapshot_items(self) -> dict:
+        with self._lock:
+            slim = {}
+            for k, v in self.items.items():
+                row = {kk: vv for kk, vv in v.items() if kk != "logs"}
+                slim[k] = row
+            return slim
 
     def set_running(self, email: str, step_text: str = "正在请求 ChatGPT 接口...") -> None:
         now = time.time()
@@ -251,13 +256,11 @@ def _check_token_mode(task: HealthCheckTask, email: str, cred: dict, at: str, pr
 
         if status_code == 200:
             user_data = resp.json() if body.startswith("{") else {}
-            task.add_email_log(email, "【接口回参】HTTP 200 /backend-api/me 响应内容:")
             try:
-                pretty_json = json.dumps(user_data, ensure_ascii=False, indent=2)
-                for json_line in pretty_json.splitlines():
-                    task.add_email_log(email, f"  {json_line}")
+                snip = json.dumps(user_data, ensure_ascii=False)
             except Exception:
-                task.add_email_log(email, f"  {body[:1000]}")
+                snip = body
+            task.add_email_log(email, f"【接口回参】HTTP 200 /backend-api/me: {snip[:800]}")
 
             name = user_data.get("name") or user_data.get("email") or ""
             user_id = user_data.get("id") or ""
@@ -425,13 +428,11 @@ def _check_plan_mode(task: HealthCheckTask, email: str, cred: dict, at: str, pro
             except Exception:
                 data = json.loads(body)
 
-            task.add_email_log(email, "【接口回参】HTTP 200 accounts/check 响应内容:")
             try:
-                pretty_json = json.dumps(data, ensure_ascii=False, indent=2)
-                for json_line in pretty_json.splitlines():
-                    task.add_email_log(email, f"  {json_line}")
+                snip = json.dumps(data, ensure_ascii=False)
             except Exception:
-                task.add_email_log(email, f"  {body[:1000]}")
+                snip = body
+            task.add_email_log(email, f"【接口回参】HTTP 200 accounts/check: {snip[:800]}")
 
             parsed = parse_account_plan(data, body)
             for l in parsed.get("log_lines") or []:

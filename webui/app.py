@@ -2437,7 +2437,7 @@ async def api_health_check_stream(task_id: str, request: Request):
         loop = asyncio.get_event_loop()
         try:
             init_snap = {
-                "items": task.items,
+                "items": task.snapshot_items(),
                 "stats": task.stats,
                 "mode": task.mode,
                 "total": len(task.items),

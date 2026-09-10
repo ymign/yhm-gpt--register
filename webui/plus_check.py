@@ -430,12 +430,9 @@ class PlusCheckTask:
         with self._lock:
             if email in self.items:
                 self.items[email]["logs"].append(formatted)
-                if len(self.items[email]["logs"]) > 500:
-                    self.items[email]["logs"] = self.items[email]["logs"][-500:]
-        try:
-            self.queue.put({"kind": "log", "email": email, "line": f"[{email}] {line}"})
-        except Exception:
-            pass
+                if len(self.items[email]["logs"]) > 200:
+                    self.items[email]["logs"] = self.items[email]["logs"][-200:]
+        # 日志不进 SSE，避免大批量检测把弹窗打卡。点「日志」再拉取。
 
     def set_running(self, email: str) -> None:
         now = time.time()
