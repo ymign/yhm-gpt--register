@@ -1621,6 +1621,7 @@ def save_registered(d: dict) -> None:
                 d.get("session_token", ""),
                 d.get("refresh_token", ""),
                 d.get("id_token", ""),
+                d.get("device_id", ""),
                 d.get("csrf_token", ""),
                 d.get("cookie_header", ""),
                 totp_secret,
