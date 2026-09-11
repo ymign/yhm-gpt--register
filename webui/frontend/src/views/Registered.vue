@@ -2742,19 +2742,6 @@ function onTableSelectionChange(checkedRows) {
   selected.value = Array.from(byEmail.values())
 }
 
-function onTableSelectAll(selection) {
-  if (suppressTableSel) return
-  const pageRows = rows.value || []
-  if (!pageRows.length) return
-  const selectedEmails = new Set((selection || []).map((r) => r?.email).filter(Boolean))
-  const pageAllChecked = pageRows.every((r) => selectedEmails.has(r.email))
-  if (pageAllChecked) {
-    selectAllFiltered()
-  } else {
-    clearSelected()
-  }
-}
-
 function syncTableChecks() {
   const table = tableRef.value
   if (!table || !rows.value.length) return
@@ -6506,10 +6493,9 @@ onUnmounted(() => {
               :class="['octopus-table-grid', `density-${tableDensity}`]"
               @row-click="setFocusedRow"
               @selection-change="onTableSelectionChange"
-              @select-all="onTableSelectAll"
               @sort-change="onTableSort"
             >
-              <!-- 1. 勾选列：表头勾选 = 全选当前筛选（跨页），不必改条/页 -->
+              <!-- 1. 勾选列：表头只勾当前页；跨页全选请用「全选筛选」 -->
               <el-table-column type="selection" width="38" align="center" header-align="center" fixed="left" :reserve-selection="true" />
 
               <!-- 2. 账号与网络出口 (靠左对齐，基线笔直规整) -->
