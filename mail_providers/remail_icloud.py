@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -37,6 +38,37 @@ REMAIL_DEFAULT_BASE_URL = "https://remail.aishop6.com"
 REMAIL_DEFAULT_API_KEY = "rk-a18f1eed-cc59-4eaf-9c5f-ac4d711c758d"
 REMAIL_DEFAULT_PROJECT_ID = 2  # ChatGPT 专属项目 (带 OpenAI 收信与提取规则)
 REMAIL_FALLBACK_PROJECT_IDS = [2]
+_PROJECT_DETAIL_CACHE: dict[tuple[str, int], tuple[float, dict]] = {}
+_PROJECT_DETAIL_LOCK = threading.Lock()
+_PROJECT_DETAIL_TTL = 8.0
+
+
+def _normalize_user_suffix(email_suffix: str) -> str:
+    suf = (email_suffix or "").strip().lower()
+    if suf.startswith("@"):
+        suf = suf[1:].strip()
+    return suf
+
+
+def _order_suffix_candidates(email_suffix: str) -> list[str]:
+    """OpenAPI 下单关键字：无 suffixes 数组的商品（icloud / gmail）要用 type，不是展示用的 icloud.com。"""
+    suf = _normalize_user_suffix(email_suffix) or "icloud.com"
+    if suf in ("icloud", "icloud.com", "apple"):
+        return ["icloud", "icloud.com"]
+    if suf in ("gmail", "gmail.com"):
+        return ["gmail", "gmail.com"]
+    if suf in ("gmail_variant", "gmail变种", "gmail-variant", "variant", "gmail+"):
+        return ["gmail_variant"]
+    if suf in ("outlook", "微软", "microsoft"):
+        return ["outlook.com", "outlook"]
+    if suf in ("domain", "域名", "自定义域名"):
+        return ["domain"]
+    return [suf]
+
+
+def _supply_candidates() -> list[str]:
+    # iCloud 当前库存全是公开池；private_first 在无私有库存时会直接 422。
+    return ["public", "private_first", ""]
 
 
 @register
@@ -211,68 +243,111 @@ class RemailICloudProvider(MailProvider):
         if 2 not in candidate_pids:
             candidate_pids.append(2)
 
+        suffix_tries = _order_suffix_candidates(self.email_suffix)
+        supply_tries = _supply_candidates()
         last_err = None
         for pid in candidate_pids:
-            try:
-                order_data = self._create_order_req(pid, self.email_suffix, self.service_mode)
-                if order_data and order_data.get("deliveryEmail") and order_data.get("serviceToken"):
-                    self.current_email = str(order_data["deliveryEmail"]).strip().lower()
-                    self.current_token = str(order_data["serviceToken"]).strip()
-                    self.current_order_no = str(order_data.get("orderNo") or "").strip()
-                    self.current_receive_until = str(order_data.get("receiveUntil") or "")
+            stock_hint = self._stock_hint(pid, suffix_tries)
+            if stock_hint:
+                logger.info(f"[Remail] 项目 {pid} 库存探测: {stock_hint}")
+            for suf in suffix_tries:
+                for supply in supply_tries:
+                    try:
+                        order_data = self._create_order_req(pid, suf, self.service_mode, supply=supply)
+                        if order_data and order_data.get("deliveryEmail") and order_data.get("serviceToken"):
+                            self.current_email = str(order_data["deliveryEmail"]).strip().lower()
+                            self.current_token = str(order_data["serviceToken"]).strip()
+                            self.current_order_no = str(order_data.get("orderNo") or "").strip()
+                            self.current_receive_until = str(order_data.get("receiveUntil") or "")
 
-                    # 解析截止时间戳
-                    now = time.time()
-                    if self.current_receive_until:
-                        try:
-                            if "T" in self.current_receive_until:
-                                dt = datetime.fromisoformat(self.current_receive_until.replace("Z", "+00:00"))
+                            now = time.time()
+                            if self.current_receive_until:
+                                try:
+                                    if "T" in self.current_receive_until:
+                                        dt = datetime.fromisoformat(self.current_receive_until.replace("Z", "+00:00"))
+                                    else:
+                                        dt = parsedate_to_datetime(self.current_receive_until)
+                                    self.current_expires_at = dt.timestamp()
+                                except Exception:
+                                    self.current_expires_at = now + (3300 if self.service_mode == "purchase" else 540)
                             else:
-                                dt = parsedate_to_datetime(self.current_receive_until)
-                            self.current_expires_at = dt.timestamp()
-                        except Exception:
-                            self.current_expires_at = now + (3300 if self.service_mode == "purchase" else 540)
-                    else:
-                        self.current_expires_at = now + (3300 if self.service_mode == "purchase" else 540)
+                                self.current_expires_at = now + (3300 if self.service_mode == "purchase" else 540)
 
-                    self.is_recycled = False
-                    self.pickup_url = f"{self.base_url}/pickup?email={urllib.parse.quote(self.current_email)}&token={self.current_token}"
-                    self.project_id = pid
-                    pay_amt = order_data.get("payAmount", "30.00")
-                    valid_min = round((self.current_expires_at - now) / 60, 1)
-                    logger.info(
-                        f"[Remail] 邮箱购买成功: email={self.current_email}, "
-                        f"orderNo={self.current_order_no}, project={pid}, "
-                        f"payAmount={pay_amt} 积分, mode={self.service_mode}, "
-                        f"有效时效={valid_min}分钟 (至 {self.current_receive_until or '自动计算'})"
-                    )
-                    return self.current_email
-            except Exception as e:
-                last_err = e
-                logger.warning(f"[Remail] 项目 ID={pid} (后缀={self.email_suffix}) 下单失败: {e}")
+                            self.is_recycled = False
+                            self.pickup_url = f"{self.base_url}/pickup?email={urllib.parse.quote(self.current_email)}&token={self.current_token}"
+                            self.project_id = pid
+                            self.email_suffix = suf
+                            pay_amt = order_data.get("payAmount", "30.00")
+                            valid_min = round((self.current_expires_at - now) / 60, 1)
+                            supply_label = supply or "default"
+                            logger.info(
+                                f"[Remail] 邮箱购买成功: email={self.current_email}, "
+                                f"orderNo={self.current_order_no}, project={pid}, suffix={suf}, "
+                                f"supply={supply_label}, payAmount={pay_amt} 积分, mode={self.service_mode}, "
+                                f"有效时效={valid_min}分钟 (至 {self.current_receive_until or '自动计算'})"
+                            )
+                            return self.current_email
+                    except Exception as e:
+                        last_err = e
+                        logger.warning(
+                            f"[Remail] 下单失败 project={pid} suffix={suf} supply={supply or 'default'}: {e}"
+                        )
 
-        raise RuntimeError(f"Remail 自动购号失败 (项目={self.project_id}, 后缀={self.email_suffix}): {last_err or '库存不足或网络异常'}")
+        raise RuntimeError(
+            f"Remail 自动购号失败 (项目={self.project_id}, 后缀={self.email_suffix}): "
+            f"{last_err or '库存不足或网络异常'}"
+        )
 
-    def _create_order_req(self, project_id: int, email_suffix: str, service_mode: str) -> dict:
-        """执行单个下单请求（严格符合 Remail OpenAPI 规范：仅需 projectId 和 emailSuffix）。"""
-        url = f"{self.base_url}/v1/open/orders?serviceMode={service_mode}&supply=private_first"
-        suf_raw = (email_suffix or "icloud.com").strip().lower()
-        if suf_raw.startswith("@"):
-            suf_raw = suf_raw[1:].strip()
+    def _fetch_project_detail(self, project_id: int) -> dict:
+        cache_key = (self.base_url, int(project_id))
+        now = time.time()
+        with _PROJECT_DETAIL_LOCK:
+            hit = _PROJECT_DETAIL_CACHE.get(cache_key)
+            if hit and now - hit[0] < _PROJECT_DETAIL_TTL:
+                return hit[1]
+        url = f"{self.base_url}/v1/open/projects/{int(project_id)}"
+        headers = {
+            "X-API-KEY": self.api_key,
+            "Accept": "application/json",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        }
+        req = urllib.request.Request(url, headers=headers, method="GET")
+        try:
+            with urllib.request.urlopen(req, timeout=12) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+        except Exception as e:
+            logger.debug(f"[Remail] 拉取项目 {project_id} 详情跳过: {e}")
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        with _PROJECT_DETAIL_LOCK:
+            _PROJECT_DETAIL_CACHE[cache_key] = (now, data)
+        return data
 
-        # 根据 Remail 官方 OpenAPI 规范做兼容别名映射
-        if suf_raw in ("gmail_variant", "gmail变种", "gmail-variant", "variant", "gmail+"):
-            suf_clean = "gmail_variant"
-        elif suf_raw in ("gmail", "gmail.com"):
-            suf_clean = "gmail.com"
-        elif suf_raw in ("icloud", "icloud.com", "apple"):
-            suf_clean = "icloud.com"
-        elif suf_raw in ("domain", "域名", "自定义域名"):
-            suf_clean = "domain"
-        elif suf_raw in ("outlook", "微软", "microsoft"):
-            suf_clean = "outlook"
-        else:
-            suf_clean = suf_raw
+    def _stock_hint(self, project_id: int, suffix_tries: list[str]) -> str:
+        data = self._fetch_project_detail(project_id)
+        products = data.get("products") or []
+        bits = []
+        want = {s.lower() for s in suffix_tries}
+        want |= {"icloud", "icloud.com", "gmail", "gmail.com"}
+        for prod in products:
+            ptype = str(prod.get("type") or "").strip().lower()
+            suffixes = prod.get("suffixes") or []
+            names = [str(s.get("suffix") or "").strip().lower() for s in suffixes if isinstance(s, dict)]
+            if ptype not in want and not (set(names) & want):
+                continue
+            total = int(prod.get("totalAvailable") or prod.get("purchaseAvailable") or 0)
+            pub = int(prod.get("publicAvailable") or prod.get("purchasePublicAvailable") or 0)
+            bits.append(f"type={ptype or '-'} 公开={pub} 合计={total} suffixes={names or ['(无)']}")
+        return "; ".join(bits)
+
+    def _create_order_req(self, project_id: int, email_suffix: str, service_mode: str, supply: str = "public") -> dict:
+        """下单。无 suffixes 的 iCloud/Gmail 商品必须传 type（icloud / gmail），不是 icloud.com。"""
+        qs = [f"serviceMode={urllib.parse.quote(str(service_mode or 'purchase'))}"]
+        if supply:
+            qs.append(f"supply={urllib.parse.quote(str(supply))}")
+        url = f"{self.base_url}/v1/open/orders?{'&'.join(qs)}"
+        suf_clean = _normalize_user_suffix(email_suffix) or "icloud"
 
         body_dict = {
             "projectId": int(project_id),
@@ -605,7 +680,7 @@ def fetch_remail_projects_and_wallet(
                     if s_name not in all_suffixes:
                         all_suffixes.append(s_name)
 
-            # 兼容 Remail OpenAPI 无显式 suffixes 数组的产品线 (按 OpenAPI 官方商品标准规范映射下单关键字)
+            # 无 suffixes 的商品（icloud / gmail）用展示后缀，真实库存来自产品本身
             if not suffixes:
                 if ptype in ("icloud", "apple"):
                     s_name = "icloud.com"

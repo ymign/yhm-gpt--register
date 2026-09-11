@@ -26,6 +26,16 @@ import {
 import FooterToolbar from '@/components/FooterToolbar.vue'
 
 // 统一归一化邮箱后缀（智能兼容 gmail, gamil, gmail变种, icloud 等各种常见写法）
+function typeToDisplaySuffix(ptype) {
+  const t = String(ptype || '').trim().toLowerCase()
+  if (t === 'icloud' || t === 'apple') return 'icloud.com'
+  if (t === 'gmail' || t === 'google') return 'gmail.com'
+  if (t === 'gmail_variant' || t === 'gmailvariant') return 'gmail_variant'
+  if (t === 'domain' || t === 'custom_domain') return 'domain'
+  if (t === 'microsoft' || t === 'outlook') return 'outlook.com'
+  return t
+}
+
 function canonicalizeSuffix(val) {
   const raw = (val || '').trim().toLowerCase()
   if (!raw) return 'gmail.com'
@@ -260,10 +270,13 @@ const currentProjectSuffixOptions = computed(() => {
     if (prod && prod.purchasePrice != null) {
       pPrice = typeof prod.purchasePrice === 'number' ? prod.purchasePrice.toFixed(2) : String(prod.purchasePrice)
     }
-    for (const s of prod?.suffixes || []) {
+    const suffixEntries = (Array.isArray(prod?.suffixes) && prod.suffixes.length)
+      ? prod.suffixes
+      : [{ suffix: typeToDisplaySuffix(ptype), totalAvailable: prod?.totalAvailable || 0, publicAvailable: prod?.publicAvailable || 0 }]
+    for (const s of suffixEntries) {
       const sname = (s?.suffix || '').trim().toLowerCase()
       if (sname && !result.some((r) => r.suffix.toLowerCase() === sname)) {
-        const stock = s?.totalAvailable || prod?.totalAvailable || 0
+        const stock = s?.totalAvailable || s?.publicAvailable || prod?.totalAvailable || 0
         const label = formatSuffixLabel(sname, pPrice, stock, ptype)
         result.push({
           suffix: sname,
@@ -277,9 +290,9 @@ const currentProjectSuffixOptions = computed(() => {
     }
   }
 
-  // 保证核心官方推荐后缀全部齐备
+  // 接口失败时才给占位，不要写假库存
   if (!result.some((r) => r.suffix.toLowerCase() === 'icloud.com')) {
-    result.push({ suffix: 'icloud.com', label: '🍏 icloud.com (苹果隐藏邮箱 · 60.00积分 · 推荐 ★★★★★)', price: '60.00', type: 'icloud', stock: 3894, weight: 100 })
+    result.push({ suffix: 'icloud.com', label: '🍏 icloud.com (苹果隐藏邮箱 · 60.00积分 · 推荐 ★★★★★)', price: '60.00', type: 'icloud', stock: 0, weight: 100 })
   }
   if (!result.some((r) => r.suffix.toLowerCase() === 'gmail_variant')) {
     result.push({ suffix: 'gmail_variant', label: '⚡ gmail_variant (Gmail加号变种 · 10.00积分 · 库1B · 性价比高)', price: '10.00', type: 'gmail_variant', stock: 1000000000, weight: 80 })
