@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 from urllib.parse import parse_qs, quote, urlencode, urljoin, urlparse
 
-from auth_flow import is_official_account_dead
+from auth_flow import is_official_account_dead, is_too_many_phone_attempts
 from config import Config
 from fingerprint import generate_fingerprint
 from http_client import create_http_session
@@ -894,6 +894,20 @@ def _raise_if_official_dead(body: str, status_code: int = 0, where: str = "") ->
     )
 
 
+def _abort_if_too_many_phone(ctrl, body: str, where: str, log_fn) -> None:
+    """官方 too many：退当前号，禁止再租下一个，本轮授权直接失败。"""
+    if not is_too_many_phone_attempts(body):
+        return
+    snip = str(body or "").replace("\n", " ")[:240]
+    try:
+        ctrl.mark_send_failed(snip or "too_many")
+    except Exception:
+        pass
+    if log_fn:
+        log_fn(f"[sms] OpenAI 返回 too many，停止换号，本轮授权失败 ({where})")
+    raise RuntimeError(f"OpenAI 频控 too many，已停止换号 ({where}): {snip}")
+
+
 def _phone_prefix(phone: str) -> str:
     digits = re.sub(r"\D+", "", phone or "")
     if not digits:
@@ -917,6 +931,8 @@ def _classify_oauth_error(err: str, status: str = "") -> str:
         return "session_expired"
     if "no_numbers" in s:
         return "sms_no_numbers"
+    if "too many" in s or "phone_verification_rate_limit" in s:
+        return "phone_rate_limit"
     if "suspicious behavior from phone" in s:
         return "phone_rejected"
     if "接码" in (err or "") or "sms" in s or "短信" in (err or ""):
@@ -1731,6 +1747,7 @@ def execute_codex_oauth_flow(
                 if is_official_account_dead(full_resp_text):
                     ctrl.mark_send_failed("account_banned")
                     _raise_if_official_dead(full_resp_text, send_resp.status_code, "add-phone/send")
+                _abort_if_too_many_phone(ctrl, full_resp_text, "add-phone/send", _log)
                 err_msg = full_resp_text[:180]
                 err_lc = err_msg.lower()
                 session_dead = (
@@ -1762,6 +1779,7 @@ def execute_codex_oauth_flow(
                     if is_official_account_dead(send_resp.text or ""):
                         ctrl.mark_send_failed("account_banned")
                         _raise_if_official_dead(send_resp.text or "", send_resp.status_code, "add-phone/send")
+                    _abort_if_too_many_phone(ctrl, send_resp.text or "", "add-phone/send", _log)
                     err_lc = err_msg.lower()
                     session_dead = (
                         send_resp.status_code in (401, 403, 409)
@@ -1826,6 +1844,7 @@ def execute_codex_oauth_flow(
                     if is_official_account_dead(val_resp.text or ""):
                         ctrl.mark_send_failed("account_banned")
                         _raise_if_official_dead(val_resp.text or "", val_resp.status_code, "phone-otp/validate")
+                    _abort_if_too_many_phone(ctrl, val_resp.text or "", "phone-otp/validate", _log)
                     _log(f"[sms] ❌ 手机验证码校验失败 ({val_resp.status_code}): {(val_resp.text or '')[:120]}，取消并退款该号码...")
                     ctrl.mark_send_failed("validate_failed")  # 释放退款
                     time.sleep(2)

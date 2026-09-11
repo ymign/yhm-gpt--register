@@ -61,6 +61,14 @@ def is_official_account_dead(text: str) -> bool:
     return any(m in s for m in _OFFICIAL_ACCOUNT_DEAD_MARKERS)
 
 
+def is_too_many_phone_attempts(text: str) -> bool:
+    """OpenAI 明确说换号太多：立刻停租，本轮授权/接码失败。"""
+    s = (text or "").lower()
+    if not s:
+        return False
+    return "too many" in s or "phone_verification_rate_limit" in s
+
+
 SESSION_WARNING_BANNER = (
     "!!!!!!!!!!!!!!!!!!!! DO NOT SHARE ANY PART OF THE INFORMATION YOU SEE HERE. "
     "THIS INFORMATION IS SENSITIVE AND CAN GRANT ACCESS TO YOUR ACCOUNT. "
@@ -1451,11 +1459,10 @@ class AuthFlow:
                 logger.info("[sms] ✅ POST add-phone/send 成功 (phone=%s)", phone)
             except Exception as e:
                 err_text = str(e)
-                if "too many phone verification" in err_text.lower() \
-                        or "phone_verification_rate_limit" in err_text.lower():
+                if is_too_many_phone_attempts(err_text):
                     logger.warning(
-                        "⚠️ OpenAI 频控: 这个 outlook 号/IP 已累积太多 add-phone 请求，"
-                        "建议换 outlook 号或换代理 IP 后重试。本次放弃 add-phone（session_token 仍可保留）"
+                        "[sms] OpenAI 返回 too many，停止换号，本轮接码失败: %s",
+                        err_text[:240],
                     )
                     ctrl.mark_send_failed(err_text)
                     last_err = e
