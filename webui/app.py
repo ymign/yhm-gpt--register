@@ -71,6 +71,16 @@ try:
 except Exception as _e:
     logging.getLogger("webui").warning(f"[startup] 接码超时兜底启动失败: {_e}")
 
+try:
+    from . import sms_phone_ledger as _sms_ledger
+    _led = _sms_ledger.warmup()
+    logging.getLogger("webui").info(
+        f"[startup] 号码台账 拒号={_led.get('rejected')} 已用={_led.get('used')} "
+        f"{_led.get('load_ms')}ms"
+    )
+except Exception as _e:
+    logging.getLogger("webui").warning(f"[startup] 号码台账预热失败: {_e}")
+
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 app = FastAPI(title="GPT Outlook Register WebUI", docs_url=None, redoc_url=None)
@@ -2642,6 +2652,13 @@ class StartOAuthExportReq(BaseModel):
     sms_except_provider_ids: Optional[str] = Field("", description="排除的供应商ID(如3327)")
     sms_max_attempts: int = Field(3, ge=1, le=10, description="最多换号尝试次数")
     sms_timeout: int = Field(80, ge=20, le=300, description="单号等待短信超时秒数")
+    target_count: int = Field(0, ge=0, le=100000, description="授权成功目标数，0=不限")
+    overshoot_slack: int = Field(2, ge=0, le=5, description="目标将满时额外允许的在途余量")
+    oauth_max_tries: int = Field(3, ge=1, le=10, description="单号累计授权次数上限")
+    sms_routes: Optional[list] = Field(None, description="Vak 线路表 [{country, price, enabled, priority}]")
+    sms_route_mode: Optional[str] = Field("priority", description="priority=优先清单 / rotate=轮转摊开")
+    sms_empty_cooldown_sec: int = Field(45, ge=5, le=600, description="无货或台账连跳后该线路冷却秒数")
+    sms_ledger_skip_streak: int = Field(2, ge=1, le=20, description="台账拒号连跳几次后换线")
 
 
 def _safe_get_oauth_export(q, timeout: float = 2.0):
@@ -2725,7 +2742,17 @@ def api_oauth_export_start(req: StartOAuthExportReq):
         "sms_except_provider_ids": req_except_ids,
         "sms_max_attempts": max(1, min(10, req.sms_max_attempts)),
         "sms_timeout": max(20, min(300, req.sms_timeout)),
+        "sms_routes": req.sms_routes or [],
+        "sms_route_mode": (req.sms_route_mode or "priority").strip() or "priority",
+        "sms_max_rent_attempts": 12,
+        "sms_empty_cooldown_sec": int(req.sms_empty_cooldown_sec if req.sms_empty_cooldown_sec is not None else 45),
+        "sms_ledger_skip_streak": int(req.sms_ledger_skip_streak if req.sms_ledger_skip_streak is not None else 2),
     }
+    if sms_config["sms_routes"]:
+        first = next((r for r in sms_config["sms_routes"] if isinstance(r, dict) and r.get("enabled", True) and r.get("country")), None)
+        if first and str(first.get("country") or "").isalpha():
+            sms_country = str(first.get("country")).strip().lower()
+            sms_config["sms_country"] = sms_country
 
     config = {
         "proxies": proxies,
@@ -2733,13 +2760,36 @@ def api_oauth_export_start(req: StartOAuthExportReq):
         "workers": max(1, min(20, req.workers)),
         "timeout": float(req.timeout or 45.0),
         "sms_config": sms_config,
+        "target_count": int(req.target_count or 0),
+        "overshoot_slack": int(req.overshoot_slack if req.overshoot_slack is not None else 2),
+        "oauth_max_tries": int(req.oauth_max_tries or 3),
+        "sms_routes": sms_config["sms_routes"],
+        "sms_route_mode": sms_config["sms_route_mode"],
+        "sms_empty_cooldown_sec": sms_config["sms_empty_cooldown_sec"],
+        "sms_ledger_skip_streak": sms_config["sms_ledger_skip_streak"],
     }
     try:
         task_id = oauth_export.start(emails, config)
     except ValueError as e:
         raise HTTPException(400, str(e))
-    logger.info(f"[oauth_export] 任务 {task_id} 启动: {len(emails)} 个账号, workers={config['workers']}, sms_enabled={req.sms_enabled}")
-    return {"ok": True, "task_id": task_id, "taskId": task_id, "total": len(emails)}
+    task = oauth_export.get_task(task_id)
+    pick_stats = (task.pick_stats if task else {}) or {}
+    queued_n = int(pick_stats.get("queued") or 0)
+    logger.info(
+        f"[oauth_export] 任务 {task_id} 启动: 候选 {len(emails)} → 排队 {queued_n}, "
+        f"workers={config['workers']}, target={config['target_count']}, sms_enabled={req.sms_enabled}"
+    )
+    return {
+        "ok": True,
+        "task_id": task_id,
+        "taskId": task_id,
+        "total": queued_n,
+        "queued_count": queued_n,
+        "queued": [],
+        "pick_stats": pick_stats,
+        "target_count": config["target_count"],
+        "pool_total": int(getattr(task, "pool_total", 0) or queued_n) if task else queued_n,
+    }
 
 
 class RetryOAuthExportReq(BaseModel):
@@ -2930,6 +2980,20 @@ def api_oauth_export_download_sub2(task_id: str, emails: str = ""):
         media_type="application/json",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@app.get("/api/registered/oauth_export/sms_ledger")
+def api_oauth_sms_phone_ledger(
+    outcome: str = "",
+    country: str = "",
+    limit: int = 100,
+    offset: int = 0,
+):
+    """接码号码台账：国家、打码号码、结果、时间。outcome=rejected|used。"""
+    data = db.list_sms_phone_ledger(
+        outcome=outcome, country=country, limit=limit, offset=offset,
+    )
+    return {"ok": True, **data}
 
 
 @app.get("/api/registered/oauth_export/features")

@@ -14,7 +14,7 @@ import {
   CircleCheck, Document, Message, Iphone, Share,
   Loading, Select, CircleClose, Refresh, CopyDocument,
   Bell, Close, Download, Delete, Link, CreditCard, UserFilled,
-  Box, Timer,
+  Box, Timer, Notebook,
 } from '@element-plus/icons-vue'
 
 import App from './App.vue'
@@ -26,7 +26,7 @@ const ICONS = {
   CircleCheck, Document, Message, Iphone, Share,
   Loading, Select, CircleClose, Refresh, CopyDocument,
   Bell, Close, Download, Delete, Link, CreditCard, UserFilled,
-  Box, Timer,
+  Box, Timer, Notebook,
 }
 
 const app = createApp(App)

@@ -34,7 +34,9 @@ from http_client import create_http_session
 from mail_providers import create_mail_provider, get_provider_class
 from sentinel import get_sentinel_token
 from . import db
+from . import sms_phone_ledger
 from .proxy_util import new_proxy_session_id, resolve_target_country, route_proxy_country
+from .sms_route import SmsRouteScheduler, normalize_sms_routes
 
 logger = logging.getLogger(__name__)
 
@@ -719,22 +721,10 @@ class OAuthExportTask:
         self.started_at = time.time()
         self.finished_at = 0.0
 
-        self.items: dict[str, dict] = {
-            e: {
-                "email": e,
-                "status": "pending",
-                "step": "pending",
-                "step_text": "待处理",
-                "result": None,
-                "started_at": 0.0,
-                "finished_at": 0.0,
-                "elapsed": 0.0,
-                "logs": [],
-                "cpa": None,
-                "sub2api": None,
-            }
-            for e in emails
-        }
+        # 号池只进 work_queue，表格按开工增量建行。预建上千 pending 会把快照和前端一起拖死。
+        self.pool_total = len(emails or [])
+        self.work_queue = None
+        self.items: dict[str, dict] = {}
         self.queue: queue.Queue = queue.Queue()
         self.cancelled = False
         self.done_count = 0
@@ -744,8 +734,47 @@ class OAuthExportTask:
             "banned": 0,
             "error": 0,
             "token_invalid": 0,
+            "skipped": 0,
         }
         self._lock = threading.Lock()
+        self.target_count = max(0, int(config.get("target_count") or 0))
+        self.overshoot_slack = max(0, min(5, int(config.get("overshoot_slack") or 2)))
+        self._success_count = 0
+        self._in_flight = 0
+        self.pick_stats = config.get("pick_stats") or {}
+        self.sms_scheduler = None
+        self.force_run = False
+
+    def _blank_item(self, email: str) -> dict:
+        return {
+            "email": email,
+            "status": "pending",
+            "step": "pending",
+            "step_text": "待处理",
+            "result": None,
+            "started_at": 0.0,
+            "finished_at": 0.0,
+            "elapsed": 0.0,
+            "logs": [],
+            "cpa": None,
+            "sub2api": None,
+        }
+
+    def ensure_item(self, email: str) -> None:
+        if not email:
+            return
+        with self._lock:
+            if email not in self.items:
+                self.items[email] = self._blank_item(email)
+
+    def queue_remaining(self) -> int:
+        q = self.work_queue
+        if q is None:
+            return 0
+        try:
+            return int(q.qsize())
+        except Exception:
+            return 0
 
     def next_proxy(self) -> str:
         if not self.proxies:
@@ -776,12 +805,14 @@ class OAuthExportTask:
 
     def set_running(self, email: str, step_text: str = "[1/6] 建立会话") -> None:
         now = time.time()
+        self.ensure_item(email)
         with self._lock:
             if email in self.items:
                 self.items[email]["status"] = "running"
                 self.items[email]["step"] = "init"
                 self.items[email]["step_text"] = step_text
                 self.items[email]["started_at"] = now
+            in_flight = self._in_flight
         self.queue.put({
             "kind": "progress",
             "email": email,
@@ -789,6 +820,8 @@ class OAuthExportTask:
             "step": "init",
             "step_text": step_text,
             "started_at": now,
+            "in_flight": in_flight,
+            "queue_remaining": self.queue_remaining(),
         })
 
     def set_step(self, email: str, step: str, step_text: str) -> None:
@@ -809,13 +842,19 @@ class OAuthExportTask:
 
     def mark_done(self, email: str, result: dict) -> None:
         now = time.time()
+        st = str(result.get("status") or "error")
+        count_try = bool(result.get("count_try", True)) and st not in ("skipped", "not_found")
+        claimed = bool(result.get("claimed", True))
         with self._lock:
             self.done_count += 1
-            st = result.get("status") or "error"
             if st in self.stats:
                 self.stats[st] += 1
             else:
                 self.stats["error"] += 1
+            if st in ("success", "success_phone", "success_direct"):
+                self._success_count += 1
+            if claimed:
+                self._in_flight = max(0, self._in_flight - 1)
 
             if email in self.items:
                 it = self.items[email]
@@ -827,6 +866,12 @@ class OAuthExportTask:
                 it["elapsed"] = round(now - (it["started_at"] or self.started_at), 1)
                 it["step_text"] = result.get("label") or "完成"
 
+        if count_try:
+            try:
+                db.finish_oauth_try(email, st)
+            except Exception:
+                pass
+
         self.queue.put({
             "kind": "progress",
             "email": email,
@@ -834,12 +879,61 @@ class OAuthExportTask:
             "result": result,
             "step_text": result.get("label") or "完成",
             "elapsed": self.items[email]["elapsed"] if email in self.items else 0,
+            "success_count": self._success_count,
+            "target_count": self.target_count,
+            "in_flight": self._in_flight,
+            "queue_remaining": self.queue_remaining(),
         })
+
+    def claim_slot(self, workers: int) -> str:
+        with self._lock:
+            if self.cancelled:
+                return "stop"
+            if self.force_run:
+                self._in_flight += 1
+                return "go"
+            target = int(self.target_count or 0)
+            if target <= 0:
+                self._in_flight += 1
+                return "go"
+            remaining = target - self._success_count
+            if remaining <= 0:
+                return "stop"
+            slack = self.overshoot_slack
+            cap = max(remaining, min(max(1, workers), remaining + slack))
+            if self._in_flight >= cap:
+                return "wait"
+            self._in_flight += 1
+            return "go"
+
+    def release_slot(self) -> None:
+        with self._lock:
+            self._in_flight = max(0, self._in_flight - 1)
+
+    def drain_unstarted(self, email_queue: queue.Queue) -> None:
+        leftover = 0
+        while True:
+            try:
+                email_queue.get_nowait()
+                leftover += 1
+            except queue.Empty:
+                break
+            try:
+                email_queue.task_done()
+            except Exception:
+                pass
+        if leftover:
+            logger.info("[oauth_export] 目标已满或任务结束，丢弃未开始 %s 个号", leftover)
 
 
 _tasks: dict[str, OAuthExportTask] = {}
 _tasks_lock = threading.Lock()
 _MAX_HISTORY_TASKS = 20
+
+
+def get_task(task_id: str):
+    with _tasks_lock:
+        return _tasks.get(task_id)
 
 
 def _prune_tasks_locked() -> None:
@@ -906,6 +1000,48 @@ def _abort_if_too_many_phone(ctrl, body: str, where: str, log_fn) -> None:
     if log_fn:
         log_fn(f"[sms] OpenAI 返回 too many，停止换号，本轮授权失败 ({where})")
     raise RuntimeError(f"OpenAI 频控 too many，已停止换号 ({where}): {snip}")
+
+
+def _openai_phone_reject_kind(text: str) -> str:
+    s = (text or "").lower()
+    if not s:
+        return ""
+    if "too many" in s or "phone_verification_rate_limit" in s:
+        return "too_many"
+    if "already" in s and ("use" in s or "taken" in s or "verified" in s):
+        return "already_in_use"
+    if "blocked_phone" in s or "invalid_phone" in s or "disallowed_phone" in s:
+        return "invalid"
+    if "suspicious" in s or "similar to" in s:
+        return "suspicious"
+    return ""
+
+
+def _apply_sms_route(ctrl, route: dict) -> None:
+    country = str((route or {}).get("country") or "").strip().lower()
+    price = str((route or {}).get("price") or "").strip()
+    lock = bool((route or {}).get("lock")) and bool(price)
+    if country:
+        ctrl.country = country
+        ctrl.auto_select_country = False
+        ctrl.config["sms_country"] = country
+    provider = getattr(ctrl, "provider", None)
+    if provider is None:
+        try:
+            provider = ctrl._provider()
+        except Exception:
+            provider = None
+    if provider is None:
+        return
+    if country and hasattr(provider, "default_country"):
+        provider.default_country = country
+    if hasattr(provider, "max_price"):
+        try:
+            provider.max_price = float(price) if price else -1
+        except (TypeError, ValueError):
+            provider.max_price = -1
+    if hasattr(provider, "lock_exact"):
+        provider.lock_exact = lock
 
 
 def _phone_prefix(phone: str) -> str:
@@ -1666,14 +1802,35 @@ def execute_codex_oauth_flow(
         verified_phone = ""
         last_sms_err = ""
         tried_phones = 0
+        sms_scheduler = account_info.get("_sms_scheduler")
+        use_routes = bool(sms_scheduler) and scheme == "iso2"
+        max_vak_rents = max(max_attempts, min(12, int(sms_cfg.get("sms_max_rent_attempts") or 12)))
+        openai_submits = 0
+        vak_rents = 0
+        current_route = None
         try:
-            for attempt in range(1, max_attempts + 1):
+            while openai_submits < max_attempts and vak_rents < max_vak_rents:
                 if _should_stop():
                     ctrl.mark_send_failed("task_cancelled")
                     raise RuntimeError("任务已停止，已取消未完成的接码号码")
-                remain_cnt = max_attempts - attempt
-                _step("5_sms_rent", f"[5/6] 租号中 ({attempt}/{max_attempts} 剩{remain_cnt})")
-                _log(f"[sms] 🔁 正在租用手机号 (第 {attempt}/{max_attempts} 个，剩余备选 {remain_cnt} 次)...")
+                remain_cnt = max_attempts - openai_submits
+                if use_routes:
+                    current_route = sms_scheduler.next_route()
+                    if not current_route:
+                        last_sms_err = "线路表当前全部无货"
+                        _log("[sms] 线路表当前全部无货，停止租号")
+                        break
+                    _apply_sms_route(ctrl, current_route)
+                    _step("5_sms_rent", f"[5/6] 租号 {current_route.get('country')}@{current_route.get('price') or '不限'} ({openai_submits}/{max_attempts})")
+                    _log(
+                        f"[sms] 🔁 租号 {current_route.get('country')}@"
+                        f"{current_route.get('price') or '不限价'} "
+                        f"(OpenAI {openai_submits}/{max_attempts}, Vak {vak_rents}/{max_vak_rents})"
+                    )
+                else:
+                    current_route = {"country": primary_country, "price": str(exact_p if exact_p > 0 else "")}
+                    _step("5_sms_rent", f"[5/6] 租号中 ({openai_submits + 1}/{max_attempts} 剩{remain_cnt})")
+                    _log(f"[sms] 🔁 正在租用手机号 (第 {openai_submits + 1}/{max_attempts} 个，剩余备选 {remain_cnt} 次)...")
                 phone = ""
                 try:
                     phone = ctrl.get_phone()
@@ -1682,17 +1839,46 @@ def execute_codex_oauth_flow(
                     _log(f"[sms] 租号失败: {e}")
                     err_l = last_sms_err.lower()
                     if any(x in last_sms_err for x in ("无货", "无号", "暂无号码")) or "nonumber" in err_l:
+                        if use_routes and current_route:
+                            sms_scheduler.mark_empty(
+                                current_route.get("country") or "",
+                                current_route.get("price") or "",
+                                "noNumber",
+                            )
+                            vak_rents += 1
+                            continue
                         _log("[sms] 当前国家/档位没有号码，不再用同一价格空转换号")
                         break
                     time.sleep(2)
+                    vak_rents += 1
                     continue
                 if not phone:
                     last_sms_err = "接码平台未返回有效手机号"
+                    vak_rents += 1
                     time.sleep(2)
                     continue
+                vak_rents += 1
+                skip_why = sms_phone_ledger.should_skip(phone)
+                if skip_why:
+                    _log(f"[sms] 跳过已记录号码 {phone[:6]}****，未提交 OpenAI ({skip_why})，释放重租")
+                    ctrl.mark_send_failed(f"skipped_{skip_why}")
+                    if use_routes and current_route and sms_scheduler:
+                        rotated = sms_scheduler.note_ledger_skip(
+                            current_route.get("country") or "",
+                            current_route.get("price") or "",
+                        )
+                        if rotated:
+                            _log("[sms] 当前线路台账连跳，改走下一条")
+                    continue
+                sms_phone_ledger.mark_inflight(phone)
+                if use_routes and current_route and sms_scheduler:
+                    sms_scheduler.note_ledger_ok(
+                        current_route.get("country") or "",
+                        current_route.get("price") or "",
+                    )
                 tried_phones += 1
 
-                _step("5_sms_send", f"[5/6] 发送短信: {phone} (第{attempt}/{max_attempts}号)")
+                _step("5_sms_send", f"[5/6] 发送短信: {phone} (OpenAI {openai_submits + 1}/{max_attempts})")
                 _log(f"[sms] 租到手机号: {phone}，正在向 OpenAI 提交发送验证短信...")
                 phone_headers = dict(post_headers)
                 phone_headers["Referer"] = "https://auth.openai.com/add-phone"
@@ -1736,17 +1922,22 @@ def execute_codex_oauth_flow(
                 _log(f"[5/6] 🌐 [OpenAI REQ] POST /api/accounts/add-phone/send (phone_number={phone}, channel=sms)")
                 try:
                     send_resp = _send_phone()
+                    openai_submits += 1
                 except Exception as e:
                     last_sms_err = f"add-phone/send 网络异常: {e}"
                     _log(f"[sms] {last_sms_err}，取消本号")
+                    sms_phone_ledger.clear_inflight(phone)
                     ctrl.mark_send_failed(last_sms_err)
                     time.sleep(1)
                     continue
                 full_resp_text = send_resp.text or ""
                 _log(f"[5/6] 🌐 [OpenAI RESP] HTTP {send_resp.status_code} 完整响应: {full_resp_text[:300]}")
                 if is_official_account_dead(full_resp_text):
+                    sms_phone_ledger.clear_inflight(phone)
                     ctrl.mark_send_failed("account_banned")
                     _raise_if_official_dead(full_resp_text, send_resp.status_code, "add-phone/send")
+                if is_too_many_phone_attempts(full_resp_text):
+                    sms_phone_ledger.clear_inflight(phone)
                 _abort_if_too_many_phone(ctrl, full_resp_text, "add-phone/send", _log)
                 err_msg = full_resp_text[:180]
                 err_lc = err_msg.lower()
@@ -1769,6 +1960,7 @@ def execute_codex_oauth_flow(
                         "[sms] 绑手机页重开",
                     )
                     if _page_kind_from_url(opened) in ("登录页", "密码页"):
+                        sms_phone_ledger.clear_inflight(phone)
                         ctrl.mark_send_failed("session_expired")
                         raise RuntimeError(
                             "绑手机时登录会话已超时失效（打开 add-phone 回到登录页）。"
@@ -1777,8 +1969,11 @@ def execute_codex_oauth_flow(
                     send_resp = _send_phone()
                     err_msg = (send_resp.text or "")[:180]
                     if is_official_account_dead(send_resp.text or ""):
+                        sms_phone_ledger.clear_inflight(phone)
                         ctrl.mark_send_failed("account_banned")
                         _raise_if_official_dead(send_resp.text or "", send_resp.status_code, "add-phone/send")
+                    if is_too_many_phone_attempts(send_resp.text or ""):
+                        sms_phone_ledger.clear_inflight(phone)
                     _abort_if_too_many_phone(ctrl, send_resp.text or "", "add-phone/send", _log)
                     err_lc = err_msg.lower()
                     session_dead = (
@@ -1791,6 +1986,7 @@ def execute_codex_oauth_flow(
                 if send_resp.status_code != 200:
                     if session_dead:
                         _log(f"[sms] 会话已失效 HTTP {send_resp.status_code}: {err_msg}，立即停止租号并释放退款")
+                        sms_phone_ledger.clear_inflight(phone)
                         ctrl.mark_send_failed("session_expired")
                         raise RuntimeError(
                             f"OpenAI 绑手机接口会话已超时失效 (HTTP {send_resp.status_code})。"
@@ -1798,12 +1994,30 @@ def execute_codex_oauth_flow(
                         )
                     last_sms_err = f"OpenAI 拒绝该手机号 HTTP {send_resp.status_code}: {err_msg}"
                     _log(f"[sms] {last_sms_err}，退号换下一个")
+                    kind = _openai_phone_reject_kind(err_msg)
+                    if kind:
+                        try:
+                            sms_phone_ledger.remember(
+                                phone,
+                                "rejected_openai",
+                                country=str((current_route or {}).get("country") or ""),
+                                price_tier=str((current_route or {}).get("price") or ""),
+                                activation_id=str(getattr(getattr(ctrl, "activation", None), "activation_id", "") or ""),
+                                reject_reason=kind,
+                                submitted_to_openai=True,
+                                email=email,
+                                task_id=str(account_info.get("_oauth_task_id") or ""),
+                            )
+                        except Exception:
+                            sms_phone_ledger.clear_inflight(phone)
+                    else:
+                        sms_phone_ledger.clear_inflight(phone)
                     ctrl.mark_send_failed(err_msg)
                     time.sleep(2)
                     continue
 
                 ctrl.mark_send_succeeded()
-                _step("5_sms_wait", f"[5/6] 等收短信: {phone} (第{attempt}/{max_attempts}号 剩{remain_cnt})")
+                _step("5_sms_wait", f"[5/6] 等收短信: {phone} (OpenAI {openai_submits}/{max_attempts})")
                 _log(f"[sms] 📩 短信已成功发送至 {phone}，正在轮询等待验证码 (timeout={per_phone_timeout}s)...")
 
                 sms_code = ""
@@ -1814,16 +2028,19 @@ def execute_codex_oauth_flow(
                     )
                 except Exception as e:
                     _log(f"[sms] ⏱️ 等待短信超时或异常: {e}，立即取消并极速换号...")
+                    sms_phone_ledger.clear_inflight(phone)
                     ctrl.mark_send_failed("timeout_no_sms")
                     time.sleep(1)
                     continue
 
                 if _should_stop():
+                    sms_phone_ledger.clear_inflight(phone)
                     ctrl.mark_send_failed("task_cancelled")
                     raise RuntimeError("任务已停止，已取消未完成的接码号码")
 
                 if not sms_code:
                     _log(f"[sms] ⏱️ 未在 {per_phone_timeout}s 内收到短信，已申请取消退款")
+                    sms_phone_ledger.clear_inflight(phone)
                     ctrl.mark_send_failed("timeout_no_sms")
                     last_sms_err = "未收到短信"
                     # 当号码已发送且进入 phone_otp_verification 后，OpenAI 锁死在等待当前号验证码状态。
@@ -1842,10 +2059,14 @@ def execute_codex_oauth_flow(
                 _log(f"[5/6] 🌐 [OpenAI RESP] HTTP {val_resp.status_code} 响应: {(val_resp.text or '')[:120]}")
                 if val_resp.status_code != 200:
                     if is_official_account_dead(val_resp.text or ""):
+                        sms_phone_ledger.clear_inflight(phone)
                         ctrl.mark_send_failed("account_banned")
                         _raise_if_official_dead(val_resp.text or "", val_resp.status_code, "phone-otp/validate")
+                    if is_too_many_phone_attempts(val_resp.text or ""):
+                        sms_phone_ledger.clear_inflight(phone)
                     _abort_if_too_many_phone(ctrl, val_resp.text or "", "phone-otp/validate", _log)
                     _log(f"[sms] ❌ 手机验证码校验失败 ({val_resp.status_code}): {(val_resp.text or '')[:120]}，取消并退款该号码...")
+                    sms_phone_ledger.clear_inflight(phone)
                     ctrl.mark_send_failed("validate_failed")  # 释放退款
                     time.sleep(2)
                     continue
@@ -1854,6 +2075,19 @@ def execute_codex_oauth_flow(
                 ctrl.report_success()
                 phone_verified = True
                 verified_phone = phone
+                try:
+                    sms_phone_ledger.remember(
+                        phone,
+                        "used_success",
+                        country=str((current_route or {}).get("country") or ""),
+                        price_tier=str((current_route or {}).get("price") or ""),
+                        activation_id=str(getattr(getattr(ctrl, "activation", None), "activation_id", "") or ""),
+                        submitted_to_openai=True,
+                        email=email,
+                        task_id=str(account_info.get("_oauth_task_id") or ""),
+                    )
+                except Exception:
+                    sms_phone_ledger.clear_inflight(phone)
                 page_type, continue_url, verify_mode = _parse_auth_page(_json_or_empty(val_resp))
                 _log(f"[sms] 验号后 {_describe_auth_page(page_type, continue_url, verify_mode)}")
                 act = getattr(ctrl, "activation", None)
@@ -1861,20 +2095,27 @@ def execute_codex_oauth_flow(
                 _trace_put(
                     trace,
                     phone_verified=True,
-                    sms_attempts=attempt,
-                    sms_country_used=str(getattr(act, "country", "") or country),
+                    sms_attempts=openai_submits,
+                    sms_country_used=str(getattr(act, "country", "") or (current_route or {}).get("country") or country),
                     sms_phone_prefix=_phone_prefix(phone),
                     sms_cost=meta.get("cost"),
                     sms_operator=str(meta.get("operator") or ""),
                 )
                 break
         finally:
+            try:
+                if phone:
+                    sms_phone_ledger.clear_inflight(phone)
+            except Exception:
+                pass
             ctrl.cleanup()
             ctrl._release_lock()
 
         if not phone_verified:
-            used = tried_phones or max_attempts
-            raise RuntimeError(f"接码失败 (本轮已尝试 {used} 个号码): {last_sms_err or '未收到短信'}")
+            raise RuntimeError(
+                f"接码失败 (OpenAI提交 {openai_submits} 次 / Vak租号 {vak_rents} 次): "
+                f"{last_sms_err or '未收到短信'}"
+            )
 
     # ──────────────── 阶段 5: 选择工作区与捕获回调 ────────────────
     _step("5", "[5/6] 选工作区 (提取回调)")
@@ -2049,7 +2290,7 @@ def _run_one_oauth_export(task: OAuthExportTask, email: str) -> None:
 
     cred = db.get_registered(email)
     if not cred:
-        res = {"status": "not_found", "label": "未找到", "error": "数据库中无此凭证记录"}
+        res = {"status": "not_found", "label": "未找到", "error": "数据库中无此凭证记录", "count_try": False}
         task.add_email_log(email, "错误: 数据库中无此凭证记录")
         try:
             db.insert_oauth_attempt_feature({
@@ -2069,7 +2310,7 @@ def _run_one_oauth_export(task: OAuthExportTask, email: str) -> None:
     plus_st = str(pc.get("status") or pc.get("plus_type") or "").strip().lower()
     if plus_st in ("banned", "deactivated", "account_deactivated"):
         task.add_email_log(email, "账号已标记封号，跳过本次授权，避免再打官方接口")
-        res = {"status": "banned", "label": "🚫 封号", "error": "库内已是封号，跳过授权"}
+        res = {"status": "banned", "label": "🚫 封号", "error": "库内已是封号，跳过授权", "count_try": False}
         try:
             db.insert_oauth_attempt_feature({
                 "task_id": task.task_id,
@@ -2082,6 +2323,11 @@ def _run_one_oauth_export(task: OAuthExportTask, email: str) -> None:
             pass
         task.mark_done(email, res)
         return
+
+    try:
+        db.touch_oauth_try_start(email)
+    except Exception:
+        pass
 
     # 1. 代理路由
     proxy = task.next_proxy()
@@ -2180,6 +2426,8 @@ def _run_one_oauth_export(task: OAuthExportTask, email: str) -> None:
     sms_enabled = bool(sms_cfg.get("sms_enabled", False))
     cred_with_sms = dict(cred)
     cred_with_sms["sms_config"] = sms_cfg
+    cred_with_sms["_sms_scheduler"] = getattr(task, "sms_scheduler", None)
+    cred_with_sms["_oauth_task_id"] = task.task_id
 
     created_at = cred.get("created_at")
     account_age_days = None
@@ -2388,14 +2636,28 @@ def _run_one_oauth_export(task: OAuthExportTask, email: str) -> None:
     task.mark_done(email, res)
 
 
-def _worker_loop(task: OAuthExportTask, email_queue: queue.Queue) -> None:
+def _worker_loop(task: OAuthExportTask, email_queue: queue.Queue, workers: int) -> None:
     while not task.cancelled:
+        decision = task.claim_slot(workers)
+        if decision == "stop":
+            break
+        if decision == "wait":
+            time.sleep(0.2)
+            continue
         try:
             email = email_queue.get_nowait()
         except queue.Empty:
+            task.release_slot()
             break
+        task.ensure_item(email)
         try:
             _run_one_oauth_export(task, email)
+        except Exception as e:
+            logger.warning("[oauth_export] 账号 %s 未捕获异常: %s", email, e)
+            try:
+                task.mark_done(email, {"status": "error", "label": "授权异常", "error": str(e)[:300]})
+            except Exception:
+                task.release_slot()
         finally:
             email_queue.task_done()
 
@@ -2406,8 +2668,58 @@ def start(emails: list[str], config: dict) -> str:
     if not unique_emails:
         raise ValueError("请提供至少一个要导出的账号邮箱")
 
+    config = dict(config or {})
+    pick = db.pick_oauth_queue(
+        unique_emails,
+        target_count=int(config.get("target_count") or 0),
+        max_tries=int(config.get("oauth_max_tries") or db.OAUTH_MAX_TRIES_DEFAULT),
+        queue_mult=int(config.get("queue_mult") or 3),
+        salt=str(uuid.uuid4()),
+    )
+    queued = pick.get("emails") or []
+    config["pick_stats"] = pick.get("stats") or {}
+    if not queued:
+        raise ValueError(
+            "筛选后没有可授权账号（已成功/封号/冷却中/次数用尽）。"
+            f"候选 {pick.get('stats', {}).get('candidates', 0)}，"
+            f"可跑 {pick.get('stats', {}).get('runnable', 0)}"
+        )
+
     task_id = str(uuid.uuid4())[:12]
-    task = OAuthExportTask(task_id, unique_emails, config)
+    task = OAuthExportTask(task_id, queued, config)
+
+    sms_cfg = config.get("sms_config") or {}
+    if sms_cfg.get("sms_enabled"):
+        try:
+            led = sms_phone_ledger.warmup()
+            logger.info(
+                "[oauth_export] 号码台账 拒号=%s 已用=%s 预热 %.1fms",
+                led.get("rejected"), led.get("used"), led.get("load_ms"),
+            )
+        except Exception as e:
+            logger.warning("[oauth_export] 号码台账预热失败: %s", e)
+    provider_kind = str(sms_cfg.get("sms_provider") or "").strip().lower()
+    if sms_cfg.get("sms_enabled") and provider_kind in ("vaksms", "vak-sms", "vak", "vak_sms"):
+        try:
+            from sms_providers.vaksms import VakSmsProvider
+            stock_p = VakSmsProvider.from_config(sms_cfg)
+            task.sms_scheduler = SmsRouteScheduler(
+                normalize_sms_routes(config.get("sms_routes") or sms_cfg.get("sms_routes")),
+                mode=str(config.get("sms_route_mode") or sms_cfg.get("sms_route_mode") or "priority"),
+                fetch_tiers=lambda iso, _p=stock_p: _p.get_country_price_tiers(iso, "dr"),
+                empty_cooldown_sec=int(
+                    config.get("sms_empty_cooldown_sec")
+                    or sms_cfg.get("sms_empty_cooldown_sec")
+                    or 45
+                ),
+                ledger_skip_streak=int(
+                    config.get("sms_ledger_skip_streak")
+                    or sms_cfg.get("sms_ledger_skip_streak")
+                    or 2
+                ),
+            )
+        except Exception as e:
+            logger.warning("[oauth_export] 线路调度器未启用: %s", e)
 
     with _tasks_lock:
         _prune_tasks_locked()
@@ -2415,21 +2727,34 @@ def start(emails: list[str], config: dict) -> str:
 
     workers = max(1, min(20, int(config.get("workers") or 5)))
     email_queue: queue.Queue = queue.Queue()
-    for em in unique_emails:
+    for em in queued:
         email_queue.put(em)
+    task.work_queue = email_queue
+    task.pool_total = len(queued)
 
     def _run():
         with ThreadPoolExecutor(max_workers=workers, thread_name_prefix=f"oauth_export_{task_id}") as pool:
-            futures = [pool.submit(_worker_loop, task, email_queue) for _ in range(workers)]
+            futures = [pool.submit(_worker_loop, task, email_queue, workers) for _ in range(workers)]
             for f in futures:
                 try:
                     f.result()
                 except Exception as e:
                     logger.warning(f"[oauth_export] Worker 异常: {e}")
-
+        try:
+            task.drain_unstarted(email_queue)
+        except Exception:
+            pass
         task.finished_at = time.time()
         try:
-            task.queue.put({"kind": "end", "task_id": task_id, "stats": task.stats})
+            task.queue.put({
+                "kind": "end",
+                "task_id": task_id,
+                "stats": task.stats,
+                "success_count": task._success_count,
+                "target_count": task.target_count,
+                "queue_remaining": 0,
+                "pick_stats": task.pick_stats,
+            })
         except Exception:
             pass
 
@@ -2466,6 +2791,7 @@ def retry(task_id: str, emails: Optional[list[str]] = None, new_config: Optional
 
         task.cancelled = False
         task.finished_at = 0.0
+        task.force_run = True
 
         for e in target_emails:
             it = task.items[e]
@@ -2498,10 +2824,11 @@ def retry(task_id: str, emails: Optional[list[str]] = None, new_config: Optional
     email_queue: queue.Queue = queue.Queue()
     for em in target_emails:
         email_queue.put(em)
+    task.work_queue = email_queue
 
     def _run_retry():
         with ThreadPoolExecutor(max_workers=workers, thread_name_prefix=f"oauth_retry_{task_id}") as pool:
-            futures = [pool.submit(_worker_loop, task, email_queue) for _ in range(workers)]
+            futures = [pool.submit(_worker_loop, task, email_queue, workers) for _ in range(workers)]
             for f in futures:
                 try:
                     f.result()
@@ -2558,6 +2885,12 @@ def snapshot(task_id: str) -> Optional[dict]:
                 "total": len(task.items),
                 "stats": dict(task.stats),
                 "items": slim_items,
+                "target_count": task.target_count,
+                "success_count": task._success_count,
+                "in_flight": task._in_flight,
+                "queue_remaining": task.queue_remaining(),
+                "pool_total": int(task.pool_total or 0),
+                "pick_stats": dict(task.pick_stats or {}),
             }
 
 

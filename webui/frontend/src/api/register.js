@@ -144,6 +144,9 @@ export const downloadOAuthExportSub2 = (taskId, emails = '') =>
 export const getOAuthExportFeatures = (params = {}) =>
   http.get('/api/registered/oauth_export/features', { params })
 
+export const listSmsPhoneLedger = (params = {}) =>
+  http.get('/api/registered/oauth_export/sms_ledger', { params })
+
 export const getOAuthExportFeatureWeights = (minN = 1) =>
   http.get('/api/registered/oauth_export/feature_weights', { params: { min_n: minN } })
 

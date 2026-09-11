@@ -94,6 +94,12 @@ const routes = [
     meta: { title: '超时退号', icon: 'Timer', group: '配置' },
   },
   {
+    path: '/settings/sms-ledger',
+    name: 'sms_ledger',
+    component: () => import('@/views/SmsPhoneLedger.vue'),
+    meta: { title: '号码台账', icon: 'Notebook', group: '配置' },
+  },
+  {
     path: '/settings/export',
     name: 'export',
     component: () => import('@/views/ExportConfig.vue'),

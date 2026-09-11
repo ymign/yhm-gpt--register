@@ -37,6 +37,7 @@ import {
   Sunrise,
   Histogram,
   Filter,
+  Notebook,
   User,
   ArrowRight,
   View,
@@ -109,6 +110,7 @@ import StatusDot from '@/components/StatusDot.vue'
 import ElapsedTimer from '@/components/ElapsedTimer.vue'
 import ExtractTaskModal from '@/components/ExtractTaskModal.vue'
 import TokenRefreshStudio from '@/components/TokenRefreshStudio.vue'
+import SmsPhoneLedgerPanel from '@/components/SmsPhoneLedgerPanel.vue'
 
 const { form } = storeToRefs(useFormStore())
 // 检测用的代理必须能从代理池里挑
@@ -607,6 +609,7 @@ function prepareRowData(r) {
   r._proxyHost = r.reg_proxy ? formatProxyHost(r.reg_proxy) : ''
   r._exportDate = (r.exported_at || r.at_exported_at) ? formatExportDateShort(r.exported_at || r.at_exported_at) : ''
   r._atExp = formatAtExpiry(r)
+  r._oauthTry = formatOauthTry(r)
   return r
 }
 
@@ -684,6 +687,69 @@ const OAUTH_STATUS_META = {
   need_phone:     { type: 'warning', label: '📱 需接码', effect: 'light' },
   failed:         { type: 'danger',  label: '❌ 失败', effect: 'light' },
   error:          { type: 'danger',  label: '⚠️ 异常', effect: 'light' },
+}
+
+const OAUTH_TRY_MAX_DEFAULT = 3
+const OAUTH_OUTCOME_LABEL = {
+  success: { text: '成功', cls: 'is-ok' },
+  success_phone: { text: '成功·接码', cls: 'is-ok' },
+  success_direct: { text: '成功·免码', cls: 'is-ok' },
+  failed: { text: '失败', cls: 'is-fail' },
+  error: { text: '异常', cls: 'is-fail' },
+  banned: { text: '封号', cls: 'is-fail' },
+  deactivated: { text: '封号', cls: 'is-fail' },
+  account_deactivated: { text: '封号', cls: 'is-fail' },
+  need_phone: { text: '需接码', cls: 'is-warn' },
+  token_invalid: { text: '凭证失效', cls: 'is-fail' },
+  phone_rate_limit: { text: 'too many', cls: 'is-warn' },
+  too_many: { text: 'too many', cls: 'is-warn' },
+  running: { text: '进行中', cls: 'is-run' },
+  skipped: { text: '跳过', cls: 'is-muted' },
+  cancelled: { text: '取消', cls: 'is-muted' },
+}
+
+function formatOauthTry(row) {
+  const tries = Number(row?.oauth_try_count || 0)
+  const lastAt = Number(row?.oauth_last_try_at || 0)
+  const coolUntil = Number(row?.oauth_cooldown_until || 0)
+  const updatedAt = Number(row?.oauth_updated_at || 0)
+  const now = Date.now() / 1000
+  const outcome = String(row?.oauth_last_outcome || '').toLowerCase().trim()
+  const status = String(row?.oauth_status || '').toLowerCase().trim()
+  const meta = OAUTH_OUTCOME_LABEL[outcome]
+    || OAUTH_OUTCOME_LABEL[status]
+    || (outcome ? { text: outcome, cls: 'is-muted' } : { text: '未跑', cls: 'is-muted' })
+  const success = ['success', 'success_phone', 'success_direct'].includes(outcome)
+    || ['success', 'success_phone', 'success_direct'].includes(status)
+  const exhausted = tries >= OAUTH_TRY_MAX_DEFAULT && !success
+  const cooling = coolUntil > now && !success
+  return {
+    tries,
+    max: OAUTH_TRY_MAX_DEFAULT,
+    countText: `${tries}/${OAUTH_TRY_MAX_DEFAULT}`,
+    outcome: meta.text,
+    outcomeCls: meta.cls,
+    lastText: lastAt ? formatExportDateShort(lastAt) : '',
+    lastAgo: lastAt ? timeAgo(lastAt) : '',
+    lastFull: lastAt ? fmtTime(lastAt) : '',
+    cooling,
+    coolLeft: cooling ? formatDurationShort(coolUntil - now) : '',
+    coolUntilText: cooling ? fmtTime(coolUntil) : '',
+    exhausted,
+    empty: tries <= 0 && !lastAt,
+    updatedText: updatedAt ? fmtTime(updatedAt) : '',
+    title: [
+      `累计授权 ${tries}/${OAUTH_TRY_MAX_DEFAULT} 次`,
+      lastAt ? `最近 ${fmtTime(lastAt)}` : '从未授权',
+      outcome ? `结果 ${meta.text}` : '',
+      cooling ? `冷却至 ${fmtTime(coolUntil)}` : '',
+      exhausted ? '次数用尽，授权队列会跳过' : '',
+    ].filter(Boolean).join(' · '),
+  }
+}
+
+function oauthTryOf(row) {
+  return row?._oauthTry || formatOauthTry(row)
 }
 
 function oauthMeta(row) {
@@ -1969,6 +2035,8 @@ const oauthTaskId = ref('')
 const oauthEs = ref(null)
 const oauthConfigCollapsed = ref(true)
 const oauthTargetEmails = ref([])
+const oauthPoolSource = ref('filter') // filter | selected
+const oauthCandidateCount = ref(0)
 const oauthItems = shallowRef({})
 const oauthTick = ref(0)
 const oauthTableRef = ref(null)
@@ -2146,6 +2214,34 @@ function normalizeOAuthSmsStrategy(saved) {
 
 const _oauthSmsStrategy = normalizeOAuthSmsStrategy(savedOAuth)
 
+const DEFAULT_OAUTH_SMS_ROUTES = [
+  { country: 'br', price: '', enabled: true, priority: 1 },
+  { country: 'za', price: '', enabled: true, priority: 2 },
+  { country: 'cl', price: '', enabled: true, priority: 3 },
+  { country: 'gb', price: '', enabled: true, priority: 4 },
+  { country: 'it', price: '', enabled: true, priority: 5 },
+  { country: 'au', price: '', enabled: true, priority: 6 },
+]
+const SMS_ROUTE_COUNTRY_NAMES = {
+  br: '巴西', za: '南非', cl: '智利', gb: '英国', it: '意大利', au: '澳大利亚',
+}
+
+function normalizeSavedSmsRoutes(raw) {
+  const src = Array.isArray(raw) && raw.length ? raw : DEFAULT_OAUTH_SMS_ROUTES
+  const out = []
+  src.forEach((r, i) => {
+    const country = String(r?.country || '').trim().toLowerCase()
+    if (!/^[a-z]{2}$/.test(country)) return
+    out.push({
+      country,
+      price: String(r?.price || r?.price_key || ''),
+      enabled: r?.enabled !== false,
+      priority: Number(r?.priority) || i + 1,
+    })
+  })
+  return out.length ? out : DEFAULT_OAUTH_SMS_ROUTES.map((r) => ({ ...r }))
+}
+
 const oauthForm = reactive({
   proxy: savedOAuth.proxy || '__POOL__',
   proxyCountry: savedOAuth.proxyCountry || 'RANDOM_HOT',
@@ -2167,6 +2263,109 @@ const oauthForm = reactive({
         .filter(Boolean),
   smsMaxAttempts: savedOAuth.smsMaxAttempts || 3,
   smsTimeout: savedOAuth.smsTimeout || 80,
+  targetCount: Number(savedOAuth.targetCount) || 0,
+  overshootSlack: Number.isFinite(Number(savedOAuth.overshootSlack)) ? Number(savedOAuth.overshootSlack) : 2,
+  oauthMaxTries: Number(savedOAuth.oauthMaxTries) || 3,
+  smsRouteMode: savedOAuth.smsRouteMode || 'priority',
+  smsEmptyCooldownSec: Number.isFinite(Number(savedOAuth.smsEmptyCooldownSec))
+    ? Number(savedOAuth.smsEmptyCooldownSec)
+    : 45,
+  smsLedgerSkipStreak: Number.isFinite(Number(savedOAuth.smsLedgerSkipStreak))
+    ? Number(savedOAuth.smsLedgerSkipStreak)
+    : 2,
+  smsRoutes: normalizeSavedSmsRoutes(savedOAuth.smsRoutes),
+})
+
+const oauthRouteTiers = reactive({})
+const oauthRouteTiersLoading = reactive({})
+const oauthPickStats = ref(null)
+const oauthRunMeta = reactive({ target_count: 0, success_count: 0, in_flight: 0, queue_remaining: 0, pool_total: 0 })
+const smsLedgerVisible = ref(false)
+
+function smsRouteCountryLabel(iso) {
+  const id = String(iso || '').toLowerCase()
+  return SMS_ROUTE_COUNTRY_NAMES[id] || id
+}
+
+async function loadRouteTiers(country) {
+  const c = String(country || '').toLowerCase()
+  if (!/^[a-z]{2}$/.test(c)) return
+  oauthRouteTiersLoading[c] = true
+  try {
+    const kind = oauthForm.smsStrategy === 'skip' ? 'vaksms' : oauthForm.smsStrategy
+    const res = await getSmsPriceTiers(c, 'dr', kind || 'vaksms')
+    oauthRouteTiers[c] = res.tiers || []
+  } catch (_) {
+    oauthRouteTiers[c] = []
+  } finally {
+    oauthRouteTiersLoading[c] = false
+  }
+}
+
+function loadAllSmsRouteTiers() {
+  const seen = new Set()
+  for (const r of oauthForm.smsRoutes || []) {
+    const c = String(r.country || '').toLowerCase()
+    if (seen.has(c)) continue
+    seen.add(c)
+    loadRouteTiers(c)
+  }
+}
+
+function addSmsRoute() {
+  oauthForm.smsRoutes.push({
+    country: 'br',
+    price: '',
+    enabled: true,
+    priority: (oauthForm.smsRoutes.length || 0) + 1,
+  })
+}
+
+function removeSmsRoute(idx) {
+  oauthForm.smsRoutes.splice(idx, 1)
+}
+
+function moveSmsRoute(idx, dir) {
+  const next = idx + dir
+  if (next < 0 || next >= oauthForm.smsRoutes.length) return
+  const arr = oauthForm.smsRoutes
+  const cur = arr[idx]
+  arr[idx] = arr[next]
+  arr[next] = cur
+  arr.forEach((r, i) => { r.priority = i + 1 })
+}
+
+function onSmsRouteCountryChange(row) {
+  row.price = ''
+  loadRouteTiers(row.country)
+}
+
+const SMS_ROUTE_FLAGS = {
+  br: '🇧🇷', za: '🇿🇦', cl: '🇨🇱', gb: '🇬🇧', it: '🇮🇹', au: '🇦🇺',
+  us: '🇺🇸', th: '🇹🇭', ph: '🇵🇭', vn: '🇻🇳', de: '🇩🇪', fr: '🇫🇷',
+  jp: '🇯🇵', kr: '🇰🇷', mx: '🇲🇽', ar: '🇦🇷', ng: '🇳🇬', in: '🇮🇳',
+}
+
+function smsRouteFlag(iso) {
+  return SMS_ROUTE_FLAGS[String(iso || '').toLowerCase()] || '🌐'
+}
+
+function smsRouteLiveCount(row) {
+  const tiers = oauthRouteTiers[row?.country] || []
+  if (!row?.price) {
+    return tiers.reduce((s, t) => s + (Number(t.count) || 0), 0)
+  }
+  const hit = tiers.find((t) => t.price_key === row.price || t.price_str === row.price)
+  return hit ? Number(hit.count) || 0 : 0
+}
+
+const oauthEnabledRouteCount = computed(() =>
+  (oauthForm.smsRoutes || []).filter((r) => r.enabled !== false).length,
+)
+
+const oauthSmsStrategyLabel = computed(() => {
+  if (oauthForm.smsStrategy === 'skip') return '跳过接码'
+  return oauthSmsMeta.value?.display_name || '接码'
 })
 
 const oauthCdkStats = ref({
@@ -2221,6 +2420,7 @@ function onOAuthStrategyChange(val) {
   oauthActiveTab.value = 'sms'
   loadSmsCountries()
   loadOAuthPriceTiers()
+  if (meta?.country_scheme === 'iso2') loadAllSmsRouteTiers()
 }
 
 async function loadSmsProviderCatalog() {
@@ -2359,6 +2559,10 @@ async function openFeatBoard() {
   await loadFeatBoard()
 }
 
+function openSmsLedger() {
+  smsLedgerVisible.value = true
+}
+
 async function onFeatOutcome(v) {
   featOutcome.value = v
   await loadFeatBoard()
@@ -2372,6 +2576,7 @@ const DEFAULT_COLUMN_VISIBILITY = {
   tokens: true,
   atExp: true,
   status: true,
+  oauth: true,
   export: true,
   time: true,
 }
@@ -2636,7 +2841,7 @@ const oauthLogView = computed(() =>
 const oauthStats = computed(() => {
   const _tick = oauthTick.value
   const map = oauthItems.value
-  const tot = oauthTargetEmails.value.length || Object.keys(map).length
+  const tot = Object.keys(map).length
   let done = 0
   let running = 0
   let pending = 0
@@ -2644,6 +2849,7 @@ const oauthStats = computed(() => {
   let need_phone = 0
   let banned = 0
   let error = 0
+  let skipped = 0
   for (const em in map) {
     const i = map[em]
     const st = i.status
@@ -2652,22 +2858,31 @@ const oauthStats = computed(() => {
     else if (st === 'pending') pending++
     else if (st === 'done') {
       done++
-      if (rs === 'success') success++
+      if (rs === 'success' || rs === 'success_phone' || rs === 'success_direct') success++
       else if (rs === 'need_phone') need_phone++
       else if (rs === 'banned' || rs === 'deactivated') banned++
+      else if (rs === 'skipped') skipped++
       else error++
     }
   }
+  const pool = oauthCandidateCount.value || oauthRunMeta.pool_total || tot
+  const queuedLeft = oauthRunMeta.queue_remaining || pending
+  const target = oauthRunMeta.target_count || 0
+  const percent = target
+    ? Math.min(100, Math.round((success / target) * 100))
+    : (pool > 0 ? Math.min(100, Math.round((done / pool) * 100)) : 0)
   return {
     total: tot,
     done,
     running,
-    pending,
+    pending: queuedLeft,
     success,
     need_phone,
     banned,
+    skipped,
     error,
-    percent: tot > 0 ? Math.round((done / tot) * 100) : 0,
+    pool,
+    percent,
   }
 })
 
@@ -2676,7 +2891,7 @@ const oauthFilteredRows = computed(() => {
   const map = oauthItems.value
   const kw = oauthSearch.value.trim().toLowerCase()
   const f = oauthFilter.value
-  const source = oauthTargetEmails.value.length ? oauthTargetEmails.value : Object.keys(map)
+  const source = Object.keys(map).length ? Object.keys(map) : oauthTargetEmails.value
   const out = []
   for (const em of source) {
     const item = map[em]
@@ -2689,7 +2904,7 @@ const oauthFilteredRows = computed(() => {
     else if (f === 'success' && rs !== 'success') continue
     else if (f === 'phone' && rs !== 'need_phone') continue
     else if (f === 'banned' && rs !== 'banned' && rs !== 'deactivated') continue
-    else if (f === 'fail' && !(st === 'done' && rs && rs !== 'success' && rs !== 'need_phone' && rs !== 'banned' && rs !== 'deactivated')) continue
+    else if (f === 'fail' && !(st === 'done' && rs && rs !== 'success' && rs !== 'success_phone' && rs !== 'success_direct' && rs !== 'need_phone' && rs !== 'banned' && rs !== 'deactivated' && rs !== 'skipped')) continue
     out.push(item)
   }
   return out
@@ -2713,9 +2928,18 @@ watch(
 watch(oauthConfigCollapsed, () => layoutOAuthTable())
 
 const oauthBatchHint = computed(() => {
-  const n = oauthStats.value.total
-  if (n < 80) return ''
-  return `已选 ${n} 个账号：表格按页显示（每页 ${oauthPageSize.value} 条），可用上方筛选只看进行中 / 失败。关闭弹窗不会中断任务。`
+  const pool = oauthCandidateCount.value || oauthTargetEmails.value.length
+  const queued = oauthPickStats.value?.queued || oauthRunMeta.queue_remaining || 0
+  if (!oauthRunning.value && !Object.keys(oauthItems.value).length && pool) {
+    return `号池来自${oauthPoolSource.value === 'selected' ? '勾选' : '当前筛选'}，共 ${pool} 个账号。点「开始授权」后会排除已授权 / 封号 / 冷却，目标未满就持续从号池补人，把并发跑满。不必勾选，也不用把分页拉到几千。`
+  }
+  if (oauthRunning.value && pool) {
+    return `号池 ${pool}，剩余排队 ${oauthRunMeta.queue_remaining}。表格只显示已开工账号，关闭弹窗不会中断任务。`
+  }
+  if (queued >= 80) {
+    return `可跑 ${queued} 个（号池 ${pool}）。表格只显示已开工账号。`
+  }
+  return ''
 })
 
 function setOAuthFilter(f) {
@@ -2736,11 +2960,27 @@ const failedOAuthEmails = computed(() => {
   return out
 })
 
+function currentRegisteredEmailQuery() {
+  return {
+    filter: 'all',
+    filter_health: filterHealth.value,
+    filter_plan: filterPlan.value,
+    filter_sec: filterSec.value,
+    filter_extract: filterExtract.value,
+    filter_oauth: filterOAuth.value,
+    filter_domain: filterDomain.value,
+    filter_country: filterCountry.value,
+    filter_at_export: filterAtExport.value,
+    filter_at_exp: filterAtExp.value,
+    search: searchKeyword.value.trim(),
+  }
+}
+
 function handleOAuthCommand(cmd) {
   if (cmd === 'oauth_selected') {
     openOAuthExport('selected')
-  } else if (cmd === 'oauth_all') {
-    openOAuthExport('all')
+  } else if (cmd === 'oauth_all' || cmd === 'oauth_filter') {
+    openOAuthExport('filter')
   } else if (cmd === 'recover_selected') {
     doRecoverOAuth('selected')
   } else if (cmd === 'recover_all') {
@@ -2748,55 +2988,45 @@ function handleOAuthCommand(cmd) {
   }
 }
 
-async function openOAuthExport(target = 'selected') {
+async function openOAuthExport(target = 'filter') {
   let emails = []
   if (target === 'selected') {
     emails = selected.value.map((r) => r.email)
     if (!emails.length) {
-      ElMessage.warning('请先在表格中勾选要导出的账号')
+      ElMessage.warning('当前没有勾选。主按钮会按筛选号池取号，不必勾选。')
       return
     }
-  } else if (target === 'all') {
+    oauthPoolSource.value = 'selected'
+  } else {
     try {
-      const res = await listRegisteredEmails('all')
+      const res = await listRegisteredEmails(currentRegisteredEmailQuery())
       emails = res.emails || []
     } catch (e) {
-      ElMessage.error('加载账号列表失败: ' + e.message)
+      ElMessage.error('加载当前筛选号池失败: ' + e.message)
+      return
+    }
+    oauthPoolSource.value = 'filter'
+    if (!emails.length) {
+      ElMessage.warning('当前筛选条件下没有账号')
       return
     }
   }
 
   oauthTargetEmails.value = emails
+  oauthCandidateCount.value = emails.length
 
   if (!oauthRunning.value) {
     oauthTaskId.value = ''
-    oauthConfigCollapsed.value = true
+    oauthConfigCollapsed.value = false
     resetOAuthListView()
-    const initMap = {}
-    const rowMap = new Map(rows.value.map((r) => [r.email, r]))
-    for (const em of emails) {
-      const r = rowMap.get(em)
-      const hasOauth = r && (r.oauth_status === 'success' || (r.refresh_token && r.refresh_token.length > 10))
-      const meta = getEmailProviderMeta(em)
-      if (hasOauth) {
-        initMap[em] = {
-          email: em,
-          status: 'done',
-          step_text: '已拥有 OAuth 凭证',
-          result: { status: 'success', label: '已授权' },
-          elapsed: 0,
-          _providerMeta: meta,
-        }
-      } else {
-        initMap[em] = { email: em, status: 'pending', result: null, elapsed: 0, _providerMeta: meta }
-      }
-    }
-    oauthItems.value = initMap
+    // 号池只存邮箱列表，不把几千行渲染进表格。点开始后后端取号，再只展示排队的那一批。
+    oauthItems.value = {}
     bumpOAuthTick()
   }
 
   oauthVisible.value = true
   loadSmsProviderCatalog()
+  loadAllSmsRouteTiers()
   loadSmsCountries()
   loadOAuthPriceTiers()
   loadOAuthSmsMeta()
@@ -2873,12 +3103,10 @@ async function startOAuthExportTask() {
   oauthConfigCollapsed.value = true
   oauthPage.value = 1
   oauthSearch.value = ''
-
-  const initMap = {}
-  for (const em of emails) {
-    initMap[em] = { email: em, status: 'pending', result: null, elapsed: 0, _providerMeta: getEmailProviderMeta(em) }
-  }
-  oauthItems.value = initMap
+  oauthItems.value = {}
+  oauthRunMeta.queue_remaining = emails.length
+  oauthRunMeta.pool_total = oauthCandidateCount.value || emails.length
+  oauthRunMeta.success_count = 0
   bumpOAuthTick()
 
   let proxiesParam = ''
@@ -2914,10 +3142,33 @@ async function startOAuthExportTask() {
         : String(oauthForm.smsExceptProviderIds || '').trim(),
       sms_max_attempts: Number(oauthForm.smsMaxAttempts) || 3,
       sms_timeout: Number(oauthForm.smsTimeout) || 80,
+      target_count: Number(oauthForm.targetCount) || 0,
+      overshoot_slack: Number(oauthForm.overshootSlack) || 0,
+      oauth_max_tries: Number(oauthForm.oauthMaxTries) || 3,
+      sms_route_mode: oauthForm.smsRouteMode || 'priority',
+      sms_empty_cooldown_sec: Number(oauthForm.smsEmptyCooldownSec) || 45,
+      sms_ledger_skip_streak: Number(oauthForm.smsLedgerSkipStreak) || 2,
+      sms_routes: (oauthForm.smsRoutes || []).map((r, i) => ({
+        country: String(r.country || '').toLowerCase(),
+        price: String(r.price || ''),
+        enabled: r.enabled !== false,
+        priority: Number(r.priority) || i + 1,
+      })),
     })
     const taskId = res.taskId || res.task_id
     if (!taskId) throw new Error('未获取到任务 ID')
     oauthTaskId.value = taskId
+    oauthPickStats.value = res.pick_stats || null
+    oauthRunMeta.target_count = Number(res.target_count) || Number(oauthForm.targetCount) || 0
+    oauthRunMeta.success_count = 0
+    oauthRunMeta.queue_remaining = Number(res.queued_count || res.pick_stats?.queued || 0)
+    oauthRunMeta.pool_total = Number(res.pool_total || oauthCandidateCount.value || 0)
+    const ps = res.pick_stats || {}
+    if (ps.queued != null) {
+      ElMessage.success(
+        `号池 ${oauthCandidateCount.value}，可跑 ${ps.runnable || ps.queued} 个已入队。目标未满会持续补人，把并发跑到 ${oauthForm.workers}。冷却 ${ps.skipped_cooldown || 0}，耗尽 ${ps.skipped_exhausted || 0}`,
+      )
+    }
     connectOAuthStream(taskId)
   } catch (e) {
     oauthRunning.value = false
@@ -2936,15 +3187,25 @@ function connectOAuthStream(taskId) {
     init: (ev) => {
       try {
         const snap = JSON.parse(ev.data)
-        if (snap.items) {
-          oauthItems.value = stripOAuthItemLogs(snap.items)
+        if (snap.items && Object.keys(snap.items).length) {
+          oauthItems.value = { ...stripOAuthItemLogs(snap.items), ...oauthItems.value }
           bumpOAuthTick()
         }
+        if (snap.pick_stats) oauthPickStats.value = snap.pick_stats
+        if (snap.target_count != null) oauthRunMeta.target_count = Number(snap.target_count) || 0
+        if (snap.success_count != null) oauthRunMeta.success_count = Number(snap.success_count) || 0
+        if (snap.in_flight != null) oauthRunMeta.in_flight = Number(snap.in_flight) || 0
+        if (snap.queue_remaining != null) oauthRunMeta.queue_remaining = Number(snap.queue_remaining) || 0
+        if (snap.pool_total != null) oauthRunMeta.pool_total = Number(snap.pool_total) || oauthRunMeta.pool_total
       } catch (_) {}
     },
     progress: (ev) => {
       try {
         const msg = JSON.parse(ev.data)
+        if (msg.success_count != null) oauthRunMeta.success_count = Number(msg.success_count) || 0
+        if (msg.target_count != null) oauthRunMeta.target_count = Number(msg.target_count) || 0
+        if (msg.in_flight != null) oauthRunMeta.in_flight = Number(msg.in_flight) || 0
+        if (msg.queue_remaining != null) oauthRunMeta.queue_remaining = Number(msg.queue_remaining) || 0
         if (!msg.email) return
         const up = oauthPendingUpdates[msg.email] || (oauthPendingUpdates[msg.email] = {})
         if (msg.status !== undefined) {
@@ -2961,9 +3222,14 @@ function connectOAuthStream(taskId) {
         scheduleOAuthUpdate()
       } catch (_) {}
     },
-    end: () => {
+    end: (ev) => {
       flushOAuthUpdates()
       oauthRunning.value = false
+      oauthRunMeta.queue_remaining = 0
+      try {
+        const msg = JSON.parse(ev.data || '{}')
+        if (msg.success_count != null) oauthRunMeta.success_count = Number(msg.success_count) || 0
+      } catch (_) {}
       stopOAuthLogPoll()
       if (oauthEs.value) {
         oauthEs.value.close()
@@ -3431,8 +3697,13 @@ function onTableSort({ prop, order }) {
     sortBy.value = 'created_at'
     sortOrder.value = 'desc'
   } else {
-    const mapped = prop === 'at_expires_at' ? 'at_expires_at' : 'created_at'
-    sortBy.value = mapped
+    const allowed = {
+      created_at: 'created_at',
+      at_expires_at: 'at_expires_at',
+      oauth_try_count: 'oauth_try_count',
+      oauth_last_try_at: 'oauth_last_try_at',
+    }
+    sortBy.value = allowed[prop] || 'created_at'
     sortOrder.value = order === 'ascending' ? 'asc' : 'desc'
   }
   load(true)
@@ -5424,6 +5695,7 @@ const hasAnyModalOpen = computed(() => {
     oaLogModalVisible.value ||
     oauthVisible.value ||
     featVisible.value ||
+    smsLedgerVisible.value ||
     oauthLogModalVisible.value ||
     healthVisible.value ||
     healthLogModalVisible.value ||
@@ -5605,7 +5877,7 @@ onUnmounted(() => {
             </el-dropdown>
 
             <!-- 自定义列显示 -->
-            <el-popover placement="bottom-end" :width="190" trigger="click" popper-class="col-setting-popover">
+            <el-popover placement="bottom-end" :width="210" trigger="click" popper-class="col-setting-popover">
               <template #reference>
                 <button class="ghost-tool-btn" title="自定义显示列">
                   <el-icon><Operation /></el-icon>
@@ -5621,6 +5893,7 @@ onUnmounted(() => {
                   <el-checkbox v-model="columnVisibility.tokens">Token 凭据状态</el-checkbox>
                   <el-checkbox v-model="columnVisibility.atExp">AT 有效期</el-checkbox>
                   <el-checkbox v-model="columnVisibility.status">套餐与特权订阅</el-checkbox>
+                  <el-checkbox v-model="columnVisibility.oauth">授权次数 / 时间</el-checkbox>
                   <el-checkbox v-model="columnVisibility.export">导出留痕与备注</el-checkbox>
                   <el-checkbox v-model="columnVisibility.time">注册时间</el-checkbox>
                 </div>
@@ -5769,6 +6042,8 @@ onUnmounted(() => {
                 <el-option label="🔄 具备 RT 凭据" value="has_rt" />
                 <el-option label="📱 需接码 (未接)" value="oauth_need_phone" />
                 <el-option label="❌ 授权失败" value="oauth_failed" />
+                <el-option label="🧊 冷却中" value="oauth_cooldown" />
+                <el-option label="🚫 次数用尽" value="oauth_exhausted" />
                 <el-option label="⚪ 从未授权" value="oauth_unchecked" />
               </el-select>
             </div>
@@ -5910,8 +6185,8 @@ onUnmounted(() => {
                     <el-dropdown-item command="token_unchecked">验活未检账号</el-dropdown-item>
                     <el-dropdown-item command="token_all">全量全库重验</el-dropdown-item>
                     <div class="dropdown-group-title divider-title">OAuth 接码授权</div>
-                    <el-dropdown-item @click="handleOAuthCommand('oauth_selected')" :disabled="!selectedCount">📱 Codex OAuth 接码 (选中)</el-dropdown-item>
-                    <el-dropdown-item @click="handleOAuthCommand('oauth_all')">📱 Codex OAuth 全量接码</el-dropdown-item>
+                    <el-dropdown-item @click="handleOAuthCommand('oauth_filter')">📱 按当前筛选号池授权（无需勾选）</el-dropdown-item>
+                    <el-dropdown-item @click="handleOAuthCommand('oauth_selected')" :disabled="!selectedCount">📱 仅勾选的 {{ selectedCount }} 个</el-dropdown-item>
                     <div class="dropdown-group-title divider-title">提链 / 出码</div>
                     <el-dropdown-item @click="openExtractChannel('paypal_pipeline')">🎁 PayPal 提链+代付 (一条龙)</el-dropdown-item>
                     <el-dropdown-item @click="openExtractChannel('paypal')">🔗 PayPal 仅提链</el-dropdown-item>
@@ -5972,6 +6247,15 @@ onUnmounted(() => {
                 </template>
               </el-dropdown>
 
+              <button
+                class="action-menu-btn action-oauth-btn"
+                title="按当前筛选号池授权接码，不必勾选"
+                @click="handleOAuthCommand('oauth_filter')"
+              >
+                <el-icon><Phone /></el-icon>
+                <span>授权接码</span>
+              </button>
+
               <!-- 4. 运维管理 (Ops ▾) -->
               <el-dropdown trigger="click">
                 <button class="action-menu-btn">
@@ -5992,6 +6276,7 @@ onUnmounted(() => {
                     <el-dropdown-item @click="handleRefreshCommand('refresh_all')">🔄 全量刷新 Token</el-dropdown-item>
                     <el-dropdown-item @click="() => doRecoverOAuth()">⚡ 扫描并找回历史授权 (RT自愈)</el-dropdown-item>
                     <el-dropdown-item @click="openFeatBoard">📊 特征工程大屏</el-dropdown-item>
+                    <el-dropdown-item @click="openSmsLedger">📒 接码号码台账</el-dropdown-item>
                     <div class="dropdown-group-title divider-title">数据清理与删除</div>
                     <el-dropdown-item @click="cleanInvalid">🧹 清理库内空号</el-dropdown-item>
                     <el-dropdown-item :disabled="!selectedCount" @click="deleteSelected" style="color: var(--el-color-danger)">🗑️ 删除选中账号 ({{ selectedCount }})</el-dropdown-item>
@@ -6032,7 +6317,7 @@ onUnmounted(() => {
           <!-- 核心数据网格 (Table) -->
           <div
             class="table-scroll-wrap"
-            v-memo="[rows, loading, selected, focusedRow, tableDensity, page, pageSize, columnVisibility.security, columnVisibility.tokens, columnVisibility.atExp, columnVisibility.status, columnVisibility.export, columnVisibility.time]"
+            v-memo="[rows, loading, selected, focusedRow, tableDensity, page, pageSize, columnVisibility.security, columnVisibility.tokens, columnVisibility.atExp, columnVisibility.status, columnVisibility.oauth, columnVisibility.export, columnVisibility.time]"
           >
             <el-skeleton v-if="loading && !rows.length" :rows="8" animated style="padding: 16px" />
             <el-table
@@ -6222,6 +6507,42 @@ onUnmounted(() => {
                       </span>
                     </template>
                     <span v-else class="free-plain-text"><span class="free-dot"></span>Free</span>
+                  </div>
+                </template>
+              </el-table-column>
+
+              <!-- 7. 授权次数 / 最近时间 / 冷却 -->
+              <el-table-column
+                v-if="columnVisibility.oauth !== false"
+                prop="oauth_last_try_at"
+                label="授权次数 / 时间"
+                min-width="158"
+                align="center"
+                header-align="center"
+                sortable="custom"
+              >
+                <template #default="{ row }">
+                  <div
+                    class="cell-oauth-try"
+                    :class="oauthTryOf(row).outcomeCls"
+                    :title="oauthTryOf(row).title"
+                  >
+                    <template v-if="oauthTryOf(row).empty">
+                      <span class="oauth-try-empty">从未授权</span>
+                    </template>
+                    <template v-else>
+                      <div class="oauth-try-main">
+                        <span class="oauth-try-count mono">{{ oauthTryOf(row).countText }}</span>
+                        <span class="oauth-try-out">{{ oauthTryOf(row).outcome }}</span>
+                      </div>
+                      <div class="oauth-try-sub">
+                        <span v-if="oauthTryOf(row).lastText">{{ oauthTryOf(row).lastText }}</span>
+                        <span v-if="oauthTryOf(row).cooling" class="oauth-try-cool">
+                          冷却 {{ oauthTryOf(row).coolLeft }}
+                        </span>
+                        <span v-else-if="oauthTryOf(row).exhausted" class="oauth-try-dead">次数用尽</span>
+                      </div>
+                    </template>
                   </div>
                 </template>
               </el-table-column>
@@ -6565,6 +6886,51 @@ onUnmounted(() => {
                     <span v-if="focusedRow.rt_len" class="dossier-tag tag-cyan mono">RT 在库</span>
                   </div>
                 </div>
+
+                <div class="dossier-row-slot">
+                  <div class="slot-label">
+                    <span>授权次数</span>
+                    <span
+                      v-if="oauthTryOf(focusedRow).exhausted"
+                      class="slot-badge badge-danger"
+                    >用尽</span>
+                    <span
+                      v-else-if="oauthTryOf(focusedRow).cooling"
+                      class="slot-badge badge-warn"
+                    >冷却</span>
+                    <span
+                      v-else-if="!oauthTryOf(focusedRow).empty"
+                      class="slot-badge badge-success"
+                    >已跑</span>
+                    <span v-else class="slot-badge">未跑</span>
+                  </div>
+                  <div class="slot-value-box">
+                    <span class="mono secret-text">{{ oauthTryOf(focusedRow).countText }}</span>
+                    <span class="dossier-tag" :class="'oauth-tag-' + oauthTryOf(focusedRow).outcomeCls">
+                      {{ oauthTryOf(focusedRow).outcome }}
+                    </span>
+                  </div>
+                </div>
+                <div class="dossier-row-slot">
+                  <div class="slot-label">
+                    <span>最近授权</span>
+                  </div>
+                  <div class="slot-value-box">
+                    <span class="mono secret-text">{{ oauthTryOf(focusedRow).lastFull || '—' }}</span>
+                    <span v-if="oauthTryOf(focusedRow).lastAgo" class="dossier-tag">{{ oauthTryOf(focusedRow).lastAgo }}</span>
+                  </div>
+                </div>
+                <div v-if="oauthTryOf(focusedRow).cooling || oauthTryOf(focusedRow).exhausted" class="dossier-row-slot">
+                  <div class="slot-label">
+                    <span>{{ oauthTryOf(focusedRow).cooling ? '冷却至' : '队列' }}</span>
+                  </div>
+                  <div class="slot-value-box">
+                    <span v-if="oauthTryOf(focusedRow).cooling" class="mono secret-text">
+                      {{ oauthTryOf(focusedRow).coolUntilText }}（剩 {{ oauthTryOf(focusedRow).coolLeft }}）
+                    </span>
+                    <span v-else class="mono secret-text text-rose">次数用尽，授权队列会跳过</span>
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -6765,8 +7131,8 @@ onUnmounted(() => {
 
             <button
               class="dock-btn"
-              @click="handleOAuthCommand('oauth_selected')"
-              title="Codex OAuth 授权与接码"
+              @click="handleOAuthCommand('oauth_filter')"
+              title="按当前筛选条件从号池取号授权，不必勾选，也不用把分页拉到几千"
             >
               <el-icon class="ico-purple"><Phone /></el-icon>
               <span>OAuth接码</span>
@@ -7382,7 +7748,7 @@ onUnmounted(() => {
 
     <!-- ──────────────── OAuth 导出与凭证生成控制台弹窗 ──────────────── -->
     <el-dialog
-      v-model="oauthVisible" width="900px" top="3vh"
+      v-model="oauthVisible" width="1040px" top="2vh"
       class="oa-custom-dialog plus-dialog oauth-dialog oauth-modern-modal"
       append-to-body
       :lock-scroll="false"
@@ -7393,9 +7759,17 @@ onUnmounted(() => {
           <div class="oa-header-title">
             <span class="oa-title-badge">CODEX OAUTH</span>
             <span class="oa-title-text">Codex OAuth 导出与智能接码授权</span>
-            <span class="oa-target-pill">{{ oauthTargetEmails.length }} 个账号</span>
+            <span class="oa-target-pill">
+              {{ oauthPoolSource === 'selected' ? '勾选' : '当前筛选' }}
+              {{ oauthCandidateCount || oauthTargetEmails.length }} 个号池
+              <template v-if="oauthForm.targetCount"> · 目标 {{ oauthForm.targetCount }}</template>
+            </span>
           </div>
           <div class="oa-header-extra">
+            <button class="oa-config-toggle-btn" title="查看拒号/已用号码" @click="openSmsLedger">
+              <el-icon><Notebook /></el-icon>
+              <span>号码台账</span>
+            </button>
             <button class="oa-config-toggle-btn" @click="oauthConfigCollapsed = !oauthConfigCollapsed">
               <el-icon><Setting /></el-icon>
               <span>{{ oauthConfigCollapsed ? '展开参数配置' : '收起配置' }}</span>
@@ -7405,97 +7779,142 @@ onUnmounted(() => {
       </template>
 
       <div class="oa-dialog-container">
-        <!-- 参数配置卡片 (Tab 选项卡折叠卡片) -->
+        <div class="oa-mission-strip">
+          <div class="oa-mission-cell">
+            <span class="oa-mission-k">号池</span>
+            <span class="oa-mission-v">{{ oauthCandidateCount || oauthTargetEmails.length || 0 }}</span>
+            <span class="oa-mission-s">{{ oauthPoolSource === 'selected' ? '勾选' : '当前筛选' }}</span>
+          </div>
+          <div class="oa-mission-cell">
+            <span class="oa-mission-k">成功目标</span>
+            <span class="oa-mission-v">{{ oauthForm.targetCount || '不限' }}</span>
+            <span class="oa-mission-s">到量停领新号</span>
+          </div>
+          <div class="oa-mission-cell">
+            <span class="oa-mission-k">并发</span>
+            <span class="oa-mission-v">{{ oauthStats.running || 0 }}/{{ oauthForm.workers }}</span>
+            <span class="oa-mission-s">排队 {{ oauthRunMeta.queue_remaining }}</span>
+          </div>
+          <div class="oa-mission-cell">
+            <span class="oa-mission-k">接码</span>
+            <span class="oa-mission-v">{{ oauthSmsStrategyLabel }}</span>
+            <span class="oa-mission-s" v-if="oauthSmsMeta?.country_scheme === 'iso2'">{{ oauthEnabledRouteCount }} 条线路</span>
+          </div>
+        </div>
+
         <el-collapse-transition>
-          <div v-show="!oauthConfigCollapsed" class="oa-config-card">
-            <!-- 手机号接码策略全局快捷切换卡片 (Hero Strategy Selector) -->
-            <div class="oa-strategy-hero-card" :class="'is-' + oauthForm.smsStrategy + '-mode'">
-              <div class="strategy-left-control">
-                <span class="strategy-label">手机号策略:</span>
-                <el-radio-group
-                  v-model="oauthForm.smsStrategy"
-                  size="small"
-                  class="strategy-radio-group"
-                  :disabled="oauthRunning"
-                  @change="onOAuthStrategyChange"
-                >
-                  <el-radio-button value="skip">
-                    <span class="strategy-btn-content">⏩ 跳过</span>
-                  </el-radio-button>
-                  <el-radio-button
-                    v-for="p in smsProviders"
-                    :key="p.kind"
-                    :value="p.kind"
+          <div v-show="!oauthConfigCollapsed" class="oa-config-card oa-setup-stack">
+            <section class="oa-setup-block">
+              <header class="oa-setup-head">
+                <span class="oa-setup-step">1</span>
+                <div>
+                  <div class="oa-setup-title">跑多少</div>
+                  <p class="oa-setup-lead">到成功目标就停领新号；超额余量避免最后只开 1 路。0 = 不限。</p>
+                </div>
+              </header>
+              <el-form label-position="top" :disabled="oauthRunning" size="small" class="oa-setup-form">
+                <el-row :gutter="12">
+                  <el-col :xs="12" :sm="8">
+                    <el-form-item label="成功目标">
+                      <el-input-number v-model="oauthForm.targetCount" :min="0" :max="100000" style="width: 100%" />
+                    </el-form-item>
+                  </el-col>
+                  <el-col :xs="12" :sm="8">
+                    <el-form-item label="超额余量">
+                      <el-input-number v-model="oauthForm.overshootSlack" :min="0" :max="5" style="width: 100%" />
+                    </el-form-item>
+                  </el-col>
+                  <el-col :xs="12" :sm="8">
+                    <el-form-item label="单号最多试几次">
+                      <el-input-number v-model="oauthForm.oauthMaxTries" :min="1" :max="10" style="width: 100%" />
+                    </el-form-item>
+                  </el-col>
+                </el-row>
+              </el-form>
+            </section>
+
+            <section class="oa-setup-block">
+              <header class="oa-setup-head">
+                <span class="oa-setup-step">2</span>
+                <div>
+                  <div class="oa-setup-title">怎么连</div>
+                  <p class="oa-setup-lead">代理、出口国家和并发。和接码国家是两件事。</p>
+                </div>
+              </header>
+              <el-form label-position="top" :disabled="oauthRunning" size="small" class="oa-setup-form">
+                <el-row :gutter="12">
+                  <el-col :xs="24" :sm="12" :md="8">
+                    <el-form-item label="网络代理">
+                      <el-select
+                        v-model="oauthForm.proxy" filterable clearable allow-create default-first-option
+                        :reserve-keyword="false" placeholder="选择或手动输入代理" style="width: 100%"
+                      >
+                        <el-option
+                          v-if="proxyList.length"
+                          label="🌐 全局代理池轮询 (自动多Worker分配)"
+                          value="__POOL__"
+                        />
+                        <el-option v-for="p in proxyList" :key="p" :label="p" :value="p" />
+                      </el-select>
+                    </el-form-item>
+                  </el-col>
+                  <el-col :xs="24" :sm="12" :md="8">
+                    <el-form-item label="代理出口国家">
+                      <el-select
+                        v-model="oauthForm.proxyCountry" filterable allow-create
+                        placeholder="选择目标国家" style="width: 100%"
+                      >
+                        <el-option
+                          v-for="c in COUNTRY_OPTIONS" :key="c.value"
+                          :label="c.label" :value="c.value"
+                        />
+                      </el-select>
+                    </el-form-item>
+                  </el-col>
+                  <el-col :xs="12" :sm="6" :md="4">
+                    <el-form-item label="并发 Worker">
+                      <el-input-number v-model="oauthForm.workers" :min="1" :max="20" style="width: 100%" />
+                    </el-form-item>
+                  </el-col>
+                  <el-col :xs="12" :sm="6" :md="4">
+                    <el-form-item label="超时 (秒)">
+                      <el-input-number v-model="oauthForm.timeout" :min="10" :max="120" style="width: 100%" />
+                    </el-form-item>
+                  </el-col>
+                </el-row>
+              </el-form>
+            </section>
+
+            <section class="oa-setup-block">
+              <header class="oa-setup-head">
+                <span class="oa-setup-step">3</span>
+                <div>
+                  <div class="oa-setup-title">怎么接码</div>
+                  <p class="oa-setup-lead">先选渠道。Vak 只调度下面勾选的国家档位，空了自动换下一条。</p>
+                </div>
+              </header>
+              <div class="oa-strategy-hero-card" :class="'is-' + oauthForm.smsStrategy + '-mode'">
+                <div class="strategy-left-control">
+                  <span class="strategy-label">渠道</span>
+                  <el-radio-group
+                    v-model="oauthForm.smsStrategy"
+                    size="small"
+                    class="strategy-radio-group"
+                    :disabled="oauthRunning"
+                    @change="onOAuthStrategyChange"
                   >
-                    <span class="strategy-btn-content">{{ p.display_name }}</span>
-                  </el-radio-button>
-                </el-radio-group>
-              </div>
-              <div class="strategy-right-meta">
-                <div v-if="oauthForm.smsStrategy === 'skip'" class="strategy-tip text-emerald">
-                  <span class="strategy-dot emerald"></span>
-                  <span>遇到手机号风控（add-phone）安全跳过并标记「需接码」，零费用消耗</span>
-                </div>
-                <div v-else class="strategy-tip" :class="oauthSmsMeta?.uses_cdk_pool ? 'text-amber' : 'text-blue'">
-                  <span class="strategy-dot" :class="oauthSmsMeta?.uses_cdk_pool ? 'amber' : 'blue'"></span>
-                  <span>{{ oauthSmsMeta?.description || '遇到手机号验证时自动调用所选接码渠道租号收码' }}</span>
+                    <el-radio-button value="skip">跳过</el-radio-button>
+                    <el-radio-button
+                      v-for="p in smsProviders"
+                      :key="p.kind"
+                      :value="p.kind"
+                    >
+                      {{ p.display_name }}
+                    </el-radio-button>
+                  </el-radio-group>
                 </div>
               </div>
-            </div>
-
-            <el-tabs v-model="oauthActiveTab" class="oa-config-tabs">
-              <!-- Tab 1: 网络与代理 -->
-              <el-tab-pane label="🌐 网络代理 & 并发" name="network">
-                <el-form label-position="top" :disabled="oauthRunning" size="small" class="oa-tab-form">
-                  <el-row :gutter="12">
-                    <el-col :xs="24" :sm="12" :md="8">
-                      <el-form-item label="网络代理设置">
-                        <el-select
-                          v-model="oauthForm.proxy" filterable clearable allow-create default-first-option
-                          :reserve-keyword="false" placeholder="选择或手动输入代理" style="width: 100%"
-                        >
-                          <el-option
-                            v-if="proxyList.length"
-                            label="🌐 全局代理池轮询 (自动多Worker分配)"
-                            value="__POOL__"
-                          />
-                          <el-option v-for="p in proxyList" :key="p" :label="p" :value="p" />
-                        </el-select>
-                      </el-form-item>
-                    </el-col>
-                    <el-col :xs="24" :sm="12" :md="8">
-                      <el-form-item label="代理目标国家">
-                        <el-select
-                          v-model="oauthForm.proxyCountry" filterable allow-create
-                          placeholder="选择目标国家" style="width: 100%"
-                        >
-                          <el-option
-                            v-for="c in COUNTRY_OPTIONS" :key="c.value"
-                            :label="c.label" :value="c.value"
-                          />
-                        </el-select>
-                      </el-form-item>
-                    </el-col>
-                    <el-col :xs="12" :sm="6" :md="4">
-                      <el-form-item label="并发 Worker">
-                        <el-input-number v-model="oauthForm.workers" :min="1" :max="20" style="width: 100%" />
-                      </el-form-item>
-                    </el-col>
-                    <el-col :xs="12" :sm="6" :md="4">
-                      <el-form-item label="单请求超时 (秒)">
-                        <el-input-number v-model="oauthForm.timeout" :min="10" :max="120" style="width: 100%" />
-                      </el-form-item>
-                    </el-col>
-                  </el-row>
-                </el-form>
-              </el-tab-pane>
-
-              <!-- Tab 2: 短信接码设置 -->
-              <el-tab-pane
-                :label="oauthForm.smsStrategy === 'skip' ? '📱 手机号接码策略' : ('📱 ' + (oauthSmsMeta?.display_name || '接码') + ' 参数')"
-                name="sms"
-              >
-                <el-form label-position="top" :disabled="oauthRunning" size="small" class="oa-tab-form">
+              <el-form label-position="top" :disabled="oauthRunning" size="small" class="oa-setup-form">
                   <!-- A. CDK 卡密模式专属配置 -->
                   <div v-if="oauthSmsMeta?.uses_cdk_pool" class="oa-cdk-config-panel">
                     <div class="cdk-pool-mini-bar" :class="{ 'is-empty': oauthCdkStats.available === 0 }">
@@ -7576,8 +7995,86 @@ onUnmounted(() => {
 
                   <!-- B. 常规短信平台（国家 / 金额 / 线路） -->
                   <div v-else-if="oauthSmsMeta?.uses_country">
+                    <div v-if="oauthSmsMeta?.country_scheme === 'iso2'" class="oa-sms-routes-block">
+                      <div class="oa-route-toolbar">
+                        <el-radio-group v-model="oauthForm.smsRouteMode" size="small">
+                          <el-radio-button value="priority">按优先级吃有货的</el-radio-button>
+                          <el-radio-button value="rotate">轮转摊开用量</el-radio-button>
+                        </el-radio-group>
+                        <div class="oa-route-switch-fields">
+                          <el-tooltip content="Vak 无货 1 次就换线；这条冷却时间内不再选该国家档位。" placement="top">
+                            <span class="oa-route-switch-item">
+                              <em>冷却</em>
+                              <el-input-number v-model="oauthForm.smsEmptyCooldownSec" :min="5" :max="600" :step="5" size="small" controls-position="right" />
+                              <i>秒</i>
+                            </span>
+                          </el-tooltip>
+                          <el-tooltip content="同一线路台账拒号连跳几次后冷却换线。无货仍是 1 次就换。" placement="top">
+                            <span class="oa-route-switch-item">
+                              <em>连跳</em>
+                              <el-input-number v-model="oauthForm.smsLedgerSkipStreak" :min="1" :max="20" size="small" controls-position="right" />
+                              <i>次换线</i>
+                            </span>
+                          </el-tooltip>
+                        </div>
+                        <div class="oa-route-toolbar-actions">
+                          <el-button size="small" @click="addSmsRoute">添加国家</el-button>
+                          <el-button size="small" :loading="Object.values(oauthRouteTiersLoading).some(Boolean)" @click="loadAllSmsRouteTiers">刷新库存</el-button>
+                        </div>
+                      </div>
+                      <div
+                        v-for="(row, idx) in oauthForm.smsRoutes"
+                        :key="idx"
+                        class="oa-route-card"
+                        :class="{ 'is-off': row.enabled === false }"
+                      >
+                        <div class="oa-route-card-top">
+                          <span class="oa-route-pri">{{ idx + 1 }}</span>
+                          <span class="oa-route-flag">{{ smsRouteFlag(row.country) }}</span>
+                          <el-select v-model="row.country" filterable size="small" class="oa-route-country" @change="onSmsRouteCountryChange(row)">
+                            <el-option
+                              v-for="sc in SMS_COUNTRY_OPTIONS"
+                              :key="sc.value"
+                              :label="sc.label"
+                              :value="String(sc.value).toLowerCase()"
+                            />
+                          </el-select>
+                          <span class="oa-route-lock">
+                            {{ row.price ? `锁 ${row.price}$` : '不限档' }}
+                          </span>
+                          <span class="oa-route-stock">
+                            <template v-if="oauthRouteTiersLoading[row.country]">拉库存…</template>
+                            <template v-else>库存 {{ smsRouteLiveCount(row) }}</template>
+                          </span>
+                          <el-switch v-model="row.enabled" size="small" />
+                          <el-button-group>
+                            <el-button size="small" :disabled="idx === 0" @click="moveSmsRoute(idx, -1)">上</el-button>
+                            <el-button size="small" :disabled="idx === oauthForm.smsRoutes.length - 1" @click="moveSmsRoute(idx, 1)">下</el-button>
+                          </el-button-group>
+                          <el-button link type="danger" size="small" :disabled="oauthForm.smsRoutes.length <= 1" @click="removeSmsRoute(idx)">删</el-button>
+                        </div>
+                        <div class="oa-tier-chips">
+                          <div
+                            class="oa-tier-pill"
+                            :class="{ 'is-active': !row.price }"
+                            @click="row.price = ''"
+                          >不限档</div>
+                          <div
+                            v-for="t in (oauthRouteTiers[row.country] || [])"
+                            :key="t.id || t.price_str"
+                            class="oa-tier-pill"
+                            :class="{ 'is-active': row.price === t.price_key || row.price === t.price_str }"
+                            @click="row.price = t.price_key || t.price_str"
+                          >
+                            <span>{{ t.label }}</span>
+                          </div>
+                          <span v-if="!(oauthRouteTiers[row.country] || []).length && !oauthRouteTiersLoading[row.country]" class="oa-route-empty">该国暂无 openai.com 报价，点刷新或换国家</span>
+                        </div>
+                      </div>
+                      <p class="oa-route-foot">点档位即锁定该价；只调度已开启的线路。空了换下一条，不会擅自升到未勾选的贵档。</p>
+                    </div>
                     <el-row :gutter="12">
-                      <el-col :xs="24" :sm="12" :md="8">
+                      <el-col v-if="oauthSmsMeta?.country_scheme !== 'iso2'" :xs="24" :sm="12" :md="8">
                         <el-form-item label="接码国家 (可搜索)">
                           <el-select
                             v-model="oauthForm.smsCountry"
@@ -7599,7 +8096,7 @@ onUnmounted(() => {
                           </el-select>
                         </el-form-item>
                       </el-col>
-                      <el-col :xs="12" :sm="6" :md="5">
+                      <el-col v-if="oauthSmsMeta?.country_scheme !== 'iso2'" :xs="12" :sm="6" :md="5">
                         <el-form-item :label="oauthSmsMeta?.country_scheme === 'iso2' ? '最高限价 / 点选档位即锁定' : '接码金额要求 (如 0.008 或区间)'">
                           <el-input
                             v-model="oauthForm.smsMaxPrice"
@@ -7634,7 +8131,7 @@ onUnmounted(() => {
                       </el-col>
 
                       <!-- 号池实时档位直选区：仅 SmsBower / HeroSMS 有供应商线路 -->
-                      <el-col v-if="oauthSmsMeta?.uses_price_tiers" :span="24">
+                      <el-col v-if="oauthSmsMeta?.uses_price_tiers && oauthSmsMeta?.country_scheme !== 'iso2'" :span="24">
                         <div class="oa-tier-chips-block">
                           <span class="oa-tier-title">
                             <el-icon><Discount /></el-icon>
@@ -7718,7 +8215,7 @@ onUnmounted(() => {
                         </el-form-item>
                       </el-col>
 
-                      <el-col :span="24">
+                      <el-col v-if="oauthSmsMeta?.country_scheme !== 'iso2'" :span="24">
                         <div class="sms-guide-box">
                           <div class="sms-guide-title">
                             <el-icon><InfoFilled /></el-icon> 怎么填才和网页点选一样（规则速查）
@@ -7746,16 +8243,12 @@ onUnmounted(() => {
                     </div>
                   </div>
                 </el-form>
-              </el-tab-pane>
-            </el-tabs>
+            </section>
 
             <div class="oa-config-footer-row">
-              <span v-if="oauthSmsMeta?.country_scheme === 'iso2'" class="oa-config-hint">💡 提示：点档位会按官网方式锁定该价（maxPrice + fixedPrice=true）。手填数字默认也是锁档；只要上限请填 &lt;=0.05。</span>
-              <span v-else-if="oauthSmsMeta?.uses_price_tiers" class="oa-config-hint">💡 提示：点选档位即锁定该价格（选 <code>0.008</code> 绝不拿 0.007）。若该档位无货会报 NO_NUMBERS，不会擅自换号。</span>
-              <span v-else-if="oauthSmsMeta?.uses_cdk_pool" class="oa-config-hint">💡 提示：卡密留空则自动从 CDK 号池调度。被拒会自动换号，多次卡不会提前作废。</span>
-              <span v-else class="oa-config-hint">💡 提示：跳过接码不会产生费用。需要自动推进时，在上方切换到任一接码渠道即可。</span>
+              <span class="oa-config-hint">配置只对下一次「开始授权」生效。号池来自当前筛选，不必勾选。</span>
               <el-button size="small" class="oa-save-default-btn" @click="saveOAuthFormDefault">
-                <el-icon><Check /></el-icon> 保存为默认配置
+                <el-icon><Check /></el-icon> 保存为默认
               </el-button>
             </div>
           </div>
@@ -7771,8 +8264,8 @@ onUnmounted(() => {
             title="查看全部账号"
             @click="setOAuthFilter('all')"
           >
-            <span class="kpi-label">已处理 / 总数</span>
-            <span class="kpi-num">{{ oauthStats.done }} / {{ oauthStats.total }}</span>
+            <span class="kpi-label">已处理 / 号池</span>
+            <span class="kpi-num">{{ oauthStats.done }} / {{ oauthStats.pool }}</span>
           </div>
           <div
             class="plus-kpi-card oa-kpi-card clickable-card"
@@ -7780,8 +8273,11 @@ onUnmounted(() => {
             title="只看授权成功"
             @click="setOAuthFilter('success')"
           >
-            <span class="kpi-label">OAuth 成功</span>
+            <span class="kpi-label">OAuth 成功{{ oauthRunMeta.target_count ? ` / 目标 ${oauthRunMeta.target_count}` : '' }}</span>
             <span class="kpi-num text-success">{{ oauthStats.success }}</span>
+            <span v-if="oauthRunMeta.target_count" class="kpi-sub-hint">
+              在途 {{ oauthRunMeta.in_flight }}{{ oauthRunMeta.success_count >= oauthRunMeta.target_count ? ' · 已停领新号' : '' }}
+            </span>
           </div>
           <div
             class="plus-kpi-card oa-kpi-card clickable-card"
@@ -7828,7 +8324,7 @@ onUnmounted(() => {
           <el-radio-group v-model="oauthFilter" size="small" class="health-filter-radio oa-filter-radio" @change="oauthPage = 1">
             <el-radio-button value="all">全部 ({{ oauthStats.total }})</el-radio-button>
             <el-radio-button value="running">进行中 ({{ oauthStats.running }})</el-radio-button>
-            <el-radio-button value="pending">排队 ({{ oauthStats.pending }})</el-radio-button>
+            <el-radio-button value="pending">排队 ({{ oauthRunMeta.queue_remaining }})</el-radio-button>
             <el-radio-button value="success">成功 ({{ oauthStats.success }})</el-radio-button>
             <el-radio-button value="fail">
               <span :class="{ 'text-danger': oauthStats.error > 0 }">失败 ({{ oauthStats.error }})</span>
@@ -7940,7 +8436,7 @@ onUnmounted(() => {
             </el-table-column>
             <template #empty>
               <div class="oauth-table-empty">
-                {{ oauthStats.total ? '当前筛选没有账号，可切回「全部」或清空搜索' : '还没有待导出账号' }}
+                {{ oauthStats.total ? '当前筛选没有账号，可切回「全部」或清空搜索' : (oauthRunning ? '工人正在从号池领号，开工后会出现在这里' : '还没有待导出账号') }}
               </div>
             </template>
           </el-table>
@@ -8002,14 +8498,36 @@ onUnmounted(() => {
             <button
               v-else
               class="oa-footer-btn btn-primary"
-              :disabled="oauthRunning"
+              :disabled="oauthRunning || !oauthTargetEmails.length"
               @click="startOAuthExportTask"
             >
-              <el-icon><VideoPlay /></el-icon>{{ oauthTaskId ? '重新执行' : '开始导出' }}
+              <el-icon><VideoPlay /></el-icon>{{ oauthTaskId ? '重新执行' : '开始授权' }}
             </button>
           </div>
         </div>
       </template>
+    </el-dialog>
+
+    <!-- ──────────────── 接码号码台账 ──────────────── -->
+    <el-dialog
+      v-model="smsLedgerVisible"
+      width="920px"
+      top="6vh"
+      class="oa-custom-dialog plus-dialog oauth-dialog"
+      append-to-body
+      destroy-on-close
+      :close-on-click-modal="false"
+    >
+      <template #header>
+        <div class="oa-header">
+          <div class="oa-header-title">
+            <span class="oa-title-badge">台账</span>
+            <span class="oa-title-text">接码号码台账</span>
+            <el-tag size="small" type="info" round effect="plain">国家 · 打码号码 · 结果 · 时间</el-tag>
+          </div>
+        </div>
+      </template>
+      <SmsPhoneLedgerPanel compact />
     </el-dialog>
 
     <!-- ──────────────── 授权特征 / 成功率看板 ──────────────── -->
@@ -10827,6 +11345,16 @@ onUnmounted(() => {
 }
 .action-menu-btn.action-refresh-btn:hover {
   border-color: #38bdf8;
+}
+.action-menu-btn.action-oauth-btn {
+  color: #1f3d42;
+  border-color: rgba(93, 164, 177, 0.55);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96) 0%, rgba(232, 244, 246, 0.92) 100%);
+}
+.action-menu-btn.action-oauth-btn:hover {
+  color: #16555e;
+  border-color: #5da4b1;
+  background: #ffffff;
 }
 
 .linear-chunk-select {
@@ -14698,9 +15226,171 @@ onUnmounted(() => {
 .text-amber { color: #8c5c16; }
 .text-blue { color: #28646e; }
 
-.oa-tab-form {
-  margin-top: 8px;
+.oa-tab-form,
+.oa-setup-form {
+  margin-top: 4px;
 }
+
+.oa-mission-strip {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+@media (max-width: 900px) {
+  .oa-mission-strip { grid-template-columns: repeat(2, 1fr); }
+}
+.oa-mission-cell {
+  background: rgba(255, 255, 255, 0.78);
+  border: 1px solid rgba(93, 164, 177, 0.22);
+  border-radius: 12px;
+  padding: 10px 12px;
+  box-shadow: inset 0 1px 0 #fff;
+}
+.oa-mission-k {
+  display: block;
+  font-size: 11px;
+  color: #6b7c80;
+  letter-spacing: 0.04em;
+}
+.oa-mission-v {
+  display: block;
+  margin-top: 2px;
+  font-size: 18px;
+  font-weight: 700;
+  color: #1f3d42;
+  line-height: 1.2;
+}
+.oa-mission-s {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  color: #5da4b1;
+}
+
+.oa-setup-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.oa-setup-block {
+  background: rgba(248, 243, 233, 0.45);
+  border: 1px solid rgba(93, 164, 177, 0.16);
+  border-radius: 12px;
+  padding: 12px 14px 8px;
+}
+.oa-setup-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.oa-setup-step {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #5da4b1;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+.oa-setup-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #1f3d42;
+}
+.oa-setup-lead {
+  margin: 2px 0 0;
+  font-size: 12px;
+  color: #6b7c80;
+  line-height: 1.45;
+}
+
+.oa-route-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.oa-route-toolbar-actions {
+  display: flex;
+  gap: 6px;
+}
+.oa-route-switch-fields {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.oa-route-switch-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--app-text-secondary);
+}
+.oa-route-switch-item em {
+  font-style: normal;
+  color: var(--app-text-secondary);
+}
+.oa-route-switch-item i {
+  font-style: normal;
+  font-size: 11px;
+}
+.oa-route-switch-item :deep(.el-input-number) {
+  width: 88px;
+}
+.oa-route-card {
+  background: #fff;
+  border: 1px solid rgba(93, 164, 177, 0.2);
+  border-radius: 10px;
+  padding: 10px 12px 8px;
+  margin-bottom: 8px;
+}
+.oa-route-card.is-off {
+  opacity: 0.48;
+}
+.oa-route-card-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.oa-route-pri {
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  background: rgba(93, 164, 177, 0.15);
+  color: #28646e;
+  font-size: 11px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.oa-route-flag { font-size: 16px; line-height: 1; }
+.oa-route-country { width: 168px; }
+.oa-route-lock {
+  font-size: 12px;
+  font-weight: 600;
+  color: #28646e;
+}
+.oa-route-stock { font-size: 11px; color: #6b7c80; }
+.oa-route-empty { font-size: 11px; color: #9aa7ab; }
+.oa-route-foot {
+  margin: 4px 0 0;
+  font-size: 11.5px;
+  color: #6b7c80;
+}
+
+.oa-sms-routes-block { margin-bottom: 8px; }
 
 /* 实时号池档位选择器 */
 .oa-tier-chips-block {
@@ -16679,6 +17369,55 @@ onUnmounted(() => {
   font-size: 10px;
   color: #64748b;
 }
+
+.cell-oauth-try {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  width: 100%;
+  text-align: center;
+  cursor: default;
+}
+.oauth-try-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  line-height: 1.2;
+}
+.oauth-try-count {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--app-title);
+  font-variant-numeric: tabular-nums;
+}
+.oauth-try-out {
+  font-size: 11px;
+  font-weight: 650;
+  color: var(--app-text-secondary);
+}
+.oauth-try-sub {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  color: var(--app-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.oauth-try-empty {
+  font-size: 11.5px;
+  color: var(--app-text-secondary);
+}
+.oauth-try-cool { color: #d97706; font-weight: 650; }
+.oauth-try-dead { color: #e11d48; font-weight: 650; }
+.cell-oauth-try.is-ok .oauth-try-out { color: #059669; }
+.cell-oauth-try.is-fail .oauth-try-out { color: #e11d48; }
+.cell-oauth-try.is-warn .oauth-try-out { color: #d97706; }
+.cell-oauth-try.is-run .oauth-try-out { color: var(--el-color-primary); }
+.oauth-tag-is-ok { color: #059669; }
+.oauth-tag-is-fail { color: #e11d48; }
+.oauth-tag-is-warn { color: #d97706; }
 
 /* ──────────── 8. 快捷操作列 3D 实体水晶药丸按键 (严格对齐素材 2ac2e3a9c1fd2371a185add9ac5a345a.jpg 与 3c96dc7ad762c523c88e687794b9c39a.jpg) ──────────── */
 .cell-actions-block {

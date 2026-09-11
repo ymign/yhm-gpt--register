@@ -24,6 +24,7 @@ import sqlite3
 import sys
 import threading
 import time
+from hashlib import sha1
 from pathlib import Path
 from typing import Optional
 
@@ -244,6 +245,18 @@ def init_db():
     if "oauth_updated_at" not in reg_cols:
         con.execute("ALTER TABLE registered ADD COLUMN oauth_updated_at REAL")
         con.commit()
+    if "oauth_try_count" not in reg_cols:
+        con.execute("ALTER TABLE registered ADD COLUMN oauth_try_count INTEGER DEFAULT 0")
+        con.commit()
+    if "oauth_last_try_at" not in reg_cols:
+        con.execute("ALTER TABLE registered ADD COLUMN oauth_last_try_at REAL")
+        con.commit()
+    if "oauth_last_outcome" not in reg_cols:
+        con.execute("ALTER TABLE registered ADD COLUMN oauth_last_outcome TEXT DEFAULT ''")
+        con.commit()
+    if "oauth_cooldown_until" not in reg_cols:
+        con.execute("ALTER TABLE registered ADD COLUMN oauth_cooldown_until REAL")
+        con.commit()
     # 全格式导出留痕：记录最后一次导出的时间、导出格式及用户备注
     if "at_exported_at" not in reg_cols:
         con.execute("ALTER TABLE registered ADD COLUMN at_exported_at REAL")
@@ -283,6 +296,7 @@ def init_db():
     con.execute("CREATE INDEX IF NOT EXISTS idx_reg_export_created ON registered(exported_at, created_at DESC)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_reg_at_export ON registered(at_exported_at)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_reg_oauth_status ON registered(oauth_status)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_reg_oauth_try ON registered(oauth_last_try_at, oauth_try_count)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_reg_at_expires ON registered(at_expires_at)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_pool_status_kind ON outlook_accounts(status, kind)")
     con.commit()
@@ -354,6 +368,33 @@ def init_db():
     )
     con.execute(
         "CREATE INDEX IF NOT EXISTS idx_oauth_feat_combo ON oauth_attempt_features(proxy_country, impersonate, sms_country, outcome)"
+    )
+
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS sms_phone_ledger (
+            phone_e164 TEXT PRIMARY KEY,
+            country TEXT,
+            price_tier TEXT,
+            provider TEXT,
+            activation_id TEXT,
+            outcome TEXT,
+            reject_reason TEXT,
+            submitted_to_openai INTEGER NOT NULL DEFAULT 0,
+            email TEXT,
+            task_id TEXT,
+            created_at REAL NOT NULL,
+            expires_at REAL NOT NULL
+        )
+    """)
+    con.execute(
+        "CREATE INDEX IF NOT EXISTS idx_sms_phone_ledger_exp ON sms_phone_ledger(expires_at)"
+    )
+    con.execute(
+        "CREATE INDEX IF NOT EXISTS idx_sms_phone_ledger_outcome ON sms_phone_ledger(outcome)"
+    )
+    con.execute(
+        "CREATE INDEX IF NOT EXISTS idx_sms_phone_ledger_live "
+        "ON sms_phone_ledger(outcome, expires_at)"
     )
 
     # 注册环境特征：一号一指纹一 IP，成功/失败都记，供试用资格与风控分析。
@@ -2667,6 +2708,14 @@ def _parse_single_filter_clause(filt: str) -> Optional[str]:
         return "(oauth_status = 'failed' OR oauth_status = 'error')"
     if f in ("oauth_unchecked", "oauth_never", "never_oauth", "no_oauth", "unchecked_oauth"):
         return "(oauth_status IS NULL OR oauth_status = '')"
+    if f in ("oauth_cooldown", "cooldown"):
+        return "(COALESCE(oauth_cooldown_until, 0) > (strftime('%s','now') + 0))"
+    if f in ("oauth_exhausted", "exhausted", "oauth_max_tries"):
+        return (
+            f"(COALESCE(oauth_try_count, 0) >= {OAUTH_MAX_TRIES_DEFAULT} "
+            "AND (oauth_status IS NULL OR oauth_status NOT IN "
+            "('success','success_phone','success_direct')))"
+        )
     # ── 密码与 2FA 安全状态筛选 ──
     if f == "no_password":
         return "(password IS NULL OR password = '')"
@@ -2896,6 +2945,9 @@ def _registered_order_sql(sort_by: str = "", sort_order: str = "") -> str:
         "created_at": "created_at",
         "at_expires_at": "at_expires_at",
         "email": "email",
+        "oauth_try_count": "oauth_try_count",
+        "oauth_last_try_at": "oauth_last_try_at",
+        "oauth_cooldown_until": "oauth_cooldown_until",
     }
     col = col_map.get((sort_by or "").strip().lower(), "created_at")
     ordr = "ASC" if str(sort_order or "").strip().lower() == "asc" else "DESC"
@@ -2904,6 +2956,13 @@ def _registered_order_sql(sort_by: str = "", sort_order: str = "") -> str:
             "ORDER BY CASE WHEN at_expires_at IS NULL OR at_expires_at <= 0 THEN 1 ELSE 0 END, "
             f"at_expires_at {ordr}"
         )
+    if col in ("oauth_last_try_at", "oauth_cooldown_until"):
+        return (
+            f"ORDER BY CASE WHEN {col} IS NULL OR {col} <= 0 THEN 1 ELSE 0 END, "
+            f"{col} {ordr}"
+        )
+    if col == "oauth_try_count":
+        return f"ORDER BY COALESCE(oauth_try_count, 0) {ordr}, oauth_last_try_at DESC"
     return f"ORDER BY {col} {ordr}"
 
 
@@ -3003,6 +3062,7 @@ def list_registered(
         f"SELECT email, password, totp_secret, reg_country, reg_city, reg_ip, "
         f"length(access_token) AS at_len, length(session_token) AS st_len, "
         f"length(refresh_token) AS rt_len, oauth_status, oauth_updated_at, "
+        f"oauth_try_count, oauth_last_try_at, oauth_last_outcome, oauth_cooldown_until, "
         f"exported_at, export_fmt, export_fmt_label, export_note, "
         f"at_exported_at, at_export_note, at_expires_at, "
         f"extra_json, oa_check, created_at "
@@ -4546,6 +4606,300 @@ def update_sms_cdk_item(
         )
         con.commit()
         return rc.rowcount > 0
+
+
+OAUTH_SUCCESS_STATUSES = ("success", "success_phone", "success_direct")
+OAUTH_FAIL_COOLDOWN_SEC = 30 * 60
+OAUTH_TOO_MANY_COOLDOWN_SEC = 6 * 3600
+OAUTH_MAX_TRIES_DEFAULT = 3
+SMS_PHONE_TTL_SEC = 7 * 86400
+
+
+def _oauth_plus_dead(extra_json: str) -> bool:
+    if not extra_json:
+        return False
+    try:
+        extra = json.loads(extra_json)
+    except Exception:
+        return False
+    pc = extra.get("plus_check") if isinstance(extra, dict) else None
+    st = _plus_check_dead_status(pc if isinstance(pc, dict) else {})
+    return st in ("banned", "deactivated", "account_deactivated")
+
+
+def pick_oauth_queue(
+    emails: list[str],
+    *,
+    target_count: int = 0,
+    max_tries: int = OAUTH_MAX_TRIES_DEFAULT,
+    queue_mult: int = 3,
+    now: Optional[float] = None,
+    salt: str = "",
+) -> dict:
+    """从候选邮箱里排出本次授权队列：排除成功/封号/冷却/耗尽，从未跑过优先。"""
+    cleaned = []
+    seen = set()
+    for raw in emails or []:
+        em = str(raw or "").strip().lower()
+        if em and em not in seen:
+            seen.add(em)
+            cleaned.append(em)
+    now = float(now if now is not None else time.time())
+    max_tries = max(1, int(max_tries or OAUTH_MAX_TRIES_DEFAULT))
+    stats = {
+        "candidates": len(cleaned),
+        "queued": 0,
+        "skipped_success": 0,
+        "skipped_banned": 0,
+        "skipped_cooldown": 0,
+        "skipped_exhausted": 0,
+        "runnable": 0,
+    }
+    if not cleaned:
+        return {"emails": [], "stats": stats, "skipped": []}
+
+    placeholders = ",".join("?" * len(cleaned))
+    con = _conn()
+    rows = con.execute(
+        "SELECT email, oauth_status, oauth_try_count, oauth_last_try_at, "
+        "oauth_last_outcome, oauth_cooldown_until, extra_json "
+        f"FROM registered WHERE lower(email) IN ({placeholders})",
+        cleaned,
+    ).fetchall()
+    by_email = {str(r["email"] or "").lower(): r for r in rows}
+
+    skipped = []
+    ranked = []
+    mix = (salt or str(now)).encode("utf-8", errors="replace")
+    for em in cleaned:
+        row = by_email.get(em)
+        if not row:
+            skipped.append({"email": em, "reason": "not_found"})
+            continue
+        st = str(row["oauth_status"] or "").strip().lower()
+        if st in OAUTH_SUCCESS_STATUSES:
+            stats["skipped_success"] += 1
+            skipped.append({"email": em, "reason": "success"})
+            continue
+        if st in ("banned", "deactivated") or _oauth_plus_dead(row["extra_json"] or ""):
+            stats["skipped_banned"] += 1
+            skipped.append({"email": em, "reason": "banned"})
+            continue
+        try:
+            cd_until = float(row["oauth_cooldown_until"] or 0)
+        except (TypeError, ValueError):
+            cd_until = 0.0
+        if cd_until > now:
+            stats["skipped_cooldown"] += 1
+            skipped.append({"email": em, "reason": "cooldown"})
+            continue
+        try:
+            tries = int(row["oauth_try_count"] or 0)
+        except (TypeError, ValueError):
+            tries = 0
+        last_out = str(row["oauth_last_outcome"] or "").strip().lower()
+        if tries >= max_tries and last_out not in OAUTH_SUCCESS_STATUSES:
+            stats["skipped_exhausted"] += 1
+            skipped.append({"email": em, "reason": "exhausted"})
+            continue
+        try:
+            last_try = float(row["oauth_last_try_at"] or 0)
+        except (TypeError, ValueError):
+            last_try = 0.0
+        never = 0 if tries <= 0 or last_try <= 0 else 1
+        mix_key = sha1(mix + b":" + em.encode("utf-8")).hexdigest()
+        ranked.append((never, last_try, tries, mix_key, em))
+
+    ranked.sort()
+    runnable = [em for *_rest, em in ranked]
+    stats["runnable"] = len(runnable)
+    # 目标未满必须能从号池继续补人。截成「目标×3」会在失败后把并发饿死（30 个跑完只剩 2 路）。
+    queued = runnable
+    stats["queued"] = len(queued)
+    _ = target_count
+    _ = queue_mult
+    return {"emails": queued, "stats": stats, "skipped": skipped}
+
+
+def touch_oauth_try_start(email: str) -> None:
+    email = (email or "").strip().lower()
+    if not email:
+        return
+    now = time.time()
+    with _lock:
+        con = _conn()
+        con.execute(
+            "UPDATE registered SET oauth_try_count=COALESCE(oauth_try_count,0)+1, "
+            "oauth_last_try_at=?, oauth_last_outcome='running' WHERE lower(email)=?",
+            (now, email),
+        )
+        con.commit()
+        invalidate_registered_caches()
+
+
+def finish_oauth_try(email: str, outcome: str) -> None:
+    email = (email or "").strip().lower()
+    if not email:
+        return
+    st = str(outcome or "").strip().lower() or "failed"
+    now = time.time()
+    if st in OAUTH_SUCCESS_STATUSES:
+        cooldown = 0.0
+    elif st in ("banned", "deactivated", "account_deactivated"):
+        cooldown = now + 10 * 365 * 86400
+    elif st in ("phone_rate_limit", "too_many") or "too many" in st:
+        cooldown = now + OAUTH_TOO_MANY_COOLDOWN_SEC
+    else:
+        cooldown = now + OAUTH_FAIL_COOLDOWN_SEC
+    with _lock:
+        con = _conn()
+        con.execute(
+            "UPDATE registered SET oauth_last_outcome=?, oauth_cooldown_until=? WHERE lower(email)=?",
+            (st[:40], cooldown, email),
+        )
+        con.commit()
+        invalidate_registered_caches()
+
+
+def normalize_phone_e164(phone: str) -> str:
+    digits = "".join(ch for ch in str(phone or "") if ch.isdigit())
+    if not digits:
+        return ""
+    return "+" + digits
+
+
+def upsert_sms_phone_ledger(
+    phone: str,
+    *,
+    outcome: str,
+    country: str = "",
+    price_tier: str = "",
+    provider: str = "vaksms",
+    activation_id: str = "",
+    reject_reason: str = "",
+    submitted_to_openai: bool = False,
+    email: str = "",
+    task_id: str = "",
+    ttl_sec: int = SMS_PHONE_TTL_SEC,
+) -> str:
+    e164 = normalize_phone_e164(phone)
+    if not e164:
+        return ""
+    now = time.time()
+    expires = now + max(3600, int(ttl_sec or SMS_PHONE_TTL_SEC))
+    with _lock:
+        con = _conn()
+        con.execute(
+            "INSERT INTO sms_phone_ledger(phone_e164, country, price_tier, provider, activation_id, "
+            "outcome, reject_reason, submitted_to_openai, email, task_id, created_at, expires_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(phone_e164) DO UPDATE SET "
+            "country=excluded.country, price_tier=excluded.price_tier, provider=excluded.provider, "
+            "activation_id=excluded.activation_id, outcome=excluded.outcome, "
+            "reject_reason=excluded.reject_reason, submitted_to_openai=excluded.submitted_to_openai, "
+            "email=excluded.email, task_id=excluded.task_id, created_at=excluded.created_at, "
+            "expires_at=excluded.expires_at",
+            (
+                e164, str(country or ""), str(price_tier or ""), str(provider or "vaksms"),
+                str(activation_id or ""), str(outcome or "")[:40], str(reject_reason or "")[:240],
+                1 if submitted_to_openai else 0, str(email or "").strip().lower(),
+                str(task_id or ""), now, expires,
+            ),
+        )
+        con.commit()
+    return e164
+
+
+def mask_phone_e164(phone: str) -> str:
+    e164 = normalize_phone_e164(phone)
+    if not e164:
+        return ""
+    if len(e164) <= 6:
+        return e164[0] + "****"
+    return e164[:4] + "****" + e164[-4:]
+
+
+def list_sms_phone_ledger(
+    outcome: str = "",
+    country: str = "",
+    limit: int = 200,
+    offset: int = 0,
+) -> dict:
+    now = time.time()
+    limit = max(1, min(int(limit or 200), 500))
+    offset = max(0, int(offset or 0))
+    where = ["expires_at > ?"]
+    args: list = [now]
+    f = str(outcome or "").strip().lower()
+    if f in ("rejected", "rejected_openai", "already_in_use"):
+        where.append("outcome IN ('rejected_openai','rejected','already_in_use')")
+    elif f in ("used", "success", "used_success"):
+        where.append("outcome IN ('used_success','success')")
+    ctry = str(country or "").strip().lower()
+    if ctry:
+        where.append("lower(country)=?")
+        args.append(ctry)
+    sql_where = " WHERE " + " AND ".join(where)
+    con = _conn()
+    total = con.execute(f"SELECT COUNT(*) FROM sms_phone_ledger{sql_where}", args).fetchone()[0]
+    all_cnt = con.execute(
+        "SELECT COUNT(*) FROM sms_phone_ledger WHERE expires_at > ?",
+        (now,),
+    ).fetchone()[0]
+    rejected_cnt = con.execute(
+        "SELECT COUNT(*) FROM sms_phone_ledger WHERE expires_at > ? AND outcome IN ('rejected_openai','rejected','already_in_use')",
+        (now,),
+    ).fetchone()[0]
+    used_cnt = con.execute(
+        "SELECT COUNT(*) FROM sms_phone_ledger WHERE expires_at > ? AND outcome IN ('used_success','success')",
+        (now,),
+    ).fetchone()[0]
+    rows = con.execute(
+        "SELECT phone_e164, country, price_tier, provider, outcome, reject_reason, "
+        "submitted_to_openai, email, task_id, created_at, expires_at "
+        f"FROM sms_phone_ledger{sql_where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
+        args + [limit, offset],
+    ).fetchall()
+    items = []
+    for r in rows:
+        d = dict(r)
+        d["phone_masked"] = mask_phone_e164(d.get("phone_e164") or "")
+        d.pop("phone_e164", None)
+        items.append(d)
+    return {
+        "items": items,
+        "total": int(total or 0),
+        "all": int(all_cnt or 0),
+        "rejected": int(rejected_cnt or 0),
+        "used": int(used_cnt or 0),
+        "limit": limit,
+        "offset": offset,
+        "outcome": f,
+        "country": ctry,
+    }
+
+
+def load_active_sms_phone_ledger(now: Optional[float] = None) -> dict:
+    now = float(now if now is not None else time.time())
+    con = _conn()
+    rows = con.execute(
+        "SELECT phone_e164, outcome FROM sms_phone_ledger "
+        "WHERE expires_at > ? AND outcome IN "
+        "('rejected_openai','rejected','already_in_use','used_success','success')",
+        (now,),
+    ).fetchall()
+    rejected = set()
+    used = set()
+    for r in rows:
+        phone = str(r["phone_e164"] or "")
+        out = str(r["outcome"] or "").strip().lower()
+        if not phone:
+            continue
+        if out in ("success", "used_success"):
+            used.add(phone)
+        elif out in ("rejected_openai", "rejected", "already_in_use"):
+            rejected.add(phone)
+    return {"rejected": rejected, "used": used}
 
 
 def seed_default_sms_cdks() -> None:
