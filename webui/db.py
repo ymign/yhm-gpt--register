@@ -2229,14 +2229,30 @@ def _wipe_session_token_fields(extra: dict, keys: tuple[str, ...]) -> None:
     extra["session_data"] = sess
 
 
+_PLUS_ERROR_STATUSES = ("error", "cancelled", "no_at", "not_found", "exception")
+_PLUS_PLAN_STATUSES = (
+    "free", "plus_active", "plus_eligible", "pro_active", "pro_20x", "pro_5x",
+    "pro_eligible", "team_active",
+)
+
+
 def update_plus_check(email: str, plus_info: dict) -> None:
     """把 Plus 检查结果写入 extra_json.plus_check。
 
+    失败 / 网关异常 / 请求异常：不落库，以免把上次套餐和账号状态清掉。
+    Token 验活成功：只记 token_check，不覆盖已有 Free/Plus 套餐结论。
     401 凭证失效：作废 access_token（列表 AT 列显示「缺失失效」），保留 ST/RT 以便刷新。
     官方封号：AT/ST/RT/id_token/cookie 一并作废。
     验死反哺：状态翻转为 banned / token_invalid 时，反查该号注册时的
     reg_proxy + reg_country 给 proxy_health 计一次死亡（同一号反复验死只计一次）。
     """
+    if not isinstance(plus_info, dict):
+        return
+    incoming = {k: v for k, v in plus_info.items() if k != "log_lines"}
+    st = _plus_check_dead_status(incoming)
+    if st in _PLUS_ERROR_STATUSES:
+        return
+
     email = email.lower()
     con = _conn()
     cur = con.execute(
@@ -2253,12 +2269,38 @@ def update_plus_check(email: str, plus_info: dict) -> None:
                 extra = {}
         except Exception:
             extra = {}
-    old_pc = extra.get("plus_check") or {}
-    extra["plus_check"] = plus_info
-    st = _plus_check_dead_status(plus_info)
-    wipe_all = st in ("banned", "deactivated", "account_deactivated")
-    wipe_at = wipe_all or st == "token_invalid"
-    acct = _account_status_from_plus(plus_info)
+    old_pc = extra.get("plus_check") if isinstance(extra.get("plus_check"), dict) else {}
+    old_st = _plus_check_dead_status(old_pc)
+
+    if st == "token_valid" and old_st in _PLUS_PLAN_STATUSES:
+        merged = dict(old_pc)
+        merged["token_status"] = "token_valid"
+        merged["token_label"] = incoming.get("label") or "Token正常"
+        merged["checked_at"] = incoming.get("checked_at") or time.time()
+        extra["plus_check"] = merged
+        extra["token_check"] = {
+            "status": "token_valid",
+            "label": merged["token_label"],
+            "checked_at": merged["checked_at"],
+        }
+        plus_info = merged
+        wipe_all = False
+        wipe_at = False
+        acct = _account_status_from_plus(merged)
+    else:
+        merged = dict(old_pc)
+        merged.update(incoming)
+        extra["plus_check"] = merged
+        if incoming.get("mode") == "token":
+            extra["token_check"] = {
+                "status": st,
+                "label": incoming.get("label") or "",
+                "checked_at": incoming.get("checked_at") or time.time(),
+            }
+        plus_info = merged
+        wipe_all = st in ("banned", "deactivated", "account_deactivated")
+        wipe_at = wipe_all or st == "token_invalid"
+        acct = _account_status_from_plus(merged)
     if wipe_all:
         _wipe_session_token_fields(
             extra, ("accessToken", "sessionToken", "access_token", "session_token")

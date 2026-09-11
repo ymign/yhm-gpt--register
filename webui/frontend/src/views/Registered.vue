@@ -207,7 +207,10 @@ const countryOptions = ref([])
 const searchKeyword = ref('')
 const selected = ref([])
 const selectedCount = computed(() => selected.value.length)
+const isAllFilteredSelected = computed(() => total.value > 0 && selectedCount.value === total.value)
+const selectingAll = ref(false)
 const loading = ref(false)
+let suppressTableSel = false
 let searchTimer = null
 
 const POPULAR_FILTER_COUNTRIES = [
@@ -1211,11 +1214,44 @@ const healthPage = ref(1)
 const healthPageSize = ref(50)
 const healthFilter = ref('all') // 'all' | 'running' | 'failed' | 'done' | 'pending' | 'dead' | 'banned' | 'token_invalid' | 'plus_active' | 'plus_eligible' | 'free' | 'token_valid'
 const healthSearch = ref('')
+let healthMergeLiveItems = false
 
 function isHealthDeadRow(row) {
   const st = String(row?.result?.status || '')
   return ['banned', 'token_invalid', 'deactivated', 'account_deactivated'].includes(st)
 }
+
+function healthResultTone(row) {
+  if (row?.status === 'running') return 'run'
+  if (row?.status === 'pending') return 'wait'
+  const st = healthResultStatus(row)
+  if (['banned', 'deactivated', 'account_deactivated'].includes(st)) return 'dead'
+  if (st === 'token_invalid') return 'invalid'
+  if (isHealthFailedRow(row)) return 'fail'
+  if (st === 'plus_active' || st === 'team_active') return 'plus'
+  if (st === 'plus_eligible' || st === 'pro_eligible') return 'promo'
+  if (st === 'pro_active' || st === 'pro_20x' || st === 'pro_5x') return 'pro'
+  if (st === 'token_valid') return 'ok'
+  if (st === 'free') return 'free'
+  return 'info'
+}
+
+function healthWritebackLabel(row) {
+  if (!row || (row.status !== 'done' && row.status !== 'error')) return ''
+  const wb = String(row?.result?.writeback || '')
+  if (wb === 'none' || row?.result?.persist === false || isHealthFailedRow(row)) return '未回写'
+  if (isHealthDeadRow(row)) {
+    return healthResultStatus(row) === 'token_invalid' ? '已写失效' : '已写封号'
+  }
+  if (healthForm.mode === 'token' || healthResultStatus(row) === 'token_valid') return '已写存活'
+  return '已写套餐'
+}
+
+const healthShowModeColumn = computed(() => {
+  const _tick = healthTick.value
+  const modes = new Set(Object.values(healthItems.value).map((i) => i.mode || healthForm.mode))
+  return modes.size > 1
+})
 
 function healthResultStatus(row) {
   return String(row?.result?.status || '')
@@ -1474,8 +1510,11 @@ async function stopHealthCheckTask() {
   }
 }
 
-async function startHealthCheckTask() {
-  const emails = healthTargetEmails.value
+async function startHealthCheckTask(opts = {}) {
+  const keepExisting = !!opts.keepExisting
+  const emails = (Array.isArray(opts.emails) && opts.emails.length)
+    ? opts.emails
+    : healthTargetEmails.value
   if (!emails.length) {
     ElMessage.warning('没有待验活的账号列表')
     return
@@ -1487,18 +1526,38 @@ async function startHealthCheckTask() {
   }
 
   flushHealthUpdates()
+  healthMergeLiveItems = keepExisting
   healthRunning.value = true
   healthNeedsReload.value = false
-  healthPage.value = 1
-  healthFilter.value = 'all'
-  healthSearch.value = ''
+  if (!opts.preserveFilter) {
+    healthPage.value = 1
+    healthFilter.value = 'all'
+    healthSearch.value = ''
+  }
   healthConfigCollapsed.value = true
 
-  const initMap = Object.create(null)
-  for (const em of emails) {
-    initMap[em] = { email: em, mode: healthForm.mode, status: 'pending', step_text: '排队中...', result: null, elapsed: 0 }
+  if (keepExisting) {
+    const map = { ...healthItems.value }
+    for (const em of emails) {
+      const prev = map[em] || { email: em }
+      map[em] = {
+        ...prev,
+        email: em,
+        mode: healthForm.mode,
+        status: 'pending',
+        step_text: '排队重试...',
+        elapsed: 0,
+        started_at: 0,
+      }
+    }
+    setHealthItems(map)
+  } else {
+    const initMap = Object.create(null)
+    for (const em of emails) {
+      initMap[em] = { email: em, mode: healthForm.mode, status: 'pending', step_text: '排队中...', result: null, elapsed: 0 }
+    }
+    setHealthItems(initMap)
   }
-  setHealthItems(initMap)
 
   let proxiesParam = ''
   let proxyParam = ''
@@ -1527,7 +1586,12 @@ async function startHealthCheckTask() {
         try {
           const snap = JSON.parse(ev.data)
           if (snap.items) {
-            setHealthItems(stripHealthItemLogs(snap.items))
+            const incoming = stripHealthItemLogs(snap.items)
+            if (healthMergeLiveItems) {
+              setHealthItems({ ...healthItems.value, ...incoming })
+            } else {
+              setHealthItems(incoming)
+            }
           }
         } catch (_) {}
       },
@@ -1680,22 +1744,12 @@ function retryFailedHealthCheck() {
     ElMessage.info('当前没有验活失败的账号')
     return
   }
-  healthTargetEmails.value = [...fails]
-  const newMap = { ...healthItems.value }
-  for (const em of fails) {
-    newMap[em] = { email: em, mode: healthForm.mode, status: 'pending', step_text: '待重试...', result: null, elapsed: 0 }
-  }
-  setHealthItems(newMap)
-  startHealthCheckTask()
+  startHealthCheckTask({ emails: fails, keepExisting: true, preserveFilter: true })
 }
 
 function retrySingleHealthCheck(row) {
-  healthTargetEmails.value = [row.email]
-  setHealthItems({
-    ...healthItems.value,
-    [row.email]: { email: row.email, mode: healthForm.mode, status: 'pending', step_text: '准备重试...', result: null, elapsed: 0 },
-  })
-  startHealthCheckTask()
+  if (!row?.email) return
+  startHealthCheckTask({ emails: [row.email], keepExisting: true, preserveFilter: true })
 }
 
 // ════════════════════════ Token 刷新与重登工作台 (Token Refresh Studio) ════════════════════════
@@ -2651,8 +2705,66 @@ const searchInputRef = ref(null)
 
 function clearSelected() {
   selected.value = []
-  if (tableRef.value) {
-    tableRef.value.clearSelection()
+  suppressTableSel = true
+  tableRef.value?.clearSelection?.()
+  nextTick(() => { suppressTableSel = false })
+}
+
+function onTableSelectionChange(checkedRows) {
+  if (suppressTableSel) return
+  const pageEmails = new Set((rows.value || []).map((r) => r.email))
+  const checked = new Set((checkedRows || []).map((r) => r.email))
+  const keep = selected.value.filter((r) => r?.email && !pageEmails.has(r.email))
+  const pageChecked = (rows.value || []).filter((r) => checked.has(r.email))
+  const byEmail = new Map()
+  for (const r of keep) byEmail.set(r.email, r)
+  for (const r of pageChecked) byEmail.set(r.email, r)
+  selected.value = Array.from(byEmail.values())
+}
+
+function onTableSelectAll(selection) {
+  if (suppressTableSel) return
+  const pageRows = rows.value || []
+  if (!pageRows.length) return
+  const selectedEmails = new Set((selection || []).map((r) => r?.email).filter(Boolean))
+  const pageAllChecked = pageRows.every((r) => selectedEmails.has(r.email))
+  if (pageAllChecked) {
+    selectAllFiltered()
+  } else {
+    clearSelected()
+  }
+}
+
+function syncTableChecks() {
+  const table = tableRef.value
+  if (!table || !rows.value.length) return
+  suppressTableSel = true
+  const want = new Set(selected.value.map((r) => r.email))
+  for (const row of rows.value) {
+    table.toggleRowSelection(row, want.has(row.email))
+  }
+  nextTick(() => { suppressTableSel = false })
+}
+
+async function selectAllFiltered() {
+  if (selectingAll.value) return
+  selectingAll.value = true
+  try {
+    const res = await listRegisteredEmails(currentRegisteredEmailQuery())
+    const emails = res.emails || []
+    if (!emails.length) {
+      ElMessage.warning('当前筛选没有账号')
+      return
+    }
+    const have = new Map(selected.value.map((r) => [r.email, r]))
+    selected.value = emails.map((em) => have.get(em) || { email: em })
+    await nextTick()
+    syncTableChecks()
+    ElMessage.success(`已全选当前筛选 ${emails.length} 个，不必改页码`)
+  } catch (e) {
+    ElMessage.error('全选失败: ' + (e.message || e))
+  } finally {
+    selectingAll.value = false
   }
 }
 
@@ -3752,6 +3864,7 @@ async function load(resetPage = false) {
     })
     rows.value = (items || []).map(prepareRowData)
     total.value = t || 0
+    nextTick(() => syncTableChecks())
     if (rows.value.length) {
       const cur = focusedRow.value
       const found = cur ? rows.value.find((r) => r.email === cur.email) : null
@@ -6183,10 +6296,32 @@ onUnmounted(() => {
           <div class="command-deck-actions">
             <!-- 左侧：操作菜单组 -->
             <div class="actions-group-left">
-              <!-- 勾选指示器 -->
+              <button
+                class="action-menu-btn"
+                :class="{ 'has-selected': isAllFilteredSelected }"
+                :disabled="!total || selectingAll"
+                title="勾选当前筛选条件下的全部账号，不必改页码"
+                @click="selectAllFiltered"
+              >
+                <el-icon><Check /></el-icon>
+                <span>{{ selectingAll ? '全选中…' : `全选筛选 (${total})` }}</span>
+              </button>
+              <button
+                class="action-menu-btn"
+                :disabled="!selectedCount"
+                title="取消全部勾选"
+                @click="clearSelected"
+              >
+                <el-icon><Close /></el-icon>
+                <span>取消全选</span>
+              </button>
               <div v-if="selectedCount" class="selection-pill">
                 <span class="selection-dot"></span>
-                <span>已选 <b>{{ selectedCount }}</b> 项</span>
+                <span>
+                  已选 <b>{{ selectedCount }}</b> 项
+                  <template v-if="isAllFilteredSelected">（当前筛选全部）</template>
+                  <template v-else-if="selectedCount > rows.length">（含其他页）</template>
+                </span>
                 <button class="clear-sel-link" @click="clearSelected" title="取消全部勾选">✕</button>
               </div>
 
@@ -6336,7 +6471,7 @@ onUnmounted(() => {
           <!-- 核心数据网格 (Table) -->
           <div
             class="table-scroll-wrap"
-            v-memo="[rows, loading, selected, focusedRow, tableDensity, page, pageSize, columnVisibility.security, columnVisibility.tokens, columnVisibility.acctStatus, columnVisibility.atExp, columnVisibility.status, columnVisibility.oauth, columnVisibility.export, columnVisibility.time]"
+            v-memo="[rows, loading, focusedRow, tableDensity, page, pageSize, columnVisibility.security, columnVisibility.tokens, columnVisibility.acctStatus, columnVisibility.atExp, columnVisibility.status, columnVisibility.oauth, columnVisibility.export, columnVisibility.time]"
           >
             <el-skeleton v-if="loading && !rows.length" :rows="8" animated style="padding: 16px" />
             <el-table
@@ -6350,10 +6485,11 @@ onUnmounted(() => {
               :row-class-name="getRowClassName"
               :class="['octopus-table-grid', `density-${tableDensity}`]"
               @row-click="setFocusedRow"
-              @selection-change="(v) => (selected = v)"
+              @selection-change="onTableSelectionChange"
+              @select-all="onTableSelectAll"
               @sort-change="onTableSort"
             >
-              <!-- 1. 勾选列 (开启 reserve-selection，确保换页/导出勾选永不丢失) -->
+              <!-- 1. 勾选列：表头勾选 = 全选当前筛选（跨页），不必改条/页 -->
               <el-table-column type="selection" width="38" align="center" header-align="center" fixed="left" :reserve-selection="true" />
 
               <!-- 2. 账号与网络出口 (靠左对齐，基线笔直规整) -->
@@ -6695,7 +6831,15 @@ onUnmounted(() => {
           <!-- 分页底栏 -->
           <div class="table-footer-bar">
             <div class="footer-left-info">
-              <span v-if="selectedCount" class="selected-badge">已勾选 <b>{{ selectedCount }}</b> 项</span>
+              <el-button size="small" :loading="selectingAll" :disabled="!total" @click="selectAllFiltered">
+                全选筛选 ({{ total }})
+              </el-button>
+              <el-button size="small" :disabled="!selectedCount" @click="clearSelected">取消全选</el-button>
+              <span v-if="selectedCount" class="selected-badge">
+                已勾选 <b>{{ selectedCount }}</b> 项
+                <template v-if="isAllFilteredSelected">（当前筛选全部）</template>
+                <template v-else-if="selectedCount > rows.length">（含其他页）</template>
+              </span>
               <span v-else class="total-badge">当前页共 {{ rows.length }} 条记录</span>
             </div>
 
@@ -8763,7 +8907,7 @@ onUnmounted(() => {
 
     <!-- ──────────────── 账号批量验活控制台弹窗 (紧凑型架构，支持 Token 验活 & 套餐验活双模式) ──────────────── -->
     <el-dialog
-      v-model="healthVisible" width="880px" top="5vh"
+      v-model="healthVisible" width="1040px" top="3vh"
       class="oa-custom-dialog plus-dialog health-dialog"
       append-to-body
       :lock-scroll="false"
@@ -8772,20 +8916,19 @@ onUnmounted(() => {
       @closed="closeHealthCheck"
     >
       <template #header>
-        <div class="oa-header">
-          <div class="oa-header-title">
-            <span class="oa-title-badge health-badge">HEALTH</span>
-            <span class="oa-title-text">账号批量验活任务台</span>
-            <el-tag size="small" :type="healthForm.mode === 'token' ? 'primary' : 'success'" round effect="dark">
-              {{ healthForm.mode === 'token' ? '🔑 Token 状态验活' : '💎 套餐与试用资格探测' }}
-            </el-tag>
-            <el-tag size="small" type="info" round effect="plain">{{ healthTargetEmails.length }} 个账号</el-tag>
+        <div class="hc-head">
+          <div class="hc-head-left">
+            <span class="hc-pulse" :class="{ on: healthRunning }"></span>
+            <div class="hc-head-copy">
+              <span class="hc-kicker">{{ healthForm.mode === 'token' ? 'TOKEN 验活' : '套餐验活' }}</span>
+              <span class="hc-title">账号批量验活</span>
+            </div>
+            <span class="hc-chip">{{ healthStats.total }} 号</span>
+            <span class="hc-chip hc-chip-done">{{ healthStats.done }} / {{ healthStats.total }}</span>
           </div>
-          <div class="oa-header-extra">
-            <el-button size="small" text @click="healthConfigCollapsed = !healthConfigCollapsed">
-              <el-icon><Setting /></el-icon>{{ healthConfigCollapsed ? '展开参数配置' : '收起参数配置' }}
-            </el-button>
-          </div>
+          <button class="oa-config-toggle-btn" type="button" @click="healthConfigCollapsed = !healthConfigCollapsed">
+            <el-icon><Setting /></el-icon>{{ healthConfigCollapsed ? '参数' : '收起参数' }}
+          </button>
         </div>
       </template>
 
@@ -8842,118 +8985,123 @@ onUnmounted(() => {
                   </el-form-item>
                 </el-col>
               </el-row>
-              <div style="font-size: 11.5px; color: var(--el-text-color-secondary); line-height: 1.5; margin-top: 2px">
-                💡 <b>模式说明</b>：<b>Token 状态验活</b> 快速检测 Token 存活、JWT 到期时间与封号排查；<b>套餐与试用探测</b> 深度提取 Plus、Pro 5x/20x、Team、1个月免单活动等订阅状态。
+              <div class="hc-config-note">
+                Token 验活只看凭证是否还能用。套餐验活走官方 accounts/check：成功拿到 Free/Plus/Pro 就说明此刻没封号。
               </div>
             </el-form>
           </div>
         </el-collapse-transition>
 
-        <!-- KPI 统计看板：点卡片即筛选表格 -->
-        <div class="plus-kpi-grid">
-          <div
-            class="plus-kpi-card clickable-card"
-            :class="{ 'is-filter-active': healthFilter === 'all' }"
-            title="查看全部账号"
-            @click="setHealthFilter('all')"
-          >
-            <span class="kpi-label">已验活 / 总数</span>
-            <span class="kpi-num">{{ healthStats.done }} / {{ healthStats.total }}</span>
-          </div>
-          <div
+        <div class="hc-meter">
+          <button class="hc-stat" :class="{ on: healthFilter === 'all' }" type="button" @click="setHealthFilter('all')">
+            <span class="hc-stat-k">进度</span>
+            <span class="hc-stat-v">{{ healthStats.done }}<small>/{{ healthStats.total }}</small></span>
+          </button>
+          <button
             v-if="healthForm.mode === 'token'"
-            class="plus-kpi-card hit-active clickable-card"
-            :class="{ 'is-filter-active': healthFilter === 'token_valid' }"
-            title="只看 Token 仍然有效的账号"
+            class="hc-stat tone-ok"
+            :class="{ on: healthFilter === 'token_valid' }"
+            type="button"
             @click="setHealthFilter('token_valid')"
           >
-            <span class="kpi-label">✅ Token 正常有效</span>
-            <span class="kpi-num text-primary">{{ healthStats.token_valid }}</span>
-          </div>
-          <div
-            v-if="healthForm.mode === 'plan' && healthStats.pro_active > 0"
-            class="plus-kpi-card hit-pro clickable-card"
-            :class="{ 'is-filter-active': healthFilter === 'pro_active' }"
-            title="只看 Pro"
-            @click="setHealthFilter('pro_active')"
-          >
-            <span class="kpi-label">👑 Pro 账号</span>
-            <span class="kpi-num text-pro">{{ healthStats.pro_active }}</span>
-          </div>
-          <div
+            <span class="hc-stat-k">Token 有效</span>
+            <span class="hc-stat-v">{{ healthStats.token_valid }}</span>
+          </button>
+          <button
             v-if="healthForm.mode === 'plan'"
-            class="plus-kpi-card hit-active clickable-card"
-            :class="{ 'is-filter-active': healthFilter === 'plus_active' }"
-            title="只看 Plus 订阅生效"
+            class="hc-stat tone-free"
+            :class="{ on: healthFilter === 'free' }"
+            type="button"
+            @click="setHealthFilter('free')"
+          >
+            <span class="hc-stat-k">Free</span>
+            <span class="hc-stat-v">{{ healthStats.free }}</span>
+          </button>
+          <button
+            v-if="healthForm.mode === 'plan'"
+            class="hc-stat tone-plus"
+            :class="{ on: healthFilter === 'plus_active' }"
+            type="button"
             @click="setHealthFilter('plus_active')"
           >
-            <span class="kpi-label">★ Plus 订阅生效</span>
-            <span class="kpi-num text-primary">{{ healthStats.plus_active }}</span>
-          </div>
-          <div
+            <span class="hc-stat-k">Plus</span>
+            <span class="hc-stat-v">{{ healthStats.plus_active }}</span>
+          </button>
+          <button
             v-if="healthForm.mode === 'plan'"
-            class="plus-kpi-card hit-promo clickable-card"
-            :class="{ 'is-filter-active': healthFilter === 'plus_eligible' }"
-            title="只看 Plus 试用"
+            class="hc-stat tone-promo"
+            :class="{ on: healthFilter === 'plus_eligible' }"
+            type="button"
             @click="setHealthFilter('plus_eligible')"
           >
-            <span class="kpi-label">◆ Plus 试用</span>
-            <span class="kpi-num text-success">{{ healthStats.plus_eligible }}</span>
-          </div>
-          <div
-            class="plus-kpi-card clickable-card"
-            :class="{ 'card-warn': healthStats.dead > 0, 'is-filter-active': healthFilter === 'dead' || healthFilter === 'banned' || healthFilter === 'token_invalid' }"
-            title="点这里只看封号和凭证失效，不会混在正常完成里"
+            <span class="hc-stat-k">试用</span>
+            <span class="hc-stat-v">{{ healthStats.plus_eligible }}</span>
+          </button>
+          <button
+            v-if="healthForm.mode === 'plan' && healthStats.pro_active > 0"
+            class="hc-stat tone-pro"
+            :class="{ on: healthFilter === 'pro_active' }"
+            type="button"
+            @click="setHealthFilter('pro_active')"
+          >
+            <span class="hc-stat-k">Pro</span>
+            <span class="hc-stat-v">{{ healthStats.pro_active }}</span>
+          </button>
+          <button
+            class="hc-stat tone-dead"
+            :class="{ on: healthFilter === 'dead', hot: healthStats.dead > 0 }"
+            type="button"
+            title="官方封号或凭证失效，会回写账号状态"
             @click="setHealthFilter('dead')"
           >
-            <span class="kpi-label">封号 / 凭证失效</span>
-            <span class="kpi-num text-danger">{{ healthStats.dead }}</span>
-            <span v-if="healthStats.dead > 0" class="kpi-sub-hint">封号 {{ healthStats.banned }} · 失效 {{ healthStats.token_invalid }}</span>
-          </div>
-          <div
-            class="plus-kpi-card clickable-card"
-            :class="{ 'card-warn': healthStats.error > 0, 'is-filter-active': healthFilter === 'failed' }"
-            title="只看探测异常/失败（网络、429 等），不含封号"
+            <span class="hc-stat-k">封号/失效</span>
+            <span class="hc-stat-v">{{ healthStats.dead }}</span>
+          </button>
+          <button
+            class="hc-stat tone-fail"
+            :class="{ on: healthFilter === 'failed', hot: healthStats.error > 0 }"
+            type="button"
+            title="网关 403 / 超时 / 请求异常：不回写，不清空上次套餐"
             @click="setHealthFilter('failed')"
           >
-            <span class="kpi-label">异常 / 失败</span>
-            <span class="kpi-num">{{ healthStats.error }}</span>
-          </div>
-          <div class="plus-progress-cell">
-            <el-progress
-              :percentage="healthStats.percent"
-              :status="healthStats.done === healthStats.total && healthStats.total > 0 ? 'success' : ''"
-              :stroke-width="8"
-              striped
-              :striped-flow="healthRunning"
-            />
+            <span class="hc-stat-k">异常未回写</span>
+            <span class="hc-stat-v">{{ healthStats.error }}</span>
+          </button>
+          <div class="hc-progress">
+            <div class="hc-progress-track">
+              <div
+                class="hc-progress-fill"
+                :class="{ run: healthRunning }"
+                :style="{ width: healthStats.percent + '%' }"
+              ></div>
+            </div>
+            <span class="hc-progress-pct">{{ healthStats.percent }}%</span>
           </div>
         </div>
 
-        <!-- 核心表格：验活监控列表 (内置状态过滤与前端高性能分页，杜绝万级账号卡顿) -->
-        <div class="health-table-filter-bar">
-          <el-radio-group v-model="healthFilter" size="small" class="health-filter-radio" @change="healthPage = 1">
-            <el-radio-button label="all">全部 ({{ healthStats.total }})</el-radio-button>
-            <el-radio-button label="running">运行中 ({{ healthStats.running }})</el-radio-button>
-            <el-radio-button label="dead">
-              <span :class="{ 'text-danger': healthStats.dead > 0 }">封号/失效 ({{ healthStats.dead }})</span>
-            </el-radio-button>
-            <el-radio-button label="failed">
-              <span :class="{ 'text-danger': healthStats.error > 0 }">异常/失败 ({{ healthStats.error }})</span>
-            </el-radio-button>
-            <el-radio-button label="done">正常完成 ({{ healthStats.doneOk }})</el-radio-button>
-          </el-radio-group>
-          <div class="health-filter-right">
-            <el-input
-              v-model="healthSearch"
-              placeholder="快速过滤邮箱..."
-              clearable
-              size="small"
-              class="health-search-input"
-              :prefix-icon="Search"
-              @input="healthPage = 1"
-            />
+        <p class="hc-legend">
+          <b>Free / Plus / Pro</b> 来自官方套餐接口，成功即此刻未封号，回写「存活有效」。
+          <b>封号/失效</b> 才改账号状态。
+          <b>HTTP 403 / 请求异常</b> 只是探测失败，不改状态，也不清空上次套餐。
+        </p>
+
+        <div class="health-table-filter-bar hc-filter-bar">
+          <div class="hc-seg">
+            <button type="button" :class="{ on: healthFilter === 'all' }" @click="healthFilter = 'all'; healthPage = 1">全部 {{ healthStats.total }}</button>
+            <button type="button" :class="{ on: healthFilter === 'running' }" @click="healthFilter = 'running'; healthPage = 1">运行 {{ healthStats.running }}</button>
+            <button type="button" :class="{ on: healthFilter === 'done' }" @click="healthFilter = 'done'; healthPage = 1">完成 {{ healthStats.doneOk }}</button>
+            <button type="button" class="seg-dead" :class="{ on: healthFilter === 'dead' }" @click="healthFilter = 'dead'; healthPage = 1">封号 {{ healthStats.dead }}</button>
+            <button type="button" class="seg-fail" :class="{ on: healthFilter === 'failed' }" @click="healthFilter = 'failed'; healthPage = 1">异常 {{ healthStats.error }}</button>
           </div>
+          <el-input
+            v-model="healthSearch"
+            placeholder="过滤邮箱"
+            clearable
+            size="small"
+            class="health-search-input"
+            :prefix-icon="Search"
+            @input="healthPage = 1"
+          />
         </div>
 
         <div class="plus-table-wrap health-table-wrap">
@@ -8962,72 +9110,79 @@ onUnmounted(() => {
             :data="healthDisplayRows"
             row-key="email"
             size="small"
-            stripe
-            :max-height="healthConfigCollapsed ? 360 : 240"
+            :max-height="healthConfigCollapsed ? 420 : 280"
             class="macos-table health-live-table"
+            :row-class-name="({ row }) => `hc-row hc-row-${healthResultTone(row)}`"
             :highlight-current-row="false"
           >
-            <el-table-column prop="email" label="账号邮箱" min-width="220" show-overflow-tooltip>
+            <el-table-column prop="email" label="账号" min-width="240" show-overflow-tooltip>
               <template #default="{ row }">
-                <button
-                  class="macos-tag-btn copy-btn"
-                  title="点击复制邮箱"
-                  @click="copyText(row.email)"
-                >
+                <button class="hc-mail" type="button" title="复制邮箱" @click="copyText(row.email)">
                   <span class="mono">{{ row.email }}</span>
                   <el-icon class="copy-ico"><CopyDocument /></el-icon>
                 </button>
               </template>
             </el-table-column>
 
-            <el-table-column label="验活模式" width="110" align="center">
+            <el-table-column v-if="healthShowModeColumn" label="模式" width="88" align="center">
               <template #default="{ row }">
-                <el-tag size="small" :type="row.mode === 'token' ? 'primary' : 'success'" effect="plain">
-                  {{ row.mode === 'token' ? 'Token 探测' : '套餐探测' }}
-                </el-tag>
+                <span class="hc-mode">{{ row.mode === 'token' ? 'Token' : '套餐' }}</span>
               </template>
             </el-table-column>
 
-            <el-table-column label="当前状态 / 步骤" min-width="160">
+            <el-table-column label="结论" min-width="180">
               <template #default="{ row }">
-                <span v-if="row.status === 'running'" class="running-step">
-                  <el-icon class="is-loading" style="margin-right: 4px"><Loading /></el-icon>
-                  {{ row.step_text || '检测中...' }}
+                <span v-if="row.status === 'running'" class="hc-pill is-run">
+                  <el-icon class="is-loading"><Loading /></el-icon>
+                  {{ row.step_text || '检测中' }}
                 </span>
-                <el-tag v-else-if="row.status === 'pending'" size="small" type="info" effect="plain">排队中</el-tag>
-                <el-tag
+                <span v-else-if="row.status === 'pending'" class="hc-pill is-wait">排队</span>
+                <span
                   v-else-if="row.result"
-                  size="small"
-                  :type="row.result.status === 'token_valid' ? 'success' : row.result.status === 'plus_active' || row.result.status === 'team_active' ? 'primary' : row.result.status === 'plus_eligible' ? 'success' : row.result.status === 'pro_active' || row.result.status === 'pro_20x' || row.result.status === 'pro_5x' ? 'danger' : isHealthDeadRow(row) || isHealthFailedRow(row) ? 'danger' : 'info'"
-                  :title="row.result.error || row.result.label || row.result.status"
+                  class="hc-pill"
+                  :class="'is-' + healthResultTone(row)"
+                  :title="row.result.error || row.result.reason || row.result.label"
                 >
                   {{ row.result.label || row.result.status }}
-                </el-tag>
+                </span>
                 <span v-else class="text-muted">—</span>
               </template>
             </el-table-column>
 
-            <el-table-column label="耗时" width="80" align="center">
+            <el-table-column label="回写" width="92" align="center">
+              <template #default="{ row }">
+                <span
+                  v-if="healthWritebackLabel(row)"
+                  class="hc-wb"
+                  :class="{ none: healthWritebackLabel(row) === '未回写', dead: isHealthDeadRow(row) }"
+                >
+                  {{ healthWritebackLabel(row) }}
+                </span>
+                <span v-else class="text-muted">—</span>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="耗时" width="72" align="center">
               <template #default="{ row }">
                 <ElapsedTimer :status="row.status" :started-at="row.started_at" :elapsed="row.elapsed" />
               </template>
             </el-table-column>
 
-            <el-table-column label="操作" width="130" align="center" fixed="right">
+            <el-table-column label="" width="118" align="right" fixed="right">
               <template #default="{ row }">
-                <el-button
+                <button
                   v-if="isHealthFailedRow(row) && !healthRunning"
-                  size="small"
-                  text
-                  type="warning"
+                  class="hc-row-btn"
+                  type="button"
+                  title="只重试这一条，其它结果保留"
                   @click="retrySingleHealthCheck(row)"
-                  title="单独重试此异常账号"
-                >
-                  <el-icon><Refresh /></el-icon>验活
-                </el-button>
-                <el-button size="small" text type="primary" :disabled="row.status === 'pending'" @click.stop="openHealthItemLog(row)">
-                  <el-icon><Document /></el-icon>日志
-                </el-button>
+                >重试</button>
+                <button
+                  class="hc-row-btn ghost"
+                  type="button"
+                  :disabled="row.status === 'pending'"
+                  @click.stop="openHealthItemLog(row)"
+                >日志</button>
               </template>
             </el-table-column>
           </el-table>
@@ -9050,40 +9205,42 @@ onUnmounted(() => {
       </div>
 
       <template #footer>
-        <div class="oa-dialog-footer">
+        <div class="oa-dialog-footer hc-footer">
           <div class="footer-tip">
             <span v-if="healthRunning" class="running-indicator">
-              <span class="pulse-dot"></span> 正在多 Worker 并发验活 (Workers: {{ healthForm.workers }})...
+              <span class="pulse-dot"></span> {{ healthForm.workers }} Worker 并发中，重试失败不会清掉已完成的号
+            </span>
+            <span v-else-if="healthTaskId && failedHealthEmails.length" class="hc-foot-warn">
+              {{ failedHealthEmails.length }} 条异常未回写，可只重试失败项
             </span>
             <span v-else-if="healthTaskId" class="finished-indicator">
-              验活已完成，结果已自动更新至数据库
+              已完成。封号/失效已落库，异常未改账号状态
             </span>
           </div>
           <div class="footer-btns">
-            <el-button @click="closeHealthCheck">
+            <button class="oa-footer-btn" type="button" @click="closeHealthCheck">
               {{ healthRunning ? '后台运行' : '关闭' }}
-            </el-button>
-            <el-button v-if="healthRunning" type="danger" plain @click="stopHealthCheckTask">
-              <el-icon><SwitchButton /></el-icon>停止验活
-            </el-button>
+            </button>
+            <button v-if="healthRunning" class="oa-footer-btn btn-stop" type="button" @click="stopHealthCheckTask">
+              停止
+            </button>
             <template v-else>
-              <el-button
+              <button
                 v-if="failedHealthEmails.length > 0"
-                type="warning"
-                plain
+                class="oa-footer-btn btn-warn"
+                type="button"
                 @click="retryFailedHealthCheck"
               >
-                <el-icon><Refresh /></el-icon>重新验活失败 ({{ failedHealthEmails.length }})
-              </el-button>
-              <el-button
-                type="primary"
-                class="start-gradient-btn"
-                :loading="healthRunning"
+                重试失败 {{ failedHealthEmails.length }}
+              </button>
+              <button
+                class="oa-footer-btn btn-primary"
+                type="button"
                 :disabled="!healthTargetEmails.length"
-                @click="startHealthCheckTask"
+                @click="startHealthCheckTask()"
               >
-                <el-icon><VideoPlay /></el-icon>{{ healthTaskId ? '重新验活' : '开始批量验活' }}
-              </el-button>
+                {{ healthTaskId ? '全部重验' : '开始验活' }}
+              </button>
             </template>
           </div>
         </div>
@@ -11357,7 +11514,7 @@ onUnmounted(() => {
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.85) 0%, rgba(255, 255, 255, 0.1) 80%, transparent 100%);
   pointer-events: none;
 }
-.action-menu-btn:hover {
+.action-menu-btn:hover:not(:disabled) {
   background: #ffffff;
   border-color: rgba(56, 189, 248, 0.7);
   border-top-color: #ffffff;
@@ -11374,6 +11531,15 @@ onUnmounted(() => {
   color: #0284c7;
   background: rgba(238, 248, 255, 0.9);
   box-shadow: 0 4px 12px rgba(2, 132, 199, 0.22), inset 0 1.5px 1px #ffffff;
+}
+.action-menu-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow:
+    0 2px 6px -2px rgba(15, 23, 42, 0.06),
+    inset 0 1.5px 1.5px #ffffff,
+    inset 0 -1.5px 2px rgba(148, 163, 184, 0.12);
 }
 .action-menu-btn.action-refresh-btn {
   border-color: rgba(255, 255, 255, 0.95);
@@ -13334,6 +13500,19 @@ onUnmounted(() => {
   background: rgba(255, 255, 255, 0.5) !important;
   backdrop-filter: blur(16px) !important;
 }
+:deep(.health-dialog) {
+  width: min(1040px, 96vw) !important;
+  border-radius: 22px !important;
+}
+:deep(.health-dialog .el-dialog__header) {
+  padding: 14px 20px 8px !important;
+}
+:deep(.health-dialog .el-dialog__body) {
+  padding: 4px 20px 12px !important;
+}
+:deep(.health-dialog .el-dialog__footer) {
+  padding: 10px 20px 16px !important;
+}
 
 .oa-header {
   display: flex;
@@ -14003,17 +14182,335 @@ onUnmounted(() => {
 }
 
 .health-search-input {
-  width: 180px;
+  width: 200px;
 }
 
 .health-pagination-bar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 4px 6px;
-  background: var(--el-fill-color-light);
-  border: 1px solid var(--el-border-color-lighter);
-  border-radius: 6px;
+  padding: 6px 8px;
+  background: rgba(255, 255, 255, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.9);
+  border-radius: 10px;
+}
+
+/* ──── 验活任务台：仪表条 + 结论珐琅胶囊 ──── */
+.health-dialog.el-dialog {
+  border-radius: 22px;
+}
+.health-dialog .el-dialog__header {
+  padding: 14px 20px 8px;
+  margin-right: 0;
+}
+.health-dialog .el-dialog__body {
+  padding: 4px 20px 12px;
+}
+.health-dialog .el-dialog__footer {
+  padding: 10px 20px 16px;
+}
+.hc-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-right: 28px;
+}
+.hc-head-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.hc-pulse {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #cbd5e1;
+  box-shadow: inset 0 1px 1px #fff;
+  flex-shrink: 0;
+}
+.hc-pulse.on {
+  background: #10b981;
+  box-shadow: 0 0 0 4px rgba(16, 185, 129, 0.18);
+  animation: hc-pulse 1.4s ease-out infinite;
+}
+@keyframes hc-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.35); }
+  100% { box-shadow: 0 0 0 8px rgba(16, 185, 129, 0); }
+}
+.hc-head-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  line-height: 1.15;
+}
+.hc-kicker {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  color: #0284c7;
+}
+.hc-title {
+  font-size: 16px;
+  font-weight: 800;
+  color: #0f172a;
+  letter-spacing: -0.02em;
+}
+.hc-chip {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  background: rgba(255, 255, 255, 0.8);
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  color: #334155;
+}
+.hc-chip-done {
+  background: rgba(224, 242, 254, 0.9);
+  border-color: rgba(56, 189, 248, 0.45);
+  color: #0369a1;
+}
+.hc-config-note {
+  font-size: 11.5px;
+  color: #64748b;
+  line-height: 1.5;
+  margin-top: 2px;
+}
+.hc-meter {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.hc-stat {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-width: 72px;
+  padding: 8px 12px;
+  border-radius: 14px;
+  border: 1.5px solid rgba(255, 255, 255, 0.95);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.92) 0%, rgba(248, 250, 252, 0.82) 100%);
+  box-shadow: 0 4px 12px -4px rgba(15, 23, 42, 0.08), inset 0 1px 1px #fff;
+  cursor: pointer;
+  text-align: left;
+  color: inherit;
+}
+.hc-stat:hover {
+  transform: translateY(-1px);
+  border-color: rgba(56, 189, 248, 0.55);
+}
+.hc-stat.on {
+  border-color: #38bdf8;
+  background: rgba(224, 242, 254, 0.95);
+}
+.hc-stat-k {
+  font-size: 10px;
+  font-weight: 700;
+  color: #64748b;
+  letter-spacing: 0.04em;
+}
+.hc-stat-v {
+  font-size: 18px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  color: #0f172a;
+  line-height: 1.15;
+}
+.hc-stat-v small {
+  font-size: 11px;
+  font-weight: 700;
+  color: #94a3b8;
+  margin-left: 1px;
+}
+.hc-stat.tone-free.on { background: #f8fafc; border-color: #94a3b8; }
+.hc-stat.tone-plus.on { background: #e0f2fe; border-color: #38bdf8; }
+.hc-stat.tone-promo.on { background: #ecfdf5; border-color: #34d399; }
+.hc-stat.tone-pro.on { background: #fff1f2; border-color: #fb7185; }
+.hc-stat.tone-dead.hot .hc-stat-v { color: #be123c; }
+.hc-stat.tone-fail.hot .hc-stat-v { color: #b45309; }
+.hc-stat.tone-dead.on { background: #fff1f2; border-color: #fb7185; }
+.hc-stat.tone-fail.on { background: #fffbeb; border-color: #fbbf24; }
+.hc-progress {
+  flex: 1;
+  min-width: 140px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 4px;
+}
+.hc-progress-track {
+  flex: 1;
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(226, 232, 240, 0.9);
+  overflow: hidden;
+  box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.08);
+}
+.hc-progress-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #38bdf8, #0284c7);
+  transition: width 0.35s ease;
+}
+.hc-progress-fill.run {
+  background-size: 16px 16px;
+  background-image: linear-gradient(45deg, rgba(255,255,255,0.28) 25%, transparent 25%, transparent 50%, rgba(255,255,255,0.28) 50%, rgba(255,255,255,0.28) 75%, transparent 75%, transparent);
+  animation: hc-bar 0.8s linear infinite;
+}
+@keyframes hc-bar {
+  to { background-position: 16px 0; }
+}
+.hc-progress-pct {
+  width: 38px;
+  font-size: 12px;
+  font-weight: 800;
+  color: #0369a1;
+  font-variant-numeric: tabular-nums;
+}
+.hc-legend {
+  margin: 2px 0 0;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: #64748b;
+}
+.hc-legend b { color: #334155; font-weight: 800; }
+.hc-filter-bar {
+  margin-top: 2px;
+}
+.hc-seg {
+  display: inline-flex;
+  padding: 3px;
+  border-radius: 999px;
+  background: rgba(241, 245, 249, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.95);
+  box-shadow: inset 0 1px 1px #fff;
+  gap: 2px;
+}
+.hc-seg button {
+  height: 26px;
+  padding: 0 11px;
+  border: 0;
+  background: transparent;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: #64748b;
+  cursor: pointer;
+}
+.hc-seg button.on {
+  background: #fff;
+  color: #0f172a;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.08);
+}
+.hc-seg button.seg-dead.on { color: #be123c; }
+.hc-seg button.seg-fail.on { color: #b45309; }
+.hc-mail {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+  color: #0f172a;
+  font-size: 12.5px;
+  max-width: 100%;
+}
+.hc-mail .mono { font-weight: 650; }
+.hc-mail .copy-ico { color: #94a3b8; font-size: 13px; }
+.hc-mail:hover { color: #0284c7; }
+.hc-mode {
+  font-size: 11px;
+  font-weight: 700;
+  color: #64748b;
+}
+.hc-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  height: 24px;
+  padding: 0 9px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 750;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.hc-pill.is-free { background: #f1f5f9; color: #475569; }
+.hc-pill.is-plus { background: #e0f2fe; color: #0369a1; }
+.hc-pill.is-promo { background: #ecfdf5; color: #047857; }
+.hc-pill.is-ok { background: #ecfdf5; color: #047857; }
+.hc-pill.is-pro { background: #fff1f2; color: #e11d48; }
+.hc-pill.is-fail { background: #fffbeb; color: #b45309; }
+.hc-pill.is-dead { background: #fff1f2; color: #be123c; }
+.hc-pill.is-invalid { background: #f8fafc; color: #475569; border: 1px dashed #94a3b8; }
+.hc-pill.is-run { background: #e0f2fe; color: #0369a1; }
+.hc-pill.is-wait { background: #f8fafc; color: #94a3b8; }
+.hc-pill.is-info { background: #f1f5f9; color: #334155; }
+.hc-wb {
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  color: #047857;
+}
+.hc-wb.none { color: #b45309; }
+.hc-wb.dead { color: #be123c; }
+.hc-row-btn {
+  height: 24px;
+  padding: 0 8px;
+  margin-left: 4px;
+  border-radius: 999px;
+  border: 1px solid rgba(245, 158, 11, 0.45);
+  background: #fffbeb;
+  color: #b45309;
+  font-size: 11px;
+  font-weight: 750;
+  cursor: pointer;
+}
+.hc-row-btn.ghost {
+  border-color: rgba(148, 163, 184, 0.4);
+  background: rgba(255, 255, 255, 0.8);
+  color: #0369a1;
+}
+.hc-row-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.health-dialog .health-live-table {
+  --el-table-border-color: rgba(226, 232, 240, 0.7);
+  --el-table-header-bg-color: rgba(248, 250, 252, 0.9);
+  border-radius: 14px;
+  overflow: hidden;
+}
+.health-dialog .health-live-table :deep(th.el-table__cell) {
+  font-size: 11px;
+  font-weight: 800;
+  color: #64748b;
+  letter-spacing: 0.04em;
+}
+.health-dialog .health-live-table :deep(.hc-row-fail) {
+  --el-table-tr-bg-color: rgba(255, 251, 235, 0.55);
+}
+.health-dialog .health-live-table :deep(.hc-row-dead) {
+  --el-table-tr-bg-color: rgba(255, 241, 242, 0.55);
+}
+.hc-footer {
+  align-items: center;
+}
+.hc-foot-warn {
+  color: #b45309;
+  font-size: 12px;
+  font-weight: 700;
+}
+.hc-footer .oa-footer-btn:not(.btn-primary):not(.btn-warn):not(.btn-stop) {
+  background: rgba(255, 255, 255, 0.9);
+  border: 1.5px solid rgba(203, 213, 225, 0.8);
+  color: #334155;
+  box-shadow: inset 0 1px 1px #fff;
 }
 
 .oauth-batch-hint {

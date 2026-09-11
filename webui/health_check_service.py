@@ -202,13 +202,30 @@ def _prune_tasks_locked() -> None:
             _tasks.pop(k, None)
 
 
+def _error_result(label: str, error: str, mode: str = "") -> dict:
+    """探测失败：只给任务台展示，不落库、不改账号状态、不清空上次套餐。"""
+    res = {
+        "status": "error",
+        "label": label,
+        "error": error,
+        "persist": False,
+        "retryable": True,
+        "writeback": "none",
+        "checked_at": time.time(),
+    }
+    if mode:
+        res["mode"] = mode
+    return res
+
+
 def _writeback_plus_check(task: HealthCheckTask, email: str, classified: dict, res: dict) -> None:
-    """401 凭证失效 / 官方封号必须落库，否则验活筛不出死号。网关页不写。"""
+    """401 凭证失效 / 官方封号必须落库，否则验活筛不出死号。网关页与请求异常不写。"""
     st = str(classified.get("status") or res.get("status") or "")
     should_write = bool(classified.get("persist")) or st in ("token_invalid", "banned", "deactivated", "account_deactivated")
     if should_write:
         payload = dict(res)
         payload.setdefault("checked_at", time.time())
+        payload.pop("log_lines", None)
         db.update_plus_check(email, payload)
         if st in ("banned", "deactivated", "account_deactivated"):
             task.add_email_log(email, "已回写账号状态: 封号，并作废 AT/ST/RT")
@@ -216,8 +233,13 @@ def _writeback_plus_check(task: HealthCheckTask, email: str, classified: dict, r
             task.add_email_log(email, "已回写账号状态: 凭证失效，并作废 Access Token（AT 列改为缺失失效，ST/RT 保留可刷新）")
         else:
             task.add_email_log(email, f"已回写账号状态: {payload.get('label') or st}")
+        res["writeback"] = "written"
+        res["persist"] = True
         return
-    task.add_email_log(email, "未回写账号状态：响应是网关/风控页，不是明确的官方封号或凭证失效")
+    res["writeback"] = "none"
+    res["persist"] = False
+    res["retryable"] = True
+    task.add_email_log(email, "未回写：网关/风控或未确认失败，账号状态和上次套餐保持不变")
 
 
 def _check_token_mode(task: HealthCheckTask, email: str, cred: dict, at: str, proxy: str, target_country: str) -> dict:
@@ -293,12 +315,15 @@ def _check_token_mode(task: HealthCheckTask, email: str, cred: dict, at: str, pr
                 "user_id": user_id,
                 "exp": exp_str,
                 "checked_at": time.time(),
+                "writeback": "token",
+                "persist": True,
             }
 
-            # 增量更新数据库
+            # Token 成功只记 token_check；已有 Free/Plus 套餐结论不会被覆盖
             db.update_plus_check(email, {
                 "status": "token_valid",
                 "label": "Token正常",
+                "mode": "token",
                 "checked_at": time.time(),
             })
             return res
@@ -321,13 +346,13 @@ def _check_token_mode(task: HealthCheckTask, email: str, cred: dict, at: str, pr
             return res
 
         err_msg = f"HTTP {status_code}: {body[:100]}"
-        task.add_email_log(email, f"检测异常: {err_msg}")
-        return {"status": "error", "label": f"HTTP {status_code}", "mode": "token", "error": err_msg}
+        task.add_email_log(email, f"检测异常: {err_msg}（不回写，不清空上次结果）")
+        return _error_result(f"HTTP {status_code}", err_msg, "token")
 
     except Exception as e:
         err_msg = f"{type(e).__name__}: {e}"
-        task.add_email_log(email, f"网络请求异常: {err_msg}")
-        return {"status": "error", "label": "请求异常", "mode": "token", "error": err_msg}
+        task.add_email_log(email, f"网络请求异常: {err_msg}（不回写，不清空上次结果）")
+        return _error_result("请求异常", err_msg, "token")
     finally:
         safe_close(sess)
 
@@ -445,18 +470,24 @@ def _check_plan_mode(task: HealthCheckTask, email: str, cred: dict, at: str, pro
             for l in parsed.get("log_lines") or []:
                 task.add_email_log(email, l)
             extra_tip = f" [{parsed['reason']}]" if parsed.get("reason") else ""
+            parsed_st = str(parsed.get("status") or "")
+            if parsed_st in ("error", "cancelled"):
+                task.add_email_log(email, f"解析失败: {parsed.get('label')}{extra_tip}（不回写，不清空上次套餐）")
+                return _error_result(parsed.get("label") or "解析失败", parsed.get("error") or parsed.get("reason") or "", "plan")
             task.add_email_log(email, f"🎉 检测结论: {parsed.get('label')} (plan={parsed.get('plan')}){extra_tip}")
             db.update_plus_check(email, parsed)
+            parsed["writeback"] = "plan"
+            parsed["persist"] = True
             return parsed
 
         err_msg = f"HTTP {status_code}: {body[:100]}"
-        task.add_email_log(email, f"检测异常: {err_msg}")
-        return {"status": "error", "label": f"HTTP {status_code}", "error": err_msg}
+        task.add_email_log(email, f"检测异常: {err_msg}（不回写，不清空上次结果）")
+        return _error_result(f"HTTP {status_code}", err_msg, "plan")
 
     except Exception as e:
         err_msg = f"{type(e).__name__}: {e}"
-        task.add_email_log(email, f"网络请求异常: {err_msg}")
-        return {"status": "error", "label": "请求异常", "error": err_msg}
+        task.add_email_log(email, f"网络请求异常: {err_msg}（不回写，不清空上次结果）")
+        return _error_result("请求异常", err_msg, "plan")
     finally:
         safe_close(sess)
 
@@ -471,15 +502,17 @@ def _check_one_account(task: HealthCheckTask, email: str) -> None:
 
     cred = db.get_registered(email)
     if not cred:
-        res = {"status": "not_found", "label": "未找到", "error": "数据库中无此凭证"}
-        task.add_email_log(email, "错误: 数据库中无此凭证记录")
+        res = _error_result("未找到", "数据库中无此凭证")
+        res["status"] = "not_found"
+        task.add_email_log(email, "错误: 数据库中无此凭证记录（不回写）")
         task.mark_done(email, res)
         return
 
     at = (cred.get("access_token") or "").strip()
     if not at:
-        res = {"status": "no_at", "label": "无AT", "error": "该账号缺少 access_token"}
-        task.add_email_log(email, "错误: 账号缺少 access_token，无法发起鉴权")
+        res = _error_result("无AT", "该账号缺少 access_token")
+        res["status"] = "no_at"
+        task.add_email_log(email, "错误: 账号缺少 access_token，无法发起鉴权（不回写）")
         task.mark_done(email, res)
         return
 
