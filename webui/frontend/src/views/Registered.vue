@@ -191,7 +191,7 @@ const pageSizeOptions = computed(() => {
   if (pageSize.value) set.add(pageSize.value)
   return [...set].sort((a, b) => a - b)
 })
-const filterHealth = ref('all') // 验活/存活状态筛选: all / token_invalid / banned / dead / alive / ...
+const filterHealth = ref('all') // 账号状态: all / alive / token_invalid / banned
 const filterPlan = ref('all')
 const filterSec = ref('all')
 const filterExtract = ref('all')
@@ -610,7 +610,26 @@ function prepareRowData(r) {
   r._exportDate = (r.exported_at || r.at_exported_at) ? formatExportDateShort(r.exported_at || r.at_exported_at) : ''
   r._atExp = formatAtExpiry(r)
   r._oauthTry = formatOauthTry(r)
+  r._acctStatus = formatAccountStatus(r)
   return r
+}
+
+function formatAccountStatus(row) {
+  const st = String(row?.account_status || '').toLowerCase().trim()
+  if (st === 'banned' || st === 'deactivated' || st === 'account_deactivated') {
+    return { key: 'banned', text: '账号封禁', cls: 'is-fail' }
+  }
+  if (st === 'token_invalid' || st === 'token_expired') {
+    return { key: 'token_invalid', text: '凭证失效', cls: 'is-warn' }
+  }
+  const pc = String(row?.plus_check?.status || row?.plus_check?.plus_type || '').toLowerCase()
+  if (pc === 'banned' || pc === 'deactivated' || pc === 'account_deactivated') {
+    return { key: 'banned', text: '账号封禁', cls: 'is-fail' }
+  }
+  if (pc === 'token_invalid' || pc === 'token_expired') {
+    return { key: 'token_invalid', text: '凭证失效', cls: 'is-warn' }
+  }
+  return { key: 'alive', text: '存活有效', cls: 'is-ok' }
 }
 
 function formatDurationShort(sec) {
@@ -2574,6 +2593,7 @@ const oauthActiveTab = ref('network')
 const DEFAULT_COLUMN_VISIBILITY = {
   security: true,
   tokens: true,
+  acctStatus: true,
   atExp: true,
   status: true,
   oauth: true,
@@ -5891,6 +5911,7 @@ onUnmounted(() => {
                 <div class="col-checkbox-list">
                   <el-checkbox v-model="columnVisibility.security">安全凭据 (密码/2FA)</el-checkbox>
                   <el-checkbox v-model="columnVisibility.tokens">Token 凭据状态</el-checkbox>
+                  <el-checkbox v-model="columnVisibility.acctStatus">账号状态</el-checkbox>
                   <el-checkbox v-model="columnVisibility.atExp">AT 有效期</el-checkbox>
                   <el-checkbox v-model="columnVisibility.status">套餐与特权订阅</el-checkbox>
                   <el-checkbox v-model="columnVisibility.oauth">授权次数 / 时间</el-checkbox>
@@ -6088,22 +6109,20 @@ onUnmounted(() => {
               </el-select>
             </div>
 
-            <!-- 8. 验活健康度筛选 -->
+            <!-- 8. 账号状态 -->
             <div class="filter-item-wrap" :class="{ 'is-filtered': filterHealth !== 'all' }">
-              <span class="filter-label">验活:</span>
+              <span class="filter-label">状态:</span>
               <el-select
                 v-model="filterHealth"
-                placeholder="全部验活"
+                placeholder="全部状态"
                 size="small"
                 class="acct-select acct-select-health"
                 @change="load(true)"
               >
-                <el-option label="全部验活状态" value="all" />
-                <el-option label="💀 失效与封号 (全部坏号)" value="dead" />
-                <el-option label="❌ 凭证失效 (401/过期)" value="token_invalid" />
-                <el-option label="🚫 账号封禁 (Banned)" value="banned" />
-                <el-option label="✅ 全部存活有效" value="alive" />
-                <el-option label="⏳ 未验活" value="unchecked" />
+                <el-option label="全部" value="all" />
+                <el-option label="存活有效" value="alive" />
+                <el-option label="凭证失效" value="token_invalid" />
+                <el-option label="账号封禁" value="banned" />
               </el-select>
             </div>
 
@@ -6317,7 +6336,7 @@ onUnmounted(() => {
           <!-- 核心数据网格 (Table) -->
           <div
             class="table-scroll-wrap"
-            v-memo="[rows, loading, selected, focusedRow, tableDensity, page, pageSize, columnVisibility.security, columnVisibility.tokens, columnVisibility.atExp, columnVisibility.status, columnVisibility.oauth, columnVisibility.export, columnVisibility.time]"
+            v-memo="[rows, loading, selected, focusedRow, tableDensity, page, pageSize, columnVisibility.security, columnVisibility.tokens, columnVisibility.acctStatus, columnVisibility.atExp, columnVisibility.status, columnVisibility.oauth, columnVisibility.export, columnVisibility.time]"
           >
             <el-skeleton v-if="loading && !rows.length" :rows="8" animated style="padding: 16px" />
             <el-table
@@ -6464,6 +6483,22 @@ onUnmounted(() => {
                       </span>
                     </div>
                   </div>
+                </template>
+              </el-table-column>
+
+              <el-table-column
+                v-if="columnVisibility.acctStatus !== false"
+                prop="account_status"
+                label="账号状态"
+                width="118"
+                align="center"
+                header-align="center"
+              >
+                <template #default="{ row }">
+                  <span
+                    class="acct-status-chip"
+                    :class="(row._acctStatus || formatAccountStatus(row)).cls"
+                  >{{ (row._acctStatus || formatAccountStatus(row)).text }}</span>
                 </template>
               </el-table-column>
 
@@ -17411,6 +17446,22 @@ onUnmounted(() => {
 }
 .oauth-try-cool { color: #d97706; font-weight: 650; }
 .oauth-try-dead { color: #e11d48; font-weight: 650; }
+.acct-status-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 76px;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 650;
+  background: var(--el-fill-color);
+  border: 1px solid var(--app-border);
+}
+.acct-status-chip.is-ok { color: #059669; background: rgba(16, 185, 129, 0.12); }
+.acct-status-chip.is-warn { color: #d97706; background: rgba(245, 158, 11, 0.14); }
+.acct-status-chip.is-fail { color: #e11d48; background: rgba(244, 63, 94, 0.12); }
 .cell-oauth-try.is-ok .oauth-try-out { color: #059669; }
 .cell-oauth-try.is-fail .oauth-try-out { color: #e11d48; }
 .cell-oauth-try.is-warn .oauth-try-out { color: #d97706; }

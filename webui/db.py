@@ -93,6 +93,95 @@ def _backfill_at_expires_at(con: sqlite3.Connection) -> None:
         logging.getLogger("db").info(f"[at_expires_at] 已回填 {n} 条 Access Token 到期时间")
 
 
+def _backfill_oauth_phone_verified(con: sqlite3.Connection) -> None:
+    """刷 Token 曾把 success_phone 写成 success 并清掉 phone_verified。按授权特征补回接码成功。"""
+    try:
+        emails = [
+            str(r[0] or "").lower()
+            for r in con.execute(
+                "SELECT DISTINCT lower(email) FROM oauth_attempt_features "
+                "WHERE outcome IN ('success','success_phone','success_direct') "
+                "AND COALESCE(phone_verified,0)=1"
+            ).fetchall()
+            if r[0]
+        ]
+    except Exception:
+        return
+    if not emails:
+        return
+    n = 0
+    for em in emails:
+        row = con.execute(
+            "SELECT oauth_status, extra_json FROM registered WHERE lower(email)=?",
+            (em,),
+        ).fetchone()
+        if not row:
+            continue
+        st = str(row["oauth_status"] or "").strip().lower()
+        if st in ("banned", "deactivated", "failed", "error", "need_phone"):
+            continue
+        extra = {}
+        if row["extra_json"]:
+            try:
+                extra = json.loads(row["extra_json"]) or {}
+            except Exception:
+                extra = {}
+        if not isinstance(extra, dict):
+            extra = {}
+        oe = extra.get("oauth_export") if isinstance(extra.get("oauth_export"), dict) else {}
+        already = st == "success_phone" and bool(oe.get("phone_verified"))
+        if already:
+            continue
+        oe = dict(oe)
+        oe["phone_verified"] = True
+        extra["oauth_export"] = oe
+        con.execute(
+            "UPDATE registered SET oauth_status=?, extra_json=? WHERE lower(email)=?",
+            ("success_phone", json.dumps(extra, ensure_ascii=False), em),
+        )
+        n += 1
+    if n:
+        con.commit()
+        invalidate_registered_caches()
+        logging.getLogger("db").info(f"[oauth_phone] 已把 {n} 条刷 Token 后丢失的接码成功状态补回")
+
+
+def _account_status_from_plus(plus_info: dict) -> str:
+    st = _plus_check_dead_status(plus_info)
+    if st in ("banned", "deactivated", "account_deactivated"):
+        return "banned"
+    if st in ("token_invalid", "token_expired"):
+        return "token_invalid"
+    if st in ("error", "cancelled"):
+        return ""
+    return "alive"
+
+
+def _backfill_account_status(con: sqlite3.Connection) -> None:
+    """按 plus_check / oauth_status 回填账号状态。默认存活有效。"""
+    try:
+        con.execute(
+            "UPDATE registered SET account_status='alive' "
+            "WHERE account_status IS NULL OR trim(account_status)=''"
+        )
+        con.execute(
+            "UPDATE registered SET account_status='banned' WHERE "
+            "oauth_status IN ('banned','deactivated') "
+            "OR extra_json LIKE '%\"banned\"%' "
+            "OR extra_json LIKE '%\"account_deactivated\"%' "
+            "OR extra_json LIKE '%封号%'"
+        )
+        con.execute(
+            "UPDATE registered SET account_status='token_invalid' WHERE "
+            "COALESCE(account_status,'') != 'banned' AND ("
+            "extra_json LIKE '%\"token_invalid\"%' "
+            "OR extra_json LIKE '%凭证失效%')"
+        )
+        con.commit()
+    except Exception as e:
+        logging.getLogger("db").warning("[account_status] 回填失败: %s", e)
+
+
 def _conn() -> sqlite3.Connection:
     con = sqlite3.connect(str(DB_PATH), check_same_thread=False, timeout=30)
     con.row_factory = sqlite3.Row
@@ -289,6 +378,9 @@ def init_db():
     if "at_expires_at" not in reg_cols:
         con.execute("ALTER TABLE registered ADD COLUMN at_expires_at REAL")
         con.commit()
+    if "account_status" not in reg_cols:
+        con.execute("ALTER TABLE registered ADD COLUMN account_status TEXT DEFAULT 'alive'")
+        con.commit()
 
     # 高频覆盖索引（保证十万级数据秒开）
     con.execute("CREATE INDEX IF NOT EXISTS idx_reg_created ON registered(created_at DESC)")
@@ -298,9 +390,12 @@ def init_db():
     con.execute("CREATE INDEX IF NOT EXISTS idx_reg_oauth_status ON registered(oauth_status)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_reg_oauth_try ON registered(oauth_last_try_at, oauth_try_count)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_reg_at_expires ON registered(at_expires_at)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_reg_account_status ON registered(account_status)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_pool_status_kind ON outlook_accounts(status, kind)")
     con.commit()
     _backfill_at_expires_at(con)
+    _backfill_oauth_phone_verified(con)
+    _backfill_account_status(con)
 
     # 自动清理历史中没有任何凭证的未完成半成品脏数据。
     # 发货导入可能只有账密+2FA、Token 稍后刷新，这类成品号必须保留。
@@ -1406,7 +1501,7 @@ def get_registered_summary() -> dict:
             SUM(CASE WHEN (exported_at IS NULL OR exported_at = 0) AND (at_exported_at IS NULL OR at_exported_at = 0) THEN 1 ELSE 0 END) AS unexported_cnt,
             SUM(CASE WHEN oauth_status IN ('success', 'success_phone', 'success_direct') THEN 1 ELSE 0 END) AS with_oauth,
             SUM(CASE WHEN (password IS NULL OR trim(password) = '') OR (totp_secret IS NULL OR trim(totp_secret) = '') THEN 1 ELSE 0 END) AS missing_sec_cnt,
-            SUM(CASE WHEN extra_json LIKE '%"banned"%' OR extra_json LIKE '%"token_invalid"%' OR extra_json LIKE '%"account_deactivated"%' OR extra_json LIKE '%"token_expired"%' OR extra_json LIKE '%封号%' OR extra_json LIKE '%凭证失效%' THEN 1 ELSE 0 END) AS dead_cnt
+            SUM(CASE WHEN COALESCE(account_status,'alive') IN ('banned','token_invalid') THEN 1 ELSE 0 END) AS dead_cnt
         FROM registered
     """).fetchone()
 
@@ -1516,8 +1611,9 @@ def save_registered(d: dict) -> None:
             "INSERT OR REPLACE INTO registered "
             "(email, password, access_token, session_token, refresh_token, "
             "id_token, device_id, csrf_token, cookie_header, "
-            "totp_secret, totp_factor_id, reg_country, reg_city, reg_ip, extra_json, created_at, at_expires_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "totp_secret, totp_factor_id, reg_country, reg_city, reg_ip, extra_json, created_at, at_expires_at, "
+            "account_status) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 email,
                 password,
@@ -1525,7 +1621,6 @@ def save_registered(d: dict) -> None:
                 d.get("session_token", ""),
                 d.get("refresh_token", ""),
                 d.get("id_token", ""),
-                d.get("device_id", ""),
                 d.get("csrf_token", ""),
                 d.get("cookie_header", ""),
                 totp_secret,
@@ -1536,6 +1631,7 @@ def save_registered(d: dict) -> None:
                 json.dumps(extra, ensure_ascii=False) if extra else None,
                 time.time(),
                 jwt_exp_unix(at_val),
+                "alive",
             ),
         )
         con.commit()
@@ -1580,8 +1676,20 @@ def update_registered_oauth(
                 extra = json.loads(d["extra_json"])
             except Exception:
                 extra = {}
+        if not isinstance(extra, dict):
+            extra = {}
         if extra_data:
+            incoming_oauth = extra_data.get("oauth_export")
+            prev_oauth = extra.get("oauth_export") if isinstance(extra.get("oauth_export"), dict) else {}
             extra.update(extra_data)
+            if isinstance(incoming_oauth, dict):
+                merged = dict(prev_oauth)
+                merged.update(incoming_oauth)
+                if prev_oauth.get("phone_verified") and not merged.get("phone_verified"):
+                    merged["phone_verified"] = prev_oauth.get("phone_verified")
+                if prev_oauth.get("auth_method") and not merged.get("auth_method"):
+                    merged["auth_method"] = prev_oauth.get("auth_method")
+                extra["oauth_export"] = merged
 
         new_at = access_token.strip() or d.get("access_token") or ""
         new_rt = refresh_token.strip() or d.get("refresh_token") or ""
@@ -1590,6 +1698,7 @@ def update_registered_oauth(
         new_cookie = cookie_header.strip() or d.get("cookie_header") or ""
 
         # 核心自愈：若有新的有效 Token，自动将历史残留的 "token_invalid" (凭证失效) 状态重置为正常套餐状态
+        restore_alive = False
         if new_at or new_st or new_rt:
             plus_chk = extra.get("plus_check")
             if isinstance(plus_chk, dict):
@@ -1602,22 +1711,38 @@ def update_registered_oauth(
                         "updated_at": time.time(),
                         "reason": "Token 刷新成功，状态已自动更新",
                     }
+                    restore_alive = True
+            old_acct = str(d.get("account_status") or "").strip().lower()
+            if old_acct != "banned":
+                restore_alive = True
 
         # 计算精确的 OAuth 授权状态：
         # 1. 显式指定了 oauth_status 则使用指定的；
-        # 2. 若本次提供了新的非空 refresh_token，则确认为 success；
-        # 3. 否则保留原数据库中的 oauth_status（避免将普通 Web 登录误打为 OAuth 成功）
-        final_oauth_status = d.get("oauth_status") or ""
+        # 2. 已是接码成功 / 免接码，刷 Token 不得降成普通 success；
+        # 3. 若本次提供了新的非空 refresh_token，且原先不是更细的成功态，才标 success；
+        # 4. 否则保留原数据库中的 oauth_status（避免将普通 Web 登录误打为 OAuth 成功）
+        final_oauth_status = str(d.get("oauth_status") or "").strip()
         if oauth_status is not None:
             final_oauth_status = oauth_status
         elif refresh_token.strip():
-            final_oauth_status = "success"
+            if final_oauth_status not in ("success_phone", "success_direct"):
+                final_oauth_status = "success"
 
-        con.execute(
-            "UPDATE registered SET access_token=?, refresh_token=?, id_token=?, session_token=?, "
-            "cookie_header=?, oauth_status=?, oauth_updated_at=?, extra_json=?, at_expires_at=? WHERE lower(email)=?",
-            (new_at, new_rt, new_it, new_st, new_cookie, final_oauth_status, time.time(), json.dumps(extra, ensure_ascii=False), jwt_exp_unix(new_at), email),
-        )
+        if restore_alive:
+            con.execute(
+                "UPDATE registered SET access_token=?, refresh_token=?, id_token=?, session_token=?, "
+                "cookie_header=?, oauth_status=?, oauth_updated_at=?, extra_json=?, at_expires_at=?, "
+                "account_status=? WHERE lower(email)=?",
+                (new_at, new_rt, new_it, new_st, new_cookie, final_oauth_status, time.time(),
+                 json.dumps(extra, ensure_ascii=False), jwt_exp_unix(new_at), "alive", email),
+            )
+        else:
+            con.execute(
+                "UPDATE registered SET access_token=?, refresh_token=?, id_token=?, session_token=?, "
+                "cookie_header=?, oauth_status=?, oauth_updated_at=?, extra_json=?, at_expires_at=? WHERE lower(email)=?",
+                (new_at, new_rt, new_it, new_st, new_cookie, final_oauth_status, time.time(),
+                 json.dumps(extra, ensure_ascii=False), jwt_exp_unix(new_at), email),
+            )
         con.commit()
         return True
 
@@ -2133,6 +2258,7 @@ def update_plus_check(email: str, plus_info: dict) -> None:
     st = _plus_check_dead_status(plus_info)
     wipe_all = st in ("banned", "deactivated", "account_deactivated")
     wipe_at = wipe_all or st == "token_invalid"
+    acct = _account_status_from_plus(plus_info)
     if wipe_all:
         _wipe_session_token_fields(
             extra, ("accessToken", "sessionToken", "access_token", "session_token")
@@ -2145,15 +2271,20 @@ def update_plus_check(email: str, plus_info: dict) -> None:
         if wipe_all:
             con.execute(
                 "UPDATE registered SET access_token='', session_token='', refresh_token='', "
-                "id_token='', cookie_header='', at_expires_at=0, extra_json=? "
+                "id_token='', cookie_header='', at_expires_at=0, extra_json=?, account_status=? "
                 "WHERE lower(email)=?",
-                (extra_json, email),
+                (extra_json, acct or "banned", email),
             )
         elif wipe_at:
             con.execute(
-                "UPDATE registered SET access_token='', at_expires_at=0, extra_json=? "
+                "UPDATE registered SET access_token='', at_expires_at=0, extra_json=?, account_status=? "
                 "WHERE lower(email)=?",
-                (extra_json, email),
+                (extra_json, acct or "token_invalid", email),
+            )
+        elif acct:
+            con.execute(
+                "UPDATE registered SET extra_json=?, account_status=? WHERE lower(email)=?",
+                (extra_json, acct, email),
             )
         else:
             con.execute(
@@ -2226,8 +2357,8 @@ def mark_registered_banned(email: str, error: str = "", source: str = "") -> boo
         con.execute(
             "UPDATE registered SET access_token='', session_token='', refresh_token='', "
             "id_token='', cookie_header='', at_expires_at=0, oauth_status=?, "
-            "oauth_updated_at=?, extra_json=? WHERE lower(email)=?",
-            ("banned", time.time(), json.dumps(extra, ensure_ascii=False), email),
+            "oauth_updated_at=?, extra_json=?, account_status=? WHERE lower(email)=?",
+            ("banned", time.time(), json.dumps(extra, ensure_ascii=False), "banned", email),
         )
         con.commit()
         invalidate_registered_caches()
@@ -2651,19 +2782,18 @@ def _parse_single_filter_clause(filt: str) -> Optional[str]:
     # ── 封号检测与凭证失效精准/健壮筛选 ──
     if f in ("banned", "deactivated", "account_deactivated", "disabled"):
         return (
-            "(extra_json LIKE '%\"banned\"%' "
+            "(account_status = 'banned' "
+            "OR extra_json LIKE '%\"banned\"%' "
             "OR extra_json LIKE '%\"account_deactivated\"%' "
-            "OR extra_json LIKE '%\"deactivated\"%' "
-            "OR extra_json LIKE '%封号%' "
-            "OR extra_json LIKE '%账号已被禁用%')"
+            "OR extra_json LIKE '%封号%')"
         )
+    if f in ("not_banned", "exclude_banned", "non_banned", "no_ban"):
+        return "(COALESCE(account_status,'alive') != 'banned')"
     if f in ("token_invalid", "invalid_token", "token_expired", "expired", "401"):
         return (
-            "(extra_json LIKE '%\"token_invalid\"%' "
-            "OR extra_json LIKE '%\"token_expired\"%' "
-            "OR extra_json LIKE '%\"401 Unauthorized\"%' "
-            "OR extra_json LIKE '%凭证失效%' "
-            "OR extra_json LIKE '%Token失效%')"
+            "(account_status = 'token_invalid' "
+            "OR extra_json LIKE '%\"token_invalid\"%' "
+            "OR extra_json LIKE '%凭证失效%')"
         )
     if f in ("dead", "all_dead", "invalid_or_banned", "failed_check", "bad"):
         return (
@@ -2675,15 +2805,7 @@ def _parse_single_filter_clause(filt: str) -> Optional[str]:
             "OR extra_json LIKE '%凭证失效%')"
         )
     if f in ("alive", "valid", "normal", "healthy"):
-        return (
-            "(extra_json LIKE '%\"plus_check\"%' "
-            "AND extra_json NOT LIKE '%\"banned\"%' "
-            "AND extra_json NOT LIKE '%\"token_invalid\"%' "
-            "AND extra_json NOT LIKE '%\"account_deactivated\"%' "
-            "AND extra_json NOT LIKE '%\"token_expired\"%' "
-            "AND extra_json NOT LIKE '%封号%' "
-            "AND extra_json NOT LIKE '%凭证失效%')"
-        )
+        return "(COALESCE(account_status,'alive') = 'alive')"
     # ── OAICS 资格检测筛选 ──
     if f == "oa_unchecked":
         return "(oa_check IS NULL OR oa_check = '')"
@@ -3064,7 +3186,7 @@ def list_registered(
         f"length(refresh_token) AS rt_len, oauth_status, oauth_updated_at, "
         f"oauth_try_count, oauth_last_try_at, oauth_last_outcome, oauth_cooldown_until, "
         f"exported_at, export_fmt, export_fmt_label, export_note, "
-        f"at_exported_at, at_export_note, at_expires_at, "
+        f"at_exported_at, at_export_note, at_expires_at, account_status, "
         f"extra_json, oa_check, created_at "
         f"FROM registered {where} {order_sql} LIMIT ? OFFSET ?",
         args + [limit, offset],
