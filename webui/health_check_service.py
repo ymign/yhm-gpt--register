@@ -202,6 +202,24 @@ def _prune_tasks_locked() -> None:
             _tasks.pop(k, None)
 
 
+def _writeback_plus_check(task: HealthCheckTask, email: str, classified: dict, res: dict) -> None:
+    """401 凭证失效 / 官方封号必须落库，否则验活筛不出死号。网关页不写。"""
+    st = str(classified.get("status") or res.get("status") or "")
+    should_write = bool(classified.get("persist")) or st in ("token_invalid", "banned", "deactivated", "account_deactivated")
+    if should_write:
+        payload = dict(res)
+        payload.setdefault("checked_at", time.time())
+        db.update_plus_check(email, payload)
+        if st in ("banned", "deactivated", "account_deactivated"):
+            task.add_email_log(email, "已回写账号状态: 封号，并作废 AT/ST/RT")
+        elif st == "token_invalid":
+            task.add_email_log(email, "已回写账号状态: 凭证失效，并作废 Access Token（AT 列改为缺失失效，ST/RT 保留可刷新）")
+        else:
+            task.add_email_log(email, f"已回写账号状态: {payload.get('label') or st}")
+        return
+    task.add_email_log(email, "未回写账号状态：响应是网关/风控页，不是明确的官方封号或凭证失效")
+
+
 def _check_token_mode(task: HealthCheckTask, email: str, cred: dict, at: str, proxy: str, target_country: str) -> dict:
     """模式 1：Token 验活（快速验证 Token 是否有效 / 过期 / 封号）。"""
     task.add_email_log(email, "【Token 验活】正在解析 JWT 凭证与声明...")
@@ -299,10 +317,7 @@ def _check_token_mode(task: HealthCheckTask, email: str, cred: dict, at: str, pr
                 res["label"] = "❌ Token失效(401)"
             task.add_email_log(email, f"【响应分析】{classified.get('error') or classified['label']}")
             task.add_email_log(email, f"检测结论: {res['label']}")
-            if classified.get("persist"):
-                db.update_plus_check(email, res)
-            else:
-                task.add_email_log(email, "未回写账号状态：响应不是明确的官方封号或凭证失效")
+            _writeback_plus_check(task, email, classified, res)
             return res
 
         err_msg = f"HTTP {status_code}: {body[:100]}"
@@ -411,10 +426,7 @@ def _check_plan_mode(task: HealthCheckTask, email: str, cred: dict, at: str, pro
             }
             task.add_email_log(email, f"【响应分析】{classified.get('error') or classified['label']}")
             task.add_email_log(email, f"检测结论: {res.get('label')}")
-            if classified.get("persist"):
-                db.update_plus_check(email, res)
-            else:
-                task.add_email_log(email, "未回写账号状态：响应不是明确的官方封号或凭证失效")
+            _writeback_plus_check(task, email, classified, res)
             return res
 
         if status_code == 200:

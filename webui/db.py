@@ -2049,9 +2049,25 @@ def update_registered_manual(email: str, password: Optional[str] = None,
         return True
 
 
+def _plus_check_dead_status(pc: dict) -> str:
+    return str((pc or {}).get("plus_type") or (pc or {}).get("status") or "").lower()
+
+
+def _wipe_session_token_fields(extra: dict, keys: tuple[str, ...]) -> None:
+    sess = extra.get("session_data")
+    if not isinstance(sess, dict):
+        return
+    for k in keys:
+        if k in sess:
+            sess[k] = ""
+    extra["session_data"] = sess
+
+
 def update_plus_check(email: str, plus_info: dict) -> None:
     """把 Plus 检查结果写入 extra_json.plus_check。
 
+    401 凭证失效：作废 access_token（列表 AT 列显示「缺失失效」），保留 ST/RT 以便刷新。
+    官方封号：AT/ST/RT/id_token/cookie 一并作废。
     验死反哺：状态翻转为 banned / token_invalid 时，反查该号注册时的
     reg_proxy + reg_country 给 proxy_health 计一次死亡（同一号反复验死只计一次）。
     """
@@ -2067,21 +2083,49 @@ def update_plus_check(email: str, plus_info: dict) -> None:
     if row["extra_json"]:
         try:
             extra = json.loads(row["extra_json"])
+            if not isinstance(extra, dict):
+                extra = {}
         except Exception:
             extra = {}
     old_pc = extra.get("plus_check") or {}
     extra["plus_check"] = plus_info
-    with _lock:
-        con.execute(
-            "UPDATE registered SET extra_json=? WHERE lower(email)=?",
-            (json.dumps(extra, ensure_ascii=False), email),
+    st = _plus_check_dead_status(plus_info)
+    wipe_all = st in ("banned", "deactivated", "account_deactivated")
+    wipe_at = wipe_all or st == "token_invalid"
+    if wipe_all:
+        _wipe_session_token_fields(
+            extra, ("accessToken", "sessionToken", "access_token", "session_token")
         )
+    elif wipe_at:
+        _wipe_session_token_fields(extra, ("accessToken", "access_token"))
+
+    extra_json = json.dumps(extra, ensure_ascii=False)
+    with _lock:
+        if wipe_all:
+            con.execute(
+                "UPDATE registered SET access_token='', session_token='', refresh_token='', "
+                "id_token='', cookie_header='', at_expires_at=0, extra_json=? "
+                "WHERE lower(email)=?",
+                (extra_json, email),
+            )
+        elif wipe_at:
+            con.execute(
+                "UPDATE registered SET access_token='', at_expires_at=0, extra_json=? "
+                "WHERE lower(email)=?",
+                (extra_json, email),
+            )
+        else:
+            con.execute(
+                "UPDATE registered SET extra_json=? WHERE lower(email)=?",
+                (extra_json, email),
+            )
         con.commit()
         invalidate_registered_caches()
 
     def _is_dead(pc: dict) -> bool:
-        st = str((pc or {}).get("plus_type") or (pc or {}).get("status") or "").lower()
-        return st in ("banned", "token_invalid", "deactivated", "account_deactivated")
+        return _plus_check_dead_status(pc) in (
+            "banned", "token_invalid", "deactivated", "account_deactivated"
+        )
 
     # 非死 → 死 的翻转才计数，避免反复验活重复累计
     if _is_dead(plus_info) and not _is_dead(old_pc):

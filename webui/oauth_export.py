@@ -2045,6 +2045,25 @@ def _run_one_oauth_export(task: OAuthExportTask, email: str) -> None:
         task.mark_done(email, res)
         return
 
+    extra = cred.get("extra") if isinstance(cred.get("extra"), dict) else {}
+    pc = extra.get("plus_check") if isinstance(extra.get("plus_check"), dict) else {}
+    plus_st = str(pc.get("status") or pc.get("plus_type") or "").strip().lower()
+    if plus_st in ("banned", "deactivated", "account_deactivated"):
+        task.add_email_log(email, "账号已标记封号，跳过本次授权，避免再打官方接口")
+        res = {"status": "banned", "label": "🚫 封号", "error": "库内已是封号，跳过授权"}
+        try:
+            db.insert_oauth_attempt_feature({
+                "task_id": task.task_id,
+                "email": (email or "").strip().lower(),
+                "outcome": "banned",
+                "error_class": "banned",
+                "error_text": "skip_already_banned",
+            })
+        except Exception:
+            pass
+        task.mark_done(email, res)
+        return
+
     # 1. 代理路由
     proxy = task.next_proxy()
     raw_country = (task.config.get("proxy_country") or cred.get("reg_country") or "").strip().upper()
@@ -2184,8 +2203,8 @@ def _run_one_oauth_export(task: OAuthExportTask, email: str) -> None:
             logger.warning("[oauth_export] 特征落库失败: %s", persist_err)
 
     started_ts = time.time()
-    # 整轮 OAuth 重登只用于「短信已发出但会话过期 / 等码超时」；
-    # 换号次数 sms_max_attempts 只约束本轮绑手机，不再拿来把整次登录重跑 5 遍。
+    # 整轮 OAuth 重登只用于授权会话过期（invalid_auth_step / 绑手机页回到登录）。
+    # 收不到短信不再整段重登再接一轮。
     max_flow_retries = 2 if sms_enabled else 1
     flow_res = None
     for flow_attempt in range(1, max_flow_retries + 1):
@@ -2210,20 +2229,18 @@ def _run_one_oauth_export(task: OAuthExportTask, email: str) -> None:
             session_stale = (
                 "会话已超时失效" in err_text
                 or "invalid_auth_step" in err_lc
-                or "等待时间过长" in err_text
             )
-            sms_wait_timeout = "未收到短信" in err_text
             can_reauth = (
                 sms_enabled
-                and (session_stale or sms_wait_timeout)
+                and session_stale
                 and flow_attempt < max_flow_retries
                 and not task.cancelled
             )
             if can_reauth:
                 task.add_email_log(
                     email,
-                    f"[sms] 🔄 本轮绑手机因会话过期或等码超时失败，重新发起一次干净鉴权 "
-                    f"(第 {flow_attempt + 1}/{max_flow_retries} 轮，换号次数仍受本轮 {sms_cfg.get('sms_max_attempts') or 3} 次限制)...",
+                    f"[sms] 🔄 绑手机时授权会话已过期，重新发起一次干净鉴权 "
+                    f"(第 {flow_attempt + 1}/{max_flow_retries} 轮)...",
                 )
                 time.sleep(2)
                 continue

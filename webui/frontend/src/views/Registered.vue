@@ -7920,7 +7920,7 @@ onUnmounted(() => {
                     日志
                   </button>
                   <button
-                    v-if="row.result && row.result.status !== 'success'"
+                    v-if="row.result && row.result.status !== 'success' && row.result.status !== 'banned' && row.result.status !== 'deactivated'"
                     class="oa-micro-btn btn-retry"
                     :disabled="row.status === 'running'"
                     @click="retryOAuthExportRunner([row.email])"

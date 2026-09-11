@@ -346,9 +346,11 @@ def _looks_deactivated(body: str) -> bool:
 
 
 def classify_openai_auth_http(status_code: int, body: str) -> dict:
-    """分类 401/403：明确封号 / 明确凭证失效 / 含糊网关错误。
+    """分类 401/403：官方封号 / 凭证失效 / 网关风控页。
 
-    persist=False 时不要回写 plus_check，避免把风控页打成「失效」。
+    persist=True 必须回写 plus_check，否则验活筛不出死号。
+    Cloudflare/HTML 风控页 persist=False，不能打成失效或封号。
+    封号只认官方注销原文；HTTP 401（非网关页）一律记凭证失效。
     """
     text = str(body or "")
     low = text.lower()
@@ -368,25 +370,12 @@ def classify_openai_auth_http(status_code: int, body: str) -> dict:
             "error": f"HTTP {status_code} 官方确认封禁: {snip}",
             "persist": True,
         }
-    tokenish = (
-        not htmlish
-        and (
-            "invalid_token" in low
-            or "invalid access token" in low
-            or "access token has expired" in low
-            or "token is expired" in low
-            or "jwt expired" in low
-            or (
-                text.lstrip().startswith("{")
-                and ("unauthorized" in low or "unauthenticated" in low)
-            )
-        )
-    )
-    if status_code == 401 and tokenish:
+    if status_code == 401 and not htmlish:
+        err = f"HTTP 401 凭证失效: {snip}" if snip else "HTTP 401 凭证失效"
         return {
             "status": "token_invalid",
             "label": "凭证失效",
-            "error": f"HTTP 401: {snip}",
+            "error": err,
             "persist": True,
         }
     return {
@@ -639,8 +628,13 @@ def _check_one_account(task: PlusCheckTask, email: str) -> None:
             }
             task.add_email_log(email, f"【响应分析】{classified.get('error') or classified['label']}")
             task.add_email_log(email, f"检测结论: {result['label']}")
-            if not classified.get("persist"):
-                task.add_email_log(email, "未回写账号状态：响应不是明确的官方封号或凭证失效")
+            if classified.get("persist") or result["status"] in ("token_invalid", "banned"):
+                if result["status"] == "banned":
+                    task.add_email_log(email, "将回写账号状态: 封号，并作废 AT/ST/RT")
+                else:
+                    task.add_email_log(email, "将回写账号状态: 凭证失效，并作废 Access Token（ST/RT 保留）")
+            else:
+                task.add_email_log(email, "未回写账号状态：响应是网关/风控页，不是明确的官方封号或凭证失效")
         elif status_code == 200:
             try:
                 data = resp.json() or {}
