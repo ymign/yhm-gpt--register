@@ -162,7 +162,7 @@ async function openExtractChannel(channelKey) {
 }
 
 // 分页与多维度结构化筛选
-const rows = ref([])
+const rows = shallowRef([])
 const total = ref(0)
 const page = ref(1)
 const PAGE_SIZE_KEY = 'reg_page_size'
@@ -205,7 +205,7 @@ const sortBy = ref('created_at')
 const sortOrder = ref('desc')
 const countryOptions = ref([])
 const searchKeyword = ref('')
-const selected = ref([])
+const selected = shallowRef([])
 const selectedCount = computed(() => selected.value.length)
 const isAllFilteredSelected = computed(() => total.value > 0 && selectedCount.value === total.value)
 const selectingAll = ref(false)
@@ -605,7 +605,7 @@ function getEmailProviderMeta(email) {
 function prepareRowData(r) {
   if (!r) return r
   r._providerMeta = getEmailProviderMeta(r.email)
-  r._badges = getStatusBadges(r)
+  r._badges = getStatusBadges(r) || []
   r._createdTime = fmtTime(r.created_at)
   r._timeAgo = timeAgo(r.created_at)
   r._countryLabel = r.reg_country ? formatCountry(r.reg_country) : ''
@@ -667,7 +667,7 @@ function formatAtExpiry(row) {
 }
 
 function getRowClassName({ row }) {
-  return focusedRow.value && focusedRow.value.email === row.email ? 'is-focused-row' : ''
+  return focusedRow.value?.email === row.email ? 'is-focused-row' : ''
 }
 
 function onSearchInput() {
@@ -2699,6 +2699,23 @@ function resetColumnVisibility() {
   ElMessage.success('已恢复默认列配置')
 }
 
+const tableMemoKey = computed(() =>
+  [
+    columnVisibility.security,
+    columnVisibility.tokens,
+    columnVisibility.acctStatus,
+    columnVisibility.atExp,
+    columnVisibility.status,
+    columnVisibility.oauth,
+    columnVisibility.export,
+    columnVisibility.time,
+  ].join(',')
+)
+const tablePaintGen = ref(0)
+function bumpTable() {
+  tablePaintGen.value++
+}
+
 // ──────────── 表格密度切换 (Compact / Default / Relaxed) ────────────
 const savedDensity = localStorage.getItem('reg_table_density')
 const tableDensity = ref(['compact', 'default', 'relaxed'].includes(savedDensity) ? savedDensity : 'default')
@@ -2722,6 +2739,46 @@ function setTableDensity(val) {
 // ──────────── 表格引用与全局快捷键 ────────────
 const tableRef = ref(null)
 const searchInputRef = ref(null)
+const rowMore = ref(null)
+const rowMoreOpen = ref(false)
+const rowMoreMenuRef = ref(null)
+const rowMorePos = reactive({ x: 0, y: 0 })
+
+function closeRowMoreMenu() {
+  rowMoreOpen.value = false
+  rowMore.value = null
+}
+
+function openRowMoreMenu(row, e) {
+  e?.preventDefault?.()
+  e?.stopPropagation?.()
+  if (rowMoreOpen.value && rowMore.value?.email === row?.email) {
+    closeRowMoreMenu()
+    return
+  }
+  const rect = e?.currentTarget?.getBoundingClientRect?.()
+  const w = 248
+  const x = rect ? Math.min(rect.right - w, window.innerWidth - w - 8) : 12
+  const y = rect ? Math.min(rect.bottom + 4, window.innerHeight - 360) : 12
+  rowMorePos.x = Math.max(8, x)
+  rowMorePos.y = Math.max(8, y)
+  rowMore.value = row
+  rowMoreOpen.value = true
+}
+
+function runRowMore(cmd) {
+  const row = rowMore.value
+  closeRowMoreMenu()
+  if (row) handleRowMoreCommand(cmd, row)
+}
+
+function onDocPointerDown(e) {
+  if (!rowMoreOpen.value) return
+  if (e.target?.closest?.('.btn-more')) return
+  const menu = rowMoreMenuRef.value
+  if (menu && e.target && menu.contains(e.target)) return
+  closeRowMoreMenu()
+}
 
 function clearSelected() {
   selected.value = []
@@ -2747,8 +2804,12 @@ function syncTableChecks() {
   if (!table || !rows.value.length) return
   suppressTableSel = true
   const want = new Set(selected.value.map((r) => r.email))
-  for (const row of rows.value) {
-    table.toggleRowSelection(row, want.has(row.email))
+  if (!want.size) {
+    table.clearSelection?.()
+  } else {
+    for (const row of rows.value) {
+      table.toggleRowSelection(row, want.has(row.email))
+    }
   }
   nextTick(() => { suppressTableSel = false })
 }
@@ -2776,8 +2837,12 @@ async function selectAllFiltered() {
 }
 
 function handleGlobalKeydown(e) {
-  // ESC: 取消勾选
+  // ESC: 先关行菜单，再取消勾选
   if (e.key === 'Escape') {
+    if (rowMoreOpen.value) {
+      closeRowMoreMenu()
+      return
+    }
     if (selected.value.length > 0) {
       clearSelected()
     }
@@ -2799,12 +2864,14 @@ onMounted(() => {
   loadSmsCountries()
   loadRegSummary()
   window.addEventListener('keydown', handleGlobalKeydown)
+  document.addEventListener('pointerdown', onDocPointerDown, true)
 })
 
 onUnmounted(() => {
   stopOAuthLogPoll()
   flushOAuthUpdates()
   window.removeEventListener('keydown', handleGlobalKeydown)
+  document.removeEventListener('pointerdown', onDocPointerDown, true)
 })
 
 function saveOAuthFormDefault() {
@@ -3759,17 +3826,30 @@ async function refreshFocusedAccount() {
   }
 }
 
+function applyFocusedRowClass(email) {
+  const root = tableRef.value?.$el
+  if (!root) return
+  const prev = root.querySelector('tr.is-focused-row')
+  if (prev) prev.classList.remove('is-focused-row')
+  if (!email) return
+  const escaped = (window.CSS && CSS.escape) ? CSS.escape(email) : String(email).replace(/"/g, '\\"')
+  const tr = root.querySelector(`tr[data-row-key="${escaped}"]`)
+  if (tr) tr.classList.add('is-focused-row')
+}
+
 async function setFocusedRow(row) {
   focusedPwdVisible.value = false
   focusedSecretVisible.value = false
   if (!row) {
     focusedRow.value = null
+    applyFocusedRowClass('')
     stopFocusedTotpTicker()
     focusedTotpCode.value = ''
     focusedTotpNextCode.value = ''
     return
   }
   focusedRow.value = row
+  applyFocusedRowClass(row.email)
   if (row.totp_secret) {
     await fetchFocusedTotp()
     startFocusedTotpTicker()
@@ -4041,6 +4121,17 @@ const exportPresetNotes = [
 const KEEP_EXPORT_MODAL_KEY = 'reg_keep_export_modal'
 const keepModalAfterExport = ref(localStorage.getItem(KEEP_EXPORT_MODAL_KEY) !== 'false')
 const lastExportedInfo = ref(null)
+let rowsPaintPending = false
+
+function flushRowsPaint() {
+  if (!rowsPaintPending) return
+  rowsPaintPending = false
+  bumpTable()
+}
+
+watch(exportConfigModalVisible, (open) => {
+  if (!open) flushRowsPaint()
+})
 
 function toggleKeepExportModal(val) {
   keepModalAfterExport.value = val
@@ -4196,6 +4287,8 @@ async function submitExport() {
         if (note) row.export_note = note
         row.export_fmt_label = fmt.label
       })
+      if (keepModalAfterExport.value) rowsPaintPending = true
+      else bumpTable()
     }
 
     lastExportedInfo.value = {
@@ -4218,10 +4311,17 @@ async function submitExport() {
       return
     }
 
-    exportText.value = r.text || ''
+    const text = r.text || ''
     exportCount.value = r.count || 0
     exportFilename.value = r.filename || 'export.txt'
     exportLabel.value = r.label || fmt.label
+    const tooBigForTextarea = (r.count || 0) > 80 || text.length > 16000
+    if (tooBigForTextarea) {
+      saveBlob(text, r.filename || 'export.txt', 'text/plain;charset=utf-8')
+      ElMessage.success(`🎉 已下载 ${r.filename || 'export.txt'}（${r.count} 个账号${skipBit}）· 已记录留痕，未打开大文本预览以免卡顿`)
+      return
+    }
+    exportText.value = text
     ElMessage.success(`🎉 已成功生成 ${r.count} 个账号数据并记录导出留痕${skipBit}`)
     exportVisible.value = true
   } catch (e) {
@@ -4281,6 +4381,7 @@ async function quickEditExportNote(row) {
     await updateExportNote({ email: row.email, note: newNote })
     row.export_note = newNote
     row.at_export_note = newNote
+    bumpTable()
     ElMessage.success('导出备注已更新')
   } catch (_) {}
 }
@@ -6478,7 +6579,7 @@ onUnmounted(() => {
           <!-- 核心数据网格 (Table) -->
           <div
             class="table-scroll-wrap"
-            v-memo="[rows, loading, focusedRow, tableDensity, page, pageSize, columnVisibility.security, columnVisibility.tokens, columnVisibility.acctStatus, columnVisibility.atExp, columnVisibility.status, columnVisibility.oauth, columnVisibility.export, columnVisibility.time]"
+            v-memo="[rows, loading, tableDensity, page, pageSize, tableMemoKey, tablePaintGen]"
           >
             <el-skeleton v-if="loading && !rows.length" :rows="8" animated style="padding: 16px" />
             <el-table
@@ -6489,23 +6590,40 @@ onUnmounted(() => {
               row-key="email"
               height="100%"
               size="small"
+              table-layout="fixed"
               :row-class-name="getRowClassName"
               :class="['octopus-table-grid', `density-${tableDensity}`]"
               @row-click="setFocusedRow"
               @selection-change="onTableSelectionChange"
               @sort-change="onTableSort"
             >
-              <!-- 1. 勾选列：表头只勾当前页；跨页全选请用「全选筛选」 -->
-              <el-table-column type="selection" width="38" align="center" header-align="center" fixed="left" :reserve-selection="true" />
+              <!-- 1. 勾选列：不用 el-table fixed，避免 500/1000 行时克隆三份表格 -->
+              <el-table-column
+                type="selection"
+                width="38"
+                align="center"
+                header-align="center"
+                class-name="col-sticky-sel"
+                label-class-name="col-sticky-sel"
+                :reserve-selection="true"
+              />
 
-              <!-- 2. 账号与网络出口 (靠左对齐，基线笔直规整) -->
-              <el-table-column prop="email" label="账号与网络出口" min-width="260" fixed="left" align="left" header-align="left" show-overflow-tooltip>
+              <!-- 2. 账号与网络出口 -->
+              <el-table-column
+                prop="email"
+                label="账号与网络出口"
+                min-width="260"
+                align="left"
+                header-align="left"
+                class-name="col-sticky-email"
+                label-class-name="col-sticky-email"
+              >
                 <template #default="{ row }">
                   <div class="account-cell-container">
                     <!-- 主行：品牌微标 + 邮箱等宽字 + 复制按键 -->
                     <div class="account-main-line">
-                      <span class="provider-avatar-badge" :style="{ background: (row._providerMeta || getEmailProviderMeta(row.email)).bg, color: (row._providerMeta || getEmailProviderMeta(row.email)).color }">
-                        {{ (row._providerMeta || getEmailProviderMeta(row.email)).icon }}
+                      <span class="provider-avatar-badge" :style="{ background: row._providerMeta?.bg, color: row._providerMeta?.color }">
+                        {{ row._providerMeta?.icon }}
                       </span>
                       <span class="email-text mono" @click.stop="copyText(row.email)" title="点击复制邮箱">{{ row.email }}</span>
                       <el-icon class="email-copy-btn" @click.stop="copyText(row.email)"><CopyDocument /></el-icon>
@@ -6519,7 +6637,7 @@ onUnmounted(() => {
                         :title="`注册出口: ${row._countryLabel || formatCountry(row.reg_country)} [${row.reg_country}] (点击过滤该国家)`"
                         @click.stop="applyFilter('country', row.reg_country)"
                       >
-                        {{ row._countryLabel || formatCountry(row.reg_country) }}
+                        {{ row._countryLabel }}
                       </span>
                       <span
                         v-if="row.reg_ip"
@@ -6534,7 +6652,7 @@ onUnmounted(() => {
                         class="meta-badge-pill ip-pill mono"
                         :title="`出口代理: ${row.reg_proxy}`"
                       >
-                        {{ row._proxyHost || formatProxyHost(row.reg_proxy) }}
+                        {{ row._proxyHost }}
                       </span>
                       <span
                         v-if="row.mail_oauth?.pickup_url"
@@ -6639,8 +6757,8 @@ onUnmounted(() => {
                 <template #default="{ row }">
                   <span
                     class="acct-status-chip"
-                    :class="(row._acctStatus || formatAccountStatus(row)).cls"
-                  >{{ (row._acctStatus || formatAccountStatus(row)).text }}</span>
+                    :class="row._acctStatus?.cls"
+                  >{{ row._acctStatus?.text }}</span>
                 </template>
               </el-table-column>
 
@@ -6657,12 +6775,12 @@ onUnmounted(() => {
                 <template #default="{ row }">
                   <div
                     class="at-expiry-modern-badge"
-                    :class="(row._atExp || formatAtExpiry(row)).cls"
-                    :title="(row._atExp || formatAtExpiry(row)).title"
+                    :class="row._atExp?.cls"
+                    :title="row._atExp?.title"
                     @click.stop="openTokenRefreshForOne(row)"
                   >
                     <span class="expiry-status-dot"></span>
-                    <span class="expiry-val-text mono">{{ (row._atExp || formatAtExpiry(row)).text }}</span>
+                    <span class="expiry-val-text mono">{{ row._atExp?.text }}</span>
                   </div>
                 </template>
               </el-table-column>
@@ -6671,9 +6789,9 @@ onUnmounted(() => {
               <el-table-column v-if="columnVisibility.status" label="套餐与业务特权" min-width="160" align="center" header-align="center">
                 <template #default="{ row }">
                   <div class="cell-entitlements-block">
-                    <template v-if="(row._badges || getStatusBadges(row)).length">
+                    <template v-if="row._badges?.length">
                       <span
-                        v-for="(b, idx) in (row._badges || getStatusBadges(row))"
+                        v-for="(b, idx) in row._badges"
                         :key="idx"
                         class="entitlement-badge"
                         :class="[b.type, b.effect]"
@@ -6701,23 +6819,23 @@ onUnmounted(() => {
                 <template #default="{ row }">
                   <div
                     class="cell-oauth-try"
-                    :class="oauthTryOf(row).outcomeCls"
-                    :title="oauthTryOf(row).title"
+                    :class="row._oauthTry?.outcomeCls"
+                    :title="row._oauthTry?.title"
                   >
-                    <template v-if="oauthTryOf(row).empty">
+                    <template v-if="row._oauthTry?.empty">
                       <span class="oauth-try-empty">从未授权</span>
                     </template>
                     <template v-else>
                       <div class="oauth-try-main">
-                        <span class="oauth-try-count mono">{{ oauthTryOf(row).countText }}</span>
-                        <span class="oauth-try-out">{{ oauthTryOf(row).outcome }}</span>
+                        <span class="oauth-try-count mono">{{ row._oauthTry?.countText }}</span>
+                        <span class="oauth-try-out">{{ row._oauthTry?.outcome }}</span>
                       </div>
                       <div class="oauth-try-sub">
-                        <span v-if="oauthTryOf(row).lastText">{{ oauthTryOf(row).lastText }}</span>
-                        <span v-if="oauthTryOf(row).cooling" class="oauth-try-cool">
-                          冷却 {{ oauthTryOf(row).coolLeft }}
+                        <span v-if="row._oauthTry?.lastText">{{ row._oauthTry.lastText }}</span>
+                        <span v-if="row._oauthTry?.cooling" class="oauth-try-cool">
+                          冷却 {{ row._oauthTry.coolLeft }}
                         </span>
-                        <span v-else-if="oauthTryOf(row).exhausted" class="oauth-try-dead">次数用尽</span>
+                        <span v-else-if="row._oauthTry?.exhausted" class="oauth-try-dead">次数用尽</span>
                       </div>
                     </template>
                   </div>
@@ -6731,7 +6849,7 @@ onUnmounted(() => {
                     <div v-if="row.exported_at || row.at_exported_at" class="export-status-line" @click.stop="quickEditExportNote(row)">
                       <span class="pulse-indicator-dot dot-cyan"></span>
                       <span class="export-tag-label">已导: {{ row.export_fmt_label || row.export_fmt || 'AT' }}</span>
-                      <span class="export-date-mono mono">({{ row._exportDate || formatExportDateShort(row.exported_at || row.at_exported_at) }})</span>
+                      <span class="export-date-mono mono">({{ row._exportDate }})</span>
                     </div>
                     <div v-else class="export-status-line">
                       <span class="pulse-indicator-dot dot-emerald"></span>
@@ -6748,14 +6866,21 @@ onUnmounted(() => {
               <el-table-column v-if="columnVisibility.time" prop="created_at" label="注册时间" min-width="135" align="center" header-align="center" sortable="custom">
                 <template #default="{ row }">
                   <div class="cell-time-block">
-                    <div class="time-main-mono mono">{{ row._createdTime || fmtTime(row.created_at) }}</div>
-                    <div class="time-relative-text">{{ row._timeAgo || timeAgo(row.created_at) }}</div>
+                    <div class="time-main-mono mono">{{ row._createdTime }}</div>
+                    <div class="time-relative-text">{{ row._timeAgo }}</div>
                   </div>
                 </template>
               </el-table-column>
 
               <!-- 8. 快捷操作列 (固定右侧，加宽至 280 彻底解决显示不全/遮挡) -->
-              <el-table-column label="快捷操作" width="280" fixed="right" align="center" header-align="center">
+              <el-table-column
+                label="快捷操作"
+                width="280"
+                align="center"
+                header-align="center"
+                class-name="col-sticky-actions"
+                label-class-name="col-sticky-actions"
+              >
                 <template #default="{ row }">
                   <div class="cell-actions-block">
                     <button class="octopus-row-btn btn-cred" @click.stop="viewCred(row.email)" title="查看完整账号凭据">
@@ -6770,68 +6895,41 @@ onUnmounted(() => {
                     <button class="octopus-row-btn btn-mail" @click.stop="openMailOtpModal(row)" title="检索邮件验证码">
                       查码
                     </button>
-
-                    <el-dropdown trigger="click" @command="(cmd) => handleRowMoreCommand(cmd, row)">
-                      <button class="octopus-row-btn btn-more" title="更多高级操作" @click.stop>
-                        ···
-                      </button>
-                      <template #dropdown>
-                        <el-dropdown-menu class="extract-dropdown-menu">
-                          <div class="dropdown-group-title">Token 凭证与自愈</div>
-                          <el-dropdown-item command="refresh_token">
-                            <el-icon><Refresh /></el-icon> 🔄 刷新此账号 Token
-                          </el-dropdown-item>
-                          <el-dropdown-item command="recover_oauth">
-                            <el-icon><CircleCheckFilled /></el-icon> 找回历史授权凭据 (RT自愈)
-                          </el-dropdown-item>
-                          <div class="dropdown-group-title divider-title">数据与凭证导出</div>
-                          <el-dropdown-item command="edit">
-                            <el-icon><Setting /></el-icon> 编辑/补全凭证
-                          </el-dropdown-item>
-                          <el-dropdown-item command="copy_session">
-                            <el-icon><Document /></el-icon> 复制 Session JSON
-                          </el-dropdown-item>
-                          <el-dropdown-item command="download_sub2">
-                            <el-icon><Download /></el-icon> 导出 Sub2API JSON
-                          </el-dropdown-item>
-                          <el-dropdown-item command="download_cpa">
-                            <el-icon><Download /></el-icon> 导出 CPA JSON
-                          </el-dropdown-item>
-                          <div class="dropdown-group-title divider-title">操作与运维</div>
-                          <el-dropdown-item v-if="row.at_len" command="copy_at">
-                            <el-icon><Key /></el-icon> 复制 Access Token (AT)
-                          </el-dropdown-item>
-                          <el-dropdown-item v-if="row.rt_len" command="copy_rt">
-                            <el-icon><Refresh /></el-icon> 复制 Refresh Token (RT)
-                          </el-dropdown-item>
-                          <el-dropdown-item command="oauth_export">
-                            <el-icon><Phone /></el-icon> Codex OAuth 接码授权
-                          </el-dropdown-item>
-                          <el-dropdown-item command="fetch_mail">
-                            <el-icon><Message /></el-icon> 检索邮件验证码
-                          </el-dropdown-item>
-                          <el-dropdown-item v-if="!row.password" command="repair_pwd">
-                            <el-icon><Key /></el-icon> 补设密码
-                          </el-dropdown-item>
-                          <el-dropdown-item v-if="!row.totp_secret" command="repair_2fa">
-                            <el-icon><Lock /></el-icon> 补绑 2FA
-                          </el-dropdown-item>
-                          <el-dropdown-item v-if="row.password" command="copy_pwd">
-                            <el-icon><CopyDocument /></el-icon> 复制密码
-                          </el-dropdown-item>
-                          <el-dropdown-item v-if="row.totp_secret" command="copy_2fa">
-                            <el-icon><CopyDocument /></el-icon> 复制 2FA Secret
-                          </el-dropdown-item>
-                          <el-dropdown-item divided command="delete" style="color: var(--el-color-danger)">
-                            <el-icon><Delete /></el-icon> 删除账号
-                          </el-dropdown-item>
-                        </el-dropdown-menu>
-                      </template>
-                    </el-dropdown>
+                    <button class="octopus-row-btn btn-more" title="更多高级操作" @click.stop="openRowMoreMenu(row, $event)">
+                      ···
+                    </button>
                   </div>
                 </template>
               </el-table-column>
             </el-table>
+            <Teleport to="body">
+              <div
+                v-if="rowMoreOpen && rowMore"
+                ref="rowMoreMenuRef"
+                class="extract-dropdown-menu row-more-float"
+                :style="{ left: rowMorePos.x + 'px', top: rowMorePos.y + 'px' }"
+                @click.stop
+              >
+                <div class="dropdown-group-title">Token 凭证与自愈</div>
+                <button type="button" class="row-more-item" @click="runRowMore('refresh_token')">🔄 刷新此账号 Token</button>
+                <button type="button" class="row-more-item" @click="runRowMore('recover_oauth')">找回历史授权凭据 (RT自愈)</button>
+                <div class="dropdown-group-title divider-title">数据与凭证导出</div>
+                <button type="button" class="row-more-item" @click="runRowMore('edit')">编辑/补全凭证</button>
+                <button type="button" class="row-more-item" @click="runRowMore('copy_session')">复制 Session JSON</button>
+                <button type="button" class="row-more-item" @click="runRowMore('download_sub2')">导出 Sub2API JSON</button>
+                <button type="button" class="row-more-item" @click="runRowMore('download_cpa')">导出 CPA JSON</button>
+                <div class="dropdown-group-title divider-title">操作与运维</div>
+                <button v-if="rowMore.at_len" type="button" class="row-more-item" @click="runRowMore('copy_at')">复制 Access Token (AT)</button>
+                <button v-if="rowMore.rt_len" type="button" class="row-more-item" @click="runRowMore('copy_rt')">复制 Refresh Token (RT)</button>
+                <button type="button" class="row-more-item" @click="runRowMore('oauth_export')">Codex OAuth 接码授权</button>
+                <button type="button" class="row-more-item" @click="runRowMore('fetch_mail')">检索邮件验证码</button>
+                <button v-if="!rowMore.password" type="button" class="row-more-item" @click="runRowMore('repair_pwd')">补设密码</button>
+                <button v-if="!rowMore.totp_secret" type="button" class="row-more-item" @click="runRowMore('repair_2fa')">补绑 2FA</button>
+                <button v-if="rowMore.password" type="button" class="row-more-item" @click="runRowMore('copy_pwd')">复制密码</button>
+                <button v-if="rowMore.totp_secret" type="button" class="row-more-item" @click="runRowMore('copy_2fa')">复制 2FA Secret</button>
+                <button type="button" class="row-more-item is-danger" @click="runRowMore('delete')">删除账号</button>
+              </div>
+            </Teleport>
           </div>
 
           <!-- 分页底栏 -->
@@ -10022,6 +10120,8 @@ onUnmounted(() => {
       width="640px"
       top="8vh"
       class="macos-custom-dialog export-config-dialog"
+      append-to-body
+      destroy-on-close
       :close-on-click-modal="false"
     >
       <template #header>
@@ -10292,17 +10392,26 @@ onUnmounted(() => {
     </el-dialog>
 
     <!-- 批量导出文本预览弹窗 -->
-    <el-dialog v-model="exportVisible" width="720px" top="8vh" class="macos-custom-dialog">
+    <el-dialog
+      v-model="exportVisible"
+      width="720px"
+      top="8vh"
+      class="macos-custom-dialog"
+      append-to-body
+      destroy-on-close
+    >
       <template #header>
         <div style="display: flex; align-items: center; gap: 12px">
           <span style="font-weight: 600">导出 · {{ exportLabel }}</span>
           <el-tag size="small" type="info">共 {{ exportCount }} 行</el-tag>
         </div>
       </template>
-      <el-input
-        :model-value="exportText" type="textarea" :rows="14" readonly
-        class="mono export-area"
-      />
+      <textarea
+        class="mono export-area export-native-textarea"
+        :value="exportText"
+        rows="14"
+        readonly
+      ></textarea>
       <template #footer>
         <el-button @click="copyText(exportText)">
           <el-icon><CopyDocument /></el-icon>复制全部
@@ -16530,6 +16639,20 @@ onUnmounted(() => {
   flex-direction: column;
   gap: 16px;
 }
+.export-native-textarea {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 280px;
+  padding: 10px 12px;
+  border: 1px solid rgba(93, 164, 177, 0.28);
+  border-radius: 8px;
+  background: #f8fafb;
+  color: #1a3c42;
+  font-size: 12px;
+  line-height: 1.5;
+  resize: vertical;
+}
 
 .export-field-group {
   display: flex;
@@ -17274,6 +17397,92 @@ onUnmounted(() => {
 .octopus-table-grid .el-table__fixed-right tr:hover td.el-table__cell,
 .octopus-table-grid .el-table__fixed tr:hover td.el-table__cell {
   background: rgba(241, 245, 249, 0.95) !important;
+}
+
+/* 大页码：用 sticky 代替 fixed 克隆表；离屏行交给浏览器跳过绘制 */
+.octopus-table-grid :deep(.el-table__body tr.el-table__row) {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 52px;
+}
+.octopus-table-grid.density-compact :deep(.el-table__body tr.el-table__row) {
+  contain-intrinsic-size: auto 40px;
+}
+.octopus-table-grid :deep(th.col-sticky-sel),
+.octopus-table-grid :deep(td.col-sticky-sel) {
+  position: sticky;
+  left: 0;
+  z-index: 3;
+}
+.octopus-table-grid :deep(th.col-sticky-email),
+.octopus-table-grid :deep(td.col-sticky-email) {
+  position: sticky;
+  left: 38px;
+  z-index: 3;
+}
+.octopus-table-grid :deep(th.col-sticky-actions),
+.octopus-table-grid :deep(td.col-sticky-actions) {
+  position: sticky;
+  right: 0;
+  z-index: 3;
+}
+.octopus-table-grid :deep(th.col-sticky-sel),
+.octopus-table-grid :deep(th.col-sticky-email),
+.octopus-table-grid :deep(th.col-sticky-actions) {
+  z-index: 5;
+  background: rgba(248, 250, 252, 0.96) !important;
+}
+.octopus-table-grid :deep(td.col-sticky-sel),
+.octopus-table-grid :deep(td.col-sticky-email),
+.octopus-table-grid :deep(td.col-sticky-actions) {
+  background: rgba(255, 255, 255, 0.96) !important;
+}
+.octopus-table-grid :deep(.el-table__row:hover > td.col-sticky-sel),
+.octopus-table-grid :deep(.el-table__row:hover > td.col-sticky-email),
+.octopus-table-grid :deep(.el-table__row:hover > td.col-sticky-actions) {
+  background: rgba(240, 249, 255, 0.96) !important;
+}
+.octopus-table-grid :deep(.is-focused-row > td.col-sticky-sel),
+.octopus-table-grid :deep(.is-focused-row > td.col-sticky-email),
+.octopus-table-grid :deep(.is-focused-row > td.col-sticky-actions) {
+  background: rgba(224, 242, 254, 0.96) !important;
+}
+.octopus-table-grid :deep(td.col-sticky-actions),
+.octopus-table-grid :deep(th.col-sticky-actions) {
+  box-shadow: -6px 0 12px -8px rgba(15, 23, 42, 0.18);
+}
+.octopus-table-grid :deep(td.col-sticky-email),
+.octopus-table-grid :deep(th.col-sticky-email) {
+  box-shadow: 6px 0 12px -8px rgba(15, 23, 42, 0.12);
+}
+
+.row-more-float {
+  position: fixed;
+  z-index: 4000;
+  min-width: 240px;
+  max-height: min(70vh, 420px);
+  overflow: auto;
+  padding: 6px 0;
+  border-radius: 10px;
+  background: #ffffff;
+  border: 1px solid rgba(93, 164, 177, 0.28);
+  box-shadow: 0 16px 40px -8px rgba(15, 23, 42, 0.22);
+}
+.row-more-item {
+  display: block;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  padding: 7px 14px;
+  font-size: 12.5px;
+  color: #1a3c42;
+  cursor: pointer;
+}
+.row-more-item:hover {
+  background: #edf6f8;
+}
+.row-more-item.is-danger {
+  color: #c7564d;
 }
 
 /* 3D 水晶多选框 (对齐素材 2ac2e3a9c1fd2371a185add9ac5a345a.jpg 中的复选框) */

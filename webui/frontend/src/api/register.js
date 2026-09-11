@@ -38,7 +38,8 @@ export { bulkDeleteAccounts } from './accounts'
 
 // 批量导出：格式清单由后端 export_formats.py 提供，加格式前端不用改
 export const listExportFormats = () => http.get('/api/registered/export/formats')
-export const exportRegistered = (payload) => http.post('/api/registered/export', payload)
+export const exportRegistered = (payload) =>
+  http.post('/api/registered/export', payload, { timeout: 180000 })
 
 export const analyzeCredentialDump = (text) =>
   http.post('/api/registered/import_dump/analyze', { text }, { timeout: 180000 })
