@@ -599,7 +599,7 @@ async function handleViewLog(item) {
 // 日志高亮分类
 function getLogLineClass(line) {
   if (line.includes('成功') || line.includes('🎉') || line.includes('completed successfully')) return 'log-success'
-  if (line.includes('失败') || line.includes('错误') || line.includes('❌') || line.includes('error') || line.includes('failed')) return 'log-error'
+  if (line.includes('失败') || line.includes('错误') || line.includes('❌') || line.includes('error') || line.includes('failed') || line.includes('Traceback') || line.includes('Exception') || line.includes('curl:')) return 'log-error'
   if (line.includes('阶段3') || line.includes('2FA') || line.includes('验证码') || line.includes('SMS')) return 'log-otp'
   if (line.includes('阶段4') || line.includes('授权') || line.includes('authorize') || line.includes('return URL')) return 'log-auth'
   if (line.includes('阶段1') || line.includes('阶段2') || line.includes('阶段0')) return 'log-phase'
@@ -1114,6 +1114,7 @@ onUnmounted(() => {
       width="820px"
       top="7vh"
       class="macos-terminal-dialog"
+      append-to-body
       :close-on-click-modal="false"
     >
       <template #header>
@@ -1455,8 +1456,8 @@ onUnmounted(() => {
   height: 150px;
   min-height: 110px;
   max-height: 220px;
-  background: #111116;
-  border-top: 1px solid #2d2d38;
+  background: #0b1619;
+  border-top: 1px solid rgba(93, 164, 177, 0.28);
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
@@ -1466,8 +1467,8 @@ onUnmounted(() => {
   align-items: center;
   justify-content: space-between;
   padding: 4px 12px;
-  background: #181820;
-  border-bottom: 1px solid #262633;
+  background: #152428;
+  border-bottom: 1px solid rgba(93, 164, 177, 0.22);
 }
 .console-header-left, .console-header-right {
   display: flex;
@@ -1497,8 +1498,8 @@ onUnmounted(() => {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11px;
   line-height: 1.5;
-  color: #cbd5e1;
-  background: #111116;
+  color: #e8f3f2;
+  background: #0b1619;
 }
 
 /* 终端日志高亮类 */
@@ -1539,58 +1540,4 @@ onUnmounted(() => {
   border-radius: 4px;
 }
 
-/* 弹窗终端样式 */
-:deep(.macos-terminal-dialog) {
-  border-radius: 12px;
-  overflow: hidden;
-  background: #141418;
-}
-:deep(.macos-terminal-dialog .el-dialog__header) {
-  padding: 10px 16px;
-  background: #1c1c22;
-  border-bottom: 1px solid #2d2d38;
-}
-.modal-header {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-.window-dots {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.window-dots .dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-}
-.window-dots .dot.red { background: #ff5f56; }
-.window-dots .dot.yellow { background: #ffbd2e; }
-.window-dots .dot.green { background: #27c93f; }
-.modal-email {
-  font-size: 13px;
-  font-weight: 600;
-  color: #f3f4f6;
-  font-family: ui-monospace, monospace;
-}
-.modal-terminal-body {
-  height: 420px;
-  padding: 12px 16px;
-  overflow-y: auto;
-  font-family: ui-monospace, monospace;
-  font-size: 12px;
-  line-height: 1.6;
-  color: #d1d5db;
-  background: #141418;
-}
-.modal-footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-.log-count-tip {
-  font-size: 11px;
-  color: #94a3b8;
-}
 </style>

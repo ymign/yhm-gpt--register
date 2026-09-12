@@ -66,17 +66,17 @@ function copyAllLogs() {
   height: 100%;
   display: flex;
   flex-direction: column;
-  background: var(--app-log-bg);
-  border: 1px solid var(--app-log-border);
+  background: var(--app-log-bg, #0b1619);
+  border: 1px solid var(--app-log-border, rgba(93, 164, 177, 0.32));
   border-radius: 12px;
   overflow: hidden;
-  box-shadow: var(--app-shadow-md);
+  box-shadow: 0 12px 28px -12px rgba(0, 0, 0, 0.35);
 }
 
 .terminal-titlebar {
   padding: 8px 14px;
-  background: rgba(255, 255, 255, 0.04);
-  border-bottom: 1px solid var(--app-log-border);
+  background: var(--app-log-chrome, #152428);
+  border-bottom: 1px solid var(--app-log-border, rgba(93, 164, 177, 0.32));
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -92,7 +92,7 @@ function copyAllLogs() {
 .terminal-title {
   font-size: 11.5px;
   font-weight: 600;
-  color: #94a3b8;
+  color: #8aa8ad;
   letter-spacing: 0.2px;
 }
 
@@ -116,24 +116,40 @@ function copyAllLogs() {
   min-height: 280px;
   padding: 12px 14px;
   overflow-y: auto;
-  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace;
-  font-size: 11.5px;
-  line-height: 1.6;
-  color: var(--app-log-text);
-  word-break: break-all;
+  font-family: "Cascadia Mono", "JetBrains Mono", "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--app-log-text, #e8f3f2);
+  word-break: break-word;
   white-space: pre-wrap;
 }
 
 .terminal-line {
-  margin-bottom: 2px;
+  margin-bottom: 1px;
+  padding: 1px 8px;
+  border-radius: 4px;
+  border-left: 3px solid transparent;
 }
-.terminal-line.err { color: #f87171; font-weight: 500; }
-.terminal-line.warn { color: #fbbf24; }
-.terminal-line.ok { color: #4ade80; }
-.terminal-line.evt { color: #60a5fa; }
+.terminal-line.err {
+  color: #ffb4ae;
+  font-weight: 650;
+  background: rgba(220, 70, 62, 0.18);
+  border-left-color: #f07167;
+}
+.terminal-line.warn {
+  color: #f5c26b;
+  background: rgba(217, 119, 6, 0.12);
+  border-left-color: #f5c26b;
+}
+.terminal-line.ok {
+  color: #6ee7b7;
+  background: rgba(16, 185, 129, 0.1);
+  border-left-color: #34d399;
+}
+.terminal-line.evt { color: #8ed7e0; }
 
 .terminal-placeholder {
-  color: #64748b;
+  color: #8aa8ad;
   font-style: italic;
   padding: 20px 0;
 }

@@ -510,7 +510,7 @@ watch(logModalVisible, (v) => {
 function logClass(line) {
   if (!line) return ''
   if (line.includes('✅') || line.includes('成功')) return 'log-hit'
-  if (line.includes('❌') || line.includes('失败') || line.includes('封号')) return 'log-err'
+  if (line.includes('❌') || line.includes('失败') || line.includes('封号') || line.includes('Traceback') || line.includes('Exception') || line.includes('curl:') || line.includes('error')) return 'log-err'
   if (line.includes('⚠️')) return 'log-miss'
   return ''
 }
@@ -979,6 +979,7 @@ onUnmounted(() => {
     width="780px"
     top="8vh"
     class="macos-terminal-dialog token-terminal-dialog"
+    append-to-body
     :close-on-click-modal="false"
   >
     <template #header>
@@ -1533,102 +1534,6 @@ onUnmounted(() => {
   cursor: not-allowed;
 }
 
-/* ──────────── 终端弹窗深度定制 ──────────── */
-:deep(.token-terminal-dialog) {
-  border-radius: 12px;
-  overflow: hidden;
-  background: #13181a;
-  border: 1px solid rgba(93, 164, 177, 0.25);
-}
-:deep(.token-terminal-dialog .el-dialog__header) {
-  padding: 10px 16px;
-  margin-right: 0;
-  background: #182022;
-  border-bottom: 1px solid rgba(93, 164, 177, 0.16);
-}
-:deep(.token-terminal-dialog .el-dialog__body) {
-  padding: 0;
-}
-:deep(.token-terminal-dialog .el-dialog__footer) {
-  padding: 10px 16px;
-  background: #182022;
-  border-top: 1px solid rgba(93, 164, 177, 0.16);
-}
-
-.modal-header {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-.window-dots {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.dot {
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-}
-.dot.red { background: #ff5f56; }
-.dot.yellow { background: #ffbd2e; }
-.dot.green { background: #27c93f; }
-.modal-title-info {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex: 1;
-}
-.modal-email {
-  font-size: 13px;
-  font-weight: 600;
-  color: #f4f8f8;
-  font-family: var(--el-font-family-monospace, monospace);
-}
-.terminal-badge {
-  font-size: 11px;
-  color: #7ebbc5;
-  background: rgba(93, 164, 177, 0.15);
-  padding: 1px 7px;
-  border-radius: 4px;
-}
-.modal-terminal-wrap {
-  height: 400px;
-  display: flex;
-  flex-direction: column;
-}
-.modal-terminal-body {
-  flex: 1;
-  padding: 12px 16px;
-  overflow-y: auto;
-  font-family: var(--el-font-family-monospace, monospace);
-  font-size: 12px;
-  line-height: 1.6;
-  color: #cbd8da;
-  word-break: break-all;
-  white-space: pre-wrap;
-  background: #13181a;
-}
-.terminal-empty {
-  color: #657e82;
-}
-.log-hit { color: #5da4b1; font-weight: 600; }
-.log-miss { color: #d49432; }
-.log-err { color: #c7564d; }
-
-.modal-footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-.log-count-tip {
-  font-size: 11px;
-  color: #809295;
-}
-.modal-footer-btns {
-  display: flex;
-  gap: 8px;
-}
 .btn-terminal-copy {
   background: rgba(93, 164, 177, 0.15);
   border: 1px solid rgba(93, 164, 177, 0.28);

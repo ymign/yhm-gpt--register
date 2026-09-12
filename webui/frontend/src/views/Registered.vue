@@ -1925,7 +1925,7 @@ function getLogClass(line) {
   if (!line) return ''
   const s = String(line)
   if (s.includes('HIT') || s.includes('oaics_') || s.includes('★') || s.includes('◆') || s.includes('成功') || s.includes('存活') || s.includes('已入库')) return 'log-hit'
-  if (s.includes('err=') || s.includes('ERROR') || s.includes('失败') || s.includes('封号') || s.includes('失效') || s.includes('异常') || s.includes('banned')) return 'log-err'
+  if (s.includes('err=') || s.includes('ERROR') || s.includes('失败') || s.includes('封号') || s.includes('失效') || s.includes('异常') || s.includes('banned') || s.includes('Traceback') || s.includes('Exception') || s.includes('curl:')) return 'log-err'
   if (s.includes('MISS') || s.includes('state=CS') || s.includes('Free') || s.includes('等待') || s.includes('需接码') || s.includes('未接')) return 'log-warn'
   if (s.includes('[1/') || s.includes('[2/') || s.includes('[3/') || s.includes('[4/') || s.includes('[5/') || s.includes('[6/') || s.includes('发起') || s.includes('开始')) return 'log-step'
   if (s.includes('网络出口') || s.includes('代理') || s.includes('cliproxy') || s.includes('目标国家')) return 'log-net'
@@ -7698,6 +7698,7 @@ onUnmounted(() => {
       width="780px"
       top="8vh"
       class="macos-terminal-dialog"
+      append-to-body
       :close-on-click-modal="false"
     >
       <template #header>
@@ -7968,6 +7969,7 @@ onUnmounted(() => {
       width="780px"
       top="8vh"
       class="macos-terminal-dialog"
+      append-to-body
       :close-on-click-modal="false"
     >
       <template #header>
@@ -9734,6 +9736,7 @@ onUnmounted(() => {
       width="780px"
       top="8vh"
       class="macos-terminal-dialog"
+      append-to-body
       :close-on-click-modal="false"
     >
       <template #header>
@@ -10053,6 +10056,7 @@ onUnmounted(() => {
       width="780px"
       top="8vh"
       class="macos-terminal-dialog"
+      append-to-body
       :close-on-click-modal="false"
     >
       <template #header>
@@ -13982,190 +13986,33 @@ onUnmounted(() => {
   overflow: hidden;
 }
 
-/* ──────────── 单账号详细日志终端弹窗 (与授权界面 oa-custom-dialog 玻璃拟态 100% 深度对齐) ──────────── */
-:deep(.macos-terminal-dialog) {
-  border-radius: 20px !important;
-  overflow: hidden !important;
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.94) 0%, rgba(255, 255, 255, 0.78) 50%, rgba(248, 250, 252, 0.9) 100%) !important;
-  backdrop-filter: blur(32px) saturate(210%) !important;
-  -webkit-backdrop-filter: blur(32px) saturate(210%) !important;
-  border: 2px solid rgba(255, 255, 255, 0.95) !important;
-  border-top: 2.5px solid #ffffff !important;
-  box-shadow: 0 32px 72px -12px rgba(15, 23, 42, 0.22), 0 12px 28px rgba(15, 23, 42, 0.08), inset 0 2.5px 2px #ffffff !important;
-}
-:deep(.macos-terminal-dialog .el-dialog__header) {
-  padding: 16px 22px 14px !important;
-  margin-right: 0 !important;
-  border-bottom: 1.5px solid rgba(255, 255, 255, 0.85) !important;
-  background: rgba(255, 255, 255, 0.5) !important;
-  backdrop-filter: blur(16px) !important;
-  -webkit-backdrop-filter: blur(16px) !important;
-}
-:deep(.macos-terminal-dialog .el-dialog__body) {
-  padding: 16px 22px !important;
-  background: transparent !important;
-}
-:deep(.macos-terminal-dialog .el-dialog__footer) {
-  padding: 14px 22px !important;
-  border-top: 1.5px solid rgba(255, 255, 255, 0.85) !important;
-  background: rgba(255, 255, 255, 0.55) !important;
-  backdrop-filter: blur(16px) !important;
-  -webkit-backdrop-filter: blur(16px) !important;
-}
-
-.modal-header {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  width: 100%;
-}
-.window-dots {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  padding: 3.5px 8px;
-  border-radius: 9999px;
-  background: rgba(255, 255, 255, 0.65);
-  border: 1.2px solid rgba(255, 255, 255, 0.95);
-  border-top: 1.5px solid #ffffff;
-  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.04), inset 0 1px 1.5px #ffffff;
-}
-.dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  position: relative;
-  box-shadow:
-    inset 0 1.2px 1.5px rgba(255, 255, 255, 0.9),
-    inset 0 -1.2px 1.8px rgba(0, 0, 0, 0.25),
-    0 1px 3px rgba(0, 0, 0, 0.12);
-}
-.dot.red { background: radial-gradient(circle at 35% 30%, #ff857d 0%, #ff5f56 70%, #d83a30 100%); }
-.dot.yellow { background: radial-gradient(circle at 35% 30%, #ffe07a 0%, #ffbd2e 70%, #d99b1a 100%); }
-.dot.green { background: radial-gradient(circle at 35% 30%, #68f07e 0%, #27c93f 70%, #1da331 100%); }
-
-.modal-title-info {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex: 1;
-}
-.modal-email {
-  font-size: 13px;
-  font-weight: 700;
-  color: #0f172a;
-  font-family: var(--el-font-family-monospace, monospace);
-  letter-spacing: -0.01em;
-  padding: 3px 10px;
-  border-radius: 6px;
-  background: rgba(255, 255, 255, 0.6);
-  border: 1px solid rgba(226, 232, 240, 0.85);
-  transition: all 0.15s ease;
-  cursor: pointer;
-}
-.modal-email:hover {
-  color: #0284c7;
-  background: rgba(224, 242, 254, 0.7);
-  border-color: rgba(56, 189, 248, 0.6);
-}
-.modal-run-tag {
-  display: inline-flex;
-  align-items: center;
-  height: 24px;
-  padding: 0 12px;
-  border-radius: 9999px;
-  font-size: 11px;
-  font-weight: 700;
-  background: linear-gradient(180deg, rgba(236, 253, 245, 0.95) 0%, rgba(209, 250, 229, 0.85) 100%);
-  border: 1.2px solid rgba(255, 255, 255, 0.95);
-  border-top: 1.6px solid #ffffff;
-  border-bottom: 1.2px solid rgba(167, 243, 208, 0.9);
-  color: #065f46;
-  box-shadow: 0 2px 6px rgba(16, 185, 129, 0.18), inset 0 1.2px 1.5px #ffffff;
-  position: relative;
-  overflow: hidden;
-}
-
-/* 终端座舱：浅色清透微晶冰釉槽，与授权界面的浅色卡片/表格完美统一 */
-.modal-terminal-wrap {
-  position: relative;
-  border-radius: 14px;
-  overflow: hidden;
-  border: 1.5px solid rgba(255, 255, 255, 0.95);
-  border-top: 2px solid #ffffff;
-  border-bottom: 1.5px solid rgba(203, 213, 225, 0.65);
-  background: rgba(255, 255, 255, 0.62) !important;
-  backdrop-filter: blur(24px) saturate(180%) !important;
-  -webkit-backdrop-filter: blur(24px) saturate(180%) !important;
-  box-shadow:
-    inset 0 2px 5px rgba(15, 23, 42, 0.04),
-    inset 0 -1.5px 2px #ffffff,
-    0 8px 24px -4px rgba(15, 23, 42, 0.05);
-}
-.modal-terminal-body {
-  height: 390px;
-  background: transparent !important;
-  padding: 16px 20px;
-  overflow-y: auto;
-  font-family: "JetBrains Mono", "SF Mono", Consolas, "Liberation Mono", Menlo, monospace !important;
-  font-size: 12.5px;
-  line-height: 1.8;
-  color: #334155;
-  word-break: break-all;
-  white-space: pre-wrap;
-}
-
-.modal-footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  width: 100%;
-}
-.log-count-tip {
-  display: inline-flex;
-  align-items: center;
-  height: 28px;
-  padding: 0 12px;
-  border-radius: 9999px;
-  background: rgba(255, 255, 255, 0.75);
-  border: 1.2px solid rgba(226, 232, 240, 0.9);
-  border-top: 1.5px solid #ffffff;
-  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.03), inset 0 1px 1px #ffffff;
-  font-size: 12px;
-  font-weight: 600;
-  color: #475569;
-  font-family: var(--el-font-family-monospace, monospace);
-}
-.modal-footer-btns {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
+/* 日志弹窗 chrome / 墨井样式见 theme.css .macos-terminal-dialog */
 
 /* ──────────── macOS 凭证弹窗精致卡片风格 ──────────── */
 .cred-dialog-body {
   max-height: 58vh;
   overflow-y: auto;
-  padding: 14px 18px;
-  background: #141418;
+  padding: 4px 2px 8px;
+  background: transparent;
   display: flex;
   flex-direction: column;
   gap: 10px;
 }
 
 .cred-item-card {
-  background: #1a1a22;
-  border: 1px solid #282834;
-  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.82);
+  border: 1px solid rgba(93, 164, 177, 0.22);
+  border-radius: 12px;
   padding: 8px 12px;
   display: flex;
   flex-direction: column;
   gap: 6px;
+  box-shadow: inset 0 1px 0 #ffffff, 0 4px 12px rgba(35, 75, 82, 0.04);
   transition: border-color 0.15s ease, background 0.15s ease;
 }
 .cred-item-card:hover {
-  border-color: #3e3e50;
-  background: #1c1c26;
+  border-color: rgba(2, 132, 199, 0.4);
+  background: #ffffff;
 }
 
 .cred-item-header {
@@ -14192,13 +14039,14 @@ onUnmounted(() => {
 .cred-key-title {
   font-size: 12px;
   font-weight: 600;
-  color: #f1f5f9;
+  color: #1a3c42;
 }
 
 .cred-len-pill {
   font-size: 10px;
-  color: #94a3b8;
-  background: #242430;
+  color: #21474e;
+  background: #edf6f8;
+  border: 1px solid rgba(93, 164, 177, 0.28);
   padding: 1px 6px;
   border-radius: 10px;
 }
@@ -14210,45 +14058,47 @@ onUnmounted(() => {
 }
 
 .cred-item-content {
-  background: #0f0f13;
-  border: 1px solid #22222c;
-  border-radius: 6px;
+  background: #f7fbfb;
+  border: 1px solid rgba(93, 164, 177, 0.22);
+  border-radius: 8px;
   padding: 7px 10px;
-  font-size: 11.5px;
-  line-height: 1.45;
-  color: #cbd5e1;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #1a3c42;
   word-break: break-all;
   white-space: pre-wrap;
   max-height: 110px;
   overflow-y: auto;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: border-color 0.15s ease, background 0.15s ease;
 }
 .cred-item-content:hover {
-  border-color: #3b82f6;
-  background: #111118;
+  border-color: #0284c7;
+  background: #edf6f8;
 }
 
 .cred-empty-box {
   text-align: center;
   padding: 30px 0;
-  color: #64748b;
+  color: #6b7c80;
   font-size: 12px;
 }
 
 .macos-copy-all-btn {
-  border-radius: 5px;
+  border-radius: 9999px;
   font-size: 11px;
-  padding: 2px 8px;
+  padding: 2px 10px;
   height: 24px;
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  color: #e2e8f0;
+  background: rgba(255, 255, 255, 0.85);
+  border: 1.2px solid rgba(255, 255, 255, 0.95);
+  color: #334155;
+  font-weight: 700;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04);
 }
 .macos-copy-all-btn:hover {
-  background: rgba(255, 255, 255, 0.15);
-  border-color: rgba(255, 255, 255, 0.25);
-  color: #fff;
+  background: #ffffff;
+  border-color: #0284c7;
+  color: #0284c7;
 }
 
 .cred-scroll-wrap {

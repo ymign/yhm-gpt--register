@@ -49,10 +49,13 @@
   --app-shadow-lg: 0 20px 48px -8px rgba(15, 23, 42, 0.09), 0 6px 16px -3px rgba(15, 23, 42, 0.04), inset 0 2px 2px #ffffff;
   --app-shadow-glass: 0 16px 40px -6px rgba(100, 116, 139, 0.12), inset 0 2px 2px #ffffff;
 
-  /* 终端 & 调试板 */
-  --app-log-bg: #0f172a;
-  --app-log-text: #f1f5f9;
-  --app-log-border: rgba(255, 255, 255, 0.12);
+  /* 终端 & 调试板 · 天水碧墨井（日志弹窗高对比） */
+  --app-log-bg: #0b1619;
+  --app-log-text: #e8f3f2;
+  --app-log-border: rgba(93, 164, 177, 0.32);
+  --app-log-chrome: #152428;
+  --app-log-shell: #101c20;
+  --app-log-accent: #5da4b1;
 }
 
 html.dark {
@@ -84,9 +87,12 @@ html.dark {
   --app-shadow-lg: 0 20px 48px -8px rgba(0, 0, 0, 0.6);
   --app-shadow-glass: 0 16px 40px -6px rgba(0, 0, 0, 0.5);
 
-  --app-log-bg: #080c14;
-  --app-log-text: #f1f5f9;
-  --app-log-border: rgba(255, 255, 255, 0.08);
+  --app-log-bg: #0b1619;
+  --app-log-text: #e8f3f2;
+  --app-log-border: rgba(93, 164, 177, 0.32);
+  --app-log-chrome: #152428;
+  --app-log-shell: #101c20;
+  --app-log-accent: #5da4b1;
 }
 
 * {
@@ -351,10 +357,27 @@ html.dark ::-webkit-scrollbar-thumb:hover {
 }
 
 /* ═════════════════════════════════════════════════════════════════════
-   macOS / VisionOS 3D 实体水晶日志终端座舱 (Crystal Glass Terminal Dialog)
-   与授权界面 oa-custom-dialog 玻璃拟态深度对齐：纯净瓷白水晶托盘 + 微晶冰釉座舱 + 3D 实体按键
+   日志弹窗 · 对齐授权窗口 (oa-custom-dialog)
+   浅色液态玻璃外壳 + 天水碧卡片槽；日志正文深字浅底，错误行带色块
    ═════════════════════════════════════════════════════════════════════ */
+
+.el-overlay:has(.macos-terminal-dialog) {
+  background: rgba(15, 23, 42, 0.42) !important;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
 .macos-terminal-dialog.el-dialog {
+  --term-text: #1a3c42;
+  --term-muted: #6b7c80;
+  --term-accent: #5da4b1;
+  --term-accent-2: #0284c7;
+  --term-err: #a1362e;
+  --term-ok: #1e4f57;
+  --term-warn: #946317;
+  --term-info: #0369a1;
+  --term-well: #f7fbfb;
+  width: min(880px, calc(100vw - 40px)) !important;
   background: linear-gradient(135deg, rgba(255, 255, 255, 0.94) 0%, rgba(255, 255, 255, 0.78) 50%, rgba(248, 250, 252, 0.9) 100%) !important;
   backdrop-filter: blur(32px) saturate(210%) !important;
   -webkit-backdrop-filter: blur(32px) saturate(210%) !important;
@@ -369,17 +392,14 @@ html.dark ::-webkit-scrollbar-thumb:hover {
 }
 
 html.dark .macos-terminal-dialog.el-dialog {
-  background: rgba(15, 23, 42, 0.94) !important;
-  border-color: rgba(255, 255, 255, 0.14) !important;
-  border-top-color: rgba(255, 255, 255, 0.25) !important;
-  box-shadow:
-    0 30px 70px -15px rgba(0, 0, 0, 0.6),
-    inset 0 1.5px 2px rgba(255, 255, 255, 0.2) !important;
+  background: linear-gradient(135deg, rgba(30, 41, 59, 0.94) 0%, rgba(15, 23, 42, 0.88) 100%) !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
+  border-top-color: rgba(255, 255, 255, 0.22) !important;
+  box-shadow: 0 30px 70px -15px rgba(0, 0, 0, 0.55), inset 0 1.5px 2px rgba(255, 255, 255, 0.12) !important;
 }
 
-/* 弹窗头部：透明微晶融入外壳，与授权界面头部完全统一 */
 .macos-terminal-dialog .el-dialog__header {
-  padding: 16px 22px 14px !important;
+  padding: 14px 20px 12px !important;
   margin-right: 0 !important;
   background: rgba(255, 255, 255, 0.5) !important;
   border-bottom: 1.5px solid rgba(255, 255, 255, 0.85) !important;
@@ -389,323 +409,359 @@ html.dark .macos-terminal-dialog.el-dialog {
   align-items: center !important;
 }
 html.dark .macos-terminal-dialog .el-dialog__header {
-  background: rgba(30, 41, 59, 0.6) !important;
+  background: rgba(30, 41, 59, 0.55) !important;
   border-bottom: 1px solid rgba(255, 255, 255, 0.08) !important;
 }
 
-/* 弹窗主体容器 */
+.macos-terminal-dialog .el-dialog__headerbtn {
+  top: 14px !important;
+  right: 14px !important;
+}
+.macos-terminal-dialog .el-dialog__headerbtn .el-dialog__close {
+  color: #64748b !important;
+}
+.macos-terminal-dialog .el-dialog__headerbtn .el-dialog__close:hover {
+  color: #0284c7 !important;
+}
+
 .macos-terminal-dialog .el-dialog__body {
-  padding: 16px 22px !important;
+  padding: 14px 18px !important;
   background: transparent !important;
 }
 
-/* 弹窗底栏：晶质毛玻璃融合，与授权界面底栏完全统一 */
 .macos-terminal-dialog .el-dialog__footer {
-  padding: 14px 22px !important;
+  padding: 12px 18px !important;
   background: rgba(255, 255, 255, 0.55) !important;
   border-top: 1.5px solid rgba(255, 255, 255, 0.85) !important;
   backdrop-filter: blur(16px) !important;
   -webkit-backdrop-filter: blur(16px) !important;
 }
 html.dark .macos-terminal-dialog .el-dialog__footer {
-  background: rgba(30, 41, 59, 0.6) !important;
+  background: rgba(30, 41, 59, 0.55) !important;
   border-top: 1px solid rgba(255, 255, 255, 0.08) !important;
 }
 
-/* ──────────────── 1. 顶部 Header 3D 水晶组件 ──────────────── */
-.macos-terminal-dialog .modal-header {
+/* ──────────────── Header：对齐授权窗口 oa-header ──────────────── */
+.macos-terminal-dialog .modal-header,
+.macos-terminal-dialog .oa-header {
   display: flex;
   align-items: center;
-  gap: 14px;
+  justify-content: space-between;
+  gap: 12px;
   width: 100%;
+  padding-right: 28px;
+  min-width: 0;
 }
 
-/* macOS 3D 水晶露珠交通灯 */
 .macos-terminal-dialog .window-dots {
+  display: none !important;
+}
+
+.macos-terminal-dialog .dot {
+  display: none;
+}
+
+.macos-terminal-dialog .modal-title-info,
+.macos-terminal-dialog .oa-header-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.macos-terminal-dialog:not(.macos-cred-dialog) .modal-title-info::before {
+  content: "LOG";
   display: inline-flex;
   align-items: center;
-  gap: 7px;
-  padding: 3.5px 8px;
+  background: linear-gradient(180deg, #38bdf8 0%, #0284c7 100%);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 800;
+  padding: 2.5px 8px;
   border-radius: 9999px;
-  background: rgba(255, 255, 255, 0.65);
-  border: 1.2px solid rgba(255, 255, 255, 0.95);
-  border-top: 1.5px solid #ffffff;
-  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.04), inset 0 1px 1.5px #ffffff;
-}
-html.dark .macos-terminal-dialog .window-dots {
-  background: rgba(30, 41, 59, 0.7);
-  border-color: rgba(255, 255, 255, 0.12);
-  box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.15);
-}
-.macos-terminal-dialog .dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  position: relative;
-  box-shadow:
-    inset 0 1.2px 1.5px rgba(255, 255, 255, 0.9),
-    inset 0 -1.2px 1.8px rgba(0, 0, 0, 0.25),
-    0 1px 3px rgba(0, 0, 0, 0.12);
-}
-.macos-terminal-dialog .dot.red {
-  background: radial-gradient(circle at 35% 30%, #ff857d 0%, #ff5f56 70%, #d83a30 100%);
-}
-.macos-terminal-dialog .dot.yellow {
-  background: radial-gradient(circle at 35% 30%, #ffe07a 0%, #ffbd2e 70%, #d99b1a 100%);
-}
-.macos-terminal-dialog .dot.green {
-  background: radial-gradient(circle at 35% 30%, #68f07e 0%, #27c93f 70%, #1da331 100%);
-}
-
-.macos-terminal-dialog .modal-title-info {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex: 1;
+  letter-spacing: 0.5px;
+  box-shadow: 0 2px 6px rgba(2, 132, 199, 0.35), inset 0 1px 1px rgba(255, 255, 255, 0.8);
+  flex-shrink: 0;
 }
 
 .macos-terminal-dialog .modal-email {
-  font-size: 13px;
-  font-weight: 700;
-  color: #0f172a;
-  font-family: var(--el-font-family-monospace, monospace);
+  font-size: 14px;
+  font-weight: 800;
+  color: #0f172a !important;
+  font-family: "Cascadia Mono", "JetBrains Mono", "SF Mono", Consolas, monospace;
   letter-spacing: -0.01em;
-  padding: 3px 10px;
-  border-radius: 6px;
-  background: rgba(255, 255, 255, 0.6);
-  border: 1px solid rgba(226, 232, 240, 0.85);
-  transition: all 0.15s ease;
+  padding: 0;
+  border-radius: 0;
+  background: transparent !important;
+  border: none !important;
+  max-width: min(100%, 480px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   cursor: pointer;
+  transition: color 0.15s ease;
 }
 .macos-terminal-dialog .modal-email:hover {
-  color: #0284c7;
-  background: rgba(224, 242, 254, 0.7);
-  border-color: rgba(56, 189, 248, 0.6);
+  color: #0284c7 !important;
+  background: transparent !important;
+  border: none !important;
 }
 html.dark .macos-terminal-dialog .modal-email {
-  color: #f8fafc;
-  background: rgba(30, 41, 59, 0.6);
-  border-color: rgba(255, 255, 255, 0.1);
+  color: #f8fafc !important;
+  background: transparent !important;
+  border: none !important;
 }
 
-/* 3D 微晶标题标签 (对齐授权界面清透胶囊质感) */
-.macos-terminal-dialog .modal-run-tag {
+.macos-terminal-dialog .modal-run-tag,
+.macos-terminal-dialog .terminal-badge {
   display: inline-flex !important;
   align-items: center !important;
-  height: 24px !important;
-  padding: 0 12px !important;
+  height: 22px !important;
+  padding: 0 9px !important;
   border-radius: 9999px !important;
   font-size: 11px !important;
   font-weight: 700 !important;
-  background: linear-gradient(180deg, rgba(236, 253, 245, 0.95) 0%, rgba(209, 250, 229, 0.85) 100%) !important;
-  border: 1.2px solid rgba(255, 255, 255, 0.95) !important;
-  border-top: 1.6px solid #ffffff !important;
-  border-bottom: 1.2px solid rgba(167, 243, 208, 0.9) !important;
-  color: #065f46 !important;
-  box-shadow: 0 2px 6px rgba(16, 185, 129, 0.18), inset 0 1.2px 1.5px #ffffff !important;
+  letter-spacing: 0;
+  background: rgba(2, 132, 199, 0.12) !important;
+  border: 1px solid rgba(2, 132, 199, 0.28) !important;
+  color: #0369a1 !important;
+  box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.8) !important;
   position: relative;
   overflow: hidden;
 }
 .macos-terminal-dialog .modal-run-tag::before {
-  content: '';
-  position: absolute;
-  top: 1px;
-  left: 10%;
-  right: 10%;
-  height: 40%;
-  border-radius: 9999px 9999px 40% 40%;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.85) 0%, rgba(255, 255, 255, 0.2) 75%, transparent 100%);
-  pointer-events: none;
+  display: none;
 }
-html.dark .macos-terminal-dialog .modal-run-tag {
-  background: linear-gradient(180deg, rgba(6, 95, 70, 0.7) 0%, rgba(4, 120, 87, 0.5) 100%) !important;
-  color: #a7f3d0 !important;
-  border-color: rgba(52, 211, 153, 0.4) !important;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3) !important;
+html.dark .macos-terminal-dialog .modal-run-tag,
+html.dark .macos-terminal-dialog .terminal-badge {
+  background: rgba(56, 189, 248, 0.16) !important;
+  color: #7dd3fc !important;
+  border-color: rgba(56, 189, 248, 0.35) !important;
+  box-shadow: none !important;
 }
 
-/* ──────────────── 2. 浅色清透微晶冰釉座舱 (与授权界面卡片/表格风格 100% 统一) ──────────────── */
+.macos-terminal-dialog .running-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  padding: 0 9px;
+  border-radius: 9999px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #d97706;
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.32);
+}
+.macos-terminal-dialog .pulse-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #f59e0b;
+  box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.45);
+  animation: term-pulse 1.4s cubic-bezier(0.32, 0.72, 0, 1) infinite;
+}
+@keyframes term-pulse {
+  0% { transform: scale(0.85); box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.45); }
+  70% { transform: scale(1); box-shadow: 0 0 0 6px rgba(245, 158, 11, 0); }
+  100% { transform: scale(0.85); box-shadow: 0 0 0 0 rgba(245, 158, 11, 0); }
+}
+
+/* ──────────────── 日志卡片槽：对齐授权窗口 oa-config-card / oa-mission-cell ──────────────── */
 .macos-terminal-dialog .modal-terminal-wrap {
+  position: relative;
   border-radius: 14px;
   overflow: hidden;
   border: 1.5px solid rgba(255, 255, 255, 0.95);
   border-top: 2px solid #ffffff;
-  border-bottom: 1.5px solid rgba(203, 213, 225, 0.65);
-  background: rgba(255, 255, 255, 0.62) !important;
-  backdrop-filter: blur(24px) saturate(180%) !important;
-  -webkit-backdrop-filter: blur(24px) saturate(180%) !important;
-  box-shadow:
-    inset 0 2px 5px rgba(15, 23, 42, 0.04),
-    inset 0 -1.5px 2px #ffffff,
-    0 8px 24px -4px rgba(15, 23, 42, 0.05);
-  position: relative;
+  background: rgba(255, 255, 255, 0.86) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.05), inset 0 1.5px 1px #ffffff;
 }
 html.dark .macos-terminal-dialog .modal-terminal-wrap {
-  background: rgba(15, 23, 42, 0.68) !important;
-  border-color: rgba(255, 255, 255, 0.12);
-  border-top-color: rgba(255, 255, 255, 0.22);
-  box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.5);
+  background: rgba(15, 23, 42, 0.72) !important;
+  border-color: rgba(255, 255, 255, 0.1);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }
 
 .macos-terminal-dialog .modal-terminal-body {
-  height: 390px;
-  background: transparent !important;
-  padding: 16px 20px;
+  height: min(58vh, 560px);
+  min-height: 320px;
+  background: #f7fbfb !important;
+  padding: 12px 14px 16px;
   overflow-y: auto;
-  font-family: "JetBrains Mono", "SF Mono", Consolas, "Liberation Mono", Menlo, monospace !important;
-  font-size: 12.5px;
-  line-height: 1.8;
-  color: #334155;
-  word-break: break-all;
+  font-family: "Cascadia Mono", "JetBrains Mono", "SF Mono", Consolas, "Liberation Mono", Menlo, monospace !important;
+  font-size: 13px;
+  line-height: 1.7;
+  color: #1a3c42 !important;
+  font-weight: 500;
+  word-break: break-word;
+  overflow-wrap: anywhere;
   white-space: pre-wrap;
+  tab-size: 2;
 }
 html.dark .macos-terminal-dialog .modal-terminal-body {
-  color: #cbd5e1;
+  background: rgba(8, 16, 22, 0.55) !important;
+  color: #e2e8f0 !important;
 }
 
-/* 日志行与高级色彩语义层级 */
 .macos-terminal-dialog .terminal-line {
-  padding: 2px 6px;
+  padding: 2px 8px 2px 10px;
   border-radius: 6px;
-  margin-bottom: 2px;
-  transition: all 0.12s ease;
+  margin: 0 0 2px;
   display: flex;
-  align-items: baseline;
-  gap: 8px;
+  align-items: flex-start;
+  gap: 10px;
   flex-wrap: wrap;
+  border-left: 3px solid transparent;
+  color: #1a3c42;
+  transition: background 0.12s ease;
 }
 .macos-terminal-dialog .terminal-line:hover {
   background: rgba(2, 132, 199, 0.06);
 }
+html.dark .macos-terminal-dialog .terminal-line {
+  color: #e2e8f0;
+}
 html.dark .macos-terminal-dialog .terminal-line:hover {
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(56, 189, 248, 0.1);
 }
 
-/* 时间戳：清澈蓝宝石墨色 */
 .macos-terminal-dialog .terminal-time {
-  color: #0284c7;
+  color: #0284c7 !important;
   font-weight: 700;
   font-size: 12px;
   flex-shrink: 0;
-  letter-spacing: 0.2px;
+  letter-spacing: 0.02em;
 }
 html.dark .macos-terminal-dialog .terminal-time {
-  color: #38bdf8;
+  color: #38bdf8 !important;
 }
 
 .macos-terminal-dialog .terminal-text {
   flex: 1;
   min-width: 0;
-  color: #334155;
+  color: inherit;
   font-weight: 500;
 }
-html.dark .macos-terminal-dialog .terminal-text {
-  color: #cbd5e1;
-}
 
-/* 语义状态高亮 */
 .macos-terminal-dialog .terminal-line.log-hit,
-.macos-terminal-dialog .terminal-line.log-hit .terminal-text {
-  color: #059669 !important;
-  font-weight: 600;
+.macos-terminal-dialog .terminal-line.log-hit .terminal-text,
+.macos-terminal-dialog .terminal-line.line-ok,
+.macos-terminal-dialog .terminal-line.log-success {
+  color: #1e4f57 !important;
+  font-weight: 650;
+}
+.macos-terminal-dialog .terminal-line.log-hit,
+.macos-terminal-dialog .terminal-line.line-ok,
+.macos-terminal-dialog .terminal-line.log-success {
+  background: rgba(93, 164, 177, 0.14);
+  border-left-color: #5da4b1;
 }
 html.dark .macos-terminal-dialog .terminal-line.log-hit,
-html.dark .macos-terminal-dialog .terminal-line.log-hit .terminal-text {
-  color: #34d399 !important;
-  text-shadow: 0 0 10px rgba(52, 211, 153, 0.35);
+html.dark .macos-terminal-dialog .terminal-line.log-hit .terminal-text,
+html.dark .macos-terminal-dialog .terminal-line.line-ok,
+html.dark .macos-terminal-dialog .terminal-line.log-success {
+  color: #5eead4 !important;
 }
 
 .macos-terminal-dialog .terminal-line.log-err,
-.macos-terminal-dialog .terminal-line.log-err .terminal-text {
-  color: #dc2626 !important;
-  font-weight: 600;
+.macos-terminal-dialog .terminal-line.log-err .terminal-text,
+.macos-terminal-dialog .terminal-line.line-err,
+.macos-terminal-dialog .terminal-line.log-error {
+  color: #a1362e !important;
+  font-weight: 650;
+}
+.macos-terminal-dialog .terminal-line.log-err,
+.macos-terminal-dialog .terminal-line.line-err,
+.macos-terminal-dialog .terminal-line.log-error {
+  background: rgba(199, 86, 77, 0.14);
+  border-left-color: #c7564d;
 }
 html.dark .macos-terminal-dialog .terminal-line.log-err,
-html.dark .macos-terminal-dialog .terminal-line.log-err .terminal-text {
-  color: #fb7185 !important;
-  text-shadow: 0 0 10px rgba(251, 113, 133, 0.35);
+html.dark .macos-terminal-dialog .terminal-line.log-err .terminal-text,
+html.dark .macos-terminal-dialog .terminal-line.line-err,
+html.dark .macos-terminal-dialog .terminal-line.log-error {
+  color: #fca5a5 !important;
 }
 
 .macos-terminal-dialog .terminal-line.log-warn,
-.macos-terminal-dialog .terminal-line.log-warn .terminal-text {
-  color: #d97706 !important;
-  font-weight: 600;
+.macos-terminal-dialog .terminal-line.log-warn .terminal-text,
+.macos-terminal-dialog .terminal-line.line-warn,
+.macos-terminal-dialog .terminal-line.log-miss,
+.macos-terminal-dialog .terminal-line.log-otp {
+  color: #946317 !important;
+  font-weight: 650;
+}
+.macos-terminal-dialog .terminal-line.log-warn,
+.macos-terminal-dialog .terminal-line.line-warn,
+.macos-terminal-dialog .terminal-line.log-miss,
+.macos-terminal-dialog .terminal-line.log-otp {
+  background: rgba(212, 148, 50, 0.14);
+  border-left-color: #d49432;
 }
 html.dark .macos-terminal-dialog .terminal-line.log-warn,
-html.dark .macos-terminal-dialog .terminal-line.log-warn .terminal-text {
-  color: #fbbf24 !important;
+html.dark .macos-terminal-dialog .terminal-line.log-warn .terminal-text,
+html.dark .macos-terminal-dialog .terminal-line.line-warn,
+html.dark .macos-terminal-dialog .terminal-line.log-miss,
+html.dark .macos-terminal-dialog .terminal-line.log-otp {
+  color: #fcd34d !important;
 }
 
 .macos-terminal-dialog .terminal-line.log-step,
-.macos-terminal-dialog .terminal-line.log-step .terminal-text {
-  color: #0284c7 !important;
-  font-weight: 600;
-}
-html.dark .macos-terminal-dialog .terminal-line.log-step,
-html.dark .macos-terminal-dialog .terminal-line.log-step .terminal-text {
-  color: #67e8f9 !important;
+.macos-terminal-dialog .terminal-line.log-step .terminal-text,
+.macos-terminal-dialog .terminal-line.line-info,
+.macos-terminal-dialog .terminal-line.log-phase,
+.macos-terminal-dialog .terminal-line.log-auth {
+  color: #0369a1 !important;
+  font-weight: 650;
 }
 
 .macos-terminal-dialog .terminal-line.log-net,
-.macos-terminal-dialog .terminal-line.log-net .terminal-text {
-  color: #0891b2 !important;
-  font-weight: 500;
-}
-html.dark .macos-terminal-dialog .terminal-line.log-net,
-html.dark .macos-terminal-dialog .terminal-line.log-net .terminal-text {
-  color: #a5b4fc !important;
-}
-
+.macos-terminal-dialog .terminal-line.log-net .terminal-text,
 .macos-terminal-dialog .terminal-line.log-task,
 .macos-terminal-dialog .terminal-line.log-task .terminal-text {
-  color: #0369a1 !important;
-  font-weight: 500;
-}
-html.dark .macos-terminal-dialog .terminal-line.log-task,
-html.dark .macos-terminal-dialog .terminal-line.log-task .terminal-text {
-  color: #7dd3fc !important;
+  color: #0e7490 !important;
+  font-weight: 550;
 }
 
-.macos-terminal-dialog .terminal-line.log-miss,
-.macos-terminal-dialog .terminal-line.log-miss .terminal-text {
-  color: #64748b !important;
+.macos-terminal-dialog .terminal-line.log-normal {
+  color: #657e82 !important;
 }
 
 .macos-terminal-dialog .terminal-empty {
-  color: #94a3b8;
+  color: #6b7c80;
   font-style: italic;
-  padding: 50px 0;
+  padding: 56px 16px;
   text-align: center;
   font-size: 13px;
 }
 
-/* 终端内专属纤细透明水晶滚动条 */
 .macos-terminal-dialog .modal-terminal-body::-webkit-scrollbar {
-  width: 5px;
+  width: 8px;
 }
 .macos-terminal-dialog .modal-terminal-body::-webkit-scrollbar-track {
   background: transparent;
 }
 .macos-terminal-dialog .modal-terminal-body::-webkit-scrollbar-thumb {
-  background: rgba(148, 163, 184, 0.35);
+  background: rgba(93, 164, 177, 0.35);
   border-radius: 9999px;
 }
 .macos-terminal-dialog .modal-terminal-body::-webkit-scrollbar-thumb:hover {
-  background: rgba(100, 116, 139, 0.6);
-}
-html.dark .macos-terminal-dialog .modal-terminal-body::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.22);
+  background: rgba(2, 132, 199, 0.45);
 }
 
-/* 悬浮回到底部小药丸按钮 */
 .terminal-scroll-bottom-pill {
   position: absolute;
-  bottom: 12px;
+  bottom: 14px;
   right: 18px;
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  height: 27px;
+  height: 28px;
   padding: 0 12px;
   border-radius: 9999px;
   background: rgba(255, 255, 255, 0.94);
@@ -713,12 +769,12 @@ html.dark .macos-terminal-dialog .modal-terminal-body::-webkit-scrollbar-thumb {
   border-top: 1.5px solid #ffffff;
   color: #0284c7;
   font-size: 11.5px;
-  font-weight: 600;
+  font-weight: 700;
   cursor: pointer;
-  box-shadow: 0 4px 12px rgba(2, 132, 199, 0.2), inset 0 1px 1px #ffffff;
+  box-shadow: 0 4px 12px rgba(2, 132, 199, 0.18), inset 0 1px 1px #ffffff;
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
-  transition: all 0.18s ease;
+  transition: transform 0.18s cubic-bezier(0.16, 1, 0.3, 1), background 0.18s ease;
   z-index: 5;
 }
 .terminal-scroll-bottom-pill:hover {
@@ -726,123 +782,131 @@ html.dark .macos-terminal-dialog .modal-terminal-body::-webkit-scrollbar-thumb {
   color: #0369a1;
   border-color: #0284c7;
   transform: translateY(-1px);
-  box-shadow: 0 6px 16px rgba(2, 132, 199, 0.3), inset 0 1.5px 1.5px #ffffff;
 }
 html.dark .terminal-scroll-bottom-pill {
   background: rgba(30, 41, 59, 0.92);
   border-color: rgba(56, 189, 248, 0.4);
   color: #38bdf8;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
 }
 
-/* ──────────────── 3. 底部 Footer 3D 实体水晶按键系统 ──────────────── */
+/* ──────────────── Footer：对齐授权窗口 oa-footer-btn ──────────────── */
 .macos-terminal-dialog .modal-footer {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
   width: 100%;
+  flex-wrap: wrap;
 }
 
-/* 左侧统计药丸胶囊 */
 .macos-terminal-dialog .log-count-tip {
   display: inline-flex;
   align-items: center;
-  height: 28px;
-  padding: 0 12px;
+  height: 22px;
+  padding: 0 9px;
   border-radius: 9999px;
-  background: rgba(255, 255, 255, 0.75);
-  border: 1.2px solid rgba(226, 232, 240, 0.9);
-  border-top: 1.5px solid #ffffff;
-  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.03), inset 0 1px 1px #ffffff;
-  font-size: 12px;
-  font-weight: 600;
-  color: #475569;
-  font-family: var(--el-font-family-monospace, monospace);
+  background: #edf6f8;
+  border: 1px solid rgba(93, 164, 177, 0.28);
+  box-shadow: inset 0 1px 1px #ffffff;
+  font-size: 11px;
+  font-weight: 700;
+  color: #21474e;
+  font-family: "Cascadia Mono", "JetBrains Mono", "SF Mono", Consolas, monospace;
 }
 html.dark .macos-terminal-dialog .log-count-tip {
-  background: rgba(30, 41, 59, 0.7);
-  border-color: rgba(255, 255, 255, 0.12);
+  background: rgba(56, 189, 248, 0.12);
+  border-color: rgba(56, 189, 248, 0.28);
   color: #94a3b8;
 }
 
 .macos-terminal-dialog .modal-footer-btns {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
 }
 
-/* 复制全部日志：3D 实体微晶白玉药丸按钮 (对齐素材 Text / Upgrade plan) */
-.macos-terminal-dialog .modal-footer-btns .el-button:not(.el-button--primary) {
-  height: 31px !important;
+.macos-terminal-dialog .modal-footer-btns .el-button:not(.el-button--primary),
+.macos-terminal-dialog .modal-footer-btns .token-footer-btn:not(.btn-primary) {
+  height: 32px !important;
   padding: 0 14px !important;
   border-radius: 9999px !important;
   font-size: 12px !important;
-  font-weight: 600 !important;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(248, 250, 252, 0.9) 100%) !important;
-  color: #1e293b !important;
-  border: 1.2px solid rgba(255, 255, 255, 0.98) !important;
-  border-top: 1.8px solid #ffffff !important;
-  border-bottom: 1.5px solid rgba(203, 213, 225, 0.7) !important;
-  box-shadow: 0 3px 8px -1px rgba(15, 23, 42, 0.05), inset 0 1.5px 1.5px #ffffff !important;
+  font-weight: 800 !important;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.95) 0%, rgba(241, 245, 249, 0.7) 100%) !important;
+  color: #475569 !important;
+  border: 1.5px solid rgba(255, 255, 255, 0.95) !important;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.04), inset 0 1.5px 1px #ffffff !important;
   position: relative;
   overflow: hidden;
-  transition: all 0.18s cubic-bezier(0.4, 0, 0.2, 1) !important;
+  transition: transform 0.18s cubic-bezier(0.16, 1, 0.3, 1), color 0.16s ease, border-color 0.16s ease !important;
 }
 .macos-terminal-dialog .modal-footer-btns .el-button:not(.el-button--primary)::before {
-  content: '';
-  position: absolute;
-  top: 1px;
-  left: 8%;
-  right: 8%;
-  height: 42%;
-  border-radius: 9999px 9999px 40% 40%;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.95) 0%, rgba(255, 255, 255, 0.2) 75%, transparent 100%);
-  pointer-events: none;
+  display: none;
 }
-.macos-terminal-dialog .modal-footer-btns .el-button:not(.el-button--primary):hover {
+.macos-terminal-dialog .modal-footer-btns .el-button:not(.el-button--primary):hover,
+.macos-terminal-dialog .modal-footer-btns .token-footer-btn:not(.btn-primary):hover {
   background: #ffffff !important;
   color: #0284c7 !important;
-  border-color: rgba(56, 189, 248, 0.65) !important;
-  border-top-color: #ffffff !important;
+  border-color: #0284c7 !important;
   transform: translateY(-1px) !important;
-  box-shadow: 0 6px 16px rgba(2, 132, 199, 0.2), inset 0 1.5px 1.5px #ffffff !important;
+  box-shadow: 0 6px 14px rgba(2, 132, 199, 0.16) !important;
 }
 
-/* 关闭按钮：3D 冰海蓝宝琉璃药丸按钮 (对齐素材 Create workspace) */
-.macos-terminal-dialog .modal-footer-btns .el-button--primary {
-  height: 31px !important;
-  padding: 0 18px !important;
+.macos-terminal-dialog .modal-footer-btns .el-button--primary,
+.macos-terminal-dialog .modal-footer-btns .token-footer-btn.btn-primary {
+  height: 32px !important;
+  padding: 0 16px !important;
   border-radius: 9999px !important;
   font-size: 12px !important;
-  font-weight: 600 !important;
-  background: linear-gradient(180deg, rgba(240, 249, 255, 0.96) 0%, rgba(224, 242, 254, 0.9) 50%, rgba(186, 230, 253, 0.8) 100%) !important;
-  border: 1.2px solid rgba(255, 255, 255, 0.98) !important;
-  border-top: 1.8px solid #ffffff !important;
-  border-bottom: 1.5px solid rgba(186, 230, 253, 0.9) !important;
-  color: #0369a1 !important;
+  font-weight: 800 !important;
+  background: linear-gradient(180deg, #38bdf8 0%, #0284c7 100%) !important;
+  border: 1.8px solid rgba(255, 255, 255, 0.95) !important;
+  color: #ffffff !important;
   box-shadow:
-    0 3px 10px -1px rgba(2, 132, 199, 0.28),
-    0 1px 3px rgba(15, 23, 42, 0.03),
-    inset 0 1.5px 1.5px #ffffff,
-    inset 0 -1.2px 1.8px rgba(2, 132, 199, 0.12) !important;
+    0 10px 24px -2px rgba(2, 132, 199, 0.48),
+    inset 0 2px 2px rgba(255, 255, 255, 0.9),
+    inset 0 -2px 3px rgba(0, 0, 0, 0.2) !important;
   position: relative;
   overflow: hidden;
-  transition: all 0.18s cubic-bezier(0.4, 0, 0.2, 1) !important;
+  transition: transform 0.18s cubic-bezier(0.16, 1, 0.3, 1) !important;
 }
 .macos-terminal-dialog .modal-footer-btns .el-button--primary::before {
-  content: '';
-  position: absolute;
-  top: 1px;
-  left: 8%;
-  right: 8%;
-  height: 42%;
-  border-radius: 9999px 9999px 40% 40%;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.95) 0%, rgba(255, 255, 255, 0.25) 75%, transparent 100%);
-  pointer-events: none;
+  display: none;
 }
-.macos-terminal-dialog .modal-footer-btns .el-button--primary:hover {
-  background: linear-gradient(180deg, rgba(240, 249, 255, 1) 0%, rgba(224, 242, 254, 0.96) 100%) !important;
-  transform: translateY(-1px) !important;
-  box-shadow: 0 6px 16px rgba(2, 132, 199, 0.42), inset 0 1.8px 1.8px #ffffff !important;
+.macos-terminal-dialog .modal-footer-btns .el-button--primary:hover,
+.macos-terminal-dialog .modal-footer-btns .token-footer-btn.btn-primary:hover {
+  background: linear-gradient(180deg, #38bdf8 0%, #0284c7 100%) !important;
+  border-color: rgba(255, 255, 255, 0.95) !important;
+  color: #ffffff !important;
+  transform: translateY(-2px) scale(1.02) !important;
+  box-shadow: 0 14px 30px -2px rgba(2, 132, 199, 0.6), inset 0 2px 2px rgba(255, 255, 255, 0.95) !important;
 }
 
+.macos-terminal-dialog .el-loading-mask {
+  background: rgba(247, 251, 251, 0.72) !important;
+}
+.macos-terminal-dialog .el-tag {
+  --el-tag-bg-color: rgba(2, 132, 199, 0.12);
+  --el-tag-border-color: rgba(2, 132, 199, 0.28);
+  --el-tag-text-color: #0369a1;
+}
+
+@media (max-width: 768px) {
+  .macos-terminal-dialog.el-dialog {
+    width: calc(100vw - 16px) !important;
+    margin: 8px auto !important;
+    border-radius: 16px !important;
+  }
+  .macos-terminal-dialog .modal-terminal-body {
+    height: min(54vh, 480px);
+    min-height: 220px;
+    font-size: 12.5px;
+    padding: 10px 12px;
+  }
+  .macos-terminal-dialog .modal-header {
+    padding-right: 24px;
+  }
+  .macos-terminal-dialog .modal-email {
+    max-width: 100%;
+  }
+}

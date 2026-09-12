@@ -607,6 +607,18 @@ async function handleViewLog(email) {
   }
 }
 
+function extractLogClass(line) {
+  if (!line) return ''
+  const t = String(line).toLowerCase()
+  if (
+    t.includes('traceback') || t.includes('exception') || t.includes('error') ||
+    t.includes('失败') || t.includes('fail') || t.includes('curl:') || t.includes('异常')
+  ) return 'log-err'
+  if (t.includes('成功') || t.includes('完成') || t.includes('ok')) return 'log-hit'
+  if (t.includes('warn') || t.includes('警告') || t.includes('timeout') || t.includes('超时')) return 'log-warn'
+  return ''
+}
+
 // ── 复制成功提炼结果 (支持携带邮箱或仅纯链接) ──
 function handleCopySuccessLinks(mode = 'email_link') {
   const items = taskItems.value.filter((i) => i.status === 'success' && i.link_url)
@@ -1144,25 +1156,48 @@ onUnmounted(() => {
     <!-- 单账号日志弹窗 -->
     <el-dialog
       v-model="logVisible"
-      :title="`提炼执行日志 · ${logEmail}`"
-      width="640px"
+      width="820px"
+      top="7vh"
+      class="macos-terminal-dialog"
       append-to-body
+      :close-on-click-modal="false"
     >
-      <div v-loading="logLoading" class="log-container mono">
-        <template v-if="logLines && logLines.length">
-          <div v-for="(line, idx) in logLines" :key="idx" class="log-line">
-            {{ line }}
+      <template #header>
+        <div class="modal-header">
+          <div class="window-dots">
+            <span class="dot red"></span>
+            <span class="dot yellow"></span>
+            <span class="dot green"></span>
           </div>
-        </template>
-        <div v-else class="log-empty">
-          暂无实时日志记录
+          <div class="modal-title-info">
+            <span class="modal-email">{{ logEmail }}</span>
+            <span class="modal-run-tag">提炼执行日志</span>
+          </div>
+        </div>
+      </template>
+      <div class="modal-terminal-wrap">
+        <div v-loading="logLoading" class="modal-terminal-body">
+          <div
+            v-for="(line, idx) in logLines"
+            :key="idx"
+            class="terminal-line"
+            :class="extractLogClass(line)"
+          >{{ line }}</div>
+          <div v-if="!logLines.length" class="terminal-empty">
+            {{ logLoading ? '正在加载日志...' : '暂无实时日志记录' }}
+          </div>
         </div>
       </div>
       <template #footer>
-        <el-button size="small" @click="logVisible = false">关闭</el-button>
-        <el-button size="small" type="primary" :icon="CopyDocument" @click="copyText(logLines.join('\n'), '日志已复制')">
-          复制日志
-        </el-button>
+        <div class="modal-footer">
+          <span class="log-count-tip">共 {{ (logLines && logLines.length) || 0 }} 行日志</span>
+          <div class="modal-footer-btns">
+            <el-button size="small" :icon="CopyDocument" @click="copyText(logLines.join('\n'), '日志已复制')">
+              复制日志
+            </el-button>
+            <el-button size="small" type="primary" @click="logVisible = false">关闭</el-button>
+          </div>
+        </div>
       </template>
     </el-dialog>
 
@@ -1533,27 +1568,7 @@ onUnmounted(() => {
   flex-wrap: wrap;
 }
 
-.log-container {
-  background: #1e1e1e;
-  color: #d4d4d4;
-  padding: 10px;
-  border-radius: 6px;
-  max-height: 380px;
-  overflow-y: auto;
-  font-size: 12px;
-  line-height: 1.5;
-}
 
-.log-line {
-  white-space: pre-wrap;
-  word-break: break-all;
-}
-
-.log-empty {
-  text-align: center;
-  color: #888;
-  padding: 20px 0;
-}
 
 .mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;

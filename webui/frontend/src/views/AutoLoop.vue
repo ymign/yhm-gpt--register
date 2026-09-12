@@ -367,11 +367,15 @@ function scrollLogModalToBottom() {
 
 function getLogLineClass(line) {
   if (!line) return ''
-  const t = line.toLowerCase()
-  if (t.includes('error') || t.includes('失败') || t.includes('fail') || t.includes('exception')) return 'line-err'
-  if (t.includes('成功') || t.includes('完成') || t.includes('ok') || t.includes('2fa 绑定成功')) return 'line-ok'
-  if (t.includes('warn') || t.includes('警告') || t.includes('timeout')) return 'line-warn'
-  if (t.includes('[register]') || t.includes('phase=')) return 'line-info'
+  const t = String(line).toLowerCase()
+  if (
+    t.includes('traceback') || t.includes('exception') || t.includes('error') ||
+    t.includes('失败') || t.includes('fail') || t.includes('curl:') ||
+    t.includes('异常') || t.includes('closed') || t.includes('errno')
+  ) return 'log-err'
+  if (t.includes('成功') || t.includes('完成') || t.includes('ok') || t.includes('2fa 绑定成功')) return 'log-hit'
+  if (t.includes('warn') || t.includes('警告') || t.includes('timeout') || t.includes('超时')) return 'log-warn'
+  if (t.includes('[register]') || t.includes('phase=')) return 'log-step'
   return ''
 }
 
@@ -1057,9 +1061,10 @@ onUnmounted(() => {
     <!-- ──────────────── 单账号详细注册日志弹窗 (macOS Terminal) ──────────────── -->
     <el-dialog
       v-model="logModalVisible"
-      width="820px"
+      width="880px"
       top="6vh"
       class="macos-terminal-dialog"
+      append-to-body
       :close-on-click-modal="false"
       @closed="closeTaskLog"
     >
@@ -2365,84 +2370,6 @@ onUnmounted(() => {
   color: #0284c7;
   transform: translateY(-1px);
   box-shadow: 0 4px 10px rgba(2, 132, 199, 0.2);
-}
-
-/* ──────────── 终端弹窗 (深色液态水晶玻璃，对齐图片 33) ──────────── */
-.macos-terminal-dialog :deep(.el-dialog__body) {
-  padding: 0;
-}
-
-.modal-header {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.window-dots {
-  display: flex;
-  gap: 6px;
-}
-
-.window-dots .dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-}
-.dot.red { background: #ff5f56; }
-.dot.yellow { background: #ffbd2e; }
-.dot.green { background: #27c93f; }
-
-.modal-title-info {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.modal-email {
-  font-size: 13px;
-  font-weight: 700;
-  color: #0f172a;
-  font-family: var(--el-font-family-monospace, monospace);
-}
-
-.modal-terminal-wrap {
-  background: #090d16;
-  padding: 14px;
-}
-
-.modal-terminal-body {
-  height: 380px;
-  overflow-y: auto;
-  font-family: var(--el-font-family-monospace, monospace);
-  font-size: 11.5px;
-  line-height: 1.6;
-  color: #e2e8f0;
-}
-
-.terminal-line {
-  white-space: pre-wrap;
-  word-break: break-all;
-}
-
-.line-err { color: #f87171; }
-.line-ok { color: #34d399; }
-.line-warn { color: #fbbf24; }
-.line-info { color: #38bdf8; }
-
-.modal-footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.log-count-tip {
-  font-size: 11px;
-  color: var(--text-muted);
-}
-
-.modal-footer-btns {
-  display: flex;
-  gap: 8px;
 }
 
 /* 动画定义 */
