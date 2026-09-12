@@ -238,3 +238,5 @@ export const autoPause = () => http.post('/api/auto/pause')
 export const autoResume = () => http.post('/api/auto/resume')
 export const autoStop = () => http.post('/api/auto/stop')
 export const autoStatus = () => http.get('/api/auto/status')
+
+export const listWarmupProfiles = () => http.get('/api/warmup_profiles')

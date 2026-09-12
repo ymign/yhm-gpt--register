@@ -80,6 +80,14 @@ export function countryNameCn(code) {
   return c
 }
 
+export const WARMUP_PROFILE_OPTIONS = [
+  { id: 'chrome142_mac', label: 'Chrome 142 · macOS', hint: '2026-09-12 JP/BR 4/4 首发过 CF，注册默认' },
+  { id: 'chrome146_mac', label: 'Chrome 146 · macOS', hint: '4/4 但常首发 403，自动回退 142' },
+  { id: 'chrome142_win', label: 'Chrome 142 · Windows', hint: '2026-09-12 JP/BR 4/4 首发过 CF' },
+  { id: 'safari180_mac', label: 'Safari 18 · macOS', hint: '2026-09-12 JP/BR 4/4 首发过 CF' },
+  { id: 'firefox144_win', label: 'Firefox 144 · Windows', hint: '2026-09-12 JP/BR 4/4 首发过 CF' },
+]
+
 export const COUNTRY_OPTIONS = [
   { value: 'TH', label: '🇹🇭 泰国 (TH · 接码提链高爆推荐 ★★★★★)' },
   { value: 'US', label: '🇺🇸 美国 (US · 协议试用命中相对更高 ★★★★)' },
@@ -116,6 +124,7 @@ const defaults = {
   autoWantPassword: true,
   wantRefreshToken: false,
   autoWantRefreshToken: false,
+  warmupProfile: 'chrome142_mac',
 }
 
 // el-select 的 clearable 清空时把值写成 **undefined**（不是 ''），而 proxy 在三个
@@ -130,6 +139,7 @@ export const useFormStore = defineStore('form', () => {
   let saved = {}
   try { saved = JSON.parse(localStorage.getItem(KEY) || '{}') } catch (_) { saved = {} }
   const form = reactive({ ...defaults, ...saved })
+  if (!form.warmupProfile) form.warmupProfile = defaults.warmupProfile
 
   // clearable 清空后 proxy 会变成 undefined 并被持久化进 localStorage，
   // 刷新页面后依然是 undefined。这里watch 回填成 ''，保证存量数据也是干净的。

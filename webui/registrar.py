@@ -506,6 +506,10 @@ def _do_register(
 
         if target_country:
             env_overrides["TARGET_COUNTRY"] = target_country
+        warmup_profile = str(options.get("warmup_profile") or "").strip()
+        if warmup_profile:
+            env_overrides["WARMUP_PROFILE"] = warmup_profile
+            _run_log(run_id, f"[register] 预热套装: {warmup_profile}")
 
         if raw_proxy and target_country:
             routed = route_proxy_country(raw_proxy, target_country, new_proxy_session_id())

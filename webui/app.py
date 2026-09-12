@@ -118,6 +118,7 @@ class RegisterReq(BaseModel):
     allow_existing_login: bool = True
     want_password: bool = True  # 是否自动设置登录密码（默认开）
     want_2fa: bool = False
+    warmup_profile: Optional[str] = Field("", description="预热过 CF 套装 id，见 /api/warmup_profiles")
 
 
 # ──────────────────────── API ────────────────────────
@@ -504,6 +505,7 @@ def api_register(req: RegisterReq):
         "allow_existing_login": req.allow_existing_login,
         "want_2fa": req.want_2fa,
         "want_password": req.want_password,
+        "warmup_profile": (req.warmup_profile or "").strip(),
     }
     run_id = registrar.start_registration(account, options)
     logger.info(f"[run] {run_id} -> {account['email']} (mail_source={mail_source})")
@@ -3971,6 +3973,13 @@ class AutoLoopStartReq(BaseModel):
     circuit_break_threshold: int = 3  # 连续网络错误暂停阈值（0=关闭）
     want_password: bool = True   # 是否自动设置强登录密码（默认开）
     want_2fa: bool = False
+    warmup_profile: Optional[str] = Field("", description="预热过 CF 套装 id")
+
+
+@app.get("/api/warmup_profiles")
+def api_warmup_profiles():
+    from fingerprint import list_warmup_profiles
+    return {"ok": True, "items": list_warmup_profiles()}
 
 
 @app.post("/api/auto/start")

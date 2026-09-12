@@ -120,6 +120,60 @@ _CHROME_VERSIONS = [
 # 首发 chrome142，403 再换 146 / 136。列表必须至少 3 个，否则预热重试不会换 TLS。
 _CHROME_TLS_FALLBACKS = ["chrome142", "chrome146", "chrome136"]
 
+DEFAULT_WARMUP_PROFILE = "chrome142_mac"
+WARMUP_PROFILES: dict[str, dict] = {
+    "chrome142_mac": {
+        "id": "chrome142_mac",
+        "label": "Chrome 142 · macOS",
+        "hint": "实测过 Cloudflare 最稳，注册默认",
+        "family": "chrome",
+        "impersonate": "chrome142",
+        "browser_os": "macOS",
+        "fallbacks": ["chrome146", "chrome136"],
+        "tested": "2026-09-12 CliProxy JP/BR 4/4 首发即种 oai-did",
+    },
+    "chrome146_mac": {
+        "id": "chrome146_mac",
+        "label": "Chrome 146 · macOS",
+        "hint": "头和 TLS 对齐 146；首发常 403，会自动回退 142",
+        "family": "chrome",
+        "impersonate": "chrome146",
+        "browser_os": "macOS",
+        "fallbacks": ["chrome142", "chrome136"],
+        "tested": "2026-09-12 JP/BR 4/4，其中 3 次首发 403 后靠 chrome142 过",
+    },
+    "chrome142_win": {
+        "id": "chrome142_win",
+        "label": "Chrome 142 · Windows",
+        "hint": "Win 桌面 Chrome，试用画像备选",
+        "family": "chrome",
+        "impersonate": "chrome142",
+        "browser_os": "Windows",
+        "fallbacks": ["chrome146", "chrome136"],
+        "tested": "2026-09-12 CliProxy JP/BR 4/4 首发即种 oai-did",
+    },
+    "safari180_mac": {
+        "id": "safari180_mac",
+        "label": "Safari 18 · macOS",
+        "hint": "另一套 JA3，不发 Client Hints",
+        "family": "safari",
+        "impersonate": "safari180",
+        "browser_os": "macOS",
+        "fallbacks": ["chrome142", "firefox144"],
+        "tested": "2026-09-12 CliProxy JP/BR 4/4 首发即种 oai-did",
+    },
+    "firefox144_win": {
+        "id": "firefox144_win",
+        "label": "Firefox 144 · Windows",
+        "hint": "Firefox JA3 备选",
+        "family": "firefox",
+        "impersonate": "firefox144",
+        "browser_os": "Windows",
+        "fallbacks": ["chrome142", "safari180"],
+        "tested": "2026-09-12 CliProxy JP/BR 4/4 首发即种 oai-did",
+    },
+}
+
 _MAC_OS_UA_VERSION = "10_15_7"  # Chrome 桌面冻结 UA，与真实 Chrome 149 一致
 _MAC_CHROME_PLATFORM_VERSION = "15.7.0"
 _MAC_CHROME_ARCH = "arm"
@@ -817,6 +871,80 @@ def fingerprint_from_account(account_info: dict | None = None, *, country_code: 
     return generate_fingerprint(country_code=cc or None)
 
 
+def list_warmup_profiles() -> list[dict]:
+    """给注册页下拉用：id / 文案 / 实测说明。"""
+    order = [
+        "chrome142_mac",
+        "chrome146_mac",
+        "chrome142_win",
+        "safari180_mac",
+        "firefox144_win",
+    ]
+    out = []
+    for pid in order:
+        spec = WARMUP_PROFILES.get(pid)
+        if not spec:
+            continue
+        item = {
+            "id": spec["id"],
+            "label": spec["label"],
+            "hint": spec.get("hint") or "",
+            "tested": spec.get("tested") or "",
+            "is_default": pid == DEFAULT_WARMUP_PROFILE,
+        }
+        out.append(item)
+    return out
+
+
+def apply_warmup_profile(fp: dict | None, profile_id: str = "", *, country_code: str = "") -> dict:
+    """按注册页选的预热套装重写指纹（TLS + 头 + 回退列表），硬件/语言仍一号一套。"""
+    spec = WARMUP_PROFILES.get((profile_id or "").strip()) or WARMUP_PROFILES[DEFAULT_WARMUP_PROFILE]
+    r = random
+    family = spec.get("family") or "chrome"
+    imp = str(spec.get("impersonate") or "chrome142")
+    os_name = str(spec.get("browser_os") or "macOS")
+    cc = (country_code or (fp or {}).get("geo_country") or "").strip().upper()
+    fallbacks = [imp] + [x for x in (spec.get("fallbacks") or []) if x != imp]
+
+    if family == "safari":
+        out = _gen_mac_safari(r)
+        out["impersonate"] = imp
+        out["user_agent"] = ua_for_impersonate(imp, out.get("user_agent") or "")
+        out["browser_os"] = "macOS"
+    elif family == "firefox":
+        out = _gen_firefox(r)
+        out["impersonate"] = imp
+        out["user_agent"] = ua_for_impersonate(imp, out.get("user_agent") or "")
+        out["browser_os"] = "Windows"
+    else:
+        out = dict(fp or {})
+        if not out.get("user_agent"):
+            out = _gen_chrome(r)
+        chrome = next((c for c in _CHROME_VERSIONS if c["impersonate"] == imp), _CHROME_VERSIONS[0])
+        out["impersonate"] = imp
+        out["browser_type"] = "chrome"
+        out["browser_os"] = os_name
+        if os_name == "Windows":
+            out["user_agent"] = _chrome_user_agent(chrome["full_ver"], "Windows")
+            out.update(_chrome_client_hints(
+                chrome, platform="Windows", platform_version="10.0.22631", arch="x86",
+            ))
+        else:
+            out["user_agent"] = _chrome_user_agent(chrome["full_ver"], "macOS")
+            plat_ver = str(out.get("sec_ch_ua_platform_version") or _MAC_CHROME_PLATFORM_VERSION).strip('"')
+            arch = str(out.get("sec_ch_ua_arch") or _MAC_CHROME_ARCH).strip('"')
+            out.update(_chrome_client_hints(
+                chrome, platform="macOS", platform_version=plat_ver, arch=arch,
+            ))
+
+    out["fallback_impersonates"] = fallbacks
+    out["warmup_profile"] = spec["id"]
+    if cc:
+        out = apply_geo_to_fingerprint(out, cc)
+    _apply_hardware(out, r)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # impersonate → UA 映射（TLS 旋转用）
 # ---------------------------------------------------------------------------
@@ -831,6 +959,14 @@ for c in _CHROME_VERSIONS:
     _ALL_IMPERSONATES[c["impersonate"]] = {"type": "chrome", "data": c}
 for f in _FIREFOX_VERSIONS:
     _ALL_IMPERSONATES[f["impersonate"]] = {"type": "firefox", "data": f}
+
+# curl_cffi 名（safari180）和内部 safari18_0 对齐，预热套装才能换 TLS。
+_s18 = next((s for s in _SAFARI_VERSIONS if s["impersonate"] == "safari18_0"), None)
+if _s18:
+    _ALL_IMPERSONATES["safari180"] = {
+        "type": "mac_safari",
+        "data": {**_s18, "impersonate": "safari180"},
+    }
 
 
 def fingerprint_for_impersonate(impersonate: str, current_fp: dict) -> dict:

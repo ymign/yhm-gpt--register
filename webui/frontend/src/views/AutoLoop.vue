@@ -31,7 +31,7 @@ import {
   savePowSlots,
 } from '@/api/register'
 import { copyText, fmtTime } from '@/api/request'
-import { useFormStore, proxyText, COUNTRY_OPTIONS, formatCountry } from '@/stores/form'
+import { useFormStore, proxyText, COUNTRY_OPTIONS, WARMUP_PROFILE_OPTIONS, formatCountry } from '@/stores/form'
 import { useProxyStore } from '@/stores/proxy'
 import { useRuntimeStore } from '@/stores/runtime'
 
@@ -115,11 +115,13 @@ const configChips = computed(() => {
   const conc = `${form.value.autoConcurrency || 1} Workers`
   const pow = `${powSlots.value} 算力槽`
   const ctry = form.value.autoProxyCountry ? formatCountry(form.value.autoProxyCountry) : '随机出口'
+  const wp = WARMUP_PROFILE_OPTIONS.find((p) => p.id === form.value.warmupProfile)
+  const wpChip = wp ? wp.label : 'Chrome 142'
   const sec = []
   if (form.value.autoWantPassword) sec.push('自动设密')
   if (form.value.autoWant2fa) sec.push('自动2FA')
   const secStr = sec.length ? sec.join(' + ') : '免密'
-  return [src, conc, pow, ctry, secStr]
+  return [src, conc, pow, ctry, wpChip, secStr]
 })
 
 const configSummary = computed(() => {
@@ -445,6 +447,7 @@ async function start() {
       circuit_break_threshold: form.value.autoCircuitBreak !== undefined ? parseInt(form.value.autoCircuitBreak, 10) : 3,
       want_2fa: form.value.autoWant2fa,
       want_password: form.value.autoWantPassword,
+      warmup_profile: form.value.warmupProfile || 'chrome142_mac',
     })
     ElMessage.success('全自动批量已启动')
     await syncAutoStatus()
@@ -814,6 +817,21 @@ onUnmounted(() => {
               <el-col :xs="12" :sm="6" :md="2">
                 <el-form-item label="冷却 (秒)">
                   <el-input-number v-model="form.autoCoolDown" :min="0" :max="120" class="macos-num-input" />
+                </el-form-item>
+              </el-col>
+              <el-col :xs="24" :sm="12" :md="5">
+                <el-form-item label="预热过 CF 套装">
+                  <el-select v-model="form.warmupProfile" class="macos-country-select">
+                    <el-option
+                      v-for="p in WARMUP_PROFILE_OPTIONS"
+                      :key="p.id"
+                      :label="p.label"
+                      :value="p.id"
+                    >
+                      <span>{{ p.label }}</span>
+                      <span style="margin-left: 8px; font-size: 11px; opacity: 0.65;">{{ p.hint }}</span>
+                    </el-option>
+                  </el-select>
                 </el-form-item>
               </el-col>
               <el-col :xs="24" :sm="12" :md="5">

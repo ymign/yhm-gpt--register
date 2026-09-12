@@ -16,7 +16,7 @@ import {
 } from '@element-plus/icons-vue'
 import { startRegister, getRegistered } from '@/api/register'
 import { copyText } from '@/api/request'
-import { useFormStore, proxyText, COUNTRY_OPTIONS } from '@/stores/form'
+import { useFormStore, proxyText, COUNTRY_OPTIONS, WARMUP_PROFILE_OPTIONS } from '@/stores/form'
 import { useProxyStore } from '@/stores/proxy'
 import { useRuntimeStore } from '@/stores/runtime'
 import LogPanel from '@/components/LogPanel.vue'
@@ -132,6 +132,7 @@ async function run() {
       want_refresh_token: form.value.wantRefreshToken || false,
       want_2fa: form.value.want2fa,
       want_password: form.value.wantPassword,
+      warmup_profile: form.value.warmupProfile || 'chrome142_mac',
     })
     runtime.addLog(`[client] 启动注册 run_id=${r.run_id} email=${r.email} 渠道=${form.value.mailSource || 'cf_temp'}`, 'evt')
     runtime.streamRun(r.run_id)
@@ -226,6 +227,23 @@ async function copyField(email, field) {
                 <div class="form-hint">
                   批量并发轮换与代理质量检测请前往「代理池」页面管理。
                 </div>
+              </el-form-item>
+
+              <el-form-item label="预热过 Cloudflare 套装">
+                <el-select v-model="form.warmupProfile" style="width: 100%">
+                  <el-option
+                    v-for="p in WARMUP_PROFILE_OPTIONS"
+                    :key="p.id"
+                    :label="p.label"
+                    :value="p.id"
+                  >
+                    <div>
+                      <div>{{ p.label }}</div>
+                      <div style="font-size: 11px; opacity: 0.7;">{{ p.hint }}</div>
+                    </div>
+                  </el-option>
+                </el-select>
+                <div class="form-hint">按本机对 chatgpt.com 实打结果做的套装。默认 Chrome 142 macOS。换套装只影响预热 TLS/头，邮箱渠道不变。</div>
               </el-form-item>
 
               <el-row :gutter="10">

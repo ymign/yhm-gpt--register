@@ -28,6 +28,8 @@ from fingerprint import (
     ua_for_impersonate,
     fingerprint_for_impersonate,
     apply_geo_to_fingerprint,
+    apply_warmup_profile,
+    DEFAULT_WARMUP_PROFILE,
 )
 from mail_providers import MailProvider
 from http_client import create_http_session, USER_AGENT
@@ -186,20 +188,27 @@ class AuthFlow:
             self._fingerprint = generate_fingerprint(country_code=target_country if target_country else None)
             self._ua = self._fingerprint["user_agent"]
             self._fingerprint_locked = False
+            profile_id = (self._env_overrides.get("WARMUP_PROFILE") or "").strip() or DEFAULT_WARMUP_PROFILE
+            self._fingerprint = apply_warmup_profile(
+                self._fingerprint, profile_id, country_code=target_country or "",
+            )
+            self._ua = self._fingerprint["user_agent"]
         self._oai_session_id = str(uuid.uuid4())
         self._exit_ip = ""
-        # 预热 403 必须能换 TLS。指纹里若只有一个 impersonate，重试会假换 IP、真 JA3 不变。
-        _tls_order = ["chrome142", "chrome146", "chrome136"]
+        # 预热 403 必须能换 TLS。套装自带回退列表；没有则用 142/146/136。
         cur_imp = str((self._fingerprint or {}).get("impersonate") or "chrome142")
-        if cur_imp not in _tls_order:
-            cur_imp = "chrome142"
-        self._impersonate_candidates = [cur_imp] + [x for x in _tls_order if x != cur_imp]
+        fallbacks = list((self._fingerprint or {}).get("fallback_impersonates") or [])
+        _tls_order = [cur_imp] + [x for x in fallbacks if x != cur_imp]
+        if len(_tls_order) < 2:
+            _tls_order = [cur_imp] + [x for x in ("chrome142", "chrome146", "chrome136") if x != cur_imp]
+        self._impersonate_candidates = _tls_order
         self._fingerprint["fallback_impersonates"] = list(self._impersonate_candidates)
         self._impersonate_idx = 0
         logger.info(
             f"指纹已生成 type={self._fingerprint.get('browser_type')} "
             f"os={self._fingerprint.get('browser_os')} "
             f"impersonate={self._fingerprint.get('impersonate')} "
+            f"profile={self._fingerprint.get('warmup_profile') or '-'} "
             f"screen={self._fingerprint.get('screen')} lang={self._fingerprint.get('lang')} "
             f"正在创建 TLS 会话..."
         )
