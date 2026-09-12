@@ -22,7 +22,7 @@ from typing import Any, Callable, Optional
 
 from . import db
 from .token_refresh_service import refresh_token_fast
-from .proxy_util import new_proxy_session_id, resolve_target_country, route_proxy_country
+from .proxy_util import followup_country, new_proxy_session_id, resolve_target_country, route_proxy_country
 
 logger = logging.getLogger("account_warmer")
 
@@ -161,12 +161,19 @@ def warm_single_account(email: str, proxy: str = "", log_cb: Optional[Callable[[
         except Exception as e:
             _l(f"⚠️ RT 刷新提示 ({e})，尝试继续使用现有 AT 发起保温...")
 
-    # 2. 模拟真实浏览器访问 ChatGPT 官方 API
-    from curl_cffi.requests import Session as CffiSession
-    session = CffiSession(impersonate="chrome136")
-    session.trust_env = False
-    if proxy:
-        session.proxies = {"http": proxy, "https": proxy}
+    # 2. 复用注册画像，禁止 Windows/Chrome136 硬编码（注册默认是 macOS Chrome149）
+    extra = row.get("extra") if isinstance(row.get("extra"), dict) else {}
+    from fingerprint import fingerprint_from_account
+    fp = fingerprint_from_account(row, country_code=str(row.get("reg_country") or ""))
+    ua = (fp.get("user_agent") or "").strip() or (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
+    )
+    impersonate = str(extra.get("impersonate") or fp.get("impersonate") or "chrome146").strip() or "chrome146"
+    from http_client import create_http_session
+    session = create_http_session(proxy=proxy or None, impersonate=impersonate, user_agent=ua)
+    if hasattr(session, "trust_env"):
+        session.trust_env = False
 
     token_hdr = at if at.lower().startswith("bearer ") else f"Bearer {at}"
     headers = {
@@ -174,14 +181,19 @@ def warm_single_account(email: str, proxy: str = "", log_cb: Optional[Callable[[
         "Authorization": token_hdr,
         "Origin": "https://chatgpt.com",
         "Referer": "https://chatgpt.com/",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
-        "Sec-Ch-Ua": '"Not?A_Brand";v="99", "Chromium";v="136", "Google Chrome";v="136"',
-        "Sec-Ch-Ua-Mobile": "?0",
-        "Sec-Ch-Ua-Platform": '"Windows"',
+        "User-Agent": ua,
+        "Sec-Ch-Ua": fp.get("sec_ch_ua") or '"Chromium";v="149", "Google Chrome";v="149", "Not_A Brand";v="24"',
+        "Sec-Ch-Ua-Mobile": fp.get("sec_ch_ua_mobile") or "?0",
+        "Sec-Ch-Ua-Platform": fp.get("sec_ch_ua_platform") or '"macOS"',
         "Sec-Fetch-Dest": "empty",
         "Sec-Fetch-Mode": "cors",
         "Sec-Fetch-Site": "same-origin",
     }
+    if fp.get("lang_full"):
+        headers["Accept-Language"] = fp["lang_full"]
+    device_id = str(row.get("device_id") or extra.get("device_id") or "").strip()
+    if device_id:
+        headers["oai-device-id"] = device_id
 
     _l("🔍 正在请求 /backend-api/models 获取官方模型矩阵...")
     r1 = session.get("https://chatgpt.com/backend-api/models", headers=headers, timeout=25)
@@ -217,11 +229,9 @@ def _process_warm_worker(task: WarmingTask, email: str):
     t0 = time.time()
     task.add_email_log(email, f"▶ 准备启动账号保温保鲜...")
     proxy = task.next_proxy()
+    row_info = db.get_registered(email) or {}
     raw_country = (task.config.get("proxy_country") or "").strip().upper()
-    if not raw_country:
-        row_info = db.get_registered(email) or {}
-        raw_country = (row_info.get("reg_country") or "").strip().upper()
-    target_country = resolve_target_country(raw_country)
+    target_country = followup_country(raw_country, row_info.get("reg_country") or "")
     if proxy and target_country:
         proxy = route_proxy_country(proxy, target_country, new_proxy_session_id())
 

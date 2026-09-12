@@ -4261,14 +4261,19 @@ class AuthFlow:
             except Exception:
                 otp_timeout = 180
 
-            # 针对 passwordless_signup：若 5 秒内未命中首发 OTP，主动调一次 resend_otp 确保服务端推信
+            # 针对 passwordless_signup：icloud/outlook 5 秒未到码再 resend。
+            # proton.me 投递慢，5 秒就补发容易把首封作废，且实测 80s 收件箱仍空。
             otp_code = None
+            slow_inbox = "proton." in (email or "").lower()
             if is_passwordless and hasattr(mail_provider, "peek_otp"):
-                otp_code = mail_provider.peek_otp(email, issued_after=otp_sent_at, wait=5.0)
-                if not otp_code:
+                peek_wait = 20.0 if slow_inbox else 5.0
+                otp_code = mail_provider.peek_otp(email, issued_after=otp_sent_at, wait=peek_wait)
+                if not otp_code and not slow_inbox:
                     logger.info("未立即命中首发 OTP，主动调用 resend_otp 触发官方投递...")
                     if self.resend_otp("https://auth.openai.com/email-verification"):
                         otp_sent_at = time.time() - 5
+                elif not otp_code and slow_inbox:
+                    logger.info("proton.me 首发未到，跳过过早 resend，继续等 Remail 收件箱...")
 
             if not otp_code:
                 otp_code = mail_provider.wait_for_otp(

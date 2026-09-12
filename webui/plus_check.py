@@ -609,7 +609,7 @@ def _check_one_account(task: PlusCheckTask, email: str) -> None:
         if device_id:
             headers["OAI-Device-Id"] = device_id
 
-        tz = get_country_timezone_offset_min(target_country or cred.get("reg_country") or "JP")
+        tz = get_country_timezone_offset_min(target_country or cred.get("reg_country") or "")
         url_with_tz = f"{CHECK_URL}?timezone_offset_min={tz}"
         task.add_email_log(email, f"发送 GET {url_with_tz}...")
         resp = sess.get(url_with_tz, headers=headers, timeout=timeout)

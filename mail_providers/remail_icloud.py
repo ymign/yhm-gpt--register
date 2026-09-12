@@ -51,7 +51,7 @@ def _normalize_user_suffix(email_suffix: str) -> str:
 
 
 def _order_suffix_candidates(email_suffix: str) -> list[str]:
-    """OpenAPI 下单关键字：无 suffixes 数组的商品（icloud / gmail）要用 type，不是展示用的 icloud.com。"""
+    """OpenAPI 下单关键字：无 suffixes 数组的商品要用 type（icloud / gmail / proto），不是展示域名。"""
     suf = _normalize_user_suffix(email_suffix) or "icloud.com"
     if suf in ("icloud", "icloud.com", "apple"):
         return ["icloud", "icloud.com"]
@@ -59,6 +59,9 @@ def _order_suffix_candidates(email_suffix: str) -> list[str]:
         return ["gmail", "gmail.com"]
     if suf in ("gmail_variant", "gmail变种", "gmail-variant", "variant", "gmail+"):
         return ["gmail_variant"]
+    if suf in ("proto", "proton", "proton.me", "protonmail.com", "protonmail"):
+        # 实测 emailSuffix=proto + public → 422；private_first + proto 才能下到 @proton.me
+        return ["proto", "proton.me", "protonmail.com"]
     if suf in ("outlook", "微软", "microsoft"):
         return ["outlook.com", "outlook"]
     if suf in ("domain", "域名", "自定义域名"):
@@ -66,8 +69,16 @@ def _order_suffix_candidates(email_suffix: str) -> list[str]:
     return [suf]
 
 
-def _supply_candidates() -> list[str]:
-    # iCloud 当前库存全是公开池；private_first 在无私有库存时会直接 422。
+def _is_proto_suffix(email_suffix: str) -> bool:
+    suf = _normalize_user_suffix(email_suffix)
+    return suf in ("proto", "proton", "proton.me", "protonmail.com", "protonmail")
+
+
+def _supply_candidates(email_suffix: str = "") -> list[str]:
+    # iCloud 库存全是公开池，private_first 会 422。
+    # Proto 相反：公开=688 但 supply=public 仍 422 Invalid order，必须 private_first。
+    if _is_proto_suffix(email_suffix):
+        return ["private_first", "public", ""]
     return ["public", "private_first", ""]
 
 
@@ -244,7 +255,7 @@ class RemailICloudProvider(MailProvider):
             candidate_pids.append(2)
 
         suffix_tries = _order_suffix_candidates(self.email_suffix)
-        supply_tries = _supply_candidates()
+        supply_tries = _supply_candidates(self.email_suffix)
         last_err = None
         for pid in candidate_pids:
             stock_hint = self._stock_hint(pid, suffix_tries)
@@ -329,7 +340,7 @@ class RemailICloudProvider(MailProvider):
         products = data.get("products") or []
         bits = []
         want = {s.lower() for s in suffix_tries}
-        want |= {"icloud", "icloud.com", "gmail", "gmail.com"}
+        want |= {"icloud", "icloud.com", "gmail", "gmail.com", "proto", "proton.me"}
         for prod in products:
             ptype = str(prod.get("type") or "").strip().lower()
             suffixes = prod.get("suffixes") or []
@@ -500,14 +511,18 @@ class RemailICloudProvider(MailProvider):
             raise RuntimeError(f"Remail 邮箱 {email_clean} 缺少 serviceToken，无法取件")
 
         start_time = time.time()
-        timeout = max(80, int(timeout or 120))
+        # proton.me 投递明显慢于 icloud/outlook，至少等 3 分钟
+        min_wait = 180 if ("proton." in email_clean or _is_proto_suffix(self.email_suffix)) else 80
+        timeout = max(min_wait, int(timeout or 120))
         check_interval = 2.5
         last_log_t = start_time
+        last_n = 0
 
         logger.info(f"[Remail] 开始轮询等待验证码: email={email_clean}, timeout={timeout}s (pickup: {self.pickup_url or 'API直取'})...")
 
         while (time.time() - start_time) < timeout:
             msgs = self._fetch_pickup_messages(email_clean, token_clean)
+            last_n = len(msgs or [])
             for m in msgs:
                 msg_id = str(m.get("id") or "")
                 otp = self._parse_message_otp(m, issued_after)
@@ -521,12 +536,19 @@ class RemailICloudProvider(MailProvider):
             now_t = time.time()
             if now_t - last_log_t >= 10.0:
                 elapsed_sec = int(now_t - start_time)
-                logger.info(f"[Remail] ⏳ 等待 OpenAI 邮件送达中 (已等待 {elapsed_sec}s / 上限 {timeout}s)...")
+                logger.info(
+                    f"[Remail] ⏳ 等待 OpenAI 邮件送达中 (已等待 {elapsed_sec}s / 上限 {timeout}s, 收件箱 {last_n} 封)..."
+                )
                 last_log_t = now_t
 
             time.sleep(check_interval)
 
-        raise TimeoutError(f"Remail 等待验证码超时 ({timeout}s)，未收到来自 OpenAI 的邮件")
+        hint = ""
+        if "proton." in email_clean or _is_proto_suffix(self.email_suffix):
+            hint = "。Proto/@proton.me 经常收不到 ChatGPT 验证码，可改 icloud 或 outlook"
+        raise TimeoutError(
+            f"Remail 等待验证码超时 ({timeout}s)，收件箱 {last_n} 封且无可用 OTP{hint}"
+        )
 
     def peek_otp(
         self,

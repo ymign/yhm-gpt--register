@@ -29,13 +29,13 @@ from urllib.parse import parse_qs, quote, urlencode, urljoin, urlparse
 
 from auth_flow import is_official_account_dead, is_too_many_phone_attempts
 from config import Config
-from fingerprint import generate_fingerprint
+from fingerprint import fingerprint_from_account
 from http_client import create_http_session
 from mail_providers import create_mail_provider, get_provider_class
 from sentinel import get_sentinel_token
 from . import db
 from . import sms_phone_ledger
-from .proxy_util import new_proxy_session_id, resolve_target_country, route_proxy_country
+from .proxy_util import followup_country, new_proxy_session_id, resolve_target_country, route_proxy_country
 from .sms_route import SmsRouteScheduler, normalize_sms_routes
 
 logger = logging.getLogger(__name__)
@@ -211,7 +211,9 @@ def _page_kind_from_url(url: str) -> str:
         return "邮箱验证页"
     if "/mfa-challenge" in u:
         return "2FA页"
-    if "/add-phone" in u or "/phone-verification" in u:
+    if "/phone-verification" in u:
+        return "短信验证页"
+    if "/add-phone" in u:
         return "绑手机页"
     if "/workspace" in u:
         return "工作空间页"
@@ -1263,8 +1265,8 @@ def execute_codex_oauth_flow(
 
     country_code = (target_country or account_info.get("reg_country") or "").strip().upper()
 
-    # 生成与目标国家对齐的一致性浏览器指纹；语言跟指纹走，不再另套 COUNTRY_LANG_MAP / 默认 JP。
-    fp = generate_fingerprint(country_code=country_code or None)
+    # 后续授权必须复用注册画像。每次 generate_fingerprint 等于同一账号换了一台新电脑。
+    fp = fingerprint_from_account(account_info, country_code=country_code or None)
     ua = fp.get("user_agent") or "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
     impersonate = fp.get("impersonate") or "chrome146"
     lang_full = fp.get("lang_full") or "en-US,en;q=0.9"
@@ -1307,7 +1309,11 @@ def execute_codex_oauth_flow(
 
     # ──────────────── 阶段 1: 建立会话与预热 ────────────────
     _step("1", "[1/6] 发起鉴权 (建立会话)")
-    _log(f"[1/6] 发起 Codex OAuth 鉴权 (模拟 {impersonate}, 国别: {country_code or '未指定'})...")
+    reused = bool((account_info.get("browser_profile") or (account_info.get("extra") or {}).get("browser_profile")))
+    _log(
+        f"[1/6] 发起 Codex OAuth 鉴权 (模拟 {impersonate}, 国别: {country_code or '未指定'}, "
+        f"画像={'复用注册' if reused else '新建'})..."
+    )
 
     warmup_headers = _nav_headers(fp, ua)
     auth_headers = _nav_headers(fp, ua, auth_url, "https://chatgpt.com/")
@@ -1986,6 +1992,16 @@ def execute_codex_oauth_flow(
                         or "invalid_auth_step" in err_lc
                     )
 
+                send_data = _json_or_empty(send_resp)
+                send_err = send_data.get("error") if isinstance(send_data.get("error"), dict) else None
+                if send_resp.status_code == 200 and send_err:
+                    _log(f"[sms] HTTP 200 但带 error，不视为已发短信: {str(send_err)[:180]}")
+                    last_sms_err = str(send_err.get("message") or send_err)[:180]
+                    sms_phone_ledger.clear_inflight(phone)
+                    ctrl.mark_send_failed(last_sms_err)
+                    time.sleep(1)
+                    continue
+
                 if send_resp.status_code != 200:
                     if session_dead:
                         _log(f"[sms] 会话已失效 HTTP {send_resp.status_code}: {err_msg}，立即停止租号并释放退款")
@@ -2019,9 +2035,41 @@ def execute_codex_oauth_flow(
                     time.sleep(2)
                     continue
 
+                send_page, send_continue, _ = _parse_auth_page(send_data)
+                if send_page not in ("phone_otp_verification", "external_url") \
+                        and "phone-verification" not in (send_continue or ""):
+                    _log(
+                        f"[sms] OpenAI HTTP 200 但未进入验证码页: "
+                        f"{_describe_auth_page(send_page, send_continue)}，不开始等码"
+                    )
+                    last_sms_err = f"add-phone/send 未进入验证页 page={send_page}"
+                    sms_phone_ledger.clear_inflight(phone)
+                    ctrl.mark_send_failed(last_sms_err)
+                    time.sleep(1)
+                    continue
+
+                verify_url = send_continue or "https://auth.openai.com/phone-verification"
+                opened_verify = _enter_auth_page(
+                    session, verify_url, fp, ua, timeout, _log, "[sms] 验证码页",
+                )
+                opened_kind = _page_kind_from_url(opened_verify)
+                if opened_kind in ("登录页", "密码页"):
+                    _log("[sms] 发码后打开验证页又回到登录，会话没保住，这号的短信不能算发出去了")
+                    last_sms_err = "发码后验证页会话丢失"
+                    sms_phone_ledger.clear_inflight(phone)
+                    ctrl.mark_send_failed(last_sms_err)
+                    time.sleep(1)
+                    continue
+                if opened_kind not in ("短信验证页", "绑手机页"):
+                    _log(f"[sms] 打开验证码页结果异常: {opened_kind} {_short_url(opened_verify)}")
+
                 ctrl.mark_send_succeeded()
                 _step("5_sms_wait", f"[5/6] 等收短信: {phone} (OpenAI {openai_submits}/{max_attempts})")
-                _log(f"[sms] 📩 短信已成功发送至 {phone}，正在轮询等待验证码 (timeout={per_phone_timeout}s)...")
+                _log(
+                    f"[sms] OpenAI 已受理发码并进入验证页 {phone}。"
+                    f"这只表示官方接口 200，不等于短信已送到接码卡。"
+                    f"开始向 Vak 轮询 (timeout={per_phone_timeout}s)..."
+                )
 
                 sms_code = ""
                 try:
@@ -2334,8 +2382,8 @@ def _run_one_oauth_export(task: OAuthExportTask, email: str) -> None:
 
     # 1. 代理路由
     proxy = task.next_proxy()
-    raw_country = (task.config.get("proxy_country") or cred.get("reg_country") or "").strip().upper()
-    target_country = resolve_target_country(raw_country)
+    raw_country = (task.config.get("proxy_country") or "").strip().upper()
+    target_country = followup_country(raw_country, cred.get("reg_country") or "")
     if proxy and target_country:
         proxy = route_proxy_country(proxy, target_country, new_proxy_session_id())
 

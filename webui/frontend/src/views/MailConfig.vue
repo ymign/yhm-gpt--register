@@ -33,6 +33,7 @@ function typeToDisplaySuffix(ptype) {
   if (t === 'gmail_variant' || t === 'gmailvariant') return 'gmail_variant'
   if (t === 'domain' || t === 'custom_domain') return 'domain'
   if (t === 'microsoft' || t === 'outlook') return 'outlook.com'
+  if (t === 'proto' || t === 'proton' || t === 'protonmail') return 'proto'
   return t
 }
 
@@ -53,6 +54,9 @@ function canonicalizeSuffix(val) {
   }
   if (['hotmail', 'hotmail.com', '@hotmail.com'].includes(raw)) {
     return 'hotmail.com'
+  }
+  if (['proto', 'proton', 'proton.me', '@proton.me', 'protonmail', 'protonmail.com'].includes(raw)) {
+    return 'proto'
   }
   return raw
 }
@@ -230,6 +234,8 @@ function formatSuffixLabel(sname, price, stock, ptype) {
     return `📮 hotmail.com (微软备用 · ${price}积分${stockText})`
   } else if (sname === 'domain') {
     return `🌐 domain (自备/公开域名邮箱 · ${price}积分${stockText})`
+  } else if (sname === 'proto' || sname === 'proton.me') {
+    return `🟣 proto / proton.me (Proton · ${price}积分${stockText} · ChatGPT 验证码常迟到或收不到)`
   } else if (sname.startsWith('outlook.')) {
     return `📫 ${sname} (微软海外 · ${price}积分${stockText})`
   }
@@ -239,6 +245,7 @@ function formatSuffixLabel(sname, price, stock, ptype) {
 // 推荐后缀排序权重
 const SUFFIX_ORDER_WEIGHT = {
   'icloud.com': 100,
+  proto: 85,
   'outlook.com': 90,
   'gmail_variant': 80,
   'gmail.com': 70,

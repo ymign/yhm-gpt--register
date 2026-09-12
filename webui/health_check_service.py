@@ -35,6 +35,7 @@ try:
     from . import db
     from .proxy_util import (
         COUNTRY_LANG_MAP,
+        followup_country,
         new_proxy_session_id,
         resolve_target_country,
         route_proxy_country,
@@ -55,6 +56,7 @@ except ImportError:
     import db
     from proxy_util import (
         COUNTRY_LANG_MAP,
+        followup_country,
         new_proxy_session_id,
         resolve_target_country,
         route_proxy_country,
@@ -262,13 +264,16 @@ def _check_token_mode(task: HealthCheckTask, email: str, cred: dict, at: str, pr
     timeout = float(task.config.get("timeout") or 20.0)
     started_req = time.time()
 
-    try:
-        if CurlSession is not None:
-            sess = CurlSession(impersonate="chrome136")
-        else:
-            from http_client import create_http_session
-            sess = create_http_session(proxy=proxy or None, impersonate="chrome110")
+    extra, fp = _plan_fingerprint(cred)
+    ua = (fp.get("user_agent") or "").strip() or DEFAULT_UA
+    impersonate = str(extra.get("impersonate") or fp.get("impersonate") or "chrome146").strip() or "chrome146"
+    lang_full = (fp.get("lang_full") or "").strip()
+    if not lang_full and target_country and target_country in COUNTRY_LANG_MAP:
+        lang_full = COUNTRY_LANG_MAP[target_country]
 
+    try:
+        from http_client import create_http_session
+        sess = create_http_session(proxy=proxy or None, impersonate=impersonate, user_agent=ua)
         if hasattr(sess, "trust_env"):
             sess.trust_env = False
         set_proxy(sess, proxy)
@@ -276,14 +281,14 @@ def _check_token_mode(task: HealthCheckTask, email: str, cred: dict, at: str, pr
         headers = {
             "Authorization": f"Bearer {at}",
             "Accept": "application/json",
-            "User-Agent": DEFAULT_UA,
+            "User-Agent": ua,
             "Origin": "https://chatgpt.com",
             "Referer": "https://chatgpt.com/",
         }
-        if target_country and target_country in COUNTRY_LANG_MAP:
-            headers["Accept-Language"] = COUNTRY_LANG_MAP[target_country]
+        if lang_full:
+            headers["Accept-Language"] = lang_full
 
-        tz = get_country_timezone_offset_min(target_country or cred.get("reg_country") or "JP")
+        tz = get_country_timezone_offset_min(target_country or cred.get("reg_country") or "")
         url = f"https://chatgpt.com/backend-api/me"
 
         task.add_email_log(email, f"发送鉴权请求 GET {url}...")
@@ -428,7 +433,7 @@ def _check_plan_mode(task: HealthCheckTask, email: str, cred: dict, at: str, pro
 
         tz_name = (fp.get("timezone") or "").strip()
         tz = get_country_timezone_offset_min(
-            target_country or cred.get("reg_country") or "JP",
+            target_country or cred.get("reg_country") or "",
             tz_name,
         )
         url_with_tz = f"{CHECK_URL}?timezone_offset_min={tz}"
@@ -518,7 +523,7 @@ def _check_one_account(task: HealthCheckTask, email: str) -> None:
 
     proxy = task.next_proxy()
     raw_country = (task.config.get("proxy_country") or "").strip().upper()
-    target_country = resolve_target_country(raw_country)
+    target_country = followup_country(raw_country, cred.get("reg_country") or "")
     if proxy and target_country:
         proxy = route_proxy_country(proxy, target_country, new_proxy_session_id())
 

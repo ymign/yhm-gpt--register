@@ -424,6 +424,8 @@ class VakSmsProvider(BaseSmsProvider):
             try:
                 data = self._request("/api/getSmsCode/", {"idNum": activation_id})
                 sms = data.get("smsCode")
+                if sms is None:
+                    sms = data.get("sms") or data.get("code") or data.get("text")
                 if isinstance(sms, list):
                     sms = sms[-1] if sms else None
                 if sms and str(sms).lower() not in ("null", "none", ""):
@@ -432,6 +434,17 @@ class VakSmsProvider(BaseSmsProvider):
                         logger.info("Vak-SMS 收到验证码 idNum=%s", activation_id)
                         return code
                     last_sms = str(sms)
+                elapsed_now = int(time.time() - started)
+                if elapsed_now and elapsed_now % 15 < 6:
+                    raw = str(data)[:160]
+                    msg = f"[sms] Vak 轮询仍无码 idNum={activation_id} 已等{elapsed_now}s 回包={raw}"
+                    logger.info(msg)
+                    task_log = getattr(self, "_task_log", None)
+                    if callable(task_log):
+                        try:
+                            task_log(msg)
+                        except Exception:
+                            pass
             except Exception as e:
                 logger.debug("Vak-SMS getSmsCode: %s", e)
             elapsed = int(time.time() - started)

@@ -778,6 +778,34 @@ def generate_fingerprint(rng: random.Random | None = None, country_code: str = "
     return fp
 
 
+def fingerprint_from_account(account_info: dict | None = None, *, country_code: str = "") -> dict:
+    """后续登录/授权/验活/保温优先复用注册时落库的 browser_profile。
+
+    禁止每次 generate_fingerprint()：同一账号换 UA / 屏幕 / TLS 家族会被当成新设备。
+    若必须换出口国家，只改语言和时区，不换浏览器家族。
+    """
+    info = account_info if isinstance(account_info, dict) else {}
+    extra = info.get("extra") if isinstance(info.get("extra"), dict) else {}
+    saved = None
+    for cand in (info.get("browser_profile"), extra.get("browser_profile")):
+        if isinstance(cand, dict) and cand.get("user_agent"):
+            saved = dict(cand)
+            break
+    cc = (
+        (country_code or info.get("reg_country") or extra.get("geo_country") or extra.get("target_country") or "")
+        .strip()
+        .upper()
+    )
+    if saved:
+        saved_geo = str(saved.get("geo_country") or "").strip().upper()
+        if cc and saved_geo and cc != saved_geo:
+            saved = apply_geo_to_fingerprint(saved, cc)
+        elif cc and not saved_geo:
+            saved = apply_geo_to_fingerprint(saved, cc)
+        return saved
+    return generate_fingerprint(country_code=cc or None)
+
+
 # ---------------------------------------------------------------------------
 # impersonate → UA 映射（TLS 旋转用）
 # ---------------------------------------------------------------------------

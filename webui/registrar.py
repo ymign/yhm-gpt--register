@@ -872,10 +872,17 @@ def _do_register(
                 except Exception:
                     pass
         elif mail_source == "remail":
+            otp_timeout_fail = "等待验证码超时" in err or "未收到来自 OpenAI 的邮件" in err or "无可用 OTP" in err
             try:
                 bought_email = getattr(mail, "current_email", "")
                 bought_token = getattr(mail, "current_token", "")
-                if bought_email and bought_token and "placeholder" not in bought_email:
+                if otp_timeout_fail and bought_email:
+                    # passwordless 已向 OpenAI 提交该邮箱，再拿去注册会 already exists
+                    try:
+                        db.discard_remail_recycled(bought_email, reason="OTP 超时，半成品账号不可再注册")
+                    except Exception:
+                        pass
+                elif bought_email and bought_token and "placeholder" not in bought_email:
                     db.push_remail_recycled(
                         email=bought_email,
                         service_token=bought_token,

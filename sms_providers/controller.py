@@ -252,6 +252,8 @@ class PhoneCallbackController:
         self._lease_record("waiting", wait_sec=timeout)
 
         try:
+            if hasattr(provider, "_task_log"):
+                provider._task_log = self.log
             code = provider.get_code(
                 self.activation.activation_id, timeout=timeout, stop_check=stop_check
             )

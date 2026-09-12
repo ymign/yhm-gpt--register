@@ -34,6 +34,21 @@ COUNTRY_OPTIONS = [
 COUNTRY_LANG_MAP = {c["code"]: c.get("lang", "en-US,en;q=0.9") for c in COUNTRY_OPTIONS if c["code"]}
 
 
+def followup_country(config_country: str, account_country: str) -> str:
+    """注册之后的动作钉死该号的注册国家。
+
+    住宅代理 session TTL 很短（常见 t-10），几天后不可能还是同一个 IP，
+    但国家必须一致。RANDOM_HOT / 默认 JP 会把 US 号漂到别国，延迟封号里这是高风险动作。
+    """
+    acct = str(account_country or "").strip().upper()
+    if acct and not acct.startswith("RANDOM") and acct not in ("HOT", "ALL"):
+        return acct
+    raw = str(config_country or "").strip().upper()
+    if raw:
+        return resolve_target_country(raw)
+    return ""
+
+
 def resolve_target_country(country_opt: str) -> str:
     """解析目标国家配置：支持单一国家代码、RANDOM_HOT 随机高爆、RANDOM_ALL 随机全部，以及逗号分隔的多国列表。"""
     c = str(country_opt or "").strip().upper()

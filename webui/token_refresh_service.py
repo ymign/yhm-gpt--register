@@ -34,9 +34,8 @@ except ImportError:
 
 from . import db
 from .proxy_util import (
-    COUNTRY_LANG_MAP,
+    followup_country,
     new_proxy_session_id,
-    resolve_target_country,
     route_proxy_country,
 )
 from .oauth_export import (
@@ -796,7 +795,9 @@ def _worker_loop(task: TokenRefreshTask, email: str):
         "session_token": registered_cred.get("session_token") or "",
         "device_id": registered_cred.get("device_id") or "",
         "cookie_header": registered_cred.get("cookie_header") or "",
-        "reg_country": registered_cred.get("reg_country") or "JP",
+        "reg_country": registered_cred.get("reg_country") or "",
+        "extra": extra,
+        "browser_profile": extra.get("browser_profile") if isinstance(extra.get("browser_profile"), dict) else {},
         "sms_config": {
             "sms_enabled": task.config.get("sms_enabled", False),
             "sms_provider": task.config.get("sms_provider") or "smsbower",
@@ -809,8 +810,9 @@ def _worker_loop(task: TokenRefreshTask, email: str):
     }
 
     raw_proxy = (task.next_proxy() or task.config.get("proxy") or "").strip()
-    raw_country = (task.config.get("proxy_country") or openai_cred_info.get("reg_country") or "").strip().upper()
-    target_country = resolve_target_country(raw_country) or "JP"
+    raw_country = (task.config.get("proxy_country") or "").strip().upper()
+    target_country = followup_country(raw_country, registered_cred.get("reg_country") or "")
+    openai_cred_info["reg_country"] = target_country or openai_cred_info.get("reg_country") or ""
     proxy = raw_proxy
 
     if raw_proxy and target_country:
