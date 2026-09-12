@@ -4,11 +4,18 @@ from __future__ import annotations
 import logging
 import re
 import threading
+import time
 from typing import Callable, Optional
 
 import requests
 
-from .base import BaseSmsProvider, SmsActivation, register
+from .base import (
+    BaseSmsProvider,
+    SmsActivation,
+    note_openai_phone_resend,
+    openai_phone_resend_due,
+    register,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -285,15 +292,10 @@ class CdkSmsProvider(BaseSmsProvider):
             elapsed = int(time.time() - start_t)
             remain = max(0, timeout - elapsed)
 
-            # 每隔 20 秒且未收码时，自动联动 OpenAI 端触发补发 (最多补发 2 次，在 ~18s、~38s 各触发一次)
-            expected_resends = min(2, int(elapsed // 20))
-            if expected_resends > resend_count and callable(getattr(self, "_resend_callback", None)):
-                resend_count = expected_resends
-                try:
-                    self._log(f"🔁 等待已达 {elapsed}s 未收码，正在通知 OpenAI 触发第 {resend_count} 次补发 (resend)...")
-                    self._resend_callback()
-                except Exception as e:
-                    logger.debug(f"[CdkSms] 调用 resend_callback 异常: {e}")
+            # 满 45s 仍无码才补发 1 次；429 后不再催
+            if openai_phone_resend_due(elapsed, resend_count) and callable(getattr(self, "_resend_callback", None)):
+                self._log(f"🔁 等待已达 {elapsed}s 未收码，通知 OpenAI 补发短信 (最多 1 次)...")
+                resend_count = note_openai_phone_resend(self._resend_callback, resend_count)
 
             # 每 3 秒同步汇报一次实时进度，向用户明确展示倒计时与轮询情况
             if time.time() - last_log_t >= 3.0 and remain > 0:

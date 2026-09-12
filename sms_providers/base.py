@@ -14,6 +14,51 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
+# OpenAI /api/accounts/phone-otp/resend
+# add-phone/send 已经发过第一封。历史成功案例（约 3100 次接码成功）整段授权
+# 中位 ~72s，智利/巴西多数码在首发后几十秒内到达；20s 就催第二次很容易 429。
+# 策略：满 45s 仍无码才补发 1 次；补发失败/429 后不再催，继续等首发或那一次补发。
+OPENAI_PHONE_RESEND_AFTER_SEC = 45
+OPENAI_PHONE_RESEND_MAX = 1
+
+
+def openai_phone_resend_due(
+    elapsed_sec: float,
+    already: int,
+    *,
+    after_sec: int = OPENAI_PHONE_RESEND_AFTER_SEC,
+    max_n: int = OPENAI_PHONE_RESEND_MAX,
+) -> bool:
+    """是否该向 OpenAI 请求补发短信。"""
+    try:
+        elapsed = float(elapsed_sec or 0)
+        n = int(already or 0)
+        after = max(15, int(after_sec or OPENAI_PHONE_RESEND_AFTER_SEC))
+        cap = max(0, int(max_n if max_n is not None else OPENAI_PHONE_RESEND_MAX))
+    except (TypeError, ValueError):
+        return False
+    if n >= cap:
+        return False
+    return elapsed >= after * (n + 1)
+
+
+def note_openai_phone_resend(callback, already: int, *, max_n: int = OPENAI_PHONE_RESEND_MAX) -> int:
+    """调用补发钩子。返回 False 视为 OpenAI 拒绝（如 429），之后不再催。"""
+    try:
+        cap = max(0, int(max_n if max_n is not None else OPENAI_PHONE_RESEND_MAX))
+        n = int(already or 0)
+    except (TypeError, ValueError):
+        return already
+    if callback is None or n >= cap:
+        return n
+    try:
+        ret = callback()
+    except Exception:
+        return n + 1
+    if ret is False:
+        return cap
+    return n + 1
+
 
 class ConfigField:
     """一个配置项的元信息，供 WebUI 动态渲染表单。"""

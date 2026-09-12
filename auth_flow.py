@@ -1361,7 +1361,7 @@ class AuthFlow:
         """走 SMS 接码 controller：租号 → add-phone/send → 等 SMS → validate。
 
         支持平台：SmsBower（smsbower.page）。
-        单号窗口 80s（每 20s × 3 触发一次 OpenAI 端 resend）；失败自动 cancel + 换新号。
+        单号窗口 80s（满 45s 未收码才补发 1 次）；失败自动 cancel + 换新号。
         最多换号次数默认 3，主人可在 WebUI / 环境变量 OPENAI_PHONE_MAX_ATTEMPTS 自定义。
         """
         ctrl = self._sms_callback
@@ -1495,7 +1495,7 @@ class AuthFlow:
 
             ctrl.mark_send_succeeded()
 
-            # 阶段 3：等 SMS code（SmsBower 内部会按 20s × 3 调 OpenAI resend）
+            # 阶段 3：等 SMS code（满 45s 未收码才补发 1 次）
             phone_start = time.time()
             seen_codes: set[str] = set()
             code_attempt = 0

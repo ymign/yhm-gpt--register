@@ -12,7 +12,15 @@ from typing import Callable, Optional
 
 import requests
 
-from .base import BaseSmsProvider, SmsActivation, register
+from .base import (
+    BaseSmsProvider,
+    SmsActivation,
+    OPENAI_PHONE_RESEND_AFTER_SEC,
+    OPENAI_PHONE_RESEND_MAX,
+    note_openai_phone_resend,
+    openai_phone_resend_due,
+    register,
+)
 from .util import (
     OPENAI_SMS_COUNTRIES,
     SMS_COUNTRY_NAMES_CN,
@@ -970,8 +978,8 @@ class SmsBowerProvider(BaseSmsProvider):
             return False
 
     def wait_for_code(self, activation_id: str, *, timeout: int = 80, poll: int = 3,
-                       openai_resend_interval: int = 30,
-                       openai_resend_max: int = 2) -> Optional[dict]:
+                       openai_resend_interval: int = OPENAI_PHONE_RESEND_AFTER_SEC,
+                       openai_resend_max: int = OPENAI_PHONE_RESEND_MAX) -> Optional[dict]:
         """等 SMS 验证码：优先从标准 getStatus 解析 6 位数字验证码。
         超过 timeout 仍没收到 → 返回 None（由上层 cancel 换号）。
         """
@@ -1000,19 +1008,20 @@ class SmsBowerProvider(BaseSmsProvider):
                     logger.debug("SmsBower status %s 失败: %s", src, e)
 
             elapsed = time.time() - start
-            # OpenAI 端 resend：仅在明确配置了回调时触发
-            expected_resend_count = min(openai_resend_max, int(elapsed // openai_resend_interval))
-            if expected_resend_count > openai_resend_count and self._resend_callback:
-                try:
-                    self._resend_callback()
-                    openai_resend_count = expected_resend_count
-                    logger.info(
-                        "SmsBower: 已请求 OpenAI 端 resend (第 %d/%d 次, elapsed=%ds)",
-                        openai_resend_count, openai_resend_max, int(elapsed),
-                    )
+            if self._resend_callback and openai_phone_resend_due(
+                elapsed, openai_resend_count,
+                after_sec=openai_resend_interval, max_n=openai_resend_max,
+            ):
+                logger.info(
+                    "SmsBower: 等待 %ds 未收码，请求 OpenAI 补发 %d/%d",
+                    int(elapsed), openai_resend_count + 1, openai_resend_max,
+                )
+                prev = openai_resend_count
+                openai_resend_count = note_openai_phone_resend(
+                    self._resend_callback, openai_resend_count, max_n=openai_resend_max,
+                )
+                if openai_resend_count > prev:
                     self.request_resend_sms(activation_id)
-                except Exception as e:
-                    logger.warning("OpenAI resend callback 失败: %s", e)
 
             time.sleep(poll)
         return None

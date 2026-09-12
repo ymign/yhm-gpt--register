@@ -14,7 +14,14 @@ from typing import Callable, Optional
 
 import requests
 
-from .base import BaseSmsProvider, ConfigField, SmsActivation, register
+from .base import (
+    BaseSmsProvider,
+    ConfigField,
+    SmsActivation,
+    note_openai_phone_resend,
+    openai_phone_resend_due,
+    register,
+)
 from .util import SMS_COUNTRY_NAMES_CN, parse_price_spec, _safe_float
 
 logger = logging.getLogger(__name__)
@@ -428,14 +435,12 @@ class VakSmsProvider(BaseSmsProvider):
             except Exception as e:
                 logger.debug("Vak-SMS getSmsCode: %s", e)
             elapsed = int(time.time() - started)
-            expected = min(2, int(elapsed // 20))
-            if expected > resend_count and self._resend_callback:
-                resend_count = expected
-                try:
-                    logger.info("Vak-SMS 等待 %ss 未收码，触发 OpenAI 补发 idNum=%s", elapsed, activation_id)
-                    self._resend_callback()
-                except Exception as e:
-                    logger.debug("Vak-SMS resend_callback: %s", e)
+            if openai_phone_resend_due(elapsed, resend_count) and self._resend_callback:
+                logger.info(
+                    "Vak-SMS 等待 %ss 未收码，触发 OpenAI 补发 %s/%s idNum=%s",
+                    elapsed, resend_count + 1, 1, activation_id,
+                )
+                resend_count = note_openai_phone_resend(self._resend_callback, resend_count)
             remaining = deadline - time.time()
             if remaining <= 0:
                 break

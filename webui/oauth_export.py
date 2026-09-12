@@ -1904,6 +1904,9 @@ def execute_codex_oauth_flow(
                             timeout=20,
                         )
                         _log(f"[sms] 🌐 [OpenAI RESP] HTTP {r.status_code} (补发结果: {(r.text or '')[:100]})")
+                        if r.status_code == 429 or "too many" in (r.text or "").lower():
+                            _log("[sms] OpenAI 补发被限流，不再催发，继续等已发出的短信")
+                            return False
                         return r.status_code == 200
                     except Exception as e:
                         _log(f"[sms] 触发 OpenAI 短信补发异常: {e}")
