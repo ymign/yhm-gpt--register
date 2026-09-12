@@ -1,17 +1,16 @@
-"""浏览器指纹（默认对齐 yhm-gpt-free-register 的 HAR / Roxy 桌面 Chrome 画像）。
+"""浏览器指纹（默认对齐桌面 Chrome 画像，一号一套，后续动作复用）。
 
 每次注册调用 generate_fingerprint() 生成一套一致的指纹组合：
-  - TLS impersonate（curl_cffi chrome146，403 后回退 142/136）
-  - HTTP/JS 自称 Chrome/146 macOS（必须与 TLS 同代，149 头今天会被 CF 403）
+  - TLS impersonate（curl_cffi chrome142，403 后回退 146/136）
+  - HTTP/JS 自称必须与 TLS 同代（149 头会被 CF 403）
   - sec-ch-ua 全套 Client Hints（仅 Chromium）
-  - 屏幕 / 硬件 / WebGL
-  - Accept-Language + IANA 时区（跟出口国家，不再随机混语言）
+  - 屏幕 / 硬件 / WebGL 跟 OS、arch 同一台机器
+  - Accept-Language + IANA 时区（跟出口国家）
   - browser_type / browser_os
   - fallback_impersonates 同家族 TLS 回退列表
 
-Safari / iOS / Firefox 生成器仍保留，供 TLS 旋转查表；默认注册不再抽它们。
-ChatGPT Plus 试用资格是注册后第一次 chatgpt.com 会话的 A/B 曝光，
-桌面 Chrome 146 + 语言/时区跟出口 IP 一致。禁止再叠 149 头。
+Safari / iOS / Firefox 生成器仍保留，供预热套装和 TLS 旋转查表。
+套餐/试用由验活再查，注册只保证画像不穿帮。禁止再叠 149 头。
 """
 from __future__ import annotations
 
@@ -818,7 +817,7 @@ def generate_fingerprint(rng: random.Random | None = None, country_code: str = "
         device_pixel_ratio: float — window.devicePixelRatio
     """
     r = rng or random
-    # 注册默认桌面 Chrome 146 / macOS。HTTP 版本跟 TLS 对齐。
+    # 注册默认桌面 Chrome / macOS。HTTP 版本跟 TLS 对齐；预热套装会再改 impersonate。
     browser_type = "chrome"
     fp = _GENERATORS[browser_type](r)
     fp.setdefault("browser_os", "macOS")
@@ -843,11 +842,17 @@ def generate_fingerprint(rng: random.Random | None = None, country_code: str = "
     return fp
 
 
-def fingerprint_from_account(account_info: dict | None = None, *, country_code: str = "") -> dict:
+def fingerprint_from_account(
+    account_info: dict | None = None,
+    *,
+    country_code: str = "",
+    generate_if_missing: bool = True,
+) -> dict:
     """后续登录/授权/验活/保温优先复用注册时落库的 browser_profile。
 
     禁止每次 generate_fingerprint()：同一账号换 UA / 屏幕 / TLS 家族会被当成新设备。
     若必须换出口国家，只改语言和时区，不换浏览器家族。
+    验活应传 generate_if_missing=False：没有落库画像就别现场抽一套新的。
     """
     info = account_info if isinstance(account_info, dict) else {}
     extra = info.get("extra") if isinstance(info.get("extra"), dict) else {}
@@ -868,6 +873,8 @@ def fingerprint_from_account(account_info: dict | None = None, *, country_code: 
         elif cc and not saved_geo:
             saved = apply_geo_to_fingerprint(saved, cc)
         return saved
+    if not generate_if_missing:
+        return {}
     return generate_fingerprint(country_code=cc or None)
 
 
@@ -903,6 +910,7 @@ def apply_warmup_profile(fp: dict | None, profile_id: str = "", *, country_code:
     family = spec.get("family") or "chrome"
     imp = str(spec.get("impersonate") or "chrome142")
     os_name = str(spec.get("browser_os") or "macOS")
+    prev_os = str((fp or {}).get("browser_os") or "")
     cc = (country_code or (fp or {}).get("geo_country") or "").strip().upper()
     fallbacks = [imp] + [x for x in (spec.get("fallbacks") or []) if x != imp]
 
@@ -929,6 +937,8 @@ def apply_warmup_profile(fp: dict | None, profile_id: str = "", *, country_code:
             out.update(_chrome_client_hints(
                 chrome, platform="Windows", platform_version="10.0.22631", arch="x86",
             ))
+            if prev_os != "Windows":
+                out["screen"] = r.choice(_WIN_SCREENS)
         else:
             out["user_agent"] = _chrome_user_agent(chrome["full_ver"], "macOS")
             plat_ver = str(out.get("sec_ch_ua_platform_version") or _MAC_CHROME_PLATFORM_VERSION).strip('"')
@@ -936,6 +946,8 @@ def apply_warmup_profile(fp: dict | None, profile_id: str = "", *, country_code:
             out.update(_chrome_client_hints(
                 chrome, platform="macOS", platform_version=plat_ver, arch=arch,
             ))
+            if prev_os != "macOS":
+                out["screen"] = r.choice(_MAC_CHROME_SCREENS)
 
     out["fallback_impersonates"] = fallbacks
     out["warmup_profile"] = spec["id"]

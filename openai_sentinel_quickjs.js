@@ -34,6 +34,41 @@ function createStorage() {
   };
 }
 
+function isIosLike(platform, ua) {
+  const p = String(platform || '');
+  const u = String(ua || '').toLowerCase();
+  return /iphone|ipad|ipod/.test(u) || /iphone|ipad/i.test(p);
+}
+
+function isMacLike(platform, ua) {
+  if (isIosLike(platform, ua)) return false;
+  const p = String(platform || '');
+  const u = String(ua || '').toLowerCase();
+  return /mac/i.test(p) || u.includes('macintosh') || u.includes('mac os');
+}
+
+function defaultWebgl(env) {
+  const platform = env.platform;
+  const ua = env.user_agent;
+  const bt = String(env.browser_type || '');
+  if (isIosLike(platform, ua) || bt === 'ios_safari') {
+    return ['Apple Inc.', 'Apple GPU'];
+  }
+  if (bt === 'mac_safari' || (isMacLike(platform, ua) && /safari/i.test(String(ua)) && !/chrome/i.test(String(ua)))) {
+    return ['Apple', 'Apple M1'];
+  }
+  if (isMacLike(platform, ua)) {
+    return ['Google Inc. (Apple)', 'ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)'];
+  }
+  return ['Google Inc. (NVIDIA)', 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)'];
+}
+
+function defaultDpr(platform, ua) {
+  if (isIosLike(platform, ua)) return 3;
+  if (isMacLike(platform, ua)) return 2;
+  return 1;
+}
+
 function genericElement(tagName) {
   const tag = String(tagName || 'div').toLowerCase();
   return {
@@ -99,8 +134,9 @@ function canvasElement() {
     }
     if (!['webgl', 'experimental-webgl', 'webgl2'].includes(kind)) return null;
     const dbg = { UNMASKED_VENDOR_WEBGL: 0x9245, UNMASKED_RENDERER_WEBGL: 0x9246 };
-    const glVendor = String(input.webgl_vendor || 'Google Inc. (Apple)');
-    const glRenderer = String(input.webgl_renderer || 'ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)');
+    const [defVendor, defRenderer] = defaultWebgl(input);
+    const glVendor = String(input.webgl_vendor || defVendor);
+    const glRenderer = String(input.webgl_renderer || defRenderer);
     return {
       VENDOR: 0x1F00, RENDERER: 0x1F01,
       getExtension(name) { return name === 'WEBGL_debug_renderer_info' ? dbg : null; },
@@ -344,7 +380,7 @@ const context = {
   innerHeight: screenH,
   outerWidth: screenW,
   outerHeight: screenH + 80,
-  devicePixelRatio: Number(input.device_pixel_ratio || 1),
+  devicePixelRatio: Number(input.device_pixel_ratio || defaultDpr(navPlatform, input.user_agent)),
   scrollX: 0,
   scrollY: 0,
   pageXOffset: 0,

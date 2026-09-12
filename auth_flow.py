@@ -2508,25 +2508,15 @@ class AuthFlow:
         self._last_chat_req = None
 
     def anonymous_bootstrap(self) -> None:
-        """注册前匿名态 ChatGPT 首页/模型预热链路（模拟真实指纹浏览器首屏访问轨迹）。"""
+        """匿名态 ChatGPT 首屏轨迹：me / models / hints / conversation/init。
+
+        不打 CES、不打 accounts/check。那两步是套餐和实验分桶，验活再查。
+        """
         logger.info("[Bootstrap] 执行匿名态 ChatGPT 首屏预热...")
         referer = "https://chatgpt.com/"
         tz = self._get_tz_offset_min()
         anon_base = "https://chatgpt.com/backend-anon"
 
-        self._ces_prefetch()
-
-        # 1. 匿名 accounts/check
-        try:
-            self.session.get(
-                f"{anon_base}/accounts/check/v4-2023-04-27?timezone_offset_min={tz}",
-                headers=self._chatgpt_headers(referer=referer),
-                timeout=10,
-            )
-        except Exception:
-            pass
-
-        # 2. 匿名 me
         try:
             self.session.get(f"{anon_base}/me", headers=self._chatgpt_headers(referer=referer), timeout=10)
         except Exception:
@@ -2534,7 +2524,6 @@ class AuthFlow:
 
         self._chat_requirements_prepare(anon_base, self._chatgpt_headers(referer=referer), "anon")
 
-        # 3. 匿名 system_hints
         for mode in ("custom_agents", "connectors", "basic"):
             try:
                 self.session.get(
@@ -2545,7 +2534,6 @@ class AuthFlow:
             except Exception:
                 pass
 
-        # 4. 匿名 models
         try:
             self.session.get(
                 f"{anon_base}/models?iim=false&is_gizmo=false&supports_model_picker_upgrade_presets=true",
@@ -2555,7 +2543,6 @@ class AuthFlow:
         except Exception:
             pass
 
-        # 5. 匿名 conversation/init
         try:
             self.session.post(
                 f"{anon_base}/conversation/init",
@@ -2574,45 +2561,28 @@ class AuthFlow:
         logger.info("[Bootstrap] 匿名态首屏预热完成")
 
     def authenticated_bootstrap(self, access_token: str) -> None:
-        """登录态 ChatGPT bootstrap 预热链路（触发客户端 A/B 测试曝光与试用资格激活）。"""
+        """登录态首屏轨迹：me / settings / models / conversation/init。
+
+        不打 accounts/check、optimized/check、CES、套餐复检。套餐由验活再查。
+        """
         if not access_token:
             return
-        logger.info("[Bootstrap] 执行登录态 ChatGPT 会话激活与实验曝光...")
+        logger.info("[Bootstrap] 执行登录态 ChatGPT 首屏激活...")
         referer = "https://chatgpt.com/"
         tz = self._get_tz_offset_min()
         api_base = "https://chatgpt.com/backend-api"
         headers = self._chatgpt_headers(referer=referer, access_token=access_token)
 
-        # 1. optimized/check
-        try:
-            self.session.get(f"{api_base}/accounts/optimized/check", headers=headers, timeout=10)
-        except Exception:
-            pass
-
-        # 2. user_granular_consent
         try:
             self.session.get(f"{api_base}/user_granular_consent", headers=headers, timeout=10)
         except Exception:
             pass
 
-        # 3. me
         try:
             self.session.get(f"{api_base}/me", headers=headers, timeout=10)
         except Exception:
             pass
 
-        # 4. accounts/check (携带 timezone_offset_min)
-        try:
-            resp = self._accounts_check(api_base, headers, tz)
-            if resp.status_code == 200:
-                try:
-                    self._store_plan_info(resp.json() or {}, resp.text or "")
-                except Exception:
-                    pass
-        except Exception:
-            pass
-
-        # 5. settings/user
         try:
             self.session.get(f"{api_base}/settings/user", headers=headers, timeout=10)
         except Exception:
@@ -2620,7 +2590,6 @@ class AuthFlow:
 
         self._chat_requirements_prepare(api_base, headers, "auth")
 
-        # 6. system_hints
         for mode in ("custom_agents", "connectors", "basic"):
             try:
                 self.session.get(
@@ -2631,7 +2600,6 @@ class AuthFlow:
             except Exception:
                 pass
 
-        # 7. models
         try:
             self.session.get(
                 f"{api_base}/models?iim=false&is_gizmo=false&supports_model_picker_upgrade_presets=true",
@@ -2641,7 +2609,6 @@ class AuthFlow:
         except Exception:
             pass
 
-        # 8. conversation/init
         try:
             self.session.post(
                 f"{api_base}/conversation/init",
@@ -2658,7 +2625,6 @@ class AuthFlow:
             pass
         self._chat_requirements_finalize(api_base, headers, "auth")
 
-        # 9. conversations
         try:
             self.session.get(
                 f"{api_base}/conversations?offset=0&limit=28&order=updated",
@@ -2668,32 +2634,12 @@ class AuthFlow:
         except Exception:
             pass
 
-        # 10. client/strings
         try:
             self.session.get(f"{api_base}/client/strings", headers=headers, timeout=10)
         except Exception:
             pass
 
-        # 注册链路默认不等待套餐复检：首屏 accounts/check 已经打过，
-        # 试用资格由用户事后自己验活。需要同会话冷却再查时再设 PLUS_CHECK_RETRY_SEC。
-        try:
-            retry_sec = float(self._get_env("PLUS_CHECK_RETRY_SEC", "0") or 0)
-        except Exception:
-            retry_sec = 0.0
-        st = (self.result.plan_info or {}).get("status") or ""
-        if retry_sec > 0 and st not in ("plus_eligible", "plus_active", "pro_eligible", "pro_active", "pro_20x", "pro_5x"):
-            logger.info(
-                f"[Bootstrap] 首屏套餐={st or '未知'}，同会话冷却 {retry_sec:.0f}s 后复检"
-            )
-            time.sleep(max(1.0, min(180.0, retry_sec)))
-            try:
-                resp2 = self._accounts_check(api_base, headers, tz)
-                if resp2.status_code == 200:
-                    self._store_plan_info(resp2.json() or {}, resp2.text or "")
-            except Exception as e:
-                logger.debug(f"[Bootstrap] 套餐复检跳过: {e}")
-
-        logger.info("[Bootstrap] 登录态 ChatGPT 激活与实验曝光完成")
+        logger.info("[Bootstrap] 登录态 ChatGPT 首屏激活完成")
 
     # ── Step 2: 获取 CSRF Token ──
     def get_csrf_token(self) -> str:
@@ -4215,12 +4161,11 @@ class AuthFlow:
                 "请检查代理后重试"
             )
 
-        # 匿名态 ChatGPT 首页/模型预热链路（建立真实客户端行为轨迹）
+        # 匿名首屏轨迹（me/models/hints），不查套餐。
         logger.info("匿名态 ChatGPT 预热...")
         self.anonymous_bootstrap()
 
-        # 创建邮箱
-        logger.info("chatgpt.com 预热完成，开始创建/购买邮箱...")
+        logger.info("chatgpt.com 预热完成（已种 oai-did），开始创建/购买邮箱...")
         email = mail_provider.create_mailbox()
         self.result.email = email
         if self._on_email_assigned:
@@ -4685,7 +4630,7 @@ class AuthFlow:
 
         if not refresh_only_mode:
             self.get_auth_session()
-            # 登录态 ChatGPT 首屏与实验曝光 Bootstrap（激活试用与 OAICS 资格）
+            # 登录态首屏轨迹。不打 accounts/check，套餐留给验活。
             if self.result.access_token:
                 self.authenticated_bootstrap(self.result.access_token)
 

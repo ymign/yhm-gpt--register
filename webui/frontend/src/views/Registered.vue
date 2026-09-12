@@ -1144,11 +1144,11 @@ const healthItems = shallowRef({})
 const healthTick = ref(0)
 const healthTableRef = ref(null)
 const healthNeedsReload = ref(false)
-const HEALTH_FORM_KEY = 'gpt_health_check_form_v1'
+const HEALTH_FORM_KEY = 'gpt_health_check_form_v2'
 const HEALTH_FORM_DEFAULTS = {
   mode: 'plan',
   proxy: '__POOL__',
-  proxyCountry: 'US',
+  proxyCountry: '',
   workers: 10,
   timeout: 20,
 }
@@ -1298,7 +1298,11 @@ const healthFilteredRows = computed(() => {
     if (f === 'token_invalid') return isHealthInvalidRow(item)
     if (f === 'plus_active') return healthResultStatus(item) === 'plus_active'
     if (f === 'pro_active') return ['pro_active', 'pro_20x', 'pro_5x', 'pro_eligible'].includes(healthResultStatus(item))
-    if (f === 'plus_eligible') return healthResultStatus(item) === 'plus_eligible'
+    if (f === 'plus_eligible') {
+      const st = healthResultStatus(item)
+      const label = String(item?.result?.label || '')
+      return st === 'plus_eligible' || st === 'pro_eligible' || label.includes('试用')
+    }
     if (f === 'free') return healthResultStatus(item) === 'free'
     if (f === 'token_valid') return healthResultStatus(item) === 'token_valid'
     if (f === 'done') {
@@ -5735,7 +5739,7 @@ function buildWarmingProxyPayload() {
   return {
     proxies: proxiesStr,
     proxy: singleProxy,
-    proxy_country: warmingForm.proxyCountry === 'RANDOM_HOT' ? '' : warmingForm.proxyCountry,
+    proxy_country: warmingForm.proxyCountry || '',
   }
 }
 
@@ -9074,11 +9078,12 @@ onUnmounted(() => {
                   <el-form-item label="代理目标国家">
                     <el-select
                       v-model="healthForm.proxyCountry" filterable allow-create
-                      placeholder="国家" style="width: 100%"
+                      placeholder="自动（跟注册国家）" style="width: 100%"
                     >
                       <el-option
-                        v-for="c in COUNTRY_OPTIONS" :key="c.value"
-                        :label="c.label" :value="c.value"
+                        v-for="c in COUNTRY_OPTIONS" :key="c.value || 'auto'"
+                        :label="c.value ? c.label : '🌐 自动（跟该号注册国家）'"
+                        :value="c.value"
                       />
                     </el-select>
                   </el-form-item>
@@ -9097,12 +9102,13 @@ onUnmounted(() => {
               <div class="token-mechanism-tip">
                 Token 验活只看凭证是否还能用。套餐验活走官方 accounts/check：成功拿到 Free/Plus/Pro 即此刻未封号。
                 <b>封号</b> 与 <b>凭证失效</b> 分开回写；HTTP 403 / 请求异常不改状态、不清空上次套餐。
+                代理国家：选了日本就走日本新住宅 IP（换不回注册当天那个 IP）；空着才跟该号注册国家。
               </div>
             </el-form>
           </div>
         </el-collapse-transition>
 
-        <div class="token-kpi-grid" :class="healthForm.mode === 'plan' ? 'cols-6' : 'cols-5'">
+        <div class="token-kpi-grid" :class="healthForm.mode === 'plan' ? 'cols-plan' : 'cols-5'">
           <div
             class="token-kpi-card"
             :class="{ 'is-filter-active': healthFilter === 'all' }"
@@ -9132,12 +9138,23 @@ onUnmounted(() => {
           </div>
           <div
             v-if="healthForm.mode === 'plan'"
+            class="token-kpi-card hit-promo"
+            :class="{ 'is-filter-active': healthFilter === 'plus_eligible' }"
+            title="只看可领 Plus 试用的号"
+            @click="setHealthFilter('plus_eligible')"
+          >
+            <span class="kpi-label">Plus 试用</span>
+            <span class="kpi-num">{{ healthStats.plus_eligible }}</span>
+          </div>
+          <div
+            v-if="healthForm.mode === 'plan'"
             class="token-kpi-card hit-active"
             :class="{ 'is-filter-active': healthFilter === 'plus_active' }"
+            title="只看 Plus 订阅已生效"
             @click="setHealthFilter('plus_active')"
           >
-            <span class="kpi-label">Plus{{ healthStats.plus_eligible ? ` · 试用 ${healthStats.plus_eligible}` : '' }}</span>
-            <span class="kpi-num text-primary">{{ healthStats.plus_active }}</span>
+            <span class="kpi-label">Plus 生效</span>
+            <span class="kpi-num">{{ healthStats.plus_active }}</span>
           </div>
           <div
             class="token-kpi-card"
@@ -9184,6 +9201,9 @@ onUnmounted(() => {
             <el-radio-button value="all">全部 ({{ healthStats.total }})</el-radio-button>
             <el-radio-button value="running">进行中 ({{ healthStats.running }})</el-radio-button>
             <el-radio-button value="done">完成 ({{ healthStats.doneOk }})</el-radio-button>
+            <el-radio-button v-if="healthForm.mode === 'plan'" value="plus_eligible">
+              <span :class="{ 'text-success': healthStats.plus_eligible > 0 }">试用 ({{ healthStats.plus_eligible }})</span>
+            </el-radio-button>
             <el-radio-button value="banned">
               <span :class="{ 'text-danger': healthStats.banned > 0 }">封号 ({{ healthStats.banned }})</span>
             </el-radio-button>
@@ -14243,6 +14263,22 @@ onUnmounted(() => {
 }
 .health-dialog .token-kpi-grid.cols-5 { grid-template-columns: repeat(5, minmax(0, 1fr)); }
 .health-dialog .token-kpi-grid.cols-6 { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+.health-dialog .token-kpi-grid.cols-plan {
+  grid-template-columns: repeat(7, minmax(88px, 1fr));
+}
+.health-dialog .token-kpi-card.hit-promo {
+  border-color: rgba(31, 157, 100, 0.4);
+  background: #f3fbf6;
+}
+.health-dialog .token-kpi-card.hit-promo .kpi-num {
+  color: #1f9d64;
+  font-size: 22px;
+}
+.health-dialog .token-kpi-card.hit-promo.is-filter-active {
+  border-color: #1f9d64;
+  background: #e8f7ef;
+  box-shadow: 0 0 0 1px #1f9d64;
+}
 .health-dialog .token-kpi-card {
   background: #ffffff;
   border: 1px solid rgba(93, 164, 177, 0.22);

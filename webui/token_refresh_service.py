@@ -817,6 +817,13 @@ def _worker_loop(task: TokenRefreshTask, email: str):
 
     if raw_proxy and target_country:
         proxy = route_proxy_country(raw_proxy, target_country, new_proxy_session_id())
+    country_src = "界面选择" if raw_country else "跟注册"
+    proxy_label = proxy.split("@")[-1] if "@" in (proxy or "") else (proxy or "直连")
+    task.add_email_log(
+        email,
+        f"使用代理: {proxy_label}"
+        + (f" (目标国家: {target_country} · {country_src})" if target_country else ""),
+    )
 
     email_lower = (email or "").strip().lower()
     default_mail_source = (task.config.get("_default_mail_source") or "cf_temp").strip().lower()

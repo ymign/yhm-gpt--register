@@ -2383,7 +2383,7 @@ class StartHealthCheckReq(BaseModel):
     mode: Optional[str] = Field("plan", description="验活模式: token (Token 状态验活) 或 plan (套餐订阅探测)")
     proxies: Optional[str] = Field("", description="代理池（每行一个）")
     proxy: Optional[str] = Field("", description="单个代理")
-    proxy_country: Optional[str] = Field("US", description="代理出口国家")
+    proxy_country: Optional[str] = Field("", description="代理出口国家；空则跟该号注册国家")
     workers: Optional[int] = Field(10, ge=1, le=20, description="并发线程数")
     timeout: Optional[float] = Field(20.0, description="请求超时秒数")
 
@@ -2411,7 +2411,7 @@ def api_health_check_start(req: StartHealthCheckReq):
     cfg = {
         "mode": (req.mode or "plan").strip().lower(),
         "proxies": proxies,
-        "proxy_country": (req.proxy_country or "US").strip().upper(),
+        "proxy_country": (req.proxy_country or "").strip().upper(),
         "workers": max(1, min(20, req.workers or 10)),
         "timeout": float(req.timeout or 20.0),
     }

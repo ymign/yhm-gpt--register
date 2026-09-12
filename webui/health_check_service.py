@@ -266,7 +266,7 @@ def _check_token_mode(task: HealthCheckTask, email: str, cred: dict, at: str, pr
 
     extra, fp = _plan_fingerprint(cred)
     ua = (fp.get("user_agent") or "").strip() or DEFAULT_UA
-    impersonate = str(extra.get("impersonate") or fp.get("impersonate") or "chrome146").strip() or "chrome146"
+    impersonate = str(extra.get("impersonate") or fp.get("impersonate") or "chrome142").strip() or "chrome142"
     lang_full = (fp.get("lang_full") or "").strip()
     if not lang_full and target_country and target_country in COUNTRY_LANG_MAP:
         lang_full = COUNTRY_LANG_MAP[target_country]
@@ -364,7 +364,20 @@ def _check_token_mode(task: HealthCheckTask, email: str, cred: dict, at: str, pr
 
 def _plan_fingerprint(cred: dict):
     extra = cred.get("extra") if isinstance(cred.get("extra"), dict) else {}
-    fp = extra.get("browser_profile") if isinstance(extra.get("browser_profile"), dict) else {}
+    fp = {}
+    try:
+        from fingerprint import fingerprint_from_account
+        fp = fingerprint_from_account(
+            cred,
+            country_code=str(cred.get("reg_country") or extra.get("geo_country") or ""),
+            generate_if_missing=False,
+        )
+    except Exception:
+        fp = {}
+    if not fp:
+        fp = extra.get("browser_profile") if isinstance(extra.get("browser_profile"), dict) else {}
+    if not isinstance(fp, dict):
+        fp = {}
     return extra, fp
 
 
@@ -378,7 +391,7 @@ def _check_plan_mode(task: HealthCheckTask, email: str, cred: dict, at: str, pro
     device_id = (cred.get("device_id") or extra.get("device_id") or fp.get("device_id") or "").strip()
     session_id = str(extra.get("oai_session_id") or "").strip()
     ua = (fp.get("user_agent") or "").strip() or DEFAULT_UA
-    impersonate = str(extra.get("impersonate") or fp.get("impersonate") or "chrome146").strip() or "chrome146"
+    impersonate = str(extra.get("impersonate") or fp.get("impersonate") or "chrome142").strip() or "chrome142"
     lang_full = (fp.get("lang_full") or "").strip()
     if not lang_full and target_country and target_country in COUNTRY_LANG_MAP:
         lang_full = COUNTRY_LANG_MAP[target_country]
@@ -523,12 +536,15 @@ def _check_one_account(task: HealthCheckTask, email: str) -> None:
 
     proxy = task.next_proxy()
     raw_country = (task.config.get("proxy_country") or "").strip().upper()
-    target_country = followup_country(raw_country, cred.get("reg_country") or "")
+    target_country = followup_country(
+        raw_country, cred.get("reg_country") or "", prefer_selected=True,
+    )
     if proxy and target_country:
         proxy = route_proxy_country(proxy, target_country, new_proxy_session_id())
 
     proxy_label = proxy.split("@")[-1] if "@" in proxy else (proxy or "直连")
-    country_tip = f" (目标国家: {target_country})" if target_country else ""
+    country_src = "界面选择" if raw_country else "跟注册"
+    country_tip = f" (目标国家: {target_country} · {country_src})" if target_country else ""
     task.add_email_log(email, f"使用代理: {proxy_label}{country_tip}")
 
     if task.mode == "token":

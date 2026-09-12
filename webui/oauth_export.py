@@ -1267,8 +1267,11 @@ def execute_codex_oauth_flow(
 
     # 后续授权必须复用注册画像。每次 generate_fingerprint 等于同一账号换了一台新电脑。
     fp = fingerprint_from_account(account_info, country_code=country_code or None)
-    ua = fp.get("user_agent") or "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
-    impersonate = fp.get("impersonate") or "chrome146"
+    ua = fp.get("user_agent") or (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36"
+    )
+    impersonate = fp.get("impersonate") or "chrome142"
     lang_full = fp.get("lang_full") or "en-US,en;q=0.9"
     _trace_put(
         trace,
@@ -2380,7 +2383,7 @@ def _run_one_oauth_export(task: OAuthExportTask, email: str) -> None:
     except Exception:
         pass
 
-    # 1. 代理路由
+    # 1. 代理路由：用界面选的代理池/线路，国家也跟界面走
     proxy = task.next_proxy()
     raw_country = (task.config.get("proxy_country") or "").strip().upper()
     target_country = followup_country(raw_country, cred.get("reg_country") or "")
@@ -2388,7 +2391,8 @@ def _run_one_oauth_export(task: OAuthExportTask, email: str) -> None:
         proxy = route_proxy_country(proxy, target_country, new_proxy_session_id())
 
     proxy_label = proxy.split("@")[-1] if "@" in proxy else (proxy or "直连")
-    country_tip = f" (目标国家: {target_country})" if target_country else ""
+    country_src = "界面选择" if raw_country else "跟注册"
+    country_tip = f" (目标国家: {target_country} · {country_src})" if target_country else ""
     task.add_email_log(email, f"使用网络出口: {proxy_label}{country_tip}")
 
     # 2. 邮箱取码准备

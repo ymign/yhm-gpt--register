@@ -318,6 +318,11 @@ def get_sentinel_token_via_quickjs(
         else:
             vendor = "Apple Computer, Inc."   # Safari / iOS
     hw_conc = int(hardware_concurrency) if hardware_concurrency else 8
+    if device_pixel_ratio:
+        dpr = float(device_pixel_ratio)
+    else:
+        mac = ("mac" in (platform or "").lower() or "macintosh" in ua_l) and "iphone" not in ua_l
+        dpr = 2.0 if mac else 1.0
 
     env_payload = {
         "device_id": did,
@@ -330,7 +335,7 @@ def get_sentinel_token_via_quickjs(
         "vendor": vendor,
         "hardware_concurrency": hw_conc,
         "browser_type": browser_type or "",
-        "device_pixel_ratio": float(device_pixel_ratio) if device_pixel_ratio else 2.0,
+        "device_pixel_ratio": dpr,
         "max_touch_points": int(max_touch_points),
         "timezone": timezone or "UTC",
         "webgl_vendor": webgl_vendor or "",

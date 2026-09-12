@@ -34,16 +34,23 @@ COUNTRY_OPTIONS = [
 COUNTRY_LANG_MAP = {c["code"]: c.get("lang", "en-US,en;q=0.9") for c in COUNTRY_OPTIONS if c["code"]}
 
 
-def followup_country(config_country: str, account_country: str) -> str:
-    """注册之后的动作钉死该号的注册国家。
+def followup_country(
+    config_country: str,
+    account_country: str,
+    *,
+    prefer_selected: bool = True,
+) -> str:
+    """后续动作选出口国家。
 
-    住宅代理 session TTL 很短（常见 t-10），几天后不可能还是同一个 IP，
-    但国家必须一致。RANDOM_HOT / 默认 JP 会把 US 号漂到别国，延迟封号里这是高风险动作。
+    住宅代理换不回注册当天那个 IP。界面选了日本就走日本（新 sid）；
+    空着 / 自动才跟该号注册国家。授权、验活、刷 token、保温同一套规则。
     """
+    raw = str(config_country or "").strip().upper()
     acct = str(account_country or "").strip().upper()
+    if prefer_selected and raw:
+        return resolve_target_country(raw)
     if acct and not acct.startswith("RANDOM") and acct not in ("HOT", "ALL"):
         return acct
-    raw = str(config_country or "").strip().upper()
     if raw:
         return resolve_target_country(raw)
     return ""

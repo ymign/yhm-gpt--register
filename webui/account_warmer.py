@@ -161,15 +161,19 @@ def warm_single_account(email: str, proxy: str = "", log_cb: Optional[Callable[[
         except Exception as e:
             _l(f"⚠️ RT 刷新提示 ({e})，尝试继续使用现有 AT 发起保温...")
 
-    # 2. 复用注册画像，禁止 Windows/Chrome136 硬编码（注册默认是 macOS Chrome149）
+    # 2. 复用注册画像。没有落库指纹时不要现场抽一套新的，更不要叠 149 头。
     extra = row.get("extra") if isinstance(row.get("extra"), dict) else {}
     from fingerprint import fingerprint_from_account
-    fp = fingerprint_from_account(row, country_code=str(row.get("reg_country") or ""))
+    fp = fingerprint_from_account(
+        row,
+        country_code=str(row.get("reg_country") or ""),
+        generate_if_missing=False,
+    )
     ua = (fp.get("user_agent") or "").strip() or (
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36"
     )
-    impersonate = str(extra.get("impersonate") or fp.get("impersonate") or "chrome146").strip() or "chrome146"
+    impersonate = str(extra.get("impersonate") or fp.get("impersonate") or "chrome142").strip() or "chrome142"
     from http_client import create_http_session
     session = create_http_session(proxy=proxy or None, impersonate=impersonate, user_agent=ua)
     if hasattr(session, "trust_env"):
@@ -234,6 +238,13 @@ def _process_warm_worker(task: WarmingTask, email: str):
     target_country = followup_country(raw_country, row_info.get("reg_country") or "")
     if proxy and target_country:
         proxy = route_proxy_country(proxy, target_country, new_proxy_session_id())
+    country_src = "界面选择" if raw_country else "跟注册"
+    proxy_label = proxy.split("@")[-1] if "@" in (proxy or "") else (proxy or "直连")
+    task.add_email_log(
+        email,
+        f"使用代理: {proxy_label}"
+        + (f" (目标国家: {target_country} · {country_src})" if target_country else ""),
+    )
 
     task.set_running(email, "正在执行保温...")
     try:

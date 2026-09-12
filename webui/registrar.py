@@ -778,14 +778,6 @@ def _do_register(
         if target_country:
             d["target_country"] = target_country
 
-        # 注册当次 bootstrap 的套餐/试用结果一并落库，避免只能靠事后验活才看得见。
-        plan_info = getattr(getattr(flow, "result", None), "plan_info", None)
-        if isinstance(plan_info, dict) and plan_info:
-            d["plus_check"] = dict(plan_info)
-            logging.getLogger("registrar").info(
-                f"[register] 注册时套餐: {plan_info.get('label') or plan_info.get('status') or '?'}"
-            )
-
         # 终身绑定邮箱底层取件凭证（包含 Remail 购买凭证、微软 OAuth 凭证、iCloud 中转凭证）
         if mail_source == "remail" or getattr(mail, "kind", "") == "remail":
             d["mail_oauth"] = {

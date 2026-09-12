@@ -24,21 +24,26 @@ from typing import Any, Optional
 from urllib.parse import quote
 
 try:
-    from curl_cffi.requests import Session as CurlSession
-except ImportError:  # pragma: no cover
-    CurlSession = None
-
-try:
     from . import db
-    from .proxy_util import COUNTRY_LANG_MAP, new_proxy_session_id, resolve_target_country, route_proxy_country
+    from .proxy_util import (
+        COUNTRY_LANG_MAP,
+        followup_country,
+        new_proxy_session_id,
+        route_proxy_country,
+    )
 except ImportError:
     import db
-    from proxy_util import COUNTRY_LANG_MAP, new_proxy_session_id, resolve_target_country, route_proxy_country
+    from proxy_util import (
+        COUNTRY_LANG_MAP,
+        followup_country,
+        new_proxy_session_id,
+        route_proxy_country,
+    )
 
 CHECK_URL = "https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27"
 DEFAULT_UA = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36"
 )
 
 _DEACTIVATED_MARKERS = (
@@ -563,21 +568,47 @@ def _check_one_account(task: PlusCheckTask, email: str) -> None:
         task.mark_done(email, res)
         return
 
+    extra = cred.get("extra") if isinstance(cred.get("extra"), dict) else {}
+    try:
+        from fingerprint import fingerprint_from_account
+        fp = fingerprint_from_account(
+            cred,
+            country_code=str(cred.get("reg_country") or ""),
+            generate_if_missing=False,
+        )
+    except Exception:
+        fp = extra.get("browser_profile") if isinstance(extra.get("browser_profile"), dict) else {}
+    if not isinstance(fp, dict):
+        fp = {}
+
     auth_claims = _get_auth(_decode_jwt_payload(at))
     account_id = str(auth_claims.get("chatgpt_account_id") or auth_claims.get("account_id") or "").strip()
-    device_id = (cred.get("device_id") or "").strip() or str(
+    device_id = (cred.get("device_id") or extra.get("device_id") or fp.get("device_id") or "").strip() or str(
         uuid.uuid5(uuid.NAMESPACE_DNS, f"dango-check-plus:{email}")
     )
+    ua = (fp.get("user_agent") or "").strip() or DEFAULT_UA
+    impersonate = str(extra.get("impersonate") or fp.get("impersonate") or "chrome142").strip() or "chrome142"
+    lang_full = (fp.get("lang_full") or "").strip()
+    lang = (fp.get("lang") or "").strip() or "en-US"
 
     proxy = task.next_proxy()
     raw_country = (task.config.get("proxy_country") or "").strip().upper()
-    target_country = resolve_target_country(raw_country)
+    target_country = followup_country(
+        raw_country, cred.get("reg_country") or "", prefer_selected=True,
+    )
+    if not lang_full and target_country and target_country in COUNTRY_LANG_MAP:
+        lang_full = COUNTRY_LANG_MAP[target_country]
     if proxy and target_country:
         proxy = route_proxy_country(proxy, target_country, new_proxy_session_id())
 
     proxy_label = proxy.split("@")[-1] if "@" in proxy else (proxy or "直连")
-    country_tip = f" (目标国家: {target_country})" if target_country else ""
-    task.add_email_log(email, f"使用代理: {proxy_label}{country_tip}, account_id={account_id or '无'}, device_id={device_id[:8]}...")
+    country_src = "界面选择" if raw_country else "跟注册"
+    country_tip = f" (目标国家: {target_country} · {country_src})" if target_country else ""
+    task.add_email_log(
+        email,
+        f"使用代理: {proxy_label}{country_tip}, impersonate={impersonate}, "
+        f"account_id={account_id or '无'}, device_id={device_id[:8]}..."
+    )
 
     sess = None
     timeout = float(task.config.get("timeout") or 20.0)
@@ -585,11 +616,8 @@ def _check_one_account(task: PlusCheckTask, email: str) -> None:
     result = {"status": "error", "label": "网络异常", "error": "未知错误"}
 
     try:
-        if CurlSession is not None:
-            sess = CurlSession(impersonate="chrome136")
-        else:
-            from http_client import create_http_session
-            sess = create_http_session(proxy=proxy or None, impersonate="chrome110")
+        from http_client import create_http_session
+        sess = create_http_session(proxy=proxy or None, impersonate=impersonate, user_agent=ua)
 
         if hasattr(sess, "trust_env"):
             sess.trust_env = False
@@ -598,18 +626,27 @@ def _check_one_account(task: PlusCheckTask, email: str) -> None:
         headers = {
             "Authorization": f"Bearer {at}",
             "Accept": "application/json",
-            "User-Agent": DEFAULT_UA,
+            "User-Agent": ua,
             "Origin": "https://chatgpt.com",
             "Referer": "https://chatgpt.com/",
+            "oai-language": lang,
         }
-        if target_country and target_country in COUNTRY_LANG_MAP:
-            headers["Accept-Language"] = COUNTRY_LANG_MAP[target_country]
+        if lang_full:
+            headers["Accept-Language"] = lang_full
         if account_id:
             headers["ChatGPT-Account-ID"] = account_id
         if device_id:
-            headers["OAI-Device-Id"] = device_id
+            headers["oai-device-id"] = device_id
+        if fp.get("sec_ch_ua"):
+            headers["sec-ch-ua"] = fp["sec_ch_ua"]
+            headers["sec-ch-ua-mobile"] = fp.get("sec_ch_ua_mobile") or "?0"
+            if fp.get("sec_ch_ua_platform"):
+                headers["sec-ch-ua-platform"] = fp["sec_ch_ua_platform"]
 
-        tz = get_country_timezone_offset_min(target_country or cred.get("reg_country") or "")
+        tz = get_country_timezone_offset_min(
+            target_country or cred.get("reg_country") or "",
+            (fp.get("timezone") or ""),
+        )
         url_with_tz = f"{CHECK_URL}?timezone_offset_min={tz}"
         task.add_email_log(email, f"发送 GET {url_with_tz}...")
         resp = sess.get(url_with_tz, headers=headers, timeout=timeout)
