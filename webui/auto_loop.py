@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import queue
+import random
 import threading
 import time
 from typing import Optional
@@ -90,6 +91,8 @@ class AutoLoopController:
         # 任务流水列表（最新 200 条，用于前端表格展示每一个号的进度与日志）
         self._tasks: list[dict] = []
         self._tasks_map: dict[str, dict] = {}
+        self._pool_stats_cache: dict = {}
+        self._pool_stats_cache_t: float = 0.0
 
     # ──────────────────────── 公共 API ────────────────────────
 
@@ -145,6 +148,11 @@ class AutoLoopController:
                     f"auto-loop 启动: concurrency={self._concurrency}, "
                     f"circuit_break_threshold={self._circuit_break_threshold}, "
                     f"target_count={self._target_count}"
+                )
+            if self._spawn_count >= 8 and len(self._proxy_pool) <= 1:
+                logger.warning(
+                    f"[auto-loop] 并发 {self._spawn_count} 但代理模板只有 {len(self._proxy_pool) or 1} 条，"
+                    "同一 ASN 会扎堆。建议代理池多放几条模板，或把并发降到 5 以内"
                 )
             # 启 manage 线程
             self._manage_thread = threading.Thread(
@@ -210,9 +218,21 @@ class AutoLoopController:
 
     # ──────────────────────── 内部 ────────────────────────
 
-    def _snapshot(self) -> dict:
-        with self._lock:
+    def _cached_pool_stats(self) -> dict:
+        now = time.time()
+        if self._pool_stats_cache and now - self._pool_stats_cache_t < 3.0:
+            return self._pool_stats_cache
+        try:
             stats = db.stats()
+        except Exception:
+            stats = self._pool_stats_cache or {}
+        self._pool_stats_cache = stats
+        self._pool_stats_cache_t = now
+        return stats
+
+    def _snapshot(self) -> dict:
+        stats = self._cached_pool_stats()
+        with self._lock:
             now = time.time()
 
             elapsed = 0.0
@@ -339,15 +359,6 @@ class AutoLoopController:
             for t in self._tasks:
                 item = dict(t)
                 rid = item.get("run_id")
-                # 实时同步真实邮箱（从 placeholder 升级为分配/复用的真正邮箱）
-                if rid and "placeholder" in (item.get("email") or ""):
-                    try:
-                        cur_em = db._conn().execute("SELECT email FROM runs WHERE run_id=?", (rid,)).fetchone()
-                        if cur_em and cur_em["email"] and "placeholder" not in cur_em["email"]:
-                            item["email"] = cur_em["email"]
-                            t["email"] = cur_em["email"]
-                    except Exception:
-                        pass
                 if item.get("status") == "running":
                     if item.get("started_at"):
                         item["elapsed"] = round(now - item["started_at"], 1)
@@ -398,6 +409,22 @@ class AutoLoopController:
                 q.put_nowait({"kind": kind, "data": data})
             except queue.Full:
                 pass
+
+    def note_run_email(self, run_id: str, email: str) -> None:
+        """注册买到真实邮箱后立刻写回任务行，界面不再停在「自动购号中」。"""
+        em = (email or "").strip()
+        rid = (run_id or "").strip()
+        if not em or not rid:
+            return
+        with self._lock:
+            t = self._tasks_map.get(rid)
+            if t:
+                t["email"] = em
+            for info in self._worker_status.values():
+                if info.get("run_id") == rid:
+                    info["email"] = em
+                    break
+        self._broadcast("state", self._snapshot())
 
     def _set_message(self, msg: str):
         with self._lock:
@@ -482,7 +509,17 @@ class AutoLoopController:
                     self._consecutive_network_fails = 0
 
                 err_str = f"{category} {error_msg}".lower()
-                if "409" in err_str or "conflict" in err_str or "cf_challenge" in err_str:
+                warmup_fail = "warmup" in err_str or "oai-did" in err_str or "预热" in err_str
+                real_409 = (
+                    not warmup_fail
+                    and (
+                        "http 409" in err_str
+                        or "409 conflict" in err_str
+                        or "invalid_state" in err_str
+                        or "cf_challenge" in err_str
+                    )
+                )
+                if real_409:
                     self._consecutive_409_count += 1
                     self._risk_backoff_until = now_ts + 60.0
                 else:
@@ -549,8 +586,8 @@ class AutoLoopController:
                 )
                 t.start()
                 workers.append(t)
-                # 每个 worker 之间错开 1s 启动，避免同时打 OpenAI
-                time.sleep(1.0)
+                # 高并发错开 1.5~3.2s，避免 15 路同一秒打 chatgpt.com
+                time.sleep(1.5 + random.uniform(0.0, 1.7))
             self._workers = workers
             # 等所有 worker 退出
             for t in workers:

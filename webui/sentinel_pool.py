@@ -68,9 +68,8 @@ class SentinelPrecomputePool:
         """启动后台预计算守护线程。"""
         if not self._enabled:
             logger.info(
-                f"[SentinelPool] 预计算池已停用（不是前端 PoW 槽位；"
-                f"缓冲水位配置={self.target_size}）。"
-                f"注册必须用本号自己的 UA/屏幕/时区现场计算 Sentinel，避免串指纹被风控。"
+                "[SentinelPool] 共享预计算池已关闭，前端「PoW 算力槽位」仍生效："
+                "每个号用自己的指纹现场算 Sentinel，槽位只限制同时算几个。"
             )
             return
         if self._worker_thread and self._worker_thread.is_alive():

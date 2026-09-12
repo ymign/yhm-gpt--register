@@ -5,7 +5,8 @@ export const startRegister = (payload) => http.post('/api/register', payload)
 
 // ──────────────── 运行记录 ────────────────
 export const listRuns = (limit = 50) => http.get('/api/runs', { params: { limit } })
-export const getRunLog = (runId) => http.get(`/api/runs/${encodeURIComponent(runId)}/log`)
+export const getRunLog = (runId, timeout = 8000) =>
+  http.get(`/api/runs/${encodeURIComponent(runId)}/log`, { timeout })
 
 // ──────────────── 注册结果 registered ────────────────
 export const getRegisteredSummary = () => http.get('/api/registered/summary')

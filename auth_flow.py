@@ -188,10 +188,13 @@ class AuthFlow:
             self._fingerprint_locked = False
         self._oai_session_id = str(uuid.uuid4())
         self._exit_ip = ""
-        self._impersonate_candidates = self._fingerprint.get(
-            "fallback_impersonates",
-            [self._fingerprint["impersonate"], "chrome146", "chrome142"],
-        )
+        # 预热 403 必须能换 TLS。指纹里若只有一个 impersonate，重试会假换 IP、真 JA3 不变。
+        _tls_order = ["chrome142", "chrome146", "chrome136"]
+        cur_imp = str((self._fingerprint or {}).get("impersonate") or "chrome142")
+        if cur_imp not in _tls_order:
+            cur_imp = "chrome142"
+        self._impersonate_candidates = [cur_imp] + [x for x in _tls_order if x != cur_imp]
+        self._fingerprint["fallback_impersonates"] = list(self._impersonate_candidates)
         self._impersonate_idx = 0
         logger.info(
             f"指纹已生成 type={self._fingerprint.get('browser_type')} "
@@ -2093,7 +2096,7 @@ class AuthFlow:
            不是换成 safari —— 换指纹只是绕开症状，且会让 self._fingerprint 与
            self._ua 不一致（后续 _common_headers 会拿旧家族的 CH 配新 UA，更假）。
 
-        重试只换出口 IP，不换指纹（指纹本来就没问题，见上）：代理池按会话分配
+        重试只换出口 IP，不换指纹（c982144 批量注册高成功路径）：代理池按会话分配
         出口，新 session ≈ 新 IP，绕开连不上的坏 IP。cookie 跟着 session 一起
         清掉是对的：失败轮本来就没种到有用的东西。
 
@@ -2104,14 +2107,30 @@ class AuthFlow:
         统一走 _navigation_headers 后，用真实 CF 域名跑完整 run_register
         **3/3 全成功**（各约 100s，password + access_token 齐全），409 = 0。
         """
-        # 一号一指纹：warmup 失败只换出口 IP，不换 UA / Client Hints / 硬件画像。
+        # 首发锁定 HAR。Cloudflare 对 chrome146 403 时换同机 Chrome TLS（头和 JA3 一起换）。
         locked_imp = (self._fingerprint or {}).get("impersonate") or "chrome146"
 
+        def _exit_ip_now() -> str:
+            ip = (getattr(self, "_exit_ip", "") or "").strip()
+            try:
+                tr = self.session.get(
+                    "https://cloudflare.com/cdn-cgi/trace",
+                    headers=self._navigation_headers(),
+                    timeout=10,
+                )
+                if getattr(tr, "status_code", 0) == 200:
+                    m = re.search(r"ip=([^\n]+)", tr.text or "")
+                    if m:
+                        ip = m.group(1).strip()
+                        self._exit_ip = ip
+            except Exception:
+                pass
+            return ip
+
         for attempt in range(5):
-            headers = self._navigation_headers()
             if attempt:
-                time.sleep(2 + attempt)
-                # 动态住宅代理一号一 IP：保持国家与浏览器画像不变，只换 session
+                time.sleep(1 + attempt)
+                prev_ip = (getattr(self, "_exit_ip", "") or "").strip()
                 try:
                     from webui.proxy_util import new_proxy_session_id, proxy_template_country, route_proxy_country
                     curr_country = (self._country_code or proxy_template_country(self.config.proxy or "") or "").strip().upper()
@@ -2119,14 +2138,28 @@ class AuthFlow:
                         self.config.proxy = route_proxy_country(
                             self.config.proxy, country=curr_country, session_id=new_proxy_session_id()
                         )
-                        logger.info(
-                            f"warmup 重试 (第 {attempt + 1}/5 次)：指纹锁定 impersonate={locked_imp}，"
-                            f"仅刷新同国新 IP 会话 [{curr_country}]"
-                        )
                 except Exception as _px_err:
                     logger.debug(f"warmup 代理轮换跳过: {_px_err}")
-
-                self._new_http_session(locked_imp)
+                rotated = False
+                if not getattr(self, "_fingerprint_locked", False):
+                    rotated = self._rotate_impersonate_session()
+                    if rotated:
+                        locked_imp = (self._fingerprint or {}).get("impersonate") or locked_imp
+                    else:
+                        logger.warning(
+                            f"warmup TLS 未换到下一个：idx={self._impersonate_idx} "
+                            f"candidates={self._impersonate_candidates}"
+                        )
+                if not rotated:
+                    self._new_http_session(locked_imp)
+                new_ip = _exit_ip_now()
+                same = "（IP没变，sticky 没换出去）" if prev_ip and new_ip and prev_ip == new_ip else ""
+                logger.info(
+                    f"warmup 重试 (第 {attempt + 1}/5 次)：impersonate={locked_imp} "
+                    f"ua_ver={str(self._ua).split('Chrome/')[-1][:12] if 'Chrome/' in str(self._ua) else '?'} "
+                    f"IP={new_ip or '?'}{same}"
+                )
+            headers = self._navigation_headers()
             try:
                 resp = self.session.get(
                     "https://chatgpt.com", headers=headers, timeout=35,
@@ -2134,6 +2167,7 @@ class AuthFlow:
                 status = resp.status_code
             except Exception as e:
                 status = None
+                resp = None
                 logger.warning(f"warmup 第 {attempt + 1}/5 次请求失败: {e}")
 
             # 唯一判据：cookie 到底种上没有。HTTP 200 不代表拿到 oai-did（CF 403 只给
@@ -2154,13 +2188,22 @@ class AuthFlow:
                     pass
                 return True
 
+            extra = ""
+            if resp is not None and status == 403:
+                try:
+                    ray = (resp.headers.get("cf-ray") or resp.headers.get("cf-mitigated") or "")[:40]
+                    extra = f" cf={ray}" if ray else " Cloudflare 403"
+                except Exception:
+                    extra = " Cloudflare 403"
             logger.warning(
                 f"warmup 第 {attempt + 1}/5 次未种到 oai-did"
                 + (f"（HTTP {status}）" if status is not None else "")
+                + extra
+                + (f" IP={getattr(self, '_exit_ip', '') or '?'}")
                 + (f"，已有 cookie: {sorted(cookies)}" if cookies else "，无任何 cookie")
             )
 
-        logger.error("warmup 5 次均未种到 oai-did cookie —— 此时继续走注册链必然 409 invalid_state")
+        logger.error("warmup 5 次均未种到 oai-did cookie —— 此时继续走注册链会被 Cloudflare/授权页拦住")
         try:
             from webui.proxy_health import get_proxy_health_manager
             get_proxy_health_manager().record_failure(self.config.proxy, reason="warmup 5次未种到 oai-did (出口IP可能被CF拦截)")
@@ -2850,6 +2893,15 @@ class AuthFlow:
             "max_touch_points": fp.get("max_touch_points", 0),
             "device_pixel_ratio": fp.get("device_pixel_ratio", 0.0),
             "timezone": fp.get("timezone", ""),  # IP 联动时区
+            "webgl_vendor": fp.get("webgl_vendor") or "",
+            "webgl_renderer": fp.get("webgl_renderer") or "",
+            "js_heap_size_limit": fp.get("js_heap_size_limit") or 4294967296,
+            "color_depth": fp.get("color_depth") or 24,
+            "avail_width": fp.get("avail_width"),
+            "avail_height": fp.get("avail_height"),
+            "connection_rtt": fp.get("connection_rtt"),
+            "connection_downlink": fp.get("connection_downlink"),
+            "connection_effective_type": fp.get("connection_effective_type") or "4g",
         }
 
     def get_sentinel_token(self, device_id: str) -> str:
@@ -4149,8 +4201,8 @@ class AuthFlow:
         logger.info("开始预热 chatgpt.com（成功后再购买 Remail 邮箱）...")
         if not self.warmup():
             raise RuntimeError(
-                "warmup 失败：4 次重试均未拿到 chatgpt.com 的 oai-did cookie，"
-                "继续注册必然 409 invalid_state（多为代理出口 IP 不通或被 CF 拦），"
+                "warmup 失败：多次重试仍未拿到 chatgpt.com 的 oai-did cookie，"
+                "继续注册会被 Cloudflare/授权页拦住（多为出口 IP 或 TLS 被拦），"
                 "请检查代理后重试"
             )
 
@@ -4680,8 +4732,8 @@ class AuthFlow:
         # 这里不花钱建邮箱，但报错说清原因，省得当成"密码错"排查。
         if not self.warmup():
             raise RuntimeError(
-                "warmup 失败：4 次重试均未拿到 chatgpt.com 的 oai-did cookie，"
-                "继续登录必然 409 invalid_state（多为代理出口 IP 不通或被 CF 拦），"
+                "warmup 失败：多次重试仍未拿到 chatgpt.com 的 oai-did cookie，"
+                "继续登录会被 Cloudflare/授权页拦住（多为出口 IP 或 TLS 被拦），"
                 "请检查代理后重试"
             )
 

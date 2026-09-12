@@ -48,6 +48,13 @@ const canStart = computed(() => st.value === 'stopped')
 const canPause = computed(() => st.value === 'running')
 const canResume = computed(() => st.value === 'paused')
 const canStop = computed(() => st.value !== 'stopped')
+const starting = ref(false)
+const startHint = computed(() => {
+  if (starting.value) return '正在启动…'
+  if (st.value === 'running') return '正在运行，请先点停止'
+  if (st.value === 'paused') return '已暂停，请先停止或恢复'
+  return '开始自动运行'
+})
 
 const stateLabel = computed(() => ({
   stopped: '未运行', running: '正在运行', paused: '已暂停',
@@ -297,27 +304,54 @@ const currentLogTask = ref(null)
 const logLines = ref([])
 let logPollTimer = null
 
+function logLinesFromRes(res) {
+  if (!res) return []
+  if (Array.isArray(res.lines) && res.lines.length) return res.lines
+  if (typeof res.text === 'string' && res.text.trim()) return res.text.split('\n')
+  return []
+}
+
 async function openTaskLog(task) {
   currentLogTask.value = task
   logLines.value = []
   logModalVisible.value = true
-  await fetchTaskLog(task.run_id)
-
-  if (task.status === 'running') {
+  logModalLoading.value = true
+  if (task?.phase_text) {
+    logLines.value = [`当前阶段: ${task.phase_text} (${task.percent || 0}%)`, '正在拉取完整日志…']
+  }
+  if (task?.status === 'running') {
     startLogPolling(task.run_id)
   }
+  await fetchTaskLog(task.run_id)
 }
 
 async function fetchTaskLog(runId) {
-  if (!runId) return
+  if (!runId) {
+    logModalLoading.value = false
+    return
+  }
   logModalLoading.value = true
   try {
-    const res = await getRunLog(runId)
-    logLines.value = res.lines || (res.text ? res.text.split('\n') : [])
+    const res = await getRunLog(runId, 8000)
+    const lines = logLinesFromRes(res)
+    if (lines.length) {
+      logLines.value = lines
+    } else if (!logLines.value.length) {
+      const phase = currentLogTask.value?.phase_text
+      logLines.value = phase
+        ? [`当前阶段: ${phase}`, '日志文件还是空的，注册线程可能卡在预热/代理，稍后再看']
+        : ['暂无日志输出']
+    }
     await nextTick()
     scrollLogModalToBottom()
   } catch (e) {
-    logLines.value = ['读取日志失败: ' + (e.response?.data?.detail || e.message)]
+    if (!logLines.value.length || logLines.value.some((l) => String(l).includes('正在拉取'))) {
+      const phase = currentLogTask.value?.phase_text || ''
+      logLines.value = [
+        '读取日志失败: ' + (e.message || '超时'),
+        phase ? `当前阶段: ${phase}` : '',
+      ].filter(Boolean)
+    }
   } finally {
     logModalLoading.value = false
   }
@@ -331,10 +365,14 @@ function startLogPolling(runId) {
       return
     }
     try {
-      const res = await getRunLog(runId)
-      logLines.value = res.lines || (res.text ? res.text.split('\n') : [])
-      await nextTick()
-      scrollLogModalToBottom()
+      const res = await getRunLog(runId, 8000)
+      const lines = logLinesFromRes(res)
+      if (lines.length) {
+        logLines.value = lines
+        logModalLoading.value = false
+        await nextTick()
+        scrollLogModalToBottom()
+      }
     } catch (_) {}
 
     const latest = taskList.value.find((t) => t.run_id === runId)
@@ -381,6 +419,16 @@ function getLogLineClass(line) {
 
 // 控制动作
 async function start() {
+  if (starting.value) return
+  if (st.value === 'running') {
+    ElMessage.warning('已经在跑了。要重开请先点停止，等当前号预热结束（可能要一两分钟）')
+    return
+  }
+  if (st.value === 'paused') {
+    ElMessage.warning('当前是暂停状态，请点「恢复」继续，或先停止再重新开始')
+    return
+  }
+  starting.value = true
   try {
     await autoStart({
       mail_source: form.value.autoMailSource || form.value.mailSource || 'cf_temp',
@@ -398,10 +446,12 @@ async function start() {
       want_2fa: form.value.autoWant2fa,
       want_password: form.value.autoWantPassword,
     })
-    ElMessage.success('🚀 AutoLoop 2.0 全自动跑号引擎已启动！')
-    syncAutoStatus()
+    ElMessage.success('全自动批量已启动')
+    await syncAutoStatus()
   } catch (e) {
-    ElMessage.error('启动失败: ' + e.message)
+    ElMessage.error('启动失败: ' + (e.message || e))
+  } finally {
+    starting.value = false
   }
 }
 
@@ -663,11 +713,12 @@ onUnmounted(() => {
           <button
             type="button"
             class="autoloop-btn btn-primary"
-            :disabled="!canStart"
+            :disabled="starting"
+            :title="startHint"
             @click="start"
           >
             <el-icon><VideoPlay /></el-icon>
-            <span>开始自动运行</span>
+            <span>{{ starting ? '正在启动…' : '开始自动运行' }}</span>
           </button>
           <div class="action-btn-group">
             <button
@@ -746,7 +797,7 @@ onUnmounted(() => {
                 <el-form-item>
                   <template #label>
                     <span>PoW 算力槽位</span>
-                    <el-tooltip content="同时解算 Sentinel PoW 的 node 进程数上限（默认 6）。启动日志里的「预计算池缓冲水位=3」是另一件事，已经停用，不会拿别人的指纹 token。网络并发再高，PoW 也会在这里排队。" placement="top">
+                    <el-tooltip content="这就是算力槽：同时跑几个 node 解 Sentinel PoW，默认 6，改了会立刻保存。日志里「预计算池已关闭」是另一件事——以前用别人指纹预计算 token，会串画像，已经关掉。槽位还在，每个号现场算。" placement="top">
                       <el-icon class="info-ico" style="margin-left: 3px;"><QuestionFilled /></el-icon>
                     </el-tooltip>
                   </template>

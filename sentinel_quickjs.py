@@ -263,6 +263,15 @@ def get_sentinel_token_via_quickjs(
     sec_ch_ua_bitness: str = "",
     sec_ch_ua_model: str = "",
     sec_ch_ua_platform_version: str = "",
+    webgl_vendor: str = "",
+    webgl_renderer: str = "",
+    js_heap_size_limit: int = 0,
+    color_depth: int = 24,
+    avail_width: Optional[int] = None,
+    avail_height: Optional[int] = None,
+    connection_rtt: Optional[int] = None,
+    connection_downlink: Optional[float] = None,
+    connection_effective_type: str = "4g",
 ) -> Optional[tuple[str, str]]:
     """Try the QuickJS path. Return JSON string on success, None on any failure.
 
@@ -321,9 +330,18 @@ def get_sentinel_token_via_quickjs(
         "vendor": vendor,
         "hardware_concurrency": hw_conc,
         "browser_type": browser_type or "",
-        "device_pixel_ratio": float(device_pixel_ratio) if device_pixel_ratio else 1.0,
+        "device_pixel_ratio": float(device_pixel_ratio) if device_pixel_ratio else 2.0,
         "max_touch_points": int(max_touch_points),
-        "timezone": timezone or "UTC",  # IANA 时区名
+        "timezone": timezone or "UTC",
+        "webgl_vendor": webgl_vendor or "",
+        "webgl_renderer": webgl_renderer or "",
+        "js_heap_size_limit": int(js_heap_size_limit or 4294967296),
+        "color_depth": int(color_depth or 24),
+        "avail_width": int(avail_width or screen_w),
+        "avail_height": int(avail_height or screen_h),
+        "connection_rtt": int(connection_rtt or 50),
+        "connection_downlink": float(connection_downlink or 10),
+        "connection_effective_type": connection_effective_type or "4g",
     }
     # deviceMemory 仅 Chromium 暴露；None 时不下发该键，JS 侧保持 undefined
     if device_memory is not None:

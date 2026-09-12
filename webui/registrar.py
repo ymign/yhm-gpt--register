@@ -262,6 +262,8 @@ _NETWORK_ERROR_PATTERNS = [
     "remote disconnected", "connection reset", "connection aborted",
     "max retries exceeded",
     "invalid_state",
+    "warmup",
+    "oai-did",
 ]
 
 
@@ -480,17 +482,27 @@ def _do_register(
             try:
                 from .db import is_combo_blacklisted, pick_healthy_country
                 if is_combo_blacklisted(raw_proxy, target_country):
-                    candidates = HOT_COUNTRIES if raw_target_country in ("RANDOM_HOT", "HOT", "RANDOM") else (
-                        ALL_AVAILABLE_COUNTRIES if raw_target_country in ("RANDOM_ALL", "ALL") else ALL_AVAILABLE_COUNTRIES
-                    )
+                    candidates = HOT_COUNTRIES if raw_target_country in ("RANDOM_HOT", "HOT", "RANDOM") else ALL_AVAILABLE_COUNTRIES
                     alt = pick_healthy_country(raw_proxy, candidates)
                     if alt and alt != target_country:
                         logging.getLogger("registrar").warning(
-                            f"[register] 出口 {target_country} 已被健康度拉黑，自动切换到 {alt}"
+                            f"[register] 出口 {target_country} 已拉黑（死亡率过高），自动切换到 {alt}"
+                        )
+                        _run_log(
+                            run_id,
+                            f"[register] 出口 {target_country} 已拉黑，改用 {alt}，否则预热会被 Cloudflare 403",
                         )
                         target_country = alt
+                    else:
+                        logging.getLogger("registrar").error(
+                            f"[register] 出口 {target_country} 已拉黑且没有可用替补国，仍继续，预热大概率 403"
+                        )
+                        _run_log(
+                            run_id,
+                            f"[register] 出口 {target_country} 已拉黑且无替补国。请换国家或换代理，不要继续打这条美国段",
+                        )
             except Exception as _e:
-                logging.getLogger("registrar").debug(f"[register] 健康度换国检查跳过: {_e}")
+                logging.getLogger("registrar").warning(f"[register] 健康度换国检查失败: {_e}")
 
         if target_country:
             env_overrides["TARGET_COUNTRY"] = target_country
@@ -572,6 +584,11 @@ def _do_register(
                 "order_no": meta.get("order_no", ""),
                 "expires_at": meta.get("expires_at", 0.0),
             })
+            try:
+                from .auto_loop import CONTROLLER as _al
+                _al.note_run_email(run_id, assigned_email)
+            except Exception:
+                pass
 
         sms_cb = _build_sms_callback(run_id, account.get("email") or "")
         flow = AuthFlow(

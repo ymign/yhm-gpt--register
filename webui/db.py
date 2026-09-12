@@ -2508,8 +2508,12 @@ def get_blacklist() -> dict:
     rows = con.execute(
         "SELECT template, country FROM proxy_health WHERE blacklisted=1"
     ).fetchall()
-    combos = {(r["template"], r["country"]) for r in rows if r["template"] and r["country"]}
-    templates = {r["template"] for r in rows if r["template"] and not r["country"]}
+    def _canon(t: str) -> str:
+        from .proxy_util import normalize_proxy_key
+        return normalize_proxy_key(t) or (t or "")
+
+    combos = {(_canon(r["template"]), r["country"]) for r in rows if r["template"] and r["country"]}
+    templates = {_canon(r["template"]) for r in rows if r["template"] and not r["country"]}
     countries = {r["country"] for r in rows if not r["template"] and r["country"]}
     # 「已有国家行全部拉黑」也视为整模板黑
     for r in con.execute(
@@ -2517,7 +2521,7 @@ def get_blacklist() -> dict:
         "FROM proxy_health WHERE template != '' AND country != '' GROUP BY template"
     ).fetchall():
         if (r["b"] or 0) >= r["n"]:
-            templates.add(r["template"])
+            templates.add(_canon(r["template"]))
     return {"combos": combos, "templates": templates, "countries": countries}
 
 

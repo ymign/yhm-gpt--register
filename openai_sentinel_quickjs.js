@@ -99,13 +99,14 @@ function canvasElement() {
     }
     if (!['webgl', 'experimental-webgl', 'webgl2'].includes(kind)) return null;
     const dbg = { UNMASKED_VENDOR_WEBGL: 0x9245, UNMASKED_RENDERER_WEBGL: 0x9246 };
+    const glVendor = String(input.webgl_vendor || 'Google Inc. (Apple)');
+    const glRenderer = String(input.webgl_renderer || 'ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)');
     return {
       VENDOR: 0x1F00, RENDERER: 0x1F01,
       getExtension(name) { return name === 'WEBGL_debug_renderer_info' ? dbg : null; },
       getParameter(p) {
-        if (p === dbg.UNMASKED_VENDOR_WEBGL || p === 0x1F00) return 'Google Inc. (Intel)';
-        if (p === dbg.UNMASKED_RENDERER_WEBGL || p === 0x1F01)
-          return 'ANGLE (Intel, Intel(R) UHD Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)';
+        if (p === dbg.UNMASKED_VENDOR_WEBGL || p === 0x1F00) return glVendor;
+        if (p === dbg.UNMASKED_RENDERER_WEBGL || p === 0x1F01) return glRenderer;
         return 0;
       },
       getSupportedExtensions() { return ['WEBGL_debug_renderer_info']; },
@@ -217,7 +218,12 @@ const navigatorObj = {
   product: 'Gecko',
   productSub: '20030107',
   vendorSub: '',
-  connection: { effectiveType: '4g', rtt: 50, downlink: 10, saveData: false },
+  connection: {
+    effectiveType: String(input.connection_effective_type || '4g'),
+    rtt: Number(input.connection_rtt || 50),
+    downlink: Number(input.connection_downlink || 10),
+    saveData: false,
+  },
   plugins: { length: 5 },
   mimeTypes: { length: 2 },
   mediaDevices: { enumerateDevices: async () => [] },
@@ -306,7 +312,7 @@ const context = {
   performance: {
     now: () => performance.now(),
     timeOrigin: performance.timeOrigin,
-    memory: { jsHeapSizeLimit: 4294967296 },
+    memory: { jsHeapSizeLimit: Number(input.js_heap_size_limit || 4294967296) },
     getEntriesByType: () => [],
     getEntriesByName: () => [],
     mark: () => {},
@@ -316,10 +322,10 @@ const context = {
   screen: {
     width: screenW,
     height: screenH,
-    availWidth: screenW,
-    availHeight: screenH,
-    colorDepth: 24,
-    pixelDepth: 24,
+    availWidth: Number(input.avail_width || screenW),
+    availHeight: Number(input.avail_height || Math.max(screenH - 28, 0)),
+    colorDepth: Number(input.color_depth || 24),
+    pixelDepth: Number(input.color_depth || 24),
     orientation: { type: 'landscape-primary', angle: 0 },
   },
 

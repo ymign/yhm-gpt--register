@@ -133,6 +133,9 @@ def normalize_proxy_key(proxy: str) -> str:
     username = re.sub(
         r"(?i)(-sid-|-session-|_session-)[a-z0-9]+", r"\g<1>*", username
     )
+    # cliproxy sticky TTL（-t-10）不是账号身份。不抹掉的话
+    # sid-auto 和 sid-*-t-10 会变成两条模板，拉黑对不上，继续打已死的美国段。
+    username = re.sub(r"(?i)-t-(?:\d+|\*)\b", "", username)
 
     # 密码 prefix-CC-session-ttl 形态：session 数字段 → *
     m = re.fullmatch(

@@ -1,8 +1,8 @@
 """浏览器指纹（默认对齐 yhm-gpt-free-register 的 HAR / Roxy 桌面 Chrome 画像）。
 
 每次注册调用 generate_fingerprint() 生成一套一致的指纹组合：
-  - TLS impersonate（curl_cffi 最高 chrome146）
-  - HTTP/JS 自称 Chrome/149 macOS（与 2026-07-19 ChatGPT 抓包一致）
+  - TLS impersonate（curl_cffi chrome146，403 后回退 142/136）
+  - HTTP/JS 自称 Chrome/146 macOS（必须与 TLS 同代，149 头今天会被 CF 403）
   - sec-ch-ua 全套 Client Hints（仅 Chromium）
   - 屏幕 / 硬件 / WebGL
   - Accept-Language + IANA 时区（跟出口国家，不再随机混语言）
@@ -11,7 +11,7 @@
 
 Safari / iOS / Firefox 生成器仍保留，供 TLS 旋转查表；默认注册不再抽它们。
 ChatGPT Plus 试用资格是注册后第一次 chatgpt.com 会话的 A/B 曝光，
-桌面 Chrome 149 + 语言/时区跟出口 IP 一致，才接近指纹浏览器的命中率。
+桌面 Chrome 146 + 语言/时区跟出口 IP 一致。禁止再叠 149 头。
 """
 from __future__ import annotations
 
@@ -82,19 +82,19 @@ _IPHONE_SCREENS = [
 ]
 
 # ---------------------------------------------------------------------------
-# Chrome（HTTP/JS = 149，TLS = curl_cffi chrome146）
-#
-# yhm-gpt-free-register 的 HAR / 协议画像：
-#   UA Chrome/149.0.0.0 + Macintosh; Intel Mac OS X 10_15_7（Chrome 冻结 UA）
-#   sec-ch-ua: "Google Chrome";v="149", "Chromium";v="149", "Not)A;Brand";v="24"
-#   TLS impersonate 仍用 chrome146（curl_cffi 0.15 最高内置版本）
+# Chrome：HTTP 主版本必须跟 TLS impersonate 一致。
+# 2026-09-12 实打 chatgpt.com（同一 CliProxy 账号、新 sid）：
+#   chrome146 TLS + Chrome/149 头     → HTTP 403，只有 __cf_bm
+#   chrome146 TLS + Chrome/146 头+CH  → HTTP 200，oai-did 种上
+#   chrome142 native / match          → HTTP 200，oai-did 种上
+# 9 月 10 日还能用的 149 头今天会被 Bot Management 直接丢掉。
 # ---------------------------------------------------------------------------
 _CHROME_HAR = {
     "impersonate": "chrome146",
-    "ver": "149",
-    "full_ver": "149.0.0.0",
-    "not_a_brand": '"Not)A;Brand";v="24"',
-    "not_a_brand_full": '"Not)A;Brand";v="24.0.0.0"',
+    "ver": "146",
+    "full_ver": "146.0.0.0",
+    "not_a_brand": '"Not?A_Brand";v="99"',
+    "not_a_brand_full": '"Not?A_Brand";v="99.0.0.0"',
 }
 
 # TLS 旋转查表用；generate_fingerprint 默认只用 _CHROME_HAR。
@@ -116,8 +116,9 @@ _CHROME_VERSIONS = [
     },
 ]
 
-# 同一账号会话内 TLS 不换版本：换 HTTP 主版本会变成「一号两套环境」。
-_CHROME_TLS_FALLBACKS = ["chrome146"]
+# 2026-09-12 实打：chrome146+149 头必 403；chrome142 最稳；146 对齐头有时过。
+# 首发 chrome142，403 再换 146 / 136。列表必须至少 3 个，否则预热重试不会换 TLS。
+_CHROME_TLS_FALLBACKS = ["chrome142", "chrome146", "chrome136"]
 
 _MAC_OS_UA_VERSION = "10_15_7"  # Chrome 桌面冻结 UA，与真实 Chrome 149 一致
 _MAC_CHROME_PLATFORM_VERSION = "15.7.0"
@@ -534,10 +535,20 @@ def _apply_hardware(fp: dict, r: random.Random) -> None:
     fp["webgl_renderer"] = w_renderer
     fp["audio_sample_rate"] = r.choice([44100, 48000])
     fp["color_depth"] = 24
+    fp["connection_effective_type"] = "4g"
+    fp["connection_rtt"] = r.choice([25, 50, 50, 75, 100])
+    fp["connection_downlink"] = r.choice([8.4, 9.7, 10, 12.5, 15])
     if key == "chrome_mac":
         fp["js_heap_size_limit"] = r.choice([4294967296, 4395630592])
     elif fp.get("browser_type") == "chrome":
         fp["js_heap_size_limit"] = 4294967296
+    try:
+        sw, sh = str(fp.get("screen") or "1440x900").lower().split("x", 1)
+        fp["avail_width"] = int(sw)
+        fp["avail_height"] = max(int(sh) - (28 if key == "chrome_mac" else 40), 600)
+    except Exception:
+        fp["avail_width"] = 1440
+        fp["avail_height"] = 872
 
 
 # ---------------------------------------------------------------------------
@@ -625,7 +636,7 @@ def _chrome_user_agent(full_ver: str, browser_os: str) -> str:
 
 
 def _gen_chrome(r: random.Random) -> dict:
-    chrome = _CHROME_HAR
+    chrome = next(c for c in _CHROME_VERSIONS if c["impersonate"] == "chrome142")
     fallbacks = list(_CHROME_TLS_FALLBACKS)
     platform_version = r.choice(_MAC_CHROME_PLATFORM_VERSIONS)
     arch = r.choice(_MAC_CHROME_ARCHS)
@@ -753,7 +764,7 @@ def generate_fingerprint(rng: random.Random | None = None, country_code: str = "
         device_pixel_ratio: float — window.devicePixelRatio
     """
     r = rng or random
-    # 注册默认锁定桌面 Chrome 149 / macOS。旧的 Safari/Firefox 权重会让 Plus 试用曝光几乎打空。
+    # 注册默认桌面 Chrome 146 / macOS。HTTP 版本跟 TLS 对齐。
     browser_type = "chrome"
     fp = _GENERATORS[browser_type](r)
     fp.setdefault("browser_os", "macOS")

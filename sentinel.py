@@ -46,6 +46,15 @@ def get_sentinel_token(
     max_touch_points: int = 0,
     device_pixel_ratio: float = 0.0,
     timezone: str = "",
+    webgl_vendor: str = "",
+    webgl_renderer: str = "",
+    js_heap_size_limit: int = 0,
+    color_depth: int = 24,
+    avail_width: int | None = None,
+    avail_height: int | None = None,
+    connection_rtt: int | None = None,
+    connection_downlink: float | None = None,
+    connection_effective_type: str = "4g",
 ) -> tuple[str, str]:
     """返回 (sentinel_token, so_token) 元组。失败抛 RuntimeError。"""
     try:
@@ -75,6 +84,15 @@ def get_sentinel_token(
             sec_ch_ua_bitness=sec_ch_ua_bitness,
             sec_ch_ua_model=sec_ch_ua_model,
             sec_ch_ua_platform_version=sec_ch_ua_platform_version,
+            webgl_vendor=webgl_vendor,
+            webgl_renderer=webgl_renderer,
+            js_heap_size_limit=js_heap_size_limit,
+            color_depth=color_depth,
+            avail_width=avail_width,
+            avail_height=avail_height,
+            connection_rtt=connection_rtt,
+            connection_downlink=connection_downlink,
+            connection_effective_type=connection_effective_type,
         )
         if qresult:
             return qresult
