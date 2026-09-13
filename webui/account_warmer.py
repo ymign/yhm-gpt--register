@@ -174,7 +174,7 @@ def warm_single_account(email: str, proxy: str = "", log_cb: Optional[Callable[[
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36"
     )
     impersonate = str(extra.get("impersonate") or fp.get("impersonate") or "chrome142").strip() or "chrome142"
-    from http_client import create_http_session
+    from http_client import attach_oai_is_header, create_http_session
     session = create_http_session(proxy=proxy or None, impersonate=impersonate, user_agent=ua)
     if hasattr(session, "trust_env"):
         session.trust_env = False
@@ -199,16 +199,20 @@ def warm_single_account(email: str, proxy: str = "", log_cb: Optional[Callable[[
     if device_id:
         headers["oai-device-id"] = device_id
 
+    models_url = "https://chatgpt.com/backend-api/models"
+    headers = attach_oai_is_header(headers, session, url=models_url)
     _l("🔍 正在请求 /backend-api/models 获取官方模型矩阵...")
-    r1 = session.get("https://chatgpt.com/backend-api/models", headers=headers, timeout=25)
+    r1 = session.get(models_url, headers=headers, timeout=25)
     if r1.status_code == 200:
         models = (r1.json() or {}).get("models", [])
         _l(f"✨ 官方模型探针成功，可用模型数: {len(models)} 个")
     elif r1.status_code in (401, 403):
         raise RuntimeError(f"账号授权失效 (HTTP {r1.status_code}): {(r1.text or '')[:120]}")
 
+    me_url = "https://chatgpt.com/backend-api/me"
+    headers = attach_oai_is_header(headers, session, url=me_url)
     _l("🔍 正在请求 /backend-api/me 获取用户信息与账号状态...")
-    r2 = session.get("https://chatgpt.com/backend-api/me", headers=headers, timeout=25)
+    r2 = session.get(me_url, headers=headers, timeout=25)
     plan_name = "free"
     if r2.status_code == 200:
         me_data = r2.json() or {}

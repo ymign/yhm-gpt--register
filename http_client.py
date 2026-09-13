@@ -4,6 +4,7 @@ HTTP 客户端 - 使用 curl_cffi 实现 TLS 指纹模拟
 """
 import logging
 from typing import Optional
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,99 @@ _TLS_ERROR_MARKERS = (
 def _is_tls_handshake_error(exc: Exception) -> bool:
     msg = str(exc).lower()
     return any(m in msg for m in _TLS_ERROR_MARKERS)
+
+
+OAI_IS_COOKIE = "__Secure-oai-is"
+OAI_IS_REQUEST_HEADER = "X-OAI-IS"
+OAI_IS_UPDATE_HEADER = "X-OAI-IS-Update"
+
+
+def _chatgpt_com_host(url: str) -> bool:
+    """仅 chatgpt.com 本身，不含 ab.chatgpt.com。"""
+    try:
+        host = (urlparse(str(url or "")).netloc or "").split("@")[-1].split(":")[0].lower()
+    except Exception:
+        return False
+    return host in ("chatgpt.com", "www.chatgpt.com")
+
+
+def _chatgpt_backend_url(url: str) -> bool:
+    if not _chatgpt_com_host(url):
+        return False
+    try:
+        path = urlparse(str(url or "")).path or ""
+    except Exception:
+        return False
+    return path.startswith("/backend-api/") or path.startswith("/backend-anon/")
+
+
+def extract_oai_is_from_session(session) -> str:
+    """只读 cookie 罐里官方给过的值，没有就空串，绝不编造。"""
+    if session is None:
+        return ""
+    cookies = getattr(session, "cookies", None)
+    if cookies is None:
+        return ""
+    try:
+        value = cookies.get(OAI_IS_COOKIE, "") or ""
+        if value:
+            return str(value).strip()
+    except Exception:
+        pass
+    try:
+        for cookie in cookies:
+            name = getattr(cookie, "name", cookie if isinstance(cookie, str) else "")
+            if str(name) != OAI_IS_COOKIE:
+                continue
+            if isinstance(cookie, str):
+                return str(cookies.get(cookie) or "").strip()
+            return str(getattr(cookie, "value", "") or "").strip()
+    except Exception:
+        pass
+    return ""
+
+
+def apply_oai_is_update_from_response(session, resp, request_url: str = "") -> str:
+    """看到 X-OAI-IS-Update 才写回 __Secure-oai-is。失败吞掉，不影响主流程。"""
+    try:
+        url = str(request_url or getattr(resp, "url", "") or "")
+        if not _chatgpt_com_host(url):
+            return ""
+        headers = getattr(resp, "headers", None) or {}
+        try:
+            value = headers.get(OAI_IS_UPDATE_HEADER) or headers.get("x-oai-is-update") or ""
+        except Exception:
+            value = ""
+        value = str(value).strip()
+        if not value:
+            return ""
+        cookies = getattr(session, "cookies", None)
+        if cookies is None:
+            return ""
+        try:
+            cookies.set(OAI_IS_COOKIE, value, domain=".chatgpt.com", path="/")
+        except TypeError:
+            cookies.set(OAI_IS_COOKIE, value)
+        logger.debug("oai-is 已从 X-OAI-IS-Update 写回 cookie")
+        return value
+    except Exception:
+        return ""
+
+
+def attach_oai_is_header(headers: dict | None, session, url: str = "") -> dict:
+    """cookie 有值才带头，头和 cookie 同一份。url 指向非 backend 时不带。"""
+    out = dict(headers or {})
+    if url and not _chatgpt_backend_url(url):
+        out.pop(OAI_IS_REQUEST_HEADER, None)
+        out.pop("x-oai-is", None)
+        return out
+    value = extract_oai_is_from_session(session)
+    if value:
+        out[OAI_IS_REQUEST_HEADER] = value
+    else:
+        out.pop(OAI_IS_REQUEST_HEADER, None)
+        out.pop("x-oai-is", None)
+    return out
 
 
 class _TlsRetrySession:
@@ -114,7 +208,16 @@ class _TlsRetrySession:
 
         for attempt in range(retries + 1):
             try:
-                return fn(*args, **kwargs)
+                req_url = args[0] if args else kwargs.get("url", "")
+                headers = kwargs.get("headers")
+                if headers is not None and _chatgpt_backend_url(str(req_url or "")):
+                    kwargs = dict(kwargs)
+                    kwargs["headers"] = attach_oai_is_header(
+                        headers, inner, url=str(req_url or "")
+                    )
+                resp = fn(*args, **kwargs)
+                apply_oai_is_update_from_response(inner, resp, request_url=str(req_url or ""))
+                return resp
             except Exception as e:
                 # 只兜 TLS 瞬断：HTTP 错误码、超时、业务异常一律原样抛，
                 # 免得把"服务端明确拒绝"也变成重试，反而更像异常流量。

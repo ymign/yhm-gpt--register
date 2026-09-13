@@ -2118,7 +2118,7 @@ def _looks_deactivated(body: str) -> bool:
 @app.post("/api/registered/check_plus")
 def api_check_plus(req: CheckPlusReq):
     """用 access_token 查询账号的 Plus 试用状态。"""
-    from http_client import create_http_session
+    from http_client import attach_oai_is_header, create_http_session
 
     log = logging.getLogger("webui")
     url = "https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27"
@@ -2169,6 +2169,7 @@ def api_check_plus(req: CheckPlusReq):
         if device_id:
             headers["OAI-Device-Id"] = device_id
         try:
+            headers = attach_oai_is_header(headers, sess, url=url)
             return sess.get(url, headers=headers, timeout=15)
         except Exception as e:  # noqa: BLE001
             if proxy and not note:

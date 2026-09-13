@@ -32,7 +32,7 @@ from fingerprint import (
     DEFAULT_WARMUP_PROFILE,
 )
 from mail_providers import MailProvider
-from http_client import create_http_session, USER_AGENT
+from http_client import attach_oai_is_header, create_http_session, USER_AGENT
 
 logger = logging.getLogger(__name__)
 
@@ -260,6 +260,15 @@ class AuthFlow:
             "1", "true", "yes", "on"
         )
         self._trace_dump_path = ""
+        if self._trace_dump_enabled:
+            try:
+                os.makedirs("outputs", exist_ok=True)
+                ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+                self._trace_dump_path = os.path.join("outputs", f"auth_trace_{ts}_{os.getpid()}.jsonl")
+                logger.info(f"HTTP 明文抓包已启用: {self._trace_dump_path}")
+            except Exception as e:
+                logger.warning(f"初始化 HTTP 抓包文件失败: {e}")
+                self._trace_dump_enabled = False
         logger.info(
             f"指纹锁定 env={self._fingerprint.get('env_id', '')[:8]} "
             f"tz={self._fingerprint.get('timezone')} ua={self._ua}"
@@ -306,6 +315,7 @@ class AuthFlow:
             "__Host-next-auth.csrf-token",
             "__Secure-next-auth.callback-url",
             "oai-did",
+            "__Secure-oai-is",
             "oai-sc",
             "cf_clearance",
             "__cf_bm",
@@ -341,15 +351,6 @@ class AuthFlow:
                 cookie_pairs.append((name, value))
 
         return "; ".join(f"{name}={value}" for name, value in cookie_pairs if name and value)
-        if self._trace_dump_enabled:
-            try:
-                os.makedirs("outputs", exist_ok=True)
-                ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-                self._trace_dump_path = os.path.join("outputs", f"auth_trace_{ts}_{os.getpid()}.jsonl")
-                logger.info(f"HTTP 明文抓包已启用: {self._trace_dump_path}")
-            except Exception as e:
-                logger.warning(f"初始化 HTTP 抓包文件失败: {e}")
-                self._trace_dump_enabled = False
 
     def _trace_http(self, step: str, resp, extra_request: dict | None = None):
         """可选 HTTP 细粒度追踪（用于协议调试）"""
@@ -2266,7 +2267,13 @@ class AuthFlow:
             logger.error(f"网络检查失败: {e}")
         return False
 
-    def _chatgpt_headers(self, referer: str = "https://chatgpt.com/", access_token: str | None = None) -> dict:
+    def _chatgpt_headers(
+        self,
+        referer: str = "https://chatgpt.com/",
+        access_token: str | None = None,
+        *,
+        attach_oai_is: bool = True,
+    ) -> dict:
         """构造 ChatGPT 前端标准 XHR 请求头（含客户端版本与 session 特征）。"""
         fp = self._fingerprint
         device_id = (self.result.device_id or "").strip() or (self.session.cookies.get("oai-did", "") or "").strip() or str(uuid.uuid4())
@@ -2303,6 +2310,8 @@ class AuthFlow:
         if access_token:
             token_str = access_token if access_token.lower().startswith("bearer ") else f"Bearer {access_token}"
             h["Authorization"] = token_str
+        if attach_oai_is:
+            h = attach_oai_is_header(h, self.session, url="https://chatgpt.com/backend-api/")
         return h
 
     def _get_tz_offset_min(self) -> int:
@@ -2349,7 +2358,7 @@ class AuthFlow:
     def _ces_prefetch(self, access_token: str = "") -> None:
         """拉取 ChatGPT 前端 CES/Statsig 配置。试用是实验分桶，缺曝光时常直接 chatgptfreeplan。"""
         url = f"https://chatgpt.com/ces/v1/projects/oai/settings?k={self._CES_CLIENT_KEY}"
-        headers = self._chatgpt_headers(access_token=access_token or None)
+        headers = self._chatgpt_headers(access_token=access_token or None, attach_oai_is=False)
         headers.pop("Content-Type", None)
         headers["Accept"] = "*/*"
         try:

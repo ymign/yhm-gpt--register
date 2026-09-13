@@ -616,7 +616,7 @@ def _check_one_account(task: PlusCheckTask, email: str) -> None:
     result = {"status": "error", "label": "网络异常", "error": "未知错误"}
 
     try:
-        from http_client import create_http_session
+        from http_client import attach_oai_is_header, create_http_session
         sess = create_http_session(proxy=proxy or None, impersonate=impersonate, user_agent=ua)
 
         if hasattr(sess, "trust_env"):
@@ -648,6 +648,7 @@ def _check_one_account(task: PlusCheckTask, email: str) -> None:
             (fp.get("timezone") or ""),
         )
         url_with_tz = f"{CHECK_URL}?timezone_offset_min={tz}"
+        headers = attach_oai_is_header(headers, sess, url=url_with_tz)
         task.add_email_log(email, f"发送 GET {url_with_tz}...")
         resp = sess.get(url_with_tz, headers=headers, timeout=timeout)
         req_ms = int((time.time() - started_req) * 1000)

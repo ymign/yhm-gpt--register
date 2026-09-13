@@ -272,7 +272,7 @@ def _check_token_mode(task: HealthCheckTask, email: str, cred: dict, at: str, pr
         lang_full = COUNTRY_LANG_MAP[target_country]
 
     try:
-        from http_client import create_http_session
+        from http_client import attach_oai_is_header, create_http_session
         sess = create_http_session(proxy=proxy or None, impersonate=impersonate, user_agent=ua)
         if hasattr(sess, "trust_env"):
             sess.trust_env = False
@@ -290,6 +290,7 @@ def _check_token_mode(task: HealthCheckTask, email: str, cred: dict, at: str, pr
 
         tz = get_country_timezone_offset_min(target_country or cred.get("reg_country") or "")
         url = f"https://chatgpt.com/backend-api/me"
+        headers = attach_oai_is_header(headers, sess, url=url)
 
         task.add_email_log(email, f"发送鉴权请求 GET {url}...")
         resp = sess.get(url, headers=headers, timeout=timeout)
@@ -402,7 +403,7 @@ def _check_plan_mode(task: HealthCheckTask, email: str, cred: dict, at: str, pro
     started_req = time.time()
 
     try:
-        from http_client import create_http_session
+        from http_client import attach_oai_is_header, create_http_session
         sess = create_http_session(proxy=proxy or None, impersonate=impersonate, user_agent=ua)
 
         if hasattr(sess, "trust_env"):
@@ -450,6 +451,7 @@ def _check_plan_mode(task: HealthCheckTask, email: str, cred: dict, at: str, pro
             tz_name,
         )
         url_with_tz = f"{CHECK_URL}?timezone_offset_min={tz}"
+        headers = attach_oai_is_header(headers, sess, url=url_with_tz)
         task.add_email_log(email, f"发送 GET {url_with_tz} (device={device_id[:8] if device_id else '-'}...)...")
         resp = sess.get(url_with_tz, headers=headers, timeout=timeout)
         req_ms = int((time.time() - started_req) * 1000)
