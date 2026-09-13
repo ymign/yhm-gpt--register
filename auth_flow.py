@@ -2344,18 +2344,126 @@ class AuthFlow:
             return offsets[cc]
         return -540 if cc == "JP" else -480
 
-    def _ces_prefetch(self) -> None:
-        """拉取 ChatGPT 前端 Statsig/实验配置。HAR 首屏在 accounts/check 之前会打 CES settings，
-        试用资格是实验分桶，缺这一步时 accounts/check 经常直接 chatgptfreeplan。"""
-        key = "client-nb0qtYlZuy2tCMN5s5ncnuIBCJncjRViT0IzFm7GqST"
-        url = f"https://chatgpt.com/ces/v1/projects/oai/settings?k={key}"
-        headers = self._chatgpt_headers()
+    _CES_CLIENT_KEY = "client-nb0qtYlZuy2tCMN5s5ncnuIBCJncjRViT0IzFm7GqST"
+
+    def _ces_prefetch(self, access_token: str = "") -> None:
+        """拉取 ChatGPT 前端 CES/Statsig 配置。试用是实验分桶，缺曝光时常直接 chatgptfreeplan。"""
+        url = f"https://chatgpt.com/ces/v1/projects/oai/settings?k={self._CES_CLIENT_KEY}"
+        headers = self._chatgpt_headers(access_token=access_token or None)
         headers.pop("Content-Type", None)
         headers["Accept"] = "*/*"
         try:
             self.session.get(url, headers=headers, timeout=8)
         except Exception as e:
             logger.debug(f"[Bootstrap] CES settings 跳过: {e}")
+
+    def _statsig_headers(self) -> dict:
+        """ab.chatgpt.com 是 chatgpt.com 的 same-site，不要套 backend-api 的 Bearer / oai-*。"""
+        fp = self._fingerprint or {}
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "Origin": "https://chatgpt.com",
+            "Referer": "https://chatgpt.com/",
+            "User-Agent": self._ua,
+            "Accept-Language": fp.get("lang_full", "en-US,en;q=0.9"),
+            "STATSIG-API-KEY": self._CES_CLIENT_KEY,
+            "statsig-api-key": self._CES_CLIENT_KEY,
+            "STATSIG-CLIENT-TIME": str(int(time.time() * 1000)),
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "same-site",
+        }
+        if fp.get("sec_ch_ua"):
+            headers["sec-ch-ua"] = fp["sec_ch_ua"]
+            headers["sec-ch-ua-mobile"] = fp.get("sec_ch_ua_mobile") or "?0"
+            headers["sec-ch-ua-platform"] = fp["sec_ch_ua_platform"]
+        return headers
+
+    def _chatgpt_user_id(self, access_token: str = "") -> str:
+        sess = self.result.session_data if isinstance(getattr(self.result, "session_data", None), dict) else {}
+        user = sess.get("user") if isinstance(sess.get("user"), dict) else {}
+        uid = str(user.get("id") or "").strip()
+        if uid:
+            return uid
+        token = (access_token or getattr(self.result, "access_token", "") or "").strip()
+        if not token or token.count(".") < 2:
+            return ""
+        try:
+            padded = token.split(".")[1] + "=" * ((4 - len(token.split(".")[1]) % 4) % 4)
+            claims = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8", errors="replace"))
+        except Exception:
+            return ""
+        if not isinstance(claims, dict):
+            return ""
+        for key in ("https://api.openai.com/profile", "https://api.openai.com/auth", "auth"):
+            blob = claims.get(key)
+            if isinstance(blob, dict):
+                for k in ("chatgpt_user_id", "user_id", "id"):
+                    v = str(blob.get(k) or "").strip()
+                    if v:
+                        return v
+        return str(claims.get("https://api.openai.com/auth.user_id") or claims.get("sub") or "").strip()
+
+    def _statsig_initialize(self, access_token: str = "") -> None:
+        """登录态 Statsig initialize：用新 userId + 国家做试用实验分桶。失败不影响注册。"""
+        fp = self._fingerprint or {}
+        user_id = self._chatgpt_user_id(access_token)
+        email = (getattr(self.result, "email", "") or "").strip()
+        country = (
+            (self._country_code or fp.get("geo_country") or fp.get("exit_country") or "")
+            .strip()
+            .upper()
+        )
+        locale = str(fp.get("lang") or "en-US")
+        stable_id = (
+            (self.result.device_id or "").strip()
+            or (self.session.cookies.get("oai-did", "") or "").strip()
+            or str(getattr(self, "_oai_session_id", "") or uuid.uuid4())
+        )
+        user = {
+            "userID": user_id or stable_id,
+            "country": country or None,
+            "locale": locale,
+            "customIDs": {"stableID": stable_id},
+            "custom": {"is_paid": False},
+            "statsigEnvironment": {"tier": "production"},
+        }
+        if email:
+            user["email"] = email
+            user["privateAttributes"] = {"email": email}
+        payload = {
+            "user": {k: v for k, v in user.items() if v not in (None, "", {})},
+            "statsigMetadata": {
+                "sdkType": "js-client",
+                "sdkVersion": "5.34.0",
+                "stableID": stable_id,
+                "locale": locale,
+                "language": str(locale).split("-", 1)[0] or "en",
+            },
+        }
+        try:
+            resp = self.session.post(
+                "https://ab.chatgpt.com/v1/initialize",
+                headers=self._statsig_headers(),
+                json=payload,
+                timeout=10,
+            )
+            logger.info(
+                f"[Bootstrap] Statsig initialize HTTP {resp.status_code} "
+                f"user={user_id[:16] or '-'} country={country or '-'}"
+            )
+        except Exception as e:
+            logger.debug(f"[Bootstrap] Statsig initialize 跳过: {e}")
+
+    def _experiment_expose(self, access_token: str = "") -> None:
+        """注册拿到 session 后补实验曝光。不打 accounts/check，不写 plus_check。"""
+        try:
+            logger.info("[Bootstrap] 补实验曝光（CES + Statsig initialize）...")
+            self._ces_prefetch(access_token)
+            self._statsig_initialize(access_token)
+        except Exception as e:
+            logger.debug(f"[Bootstrap] 实验曝光跳过: {e}")
 
     def _store_plan_info(self, data: dict, body: str = "") -> dict:
         try:
@@ -2508,14 +2616,15 @@ class AuthFlow:
         self._last_chat_req = None
 
     def anonymous_bootstrap(self) -> None:
-        """匿名态 ChatGPT 首屏轨迹：me / models / hints / conversation/init。
+        """匿名态 ChatGPT 首屏轨迹：CES + me / models / hints / conversation/init。
 
-        不打 CES、不打 accounts/check。那两步是套餐和实验分桶，验活再查。
+        不打 accounts/check。套餐由验活再查。
         """
         logger.info("[Bootstrap] 执行匿名态 ChatGPT 首屏预热...")
         referer = "https://chatgpt.com/"
         tz = self._get_tz_offset_min()
         anon_base = "https://chatgpt.com/backend-anon"
+        self._ces_prefetch()
 
         try:
             self.session.get(f"{anon_base}/me", headers=self._chatgpt_headers(referer=referer), timeout=10)
@@ -2561,13 +2670,14 @@ class AuthFlow:
         logger.info("[Bootstrap] 匿名态首屏预热完成")
 
     def authenticated_bootstrap(self, access_token: str) -> None:
-        """登录态首屏轨迹：me / settings / models / conversation/init。
+        """登录态首屏轨迹：实验曝光 + me / settings / models / conversation/init。
 
-        不打 accounts/check、optimized/check、CES、套餐复检。套餐由验活再查。
+        不打 accounts/check，不写 plus_check。套餐由验活再查。
         """
         if not access_token:
             return
         logger.info("[Bootstrap] 执行登录态 ChatGPT 首屏激活...")
+        self._experiment_expose(access_token)
         referer = "https://chatgpt.com/"
         tz = self._get_tz_offset_min()
         api_base = "https://chatgpt.com/backend-api"
@@ -4630,9 +4740,12 @@ class AuthFlow:
 
         if not refresh_only_mode:
             self.get_auth_session()
-            # 登录态首屏轨迹。不打 accounts/check，套餐留给验活。
+            # 登录态首屏 + 实验分桶。不打 accounts/check，套餐留给验活。
             if self.result.access_token:
-                self.authenticated_bootstrap(self.result.access_token)
+                try:
+                    self.authenticated_bootstrap(self.result.access_token)
+                except Exception as e:
+                    logger.warning(f"[Bootstrap] 登录态首屏/实验曝光失败（不影响注册）: {e}")
 
         # ── 钩子：session 到手、Codex 授权之前 ──
         # 主人指定的顺序是「注册完 → 绑 2FA → Codex 授权 → 接码」。这里是唯一同时满足
