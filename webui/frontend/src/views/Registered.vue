@@ -2400,13 +2400,20 @@ async function loadRouteTiers(country) {
   }
 }
 
-function loadAllSmsRouteTiers() {
+async function loadAllSmsRouteTiers() {
   const seen = new Set()
+  const countries = []
   for (const r of oauthForm.smsRoutes || []) {
     const c = String(r.country || '').toLowerCase()
-    if (seen.has(c)) continue
+    if (!c || seen.has(c)) continue
     seen.add(c)
-    loadRouteTiers(c)
+    countries.push(c)
+  }
+  if (!countries.length) return
+  await Promise.all(countries.map((c) => loadRouteTiers(c)))
+  const any = countries.some((c) => (oauthRouteTiers[c] || []).length)
+  if (!any) {
+    ElMessage.warning('Vak 库存拉空：接口被本机网络掐断，或这些国家暂无 openai.com 报价')
   }
 }
 
@@ -2449,7 +2456,8 @@ function smsRouteFlag(iso) {
 }
 
 function smsRouteLiveCount(row) {
-  const tiers = oauthRouteTiers[row?.country] || []
+  const key = String(row?.country || '').toLowerCase()
+  const tiers = oauthRouteTiers[key] || oauthRouteTiers[row?.country] || []
   if (!row?.price) {
     return tiers.reduce((s, t) => s + (Number(t.count) || 0), 0)
   }
@@ -8355,7 +8363,7 @@ onUnmounted(() => {
                         </div>
                         <div class="oa-route-toolbar-actions">
                           <el-button size="small" @click="addSmsRoute">添加国家</el-button>
-                          <el-button size="small" :loading="Object.values(oauthRouteTiersLoading).some(Boolean)" @click="loadAllSmsRouteTiers">刷新库存</el-button>
+                          <el-button size="small" :loading="Object.values(oauthRouteTiersLoading).some(Boolean)" @click="loadAllSmsRouteTiers()">刷新库存</el-button>
                         </div>
                       </div>
                       <div
@@ -8379,7 +8387,7 @@ onUnmounted(() => {
                             {{ row.price ? `锁 ${row.price}$` : '不限档' }}
                           </span>
                           <span class="oa-route-stock">
-                            <template v-if="oauthRouteTiersLoading[row.country]">拉库存…</template>
+                            <template v-if="oauthRouteTiersLoading[String(row.country || '').toLowerCase()]">拉库存…</template>
                             <template v-else>库存 {{ smsRouteLiveCount(row) }}</template>
                           </span>
                           <el-switch v-model="row.enabled" size="small" />
@@ -8396,7 +8404,7 @@ onUnmounted(() => {
                             @click="row.price = ''"
                           >不限档</div>
                           <div
-                            v-for="t in (oauthRouteTiers[row.country] || [])"
+                            v-for="t in (oauthRouteTiers[String(row.country || '').toLowerCase()] || [])"
                             :key="t.id || t.price_str"
                             class="oa-tier-pill"
                             :class="{ 'is-active': row.price === t.price_key || row.price === t.price_str }"
@@ -8404,7 +8412,7 @@ onUnmounted(() => {
                           >
                             <span>{{ t.label }}</span>
                           </div>
-                          <span v-if="!(oauthRouteTiers[row.country] || []).length && !oauthRouteTiersLoading[row.country]" class="oa-route-empty">该国暂无 openai.com 报价，点刷新或换国家</span>
+                          <span v-if="!(oauthRouteTiers[String(row.country || '').toLowerCase()] || []).length && !oauthRouteTiersLoading[String(row.country || '').toLowerCase()]" class="oa-route-empty">该国暂无 openai.com 报价，点刷新或换国家</span>
                         </div>
                       </div>
                       <p class="oa-route-foot">点档位即锁定该价；只调度已开启的线路。空了换下一条，不会擅自升到未勾选的贵档。</p>

@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable, Optional
 
 import requests
+from requests.adapters import HTTPAdapter
 
 from .base import (
     BaseSmsProvider,
@@ -31,6 +33,43 @@ VAK_BASE_URLS = (
     "https://moresms.net",
     "https://vaksms.ru",
 )
+
+_CONN_ERR_MARKERS = (
+    "10053",
+    "10054",
+    "10060",
+    "10061",
+    "connection aborted",
+    "connection reset",
+    "remotely aborted",
+    "forcibly closed",
+    "winerror",
+    "timed out",
+    "timeout",
+    "name resolution",
+    "getaddrinfo",
+    "proxyerror",
+)
+
+_tls = threading.local()
+
+
+def _is_conn_err(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return any(m in msg for m in _CONN_ERR_MARKERS)
+
+
+def _vak_http() -> requests.Session:
+    """线程内复用 Session。关掉系统代理，避免 Clash/加速器把报价请求掐成 10053。"""
+    sess = getattr(_tls, "session", None)
+    if sess is None:
+        sess = requests.Session()
+        sess.trust_env = False
+        adapter = HTTPAdapter(pool_connections=4, pool_maxsize=4, max_retries=0)
+        sess.mount("https://", adapter)
+        sess.mount("http://", adapter)
+        _tls.session = sess
+    return sess
 
 # sms-activate 数字国家 ID → vak-sms ISO2
 ACTIVATE_ID_TO_ISO2 = {
@@ -263,16 +302,19 @@ class VakSmsProvider(BaseSmsProvider):
         if needs_key:
             payload["apiKey"] = self.api_key
         last_err = None
+        saw_conn_err = False
         urls = [self._base_url] + [u for u in VAK_BASE_URLS if u != self._base_url]
+        sess = _vak_http()
+        req_kwargs = {
+            "params": payload,
+            "timeout": timeout,
+            "headers": {"Accept": "application/json", "Connection": "close"},
+        }
+        if self._proxies:
+            req_kwargs["proxies"] = self._proxies
         for base in urls:
             try:
-                resp = requests.get(
-                    f"{base}{path}",
-                    params=payload,
-                    timeout=timeout,
-                    proxies=self._proxies,
-                    headers={"Accept": "application/json"},
-                )
+                resp = sess.get(f"{base}{path}", **req_kwargs)
                 try:
                     data = resp.json() if resp.content else {}
                 except Exception:
@@ -288,7 +330,7 @@ class VakSmsProvider(BaseSmsProvider):
                 if resp.status_code >= 400:
                     msg = str(data.get("message") or data.get("code") or "").strip()
                     last_err = RuntimeError(msg or f"HTTP {resp.status_code} {path}")
-                    logger.warning("Vak-SMS %s %s HTTP %s: %s", base, path, resp.status_code, last_err)
+                    logger.debug("Vak-SMS %s %s HTTP %s: %s", base, path, resp.status_code, last_err)
                     continue
                 self._base_url = base
                 return data
@@ -296,7 +338,19 @@ class VakSmsProvider(BaseSmsProvider):
                 raise
             except Exception as e:
                 last_err = e
+                if _is_conn_err(e):
+                    saw_conn_err = True
+                    if self._base_url == base:
+                        self._base_url = next((u for u in VAK_BASE_URLS if u != base), VAK_BASE_URLS[0])
+                    logger.debug("Vak-SMS %s %s 连接中断，换镜像: %s", base, path, e)
+                    continue
                 logger.warning("Vak-SMS %s %s 失败: %s", base, path, e)
+        if saw_conn_err:
+            logger.warning(
+                "Vak-SMS %s 连接被本机中止（加速器/防火墙常见 10053），三个镜像都没通: %s",
+                path,
+                last_err,
+            )
         raise RuntimeError(f"Vak-SMS 请求失败 {path}: {last_err}")
 
     def get_balance(self) -> float:
@@ -576,7 +630,7 @@ class VakSmsProvider(BaseSmsProvider):
                 logger.debug("Vak-SMS 报价 %s 失败: %s", iso, e)
                 return None
 
-        with ThreadPoolExecutor(max_workers=12) as pool:
+        with ThreadPoolExecutor(max_workers=4) as pool:
             futs = {pool.submit(_one, iso): iso for iso in STOCK_COUNTRIES}
             for fut in as_completed(futs):
                 row = fut.result()
