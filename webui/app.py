@@ -1395,12 +1395,24 @@ def api_sms_all_countries(provider: str = ""):
 
     live_map: dict = {}
     try:
-        p = create_sms_provider(cfg["sms_provider"], cfg)
-        if hasattr(p, "get_top_countries"):
-            for r in p.get_top_countries(service=cfg.get("sms_service") or "dr") or []:
-                cid = str(r.get("country") or "").strip()
-                if cid and _is_scheme_id(cid):
-                    live_map[cid] = r
+        if scheme == "iso2":
+            # Vak 下拉只要中文名。60 国实时库存会把报价接口打爆，页面卡住只剩字母代码。
+            # 有货数量改由各线路 price_tiers 单独拉。
+            from sms_providers.vaksms import VakSmsProvider
+
+            cache_t, _cache_svc, cache_rows = VakSmsProvider._top_cache
+            if cache_rows and (time.time() - float(cache_t or 0)) < 180:
+                for r in cache_rows:
+                    cid = str((r or {}).get("country") or "").strip()
+                    if cid and _is_scheme_id(cid):
+                        live_map[cid] = r
+        else:
+            p = create_sms_provider(cfg["sms_provider"], cfg)
+            if hasattr(p, "get_top_countries"):
+                for r in p.get_top_countries(service=cfg.get("sms_service") or "dr") or []:
+                    cid = str(r.get("country") or "").strip()
+                    if cid and _is_scheme_id(cid):
+                        live_map[cid] = r
     except Exception as e:
         logger.warning(f"拉取接码国家实时库存失败: {e}")
         live_map = {}

@@ -59,16 +59,20 @@ def _is_conn_err(exc: Exception) -> bool:
     return any(m in msg for m in _CONN_ERR_MARKERS)
 
 
-def _vak_http() -> requests.Session:
-    """线程内复用 Session。关掉系统代理，避免 Clash/加速器把报价请求掐成 10053。"""
-    sess = getattr(_tls, "session", None)
+def _vak_http(*, direct: bool = False) -> requests.Session:
+    """线程内复用 Session。默认走系统代理（家里 Clash 10808 实测 Vak 1.7s 能出货）。
+
+    直连模式给 10053 / 代理掐线时兜底，不作为默认，避免把本来通的加速器关掉。
+    """
+    key = "direct" if direct else "proxy"
+    sess = getattr(_tls, key, None)
     if sess is None:
         sess = requests.Session()
-        sess.trust_env = False
+        sess.trust_env = not direct
         adapter = HTTPAdapter(pool_connections=4, pool_maxsize=4, max_retries=0)
         sess.mount("https://", adapter)
         sess.mount("http://", adapter)
-        _tls.session = sess
+        setattr(_tls, key, sess)
     return sess
 
 # sms-activate 数字国家 ID → vak-sms ISO2
@@ -230,6 +234,7 @@ class VakSmsProvider(BaseSmsProvider):
     uses_reuse_phone = False
     uses_auto_country = True
     country_scheme = "iso2"
+    iso2_names = ISO2_NAMES_CN
     default_country = "th"
     default_service = "dr"
     default_timeout = 80
@@ -304,50 +309,66 @@ class VakSmsProvider(BaseSmsProvider):
         last_err = None
         saw_conn_err = False
         urls = [self._base_url] + [u for u in VAK_BASE_URLS if u != self._base_url]
-        sess = _vak_http()
-        req_kwargs = {
-            "params": payload,
-            "timeout": timeout,
-            "headers": {"Accept": "application/json", "Connection": "close"},
-        }
-        if self._proxies:
-            req_kwargs["proxies"] = self._proxies
+        if isinstance(timeout, (int, float)):
+            connect_t = 5 if timeout >= 8 else max(2, int(timeout))
+            timeout = (connect_t, timeout)
+        req_headers = {"Accept": "application/json", "Connection": "close"}
+        modes = (False, True) if not self._proxies else (False,)
         for base in urls:
-            try:
-                resp = sess.get(f"{base}{path}", **req_kwargs)
+            for direct in modes:
+                sess = _vak_http(direct=direct)
+                req_kwargs = {
+                    "params": payload,
+                    "timeout": timeout,
+                    "headers": req_headers,
+                }
+                if self._proxies and not direct:
+                    req_kwargs["proxies"] = self._proxies
                 try:
-                    data = resp.json() if resp.content else {}
-                except Exception:
-                    data = {}
-                if not isinstance(data, dict):
-                    last_err = RuntimeError(f"Vak-SMS 非 JSON 响应: {(resp.text or '')[:180]}")
-                    continue
-                err = str(data.get("error") or "").strip()
-                if err:
-                    raise RuntimeError(VAK_ERRORS.get(err, err))
-                # 404 页面是 {statusCode:404,message:...}，没有 error 字段。
-                # 以前当成功返回，取消号码会假成功、号一直挂到超时扣费。
-                if resp.status_code >= 400:
-                    msg = str(data.get("message") or data.get("code") or "").strip()
-                    last_err = RuntimeError(msg or f"HTTP {resp.status_code} {path}")
-                    logger.debug("Vak-SMS %s %s HTTP %s: %s", base, path, resp.status_code, last_err)
-                    continue
-                self._base_url = base
-                return data
-            except RuntimeError:
-                raise
-            except Exception as e:
-                last_err = e
-                if _is_conn_err(e):
-                    saw_conn_err = True
-                    if self._base_url == base:
-                        self._base_url = next((u for u in VAK_BASE_URLS if u != base), VAK_BASE_URLS[0])
-                    logger.debug("Vak-SMS %s %s 连接中断，换镜像: %s", base, path, e)
-                    continue
-                logger.warning("Vak-SMS %s %s 失败: %s", base, path, e)
+                    resp = sess.get(f"{base}{path}", **req_kwargs)
+                    text = (getattr(resp, "text", None) or "")
+                    stripped = text.lstrip()
+                    try:
+                        data = resp.json() if stripped.startswith("{") or stripped.startswith("[") else {}
+                    except Exception:
+                        data = {}
+                    if not isinstance(data, dict) or not stripped.startswith("{"):
+                        last_err = RuntimeError(f"Vak-SMS 非 JSON 响应: {stripped[:160]}")
+                        logger.debug("Vak-SMS %s %s 非 JSON，换镜像", base, path)
+                        break
+                    err = str(data.get("error") or "").strip()
+                    if err:
+                        raise RuntimeError(VAK_ERRORS.get(err, err))
+                    if resp.status_code >= 400:
+                        msg = str(data.get("message") or data.get("code") or "").strip()
+                        last_err = RuntimeError(msg or f"HTTP {resp.status_code} {path}")
+                        logger.debug("Vak-SMS %s %s HTTP %s: %s", base, path, resp.status_code, last_err)
+                        break
+                    if path.rstrip("/").endswith("getOfferNumberList") and not any(
+                        isinstance(v, dict) for v in data.values()
+                    ):
+                        last_err = RuntimeError(f"{base} 报价空包")
+                        break
+                    self._base_url = base
+                    return data
+                except RuntimeError:
+                    raise
+                except Exception as e:
+                    last_err = e
+                    if _is_conn_err(e):
+                        saw_conn_err = True
+                        if self._base_url == base:
+                            self._base_url = next((u for u in VAK_BASE_URLS if u != base), VAK_BASE_URLS[0])
+                        logger.debug(
+                            "Vak-SMS %s %s 连接中断 direct=%s: %s",
+                            base, path, direct, e,
+                        )
+                        continue
+                    logger.warning("Vak-SMS %s %s 失败: %s", base, path, e)
+                    break
         if saw_conn_err:
             logger.warning(
-                "Vak-SMS %s 连接被本机中止（加速器/防火墙常见 10053），三个镜像都没通: %s",
+                "Vak-SMS %s 连接被本机中止（加速器/防火墙常见 10053），镜像都没通: %s",
                 path,
                 last_err,
             )

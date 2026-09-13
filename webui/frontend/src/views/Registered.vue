@@ -2321,7 +2321,22 @@ const DEFAULT_OAUTH_SMS_ROUTES = [
   { country: 'au', price: '', enabled: true, priority: 6 },
 ]
 const SMS_ROUTE_COUNTRY_NAMES = {
-  br: '巴西', za: '南非', cl: '智利', gb: '英国', it: '意大利', au: '澳大利亚',
+  th: '泰国', us: '美国', ph: '菲律宾', vn: '越南', id: '印度尼西亚',
+  my: '马来西亚', in: '印度', br: '巴西', cl: '智利', mx: '墨西哥',
+  gb: '英国', de: '德国', fr: '法国', it: '意大利', es: '西班牙',
+  nl: '荷兰', pl: '波兰', ca: '加拿大', au: '澳大利亚', jp: '日本',
+  kr: '韩国', tr: '土耳其', ng: '尼日利亚', za: '南非', ke: '肯尼亚',
+  co: '哥伦比亚', ar: '阿根廷', pe: '秘鲁', ua: '乌克兰', kz: '哈萨克斯坦',
+  ru: '俄罗斯', cn: '中国', hk: '中国香港', tw: '中国台湾', sg: '新加坡',
+  ae: '阿联酋', sa: '沙特阿拉伯', eg: '埃及', pk: '巴基斯坦', bd: '孟加拉国',
+  ro: '罗马尼亚', cz: '捷克', se: '瑞典', at: '奥地利', be: '比利时',
+  ch: '瑞士', no: '挪威', dk: '丹麦', fi: '芬兰', ie: '爱尔兰',
+  pt: '葡萄牙', gr: '希腊', hu: '匈牙利', bg: '保加利亚', nz: '新西兰',
+  il: '以色列', mm: '缅甸', kh: '柬埔寨', la: '老挝', uz: '乌兹别克斯坦',
+  kg: '吉尔吉斯斯坦', ec: '厄瓜多尔', uy: '乌拉圭', ve: '委内瑞拉',
+  ug: '乌干达', gh: '加纳', ma: '摩洛哥', tz: '坦桑尼亚', lu: '卢森堡',
+  sk: '斯洛伐克', si: '斯洛文尼亚', hr: '克罗地亚', lt: '立陶宛',
+  lv: '拉脱维亚', ee: '爱沙尼亚', rs: '塞尔维亚',
 }
 
 function normalizeSavedSmsRoutes(raw) {
@@ -2929,11 +2944,13 @@ function formatSmsCountryOption(c) {
   const id = String(c.id || '')
   const iso2 = /^[a-z]{2}$/i.test(id)
   if (iso2) {
-    const bits = [`${c.name_cn} ${id.toLowerCase()}`]
+    const key = id.toLowerCase()
+    const name = c.name_cn || SMS_ROUTE_COUNTRY_NAMES[key] || key
+    const bits = [`${name} ${key}`]
     if (c.price != null && c.price !== '') bits.push(`起${c.price}$`)
     if (c.count != null && c.count !== '') bits.push(formatStockCount(c.count))
     else bits.push('暂无库存')
-    return { value: id, label: bits.join(' · '), safe: !!c.openai_sms_safe }
+    return { value: key, label: bits.join(' · '), safe: !!c.openai_sms_safe }
   }
   const bits = [`${id} · ${c.name_cn}`]
   if (c.count != null && c.count !== '') {
@@ -2946,7 +2963,14 @@ function formatSmsCountryOption(c) {
 
 const SMS_COUNTRY_OPTIONS = computed(() => {
   const rest = (smsAllCountries.value || []).map(formatSmsCountryOption)
-  if (oauthSmsMeta.value?.country_scheme === 'iso2') return rest
+  if (oauthSmsMeta.value?.country_scheme === 'iso2') {
+    if (rest.length) return rest
+    return Object.entries(SMS_ROUTE_COUNTRY_NAMES).map(([id, name]) => ({
+      value: id,
+      label: `${name} ${id}`,
+      safe: false,
+    }))
+  }
   const auto = { value: 'AUTO', label: '🌐 智能多国自动轮换', safe: false }
   return [auto, ...rest]
 })
