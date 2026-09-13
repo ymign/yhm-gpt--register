@@ -4890,6 +4890,40 @@ def pick_oauth_queue(
     return {"emails": queued, "stats": stats, "skipped": skipped}
 
 
+def reset_oauth_tries(emails: list[str]) -> dict:
+    """清零授权累计次数和冷却，让次数用尽的号能再进队列。
+
+    已成功授权的号不改，避免把成功态冲掉。
+    """
+    cleaned = list(dict.fromkeys(
+        (e or "").strip().lower() for e in (emails or []) if e and str(e).strip()
+    ))
+    if not cleaned:
+        return {"reset": 0, "skipped_success": 0}
+    placeholders = ",".join("?" * len(cleaned))
+    success = ("success", "success_phone", "success_direct")
+    with _lock:
+        con = _conn()
+        skipped = con.execute(
+            f"SELECT COUNT(*) FROM registered WHERE lower(email) IN ({placeholders}) "
+            f"AND oauth_status IN ({','.join('?' * len(success))})",
+            cleaned + list(success),
+        ).fetchone()[0]
+        rc = con.execute(
+            f"""UPDATE registered SET
+                    oauth_try_count=0,
+                    oauth_cooldown_until=0,
+                    oauth_last_outcome=''
+                WHERE lower(email) IN ({placeholders})
+                  AND (oauth_status IS NULL OR oauth_status NOT IN ({','.join('?' * len(success))}))
+            """,
+            cleaned + list(success),
+        )
+        con.commit()
+        invalidate_registered_caches()
+        return {"reset": int(rc.rowcount or 0), "skipped_success": int(skipped or 0)}
+
+
 def touch_oauth_try_start(email: str) -> None:
     email = (email or "").strip().lower()
     if not email:

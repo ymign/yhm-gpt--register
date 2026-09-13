@@ -738,6 +738,20 @@ def api_recover_oauth(req: RecoverOAuthReq):
     return {"ok": True, "data": res}
 
 
+class ResetOAuthTriesReq(BaseModel):
+    emails: list[str] = Field(..., description="要清零授权次数的邮箱")
+
+
+@app.post("/api/registered/reset_oauth_tries")
+def api_reset_oauth_tries(req: ResetOAuthTriesReq):
+    """清零选中号的授权累计次数和冷却，次数用尽后可再进队列。已成功授权的号不改。"""
+    emails = [e.strip().lower() for e in (req.emails or []) if e and e.strip()]
+    if not emails:
+        raise HTTPException(400, "请先勾选要重置的账号")
+    data = db.reset_oauth_tries(emails)
+    return {"ok": True, **data}
+
+
 # ──────────────────────── 批量导出（文本） ────────────────────────
 # ⚠️ 路由顺序：
 #   - formats 是 4 段路径，不会被 3 段的 GET /api/registered/{email} 吃掉；

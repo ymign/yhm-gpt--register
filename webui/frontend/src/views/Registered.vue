@@ -55,6 +55,7 @@ import {
   bulkDeleteRegistered,
   cleanInvalidRegistered,
   recoverOAuthCredentials,
+  resetOAuthTries,
   bulkDeleteAccounts,
   listExportFormats,
   exportRegistered,
@@ -3191,10 +3192,38 @@ function handleOAuthCommand(cmd) {
     openOAuthExport('selected')
   } else if (cmd === 'oauth_all' || cmd === 'oauth_filter') {
     openOAuthExport('filter')
+  } else if (cmd === 'reset_tries_selected') {
+    resetOauthTriesFor(selected.value.map((r) => r.email))
   } else if (cmd === 'recover_selected') {
     doRecoverOAuth('selected')
   } else if (cmd === 'recover_all') {
     doRecoverOAuth('all')
+  }
+}
+
+async function resetOauthTriesFor(emails) {
+  const list = [...new Set((emails || []).map((e) => String(e || '').trim().toLowerCase()).filter(Boolean))]
+  if (!list.length) {
+    ElMessage.warning('请先勾选要重置授权次数的账号')
+    return
+  }
+  const ok = await confirm(
+    `清零这 ${list.length} 个号的授权次数和冷却，之后可以重新进授权队列。\n已成功授权的号不会改。确定？`,
+  )
+  if (!ok) return
+  try {
+    const res = await resetOAuthTries(list)
+    const n = Number(res.reset || 0)
+    const skip = Number(res.skipped_success || 0)
+    if (n <= 0) {
+      ElMessage.info(skip ? `没有可重置的号（${skip} 个已是授权成功）` : '没有可重置的号')
+      return
+    }
+    ElMessage.success(`已重置 ${n} 个号的授权次数` + (skip ? `，跳过 ${skip} 个已成功` : ''))
+    load(false)
+    loadRegSummary()
+  } catch (e) {
+    ElMessage.error('重置失败: ' + (e.response?.data?.detail || e.message))
   }
 }
 
@@ -6453,6 +6482,7 @@ onUnmounted(() => {
                     <div class="dropdown-group-title divider-title">OAuth 接码授权</div>
                     <el-dropdown-item @click="handleOAuthCommand('oauth_filter')">📱 按当前筛选号池授权（无需勾选）</el-dropdown-item>
                     <el-dropdown-item @click="handleOAuthCommand('oauth_selected')" :disabled="!selectedCount">📱 仅勾选的 {{ selectedCount }} 个</el-dropdown-item>
+                    <el-dropdown-item @click="handleOAuthCommand('reset_tries_selected')" :disabled="!selectedCount">↺ 重置选中授权次数 ({{ selectedCount }})</el-dropdown-item>
                     <div class="dropdown-group-title divider-title">提链 / 出码</div>
                     <el-dropdown-item @click="openExtractChannel('paypal_pipeline')">🎁 PayPal 提链+代付 (一条龙)</el-dropdown-item>
                     <el-dropdown-item @click="openExtractChannel('paypal')">🔗 PayPal 仅提链</el-dropdown-item>
@@ -6839,7 +6869,12 @@ onUnmounted(() => {
                         <span v-if="row._oauthTry?.cooling" class="oauth-try-cool">
                           冷却 {{ row._oauthTry.coolLeft }}
                         </span>
-                        <span v-else-if="row._oauthTry?.exhausted" class="oauth-try-dead">次数用尽</span>
+                        <span
+                          v-else-if="row._oauthTry?.exhausted"
+                          class="oauth-try-dead oauth-try-reset"
+                          title="点击清零授权次数"
+                          @click.stop="resetOauthTriesFor([row.email])"
+                        >次数用尽</span>
                       </div>
                     </template>
                   </div>
@@ -7215,7 +7250,10 @@ onUnmounted(() => {
                     <span v-if="oauthTryOf(focusedRow).cooling" class="mono secret-text">
                       {{ oauthTryOf(focusedRow).coolUntilText }}（剩 {{ oauthTryOf(focusedRow).coolLeft }}）
                     </span>
-                    <span v-else class="mono secret-text text-rose">次数用尽，授权队列会跳过</span>
+                    <span v-else class="mono secret-text text-rose">
+                      次数用尽，授权队列会跳过
+                      <button class="dossier-inline-reset" type="button" @click="resetOauthTriesFor([focusedRow.email])">重置次数</button>
+                    </span>
                   </div>
                 </div>
               </div>
@@ -7414,6 +7452,15 @@ onUnmounted(() => {
             >
               <el-icon class="ico-amber"><Key /></el-icon>
               <span>批量改密</span>
+            </button>
+
+            <button
+              class="dock-btn"
+              @click="handleOAuthCommand('reset_tries_selected')"
+              title="清零选中号的授权次数和冷却，次数用尽后可再进队列"
+            >
+              <el-icon><Refresh /></el-icon>
+              <span>重置次数</span>
             </button>
 
             <button
@@ -18108,6 +18155,23 @@ onUnmounted(() => {
 }
 .oauth-try-cool { color: #d97706; font-weight: 650; }
 .oauth-try-dead { color: #e11d48; font-weight: 650; }
+.oauth-try-reset {
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.oauth-try-reset:hover { color: #be123c; }
+.dossier-inline-reset {
+  margin-left: 8px;
+  border: 0;
+  background: #fff1f2;
+  color: #be123c;
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.dossier-inline-reset:hover { background: #ffe4e6; }
 .acct-status-chip {
   display: inline-flex;
   align-items: center;

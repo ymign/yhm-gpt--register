@@ -33,6 +33,9 @@ export const cleanInvalidRegistered = () =>
 export const recoverOAuthCredentials = (payload = {}) =>
   http.post('/api/registered/recover_oauth', payload) // { emails }
 
+export const resetOAuthTries = (emails) =>
+  http.post('/api/registered/reset_oauth_tries', { emails })
+
 // 导出后清理用：把号池那一行也删掉。
 // 从 accounts.js 转出来一份，省得 Registered.vue 同时 import 两个 api 模块。
 export { bulkDeleteAccounts } from './accounts'
