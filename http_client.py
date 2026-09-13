@@ -3,6 +3,7 @@ HTTP 客户端 - 使用 curl_cffi 实现 TLS 指纹模拟
 支持 Cloudflare 绕过，降级到 requests
 """
 import logging
+import re
 from typing import Optional
 from urllib.parse import urlparse
 
@@ -49,6 +50,21 @@ _TLS_ERROR_MARKERS = (
 def _is_tls_handshake_error(exc: Exception) -> bool:
     msg = str(exc).lower()
     return any(m in msg for m in _TLS_ERROR_MARKERS)
+
+
+_FULL_TIMEOUT_RE = re.compile(r"timed out after (\d+)\s*milliseconds", re.I)
+
+
+def _is_exhausted_timeout(exc: Exception) -> bool:
+    """已经等到调用方 timeout（常见 30s 的 curl 28），再当 TLS 瞬断重试会把整批卡住。"""
+    msg = str(exc or "")
+    match = _FULL_TIMEOUT_RE.search(msg)
+    if not match:
+        return False
+    try:
+        return int(match.group(1)) >= 15000
+    except (TypeError, ValueError):
+        return False
 
 
 OAI_IS_COOKIE = "__Secure-oai-is"
@@ -219,9 +235,13 @@ class _TlsRetrySession:
                 apply_oai_is_update_from_response(inner, resp, request_url=str(req_url or ""))
                 return resp
             except Exception as e:
-                # 只兜 TLS 瞬断：HTTP 错误码、超时、业务异常一律原样抛，
-                # 免得把"服务端明确拒绝"也变成重试，反而更像异常流量。
-                if not _is_tls_handshake_error(e) or attempt >= retries:
+                # 只兜 TLS 瞬断。满超时（curl 28 after 30s）不要再套 2 次，
+                # 15 Worker 会把界面卡死、代理打爆。
+                if (
+                    _is_exhausted_timeout(e)
+                    or not _is_tls_handshake_error(e)
+                    or attempt >= retries
+                ):
                     raise
                 wait = backoff * (attempt + 1)
                 url = args[0] if args else kwargs.get("url", "?")
