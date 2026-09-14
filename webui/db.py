@@ -495,6 +495,14 @@ def init_db():
         "CREATE INDEX IF NOT EXISTS idx_sms_phone_ledger_country "
         "ON sms_phone_ledger(country, expires_at)"
     )
+    led_cols = {r[1] for r in con.execute("PRAGMA table_info(sms_phone_ledger)").fetchall()}
+    if "use_count" not in led_cols:
+        con.execute("ALTER TABLE sms_phone_ledger ADD COLUMN use_count INTEGER NOT NULL DEFAULT 0")
+        con.execute(
+            "UPDATE sms_phone_ledger SET use_count=1 "
+            "WHERE use_count=0 AND outcome IN ('used_success','success')"
+        )
+        con.commit()
 
     # 注册环境特征：一号一指纹一 IP，成功/失败都记，供试用资格与风控分析。
     con.execute("""
@@ -4786,6 +4794,7 @@ OAUTH_FAIL_COOLDOWN_SEC = 30 * 60
 OAUTH_TOO_MANY_COOLDOWN_SEC = 6 * 3600
 OAUTH_MAX_TRIES_DEFAULT = 3
 SMS_PHONE_TTL_SEC = 7 * 86400
+SMS_PHONE_MAX_USES = 3
 
 
 def _oauth_plus_dead(extra_json: str) -> bool:
@@ -5015,21 +5024,24 @@ def upsert_sms_phone_ledger(
     expires = now + max(3600, int(ttl_sec or SMS_PHONE_TTL_SEC))
     with _lock:
         con = _conn()
+        out = str(outcome or "")[:40]
+        bump_use = 1 if out.lower() in ("used_success", "success") else 0
         con.execute(
             "INSERT INTO sms_phone_ledger(phone_e164, country, price_tier, provider, activation_id, "
-            "outcome, reject_reason, submitted_to_openai, email, task_id, created_at, expires_at) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?) "
+            "outcome, reject_reason, submitted_to_openai, email, task_id, created_at, expires_at, use_count) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT(phone_e164) DO UPDATE SET "
             "country=excluded.country, price_tier=excluded.price_tier, provider=excluded.provider, "
             "activation_id=excluded.activation_id, outcome=excluded.outcome, "
             "reject_reason=excluded.reject_reason, submitted_to_openai=excluded.submitted_to_openai, "
             "email=excluded.email, task_id=excluded.task_id, created_at=excluded.created_at, "
-            "expires_at=excluded.expires_at",
+            "expires_at=excluded.expires_at, "
+            "use_count=sms_phone_ledger.use_count + excluded.use_count",
             (
                 e164, str(country or ""), str(price_tier or ""), str(provider or "vaksms"),
-                str(activation_id or ""), str(outcome or "")[:40], str(reject_reason or "")[:240],
+                str(activation_id or ""), out, str(reject_reason or "")[:240],
                 1 if submitted_to_openai else 0, str(email or "").strip().lower(),
-                str(task_id or ""), now, expires,
+                str(task_id or ""), now, expires, bump_use,
             ),
         )
         con.commit()
@@ -5172,24 +5184,31 @@ def list_sms_phone_ledger(
 def load_active_sms_phone_ledger(now: Optional[float] = None) -> dict:
     now = float(now if now is not None else time.time())
     con = _conn()
+    led_cols = {c[1] for c in con.execute("PRAGMA table_info(sms_phone_ledger)").fetchall()}
+    use_sql = "COALESCE(use_count,0)" if "use_count" in led_cols else "0"
     rows = con.execute(
-        "SELECT phone_e164, outcome FROM sms_phone_ledger "
+        f"SELECT phone_e164, outcome, {use_sql} AS use_count FROM sms_phone_ledger "
         "WHERE expires_at > ? AND outcome IN "
         "('rejected_openai','rejected','already_in_use','used_success','success')",
         (now,),
     ).fetchall()
     rejected = set()
     used = set()
+    used_count = {}
     for r in rows:
         phone = str(r["phone_e164"] or "")
         out = str(r["outcome"] or "").strip().lower()
+        n = int(r["use_count"] or 0)
         if not phone:
             continue
-        if out in ("success", "used_success"):
+        if out in ("success", "used_success") or n > 0:
             used.add(phone)
-        elif out in ("rejected_openai", "rejected", "already_in_use"):
-            rejected.add(phone)
-    return {"rejected": rejected, "used": used}
+            used_count[phone] = n if n > 0 else 1
+        if out in ("rejected_openai", "rejected", "already_in_use"):
+            # 已成功接过码且未满 3 次：不拉黑，同一号还能再给 GPT 接。
+            if used_count.get(phone, 0) >= SMS_PHONE_MAX_USES or used_count.get(phone, 0) == 0:
+                rejected.add(phone)
+    return {"rejected": rejected, "used": used, "used_count": used_count}
 
 
 def seed_default_sms_cdks() -> None:

@@ -1,4 +1,7 @@
-"""接码号码台账：内存热路径 + SQLite 落库。只跳过拒号，已用号可再次接码。"""
+"""接码号码台账：内存热路径 + SQLite 落库。
+
+从未成功过的官方拒号才跳过。已成功接过 GPT 的号默认还能再用，满 3 次才跳过。
+"""
 from __future__ import annotations
 
 import logging
@@ -15,13 +18,15 @@ logger = logging.getLogger(__name__)
 _lock = threading.Lock()
 _rejected: set[str] = set()
 _used: set[str] = set()
+_used_count: dict[str, int] = {}
 _inflight: set[str] = set()
 _loaded = False
 _load_ms = 0.0
+_MAX_USES = 3
 
 
 def _ensure_loaded() -> None:
-    global _loaded, _load_ms
+    global _loaded, _load_ms, _MAX_USES
     if _loaded:
         return
     with _lock:
@@ -31,11 +36,20 @@ def _ensure_loaded() -> None:
         data = db.load_active_sms_phone_ledger()
         _rejected.update(data.get("rejected") or [])
         _used.update(data.get("used") or [])
+        for k, v in (data.get("used_count") or {}).items():
+            try:
+                _used_count[str(k)] = int(v or 0)
+            except (TypeError, ValueError):
+                continue
+        try:
+            _MAX_USES = int(getattr(db, "SMS_PHONE_MAX_USES", 3) or 3)
+        except (TypeError, ValueError):
+            _MAX_USES = 3
         _loaded = True
         _load_ms = (time.perf_counter() - t0) * 1000
         logger.info(
-            "[sms_ledger] 预热完成 拒号=%s 已用=%s %.1fms",
-            len(_rejected), len(_used), _load_ms,
+            "[sms_ledger] 预热完成 拒号=%s 已用=%s 满次跳过=%s %.1fms",
+            len(_rejected), len(_used), _MAX_USES, _load_ms,
         )
 
 
@@ -52,6 +66,7 @@ def stats() -> dict:
             "rejected": len(_rejected),
             "used": len(_used),
             "in_flight": len(_inflight),
+            "max_uses": _MAX_USES,
             "load_ms": round(_load_ms, 1),
         }
 
@@ -60,8 +75,17 @@ def normalize(phone: str) -> str:
     return db.normalize_phone_e164(phone)
 
 
+def used_count(phone: str) -> int:
+    _ensure_loaded()
+    e164 = normalize(phone)
+    if not e164:
+        return 0
+    with _lock:
+        return int(_used_count.get(e164, 0) or 0)
+
+
 def should_skip(phone: str) -> str:
-    """命中则返回原因，否则空串。已用号不拉黑，同一号还能再接码。"""
+    """命中则返回原因，否则空串。已用号未满 3 次不跳过。"""
     _ensure_loaded()
     e164 = normalize(phone)
     if not e164:
@@ -69,7 +93,10 @@ def should_skip(phone: str) -> str:
     with _lock:
         if e164 in _inflight:
             return "in_flight"
-        if e164 in _rejected:
+        n = int(_used_count.get(e164, 0) or 0)
+        if n >= _MAX_USES:
+            return "used_quota"
+        if e164 in _rejected and n <= 0:
             return "rejected_openai"
     return ""
 
@@ -129,7 +156,13 @@ def remember(
         _inflight.discard(e164)
         if out in ("success", "used_success"):
             _used.add(e164)
-            _rejected.discard(e164)
+            _used_count[e164] = int(_used_count.get(e164, 0) or 0) + 1
+            if _used_count[e164] < _MAX_USES:
+                _rejected.discard(e164)
+            else:
+                _rejected.add(e164)
         elif out in ("rejected_openai", "rejected", "already_in_use"):
-            _rejected.add(e164)
+            n = int(_used_count.get(e164, 0) or 0)
+            if n >= _MAX_USES or n <= 0:
+                _rejected.add(e164)
     return e164

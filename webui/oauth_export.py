@@ -1966,7 +1966,8 @@ def execute_codex_oauth_flow(
                 vak_rents += 1
                 skip_why = sms_phone_ledger.should_skip(phone)
                 if skip_why:
-                    _log(f"[sms] 跳过已记录号码 {phone[:6]}****，未提交 OpenAI ({skip_why})，释放重租")
+                    why_tip = "已满 3 次 GPT 接码" if skip_why == "used_quota" else skip_why
+                    _log(f"[sms] 跳过已记录号码 {phone[:6]}****，未提交 OpenAI ({why_tip})，释放重租")
                     ctrl.mark_send_failed(f"skipped_{skip_why}")
                     if use_routes and current_route and sms_scheduler:
                         rotated = sms_scheduler.note_ledger_skip(
@@ -1976,6 +1977,9 @@ def execute_codex_oauth_flow(
                         if rotated:
                             _log("[sms] 当前线路台账连跳，改走下一条")
                     continue
+                used_n = sms_phone_ledger.used_count(phone)
+                if used_n:
+                    _log(f"[sms] 台账已用 {used_n}/3，同一号继续提交 OpenAI")
                 sms_phone_ledger.mark_inflight(phone)
                 if use_routes and current_route and sms_scheduler:
                     sms_scheduler.note_ledger_ok(
