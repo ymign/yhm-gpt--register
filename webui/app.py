@@ -3246,6 +3246,177 @@ def api_token_refresh_download(task_id: str, format: str = "txt"):
         )
 
 
+# ──────────────────────── 解 401（独立菜单，用户代理重提 RT） ────────────────────────
+
+
+class Fix401PreviewReq(BaseModel):
+    emails: list[str] = Field(default_factory=list)
+
+
+class Fix401ProxyCheckReq(BaseModel):
+    proxy: str = ""
+
+
+class Fix401StartReq(BaseModel):
+    emails: list[str] = Field(default_factory=list)
+    proxy: str = ""
+    proxies: str = ""
+    proxy_country: str = ""
+    workers: int = Field(2, ge=1, le=5)
+    timeout: int = Field(45, ge=15, le=120)
+    force_full_login: bool = False
+
+
+def _safe_get_fix401(q, timeout: float = 2.0):
+    try:
+        return q.get(timeout=timeout)
+    except Exception as e:
+        if type(e).__name__ == "Empty":
+            return "__TIMEOUT__"
+        return None
+
+
+@app.post("/api/fix401/preview")
+def api_fix401_preview(req: Fix401PreviewReq):
+    from . import fix401_service
+    return fix401_service.preview(req.emails or [])
+
+
+@app.post("/api/fix401/proxy/check")
+def api_fix401_proxy_check(req: Fix401ProxyCheckReq):
+    from . import fix401_service
+    try:
+        return fix401_service.check_user_proxy(req.proxy or "")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(400, f"代理不可用: {e}")
+
+
+@app.post("/api/fix401/start")
+def api_fix401_start(req: Fix401StartReq):
+    from . import fix401_service
+    emails = [e.strip().lower() for e in (req.emails or []) if e and str(e).strip()]
+    if not emails:
+        raise HTTPException(400, "请填写至少一个邮箱")
+    proxy_text = "\n".join(x for x in (req.proxies, req.proxy) if x)
+    try:
+        out = fix401_service.start(
+            emails=emails,
+            proxy_text=proxy_text,
+            proxy_country=req.proxy_country or "",
+            workers=req.workers,
+            timeout=req.timeout,
+            force_full_login=bool(req.force_full_login),
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    logger.info(
+        "[fix401] 任务 %s 启动: 提交 %s 排队 %s workers=%s proxy=%s",
+        out.get("task_id"), out.get("total"), out.get("queued"),
+        req.workers, "有" if out.get("has_proxy") else "无",
+    )
+    return out
+
+
+@app.post("/api/fix401/{task_id}/stop")
+def api_fix401_stop(task_id: str):
+    from . import fix401_service
+    return {"ok": True, "task_id": task_id, "active": fix401_service.stop(task_id)}
+
+
+@app.get("/api/fix401/{task_id}")
+def api_fix401_snapshot(task_id: str):
+    from . import fix401_service
+    snap = fix401_service.snapshot(task_id)
+    if not snap:
+        raise HTTPException(404, "任务未找到")
+    return {"ok": True, **snap}
+
+
+@app.get("/api/fix401/{task_id}/stream")
+async def api_fix401_stream(task_id: str, request: Request):
+    from . import fix401_service
+    task = fix401_service.get_task(task_id)
+    if not task:
+        raise HTTPException(404, "任务未找到")
+
+    async def event_gen():
+        loop = asyncio.get_event_loop()
+        init = {
+            "task_id": task_id,
+            "total": len(task.items),
+            "stats": task.stats,
+            "has_proxy": bool(task.proxies),
+        }
+        yield f"event: init\ndata: {json.dumps(init, ensure_ascii=False)}\n\n"
+        while True:
+            if await request.is_disconnected():
+                break
+            msg = await loop.run_in_executor(None, _safe_get_fix401, task.queue)
+            if msg is None:
+                break
+            if msg == "__TIMEOUT__":
+                yield ": keep-alive\n\n"
+                continue
+            kind = msg.get("kind") or "progress"
+            data_str = json.dumps(msg, ensure_ascii=False)
+            if kind == "end":
+                yield f"event: end\ndata: {data_str}\n\n"
+                break
+            yield f"event: progress\ndata: {data_str}\n\n"
+
+    return StreamingResponse(
+        event_gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
+@app.get("/api/fix401/{task_id}/log")
+def api_fix401_log(task_id: str, email: str = ""):
+    from . import fix401_service
+    return {"ok": True, "email": email, "lines": fix401_service.get_log(task_id, email)}
+
+
+@app.get("/api/fix401/{task_id}/download_cpa")
+def api_fix401_download_cpa(task_id: str, layout: str = "txt"):
+    from . import fix401_service, oauth_export
+    task = fix401_service.get_task(task_id)
+    if not task:
+        raise HTTPException(404, "任务未找到")
+    rows = fix401_service.success_cpa_list(task_id)
+    if not rows:
+        raise HTTPException(404, "还没有解 401 成功的账号")
+    content, filename, mime = oauth_export.pack_cpa_export(rows, layout=layout, task_id=task_id)
+    return Response(
+        content=content,
+        media_type=mime,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.get("/api/fix401/{task_id}/download_sub2")
+def api_fix401_download_sub2(task_id: str, layout: str = "bundle"):
+    from . import fix401_service, oauth_export
+    task = fix401_service.get_task(task_id)
+    if not task:
+        raise HTTPException(404, "任务未找到")
+    rows = fix401_service.success_cpa_list(task_id)
+    if not rows:
+        raise HTTPException(404, "还没有解 401 成功的账号")
+    content, filename, mime = oauth_export.pack_sub2_export(rows, layout=layout, task_id=task_id)
+    return Response(
+        content=content,
+        media_type=mime,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 # ──────────────────────── Plus 试用提链 (Extract Link) ────────────────────────
 
 

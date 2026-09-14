@@ -62,15 +62,26 @@ def refresh_token_fast(
     proxy: str = "",
     timeout: float = 25.0,
     client_id: str = CODEX_CLIENT_ID,
+    impersonate: str = "",
+    user_agent: str = "",
 ) -> dict:
-    """使用 refresh_token 极速换取新 access_token / id_token / refresh_token。"""
+    """使用 refresh_token 极速换取新 access_token / id_token / refresh_token。
+
+    impersonate / user_agent 应跟该号注册画像走。缺省不再用 Windows Chrome 136，
+    避免刷 token 时 TLS/UA 和注册设备对不上。
+    """
     rt = str(refresh_token or "").strip()
     if not rt:
         raise ValueError("缺少 refresh_token")
 
     from http_client import create_http_session
 
-    session = create_http_session(proxy=proxy or None, impersonate="chrome110")
+    imp = (impersonate or "chrome142").strip() or "chrome142"
+    ua = (user_agent or "").strip() or (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36"
+    )
+    session = create_http_session(proxy=proxy or None, impersonate=imp, user_agent=ua)
     body = {
         "grant_type": "refresh_token",
         "client_id": client_id,
@@ -82,7 +93,7 @@ def refresh_token_fast(
         "Accept": "application/json",
         "Origin": "https://auth.openai.com",
         "Referer": "https://auth.openai.com/",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+        "User-Agent": ua,
     }
 
     resp = session.post(
@@ -197,7 +208,17 @@ def execute_token_refresh_flow(
         _log(f"检测到存在历史 Refresh Token (len={len(existing_rt)})，优先发起极速置换...")
         try:
             t0 = time.time()
-            data = refresh_token_fast(existing_rt, proxy=proxy, timeout=min(20.0, timeout))
+            from fingerprint import fingerprint_from_account
+            fp = fingerprint_from_account(
+                account_info, country_code=target_country or "", generate_if_missing=False,
+            )
+            data = refresh_token_fast(
+                existing_rt,
+                proxy=proxy,
+                timeout=min(20.0, timeout),
+                impersonate=str((fp or {}).get("impersonate") or ""),
+                user_agent=str((fp or {}).get("user_agent") or ""),
+            )
             elapsed_ms = int((time.time() - t0) * 1000)
 
             new_at = data.get("access_token") or ""

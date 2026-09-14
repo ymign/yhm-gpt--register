@@ -19,6 +19,12 @@ const routes = [
     meta: { title: '账号管理', icon: 'UserFilled', group: '账号' },
   },
   {
+    path: '/fix401',
+    name: 'fix401',
+    component: () => import('@/views/Fix401.vue'),
+    meta: { title: '解 401', icon: 'Key', group: '账号' },
+  },
+  {
     path: '/import-dump',
     name: 'import_dump',
     component: () => import('@/views/ShipmentImport.vue'),

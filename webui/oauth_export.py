@@ -1309,6 +1309,7 @@ def execute_codex_oauth_flow(
     timeout: float = 45.0,
     trace: Optional[dict] = None,
     stop_fn: Optional[Callable[[], bool]] = None,
+    pin_proxy: bool = False,
 ) -> dict:
     """独立且纯净的 Codex OAuth 授权与 Token 获取协议流。
 
@@ -1422,6 +1423,10 @@ def execute_codex_oauth_flow(
         t_hop = int((time.time() - t0) * 1000)
         status_code = getattr(resp, "status_code", 0)
         if status_code in (401, 403):
+            if pin_proxy:
+                raise RuntimeError(
+                    f"OpenAI 授权服务器返回 HTTP {status_code}，已钉死用户代理，不再换 IP"
+                )
             _log(f"[1/6] ⚠️ 授权服务器响应 {status_code}，保持本号指纹，只换同国新 IP 重试")
             time.sleep(2)
             proxy = _rotate_proxy_ip(proxy, country_code)
@@ -1478,10 +1483,13 @@ def execute_codex_oauth_flow(
         _raise_if_official_dead(step_resp.text or "", step_resp.status_code, "authorize/continue")
         # 如果遇到 409 invalid_state，自动切换至标准 AuthFlow.run_protocol_login 作为强健兜底
         if step_resp.status_code == 409 or "invalid_state" in err_msg:
-            _log("[2/6] ⚠️ 触发 409 invalid_state：保持本号指纹，换同国新 IP 后走协议登录（不再同 IP 换皮）")
+            if pin_proxy:
+                _log("[2/6] ⚠️ 触发 409 invalid_state：用户代理已钉死，不换 IP，原代理走协议登录")
+            else:
+                _log("[2/6] ⚠️ 触发 409 invalid_state：保持本号指纹，换同国新 IP 后走协议登录（不再同 IP 换皮）")
             from auth_flow import AuthFlow
             cfg = Config()
-            cfg.proxy = _rotate_proxy_ip(proxy, country_code) or None
+            cfg.proxy = (proxy if pin_proxy else _rotate_proxy_ip(proxy, country_code)) or None
             env_overrides = {
                 "TARGET_COUNTRY": country_code,
                 "OTP_TIMEOUT": str(int(timeout)),
