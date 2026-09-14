@@ -82,6 +82,7 @@ import {
   oaCheckStreamUrl,
   getOACheckLog,
   startOAuthExport,
+  previewOAuthExport,
   retryOAuthExport,
   stopOAuthExport,
   oauthExportStreamUrl,
@@ -2133,8 +2134,18 @@ const oauthTaskId = ref('')
 const oauthEs = ref(null)
 const oauthConfigCollapsed = ref(true)
 const oauthTargetEmails = ref([])
-const oauthPoolSource = ref('filter') // filter | selected
+const oauthPoolSource = ref('filter') // filter | selected | paste
+const oauthReauthMode = ref(false)
+const oauthPasteText = ref('')
+const oauthPreview = ref(null)
+const oauthIdentifying = ref(false)
+const oauthIdentified = ref(false)
+const oauthIdentifyPct = ref(0)
+const oauthIdentifyText = ref('')
+let oauthPreviewTimer = 0
+let oauthIdentifyAnim = 0
 const oauthCandidateCount = ref(0)
+const oauthPasteCount = computed(() => parsePastedEmails(oauthPasteText.value).length)
 const oauthItems = shallowRef({})
 const oauthTick = ref(0)
 const oauthTableRef = ref(null)
@@ -2777,7 +2788,7 @@ function closeRowMoreMenu() {
   rowMore.value = null
 }
 
-function openRowMoreMenu(row, e) {
+async function openRowMoreMenu(row, e) {
   e?.preventDefault?.()
   e?.stopPropagation?.()
   if (rowMoreOpen.value && rowMore.value?.email === row?.email) {
@@ -2785,13 +2796,23 @@ function openRowMoreMenu(row, e) {
     return
   }
   const rect = e?.currentTarget?.getBoundingClientRect?.()
-  const w = 248
-  const x = rect ? Math.min(rect.right - w, window.innerWidth - w - 8) : 12
-  const y = rect ? Math.min(rect.bottom + 4, window.innerHeight - 360) : 12
-  rowMorePos.x = Math.max(8, x)
-  rowMorePos.y = Math.max(8, y)
   rowMore.value = row
   rowMoreOpen.value = true
+  rowMorePos.x = rect ? Math.max(8, Math.min(rect.right - 248, window.innerWidth - 256)) : 12
+  rowMorePos.y = rect ? Math.max(8, rect.bottom + 4) : 12
+  await nextTick()
+  const menu = rowMoreMenuRef.value
+  if (!menu || !rect) return
+  const mw = menu.offsetWidth || 248
+  const mh = menu.offsetHeight || 320
+  let x = rect.right - mw
+  let y = rect.bottom + 4
+  if (x + mw > window.innerWidth - 8) x = window.innerWidth - mw - 8
+  if (x < 8) x = 8
+  if (y + mh > window.innerHeight - 8) y = rect.top - mh - 4
+  if (y < 8) y = Math.max(8, window.innerHeight - mh - 8)
+  rowMorePos.x = x
+  rowMorePos.y = y
 }
 
 function runRowMore(cmd) {
@@ -2898,6 +2919,8 @@ onMounted(() => {
 onUnmounted(() => {
   stopOAuthLogPoll()
   flushOAuthUpdates()
+  if (oauthPreviewTimer) window.clearTimeout(oauthPreviewTimer)
+  stopIdentifyAnim()
   window.removeEventListener('keydown', handleGlobalKeydown)
   document.removeEventListener('pointerdown', onDocPointerDown, true)
 })
@@ -3173,6 +3196,14 @@ watch(oauthConfigCollapsed, () => layoutOAuthTable())
 const oauthBatchHint = computed(() => {
   const pool = oauthCandidateCount.value || oauthTargetEmails.value.length
   const queued = oauthPickStats.value?.queued || oauthRunMeta.queue_remaining || 0
+  if (oauthReauthMode.value && !oauthRunning.value && pool) {
+    const pv = oauthPreview.value
+    const miss = pv?.missing?.length || 0
+    const ban = pv?.banned?.length || 0
+    const can = pv?.queued != null ? pv.queued : pool
+    if (!oauthIdentified.value) return '粘贴邮箱后点「识别号池」。号池里有的会进下面表格，已导出的也照跑，不接码。'
+    return `重新授权：号池里有就跑，不管有没有导出过。名单 ${pool}，号池可跑 ${can}${miss ? `，号池没有 ${miss}` : ''}${ban ? `，封号跳过 ${ban}` : ''}。不接码。跑完下载 CPA / Sub2 JSON。`
+  }
   if (!oauthRunning.value && !Object.keys(oauthItems.value).length && pool) {
     return `号池来自${oauthPoolSource.value === 'selected' ? '勾选' : '当前筛选'}，共 ${pool} 个账号。点「开始授权」后会排除已授权 / 封号 / 冷却，目标未满就持续从号池补人，把并发跑满。不必勾选，也不用把分页拉到几千。`
   }
@@ -3219,11 +3250,28 @@ function currentRegisteredEmailQuery() {
   }
 }
 
+function parsePastedEmails(text) {
+  const out = []
+  const seen = new Set()
+  const re = /[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}/gi
+  for (const chunk of String(text || '').split(/[\r\n,;]+/)) {
+    const m = String(chunk || '').match(re)
+    if (!m) continue
+    const em = m[0].trim().toLowerCase()
+    if (!em || seen.has(em)) continue
+    seen.add(em)
+    out.push(em)
+  }
+  return out
+}
+
 function handleOAuthCommand(cmd) {
   if (cmd === 'oauth_selected') {
     openOAuthExport('selected')
   } else if (cmd === 'oauth_all' || cmd === 'oauth_filter') {
     openOAuthExport('filter')
+  } else if (cmd === 'oauth_reauth') {
+    openReauthExport()
   } else if (cmd === 'reset_tries_selected') {
     resetOauthTriesFor(selected.value.map((r) => r.email))
   } else if (cmd === 'recover_selected') {
@@ -3259,7 +3307,150 @@ async function resetOauthTriesFor(emails) {
   }
 }
 
+function seedReauthPreviewRows(preview, parsed) {
+  if (oauthRunning.value) return
+  const emails = parsed || []
+  if (!emails.length) {
+    oauthItems.value = {}
+    bumpOAuthTick()
+    return
+  }
+  const missing = new Set((preview?.missing || []).map((e) => String(e || '').toLowerCase()))
+  const banned = new Set((preview?.banned || []).map((e) => String(e || '').toLowerCase()))
+  const map = {}
+  for (const em of emails) {
+    const row = {
+      email: em,
+      status: 'pending',
+      result: null,
+      elapsed: 0,
+      _providerMeta: getEmailProviderMeta(em),
+    }
+    if (missing.has(em)) {
+      row.status = 'done'
+      row.step_text = '号池里没有这个邮箱'
+      row.result = { status: 'skipped', label: '号池没有' }
+    } else if (banned.has(em)) {
+      row.status = 'done'
+      row.step_text = '封号，跳过'
+      row.result = { status: 'banned', label: '封号跳过' }
+    } else {
+      row.step_text = '号池已有，待重新授权（已导出也跑）'
+    }
+    map[em] = row
+  }
+  oauthItems.value = map
+  bumpOAuthTick()
+}
+
+function stopIdentifyAnim() {
+  if (oauthIdentifyAnim) {
+    window.clearInterval(oauthIdentifyAnim)
+    oauthIdentifyAnim = 0
+  }
+}
+
+function startIdentifyAnim() {
+  stopIdentifyAnim()
+  oauthIdentifyPct.value = 6
+  oauthIdentifyAnim = window.setInterval(() => {
+    if (oauthIdentifyPct.value < 88) {
+      oauthIdentifyPct.value += oauthIdentifyPct.value < 40 ? 7 : 2
+      if (oauthIdentifyPct.value > 88) oauthIdentifyPct.value = 88
+    }
+  }, 140)
+}
+
+async function identifyReauthEmails() {
+  if (oauthIdentifying.value || oauthRunning.value) return
+  const emails = parsePastedEmails(oauthPasteText.value)
+  if (!emails.length) {
+    ElMessage.warning('先把邮箱粘贴进去，每行一个，再点识别')
+    return
+  }
+  oauthIdentifying.value = true
+  oauthIdentified.value = false
+  oauthIdentifyPct.value = 4
+  oauthIdentifyText.value = `正在解析 ${emails.length} 个邮箱…`
+  oauthTargetEmails.value = emails
+  oauthCandidateCount.value = emails.length
+  oauthPreview.value = null
+  oauthItems.value = {}
+  bumpOAuthTick()
+  startIdentifyAnim()
+  const started = Date.now()
+  try {
+    const chunkSize = emails.length > 500 ? 250 : emails.length
+    const merged = {
+      parsed: emails.length,
+      queued: 0,
+      found: 0,
+      queued_emails: [],
+      missing: [],
+      banned: [],
+    }
+    for (let i = 0; i < emails.length; i += chunkSize) {
+      const part = emails.slice(i, i + chunkSize)
+      oauthIdentifyText.value = `正在对照号池 ${Math.min(i + part.length, emails.length)} / ${emails.length}`
+      const pv = await previewOAuthExport({ emails: part, force_reauth: true })
+      merged.queued += Number(pv.queued || 0)
+      merged.found += Number(pv.found || 0)
+      merged.queued_emails.push(...(pv.queued_emails || []))
+      merged.missing.push(...(pv.missing || []))
+      merged.banned.push(...(pv.banned || []))
+      if (emails.length > chunkSize) {
+        stopIdentifyAnim()
+        oauthIdentifyPct.value = Math.min(92, Math.round(((i + part.length) / emails.length) * 92))
+      }
+    }
+    stopIdentifyAnim()
+    oauthIdentifyPct.value = 100
+    oauthIdentifyText.value = `识别完成：号池可跑 ${merged.queued} / ${emails.length}`
+    oauthPreview.value = merged
+    seedReauthPreviewRows(merged, emails)
+    oauthIdentified.value = true
+    const wait = Math.max(0, 420 - (Date.now() - started))
+    if (wait) await new Promise((r) => setTimeout(r, wait))
+    ElMessage.success(`识别完成，号池里有 ${merged.queued} 个会重跑（含已导出）`)
+  } catch (e) {
+    oauthIdentified.value = false
+    ElMessage.error('识别失败: ' + (e.message || e))
+  } finally {
+    stopIdentifyAnim()
+    oauthIdentifying.value = false
+    layoutOAuthTable()
+  }
+}
+
+async function openReauthExport() {
+  oauthReauthMode.value = true
+  oauthPoolSource.value = 'paste'
+  if (!oauthRunning.value) {
+    oauthTaskId.value = ''
+    oauthConfigCollapsed.value = false
+    resetOAuthListView()
+    oauthItems.value = {}
+    oauthPickStats.value = null
+    oauthIdentified.value = false
+    oauthPreview.value = null
+    oauthIdentifyPct.value = 0
+    oauthIdentifyText.value = ''
+    bumpOAuthTick()
+  }
+  const fromSel = selected.value.map((r) => r.email).filter(Boolean)
+  if (!oauthPasteText.value.trim() && fromSel.length) {
+    oauthPasteText.value = fromSel.join('\n')
+  }
+  oauthTargetEmails.value = []
+  oauthCandidateCount.value = 0
+  oauthVisible.value = true
+  loadSmsProviderCatalog()
+  loadSmsCountries()
+  loadOAuthSmsMeta()
+}
+
 async function openOAuthExport(target = 'filter') {
+  oauthReauthMode.value = false
   let emails = []
   if (target === 'selected') {
     emails = selected.value.map((r) => r.email)
@@ -3357,10 +3548,27 @@ async function stopOAuthExportTask() {
   }
 }
 
+watch(oauthPasteText, () => {
+  if (!oauthReauthMode.value || oauthRunning.value || oauthIdentifying.value) return
+  if (!oauthIdentified.value) return
+  oauthIdentified.value = false
+  oauthPreview.value = null
+  oauthItems.value = {}
+  oauthTargetEmails.value = []
+  oauthCandidateCount.value = 0
+  bumpOAuthTick()
+})
+
 async function startOAuthExportTask() {
-  const emails = oauthTargetEmails.value
+  if (oauthReauthMode.value && !oauthIdentified.value) {
+    ElMessage.warning('请先点「识别号池」，对照完成后再开始重新授权')
+    return
+  }
+  const emails = oauthReauthMode.value
+    ? (oauthPreview.value?.queued_emails || oauthTargetEmails.value)
+    : oauthTargetEmails.value
   if (!emails.length) {
-    ElMessage.warning('没有待导出的账号列表')
+    ElMessage.warning(oauthReauthMode.value ? '先粘贴邮箱并点识别，号池里有的才会进表格' : '没有待导出的账号列表')
     return
   }
 
@@ -3389,7 +3597,7 @@ async function startOAuthExportTask() {
   }
 
   try {
-    const skipSms = oauthForm.smsStrategy === 'skip'
+    const skipSms = oauthReauthMode.value || oauthForm.smsStrategy === 'skip'
     const effectiveProvider = skipSms
       ? (oauthForm.smsProvider || 'smsbower')
       : oauthForm.smsStrategy
@@ -3398,10 +3606,11 @@ async function startOAuthExportTask() {
       emails,
       proxies: proxiesParam,
       proxy: proxyParam,
-      proxy_country: oauthForm.proxyCountry || '',
+      proxy_country: oauthReauthMode.value ? '' : (oauthForm.proxyCountry || ''),
       workers: oauthForm.workers || 5,
       timeout: oauthForm.timeout || 45,
       sms_enabled: !skipSms,
+      force_reauth: oauthReauthMode.value,
       sms_provider: effectiveProvider,
       sms_api_key: oauthForm.smsApiKey || '',
       sms_cdk_url: oauthForm.smsCdkUrl || 'https://ndk.cc.cd',
@@ -3413,7 +3622,7 @@ async function startOAuthExportTask() {
         : String(oauthForm.smsExceptProviderIds || '').trim(),
       sms_max_attempts: Number(oauthForm.smsMaxAttempts) || 3,
       sms_timeout: Number(oauthForm.smsTimeout) || 80,
-      target_count: Number(oauthForm.targetCount) || 0,
+      target_count: oauthReauthMode.value ? 0 : (Number(oauthForm.targetCount) || 0),
       overshoot_slack: Number(oauthForm.overshootSlack) || 0,
       oauth_max_tries: Number(oauthForm.oauthMaxTries) || 3,
       sms_route_mode: oauthForm.smsRouteMode || 'priority',
@@ -3437,7 +3646,9 @@ async function startOAuthExportTask() {
     const ps = res.pick_stats || {}
     if (ps.queued != null) {
       ElMessage.success(
-        `号池 ${oauthCandidateCount.value}，可跑 ${ps.runnable || ps.queued} 个已入队。目标未满会持续补人，把并发跑到 ${oauthForm.workers}。冷却 ${ps.skipped_cooldown || 0}，耗尽 ${ps.skipped_exhausted || 0}`,
+        oauthReauthMode.value
+          ? `重新授权已入队 ${ps.queued} 个（名单 ${oauthCandidateCount.value}，库里没有 ${ps.skipped_not_found || 0}，封号 ${ps.skipped_banned || 0}），不接码`
+          : `号池 ${oauthCandidateCount.value}，可跑 ${ps.runnable || ps.queued} 个已入队。目标未满会持续补人，把并发跑到 ${oauthForm.workers}。冷却 ${ps.skipped_cooldown || 0}，耗尽 ${ps.skipped_exhausted || 0}`,
       )
     }
     connectOAuthStream(taskId)
@@ -3544,7 +3755,7 @@ async function retryOAuthExportRunner(targetEmails = null) {
   }
 
   try {
-    const skipSms = oauthForm.smsStrategy === 'skip'
+    const skipSms = oauthReauthMode.value || oauthForm.smsStrategy === 'skip'
     const effectiveProvider = skipSms
       ? (oauthForm.smsProvider || 'smsbower')
       : oauthForm.smsStrategy
@@ -3553,7 +3764,7 @@ async function retryOAuthExportRunner(targetEmails = null) {
       emails,
       proxies: proxiesParam,
       proxy: proxyParam,
-      proxy_country: oauthForm.proxyCountry || '',
+      proxy_country: oauthReauthMode.value ? '' : (oauthForm.proxyCountry || ''),
       workers: oauthForm.workers || 5,
       timeout: oauthForm.timeout || 45,
       sms_enabled: !skipSms,
@@ -3675,51 +3886,56 @@ async function openOAuthItemLog(row) {
   startOAuthLogPoll()
 }
 
-async function downloadCpaJson() {
+function saveDownloadBlob(res, filename) {
+  const blob = res instanceof Blob ? res : new Blob([res?.data || res])
+  const url = window.URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  window.URL.revokeObjectURL(url)
+}
+
+function oauthExportEmailsParam() {
+  if (oauthReauthMode.value && oauthPreview.value?.queued_emails?.length) {
+    return oauthPreview.value.queued_emails.join(',')
+  }
+  return (oauthTargetEmails.value || []).join(',')
+}
+
+async function downloadCpaJson(layout = 'auto') {
   if (!oauthTaskId.value && !oauthTargetEmails.value.length) {
     ElMessage.warning('没有可下载的导出数据')
     return
   }
   try {
     const taskId = oauthTaskId.value || 'current'
-    const emailsParam = oauthTargetEmails.value.join(',')
-    const res = await downloadOAuthExportCpa(taskId, emailsParam)
-    const blob = new Blob([res.data || res], { type: 'application/json' })
-    const url = window.URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `cpa-oauth-${taskId}.json`
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
-    window.URL.revokeObjectURL(url)
-    ElMessage.success('CPA JSON 凭证下载成功')
+    const kind = layout === 'zip' ? 'zip' : (layout === 'bundle' ? 'bundle' : 'auto')
+    const res = await downloadOAuthExportCpa(taskId, oauthExportEmailsParam(), kind)
+    const filename = kind === 'zip' ? `cpa-oauth-${taskId}.zip` : `cpa-oauth-${taskId}.json`
+    saveDownloadBlob(res, filename)
+    ElMessage.success(kind === 'zip' ? 'CPA 压缩包已下载（一号一个 json）' : 'CPA 整包 JSON 已下载')
   } catch (e) {
-    ElMessage.error('下载 CPA JSON 失败: ' + (e.response?.data?.detail || e.message))
+    ElMessage.error('下载 CPA 失败: ' + (e.response?.data?.detail || e.message))
   }
 }
 
-async function downloadSub2Json() {
+async function downloadSub2Json(layout = 'bundle') {
   if (!oauthTaskId.value && !oauthTargetEmails.value.length) {
     ElMessage.warning('没有可下载的导出数据')
     return
   }
   try {
     const taskId = oauthTaskId.value || 'current'
-    const emailsParam = oauthTargetEmails.value.join(',')
-    const res = await downloadOAuthExportSub2(taskId, emailsParam)
-    const blob = new Blob([res.data || res], { type: 'application/json' })
-    const url = window.URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `sub2api-oauth-${taskId}.json`
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
-    window.URL.revokeObjectURL(url)
-    ElMessage.success('Sub2API JSON 凭证下载成功')
+    const kind = layout === 'zip' ? 'zip' : 'bundle'
+    const res = await downloadOAuthExportSub2(taskId, oauthExportEmailsParam(), kind)
+    const filename = kind === 'zip' ? `sub2api-oauth-${taskId}.zip` : `sub2api-oauth-${taskId}.json`
+    saveDownloadBlob(res, filename)
+    ElMessage.success(kind === 'zip' ? 'Sub2 压缩包已下载（一号一个 json）' : 'Sub2 整包 JSON 已下载')
   } catch (e) {
-    ElMessage.error('下载 Sub2API JSON 失败: ' + (e.response?.data?.detail || e.message))
+    ElMessage.error('下载 Sub2 失败: ' + (e.response?.data?.detail || e.message))
   }
 }
 
@@ -3808,6 +4024,7 @@ async function downloadSingleSub2Json(email) {
 // 单账号发起 OAuth 导出 / 手机接码弹窗
 function openOAuthExportForSingle(email) {
   if (!email) return
+  oauthReauthMode.value = false
   oauthTargetEmails.value = [email]
   oauthTaskId.value = ''
   initOAuthRows([email])
@@ -6514,6 +6731,7 @@ onUnmounted(() => {
                     <div class="dropdown-group-title divider-title">OAuth 接码授权</div>
                     <el-dropdown-item @click="handleOAuthCommand('oauth_filter')">📱 按当前筛选号池授权（无需勾选）</el-dropdown-item>
                     <el-dropdown-item @click="handleOAuthCommand('oauth_selected')" :disabled="!selectedCount">📱 仅勾选的 {{ selectedCount }} 个</el-dropdown-item>
+                    <el-dropdown-item @click="handleOAuthCommand('oauth_reauth')">🔁 重新授权（粘贴邮箱，不接码）</el-dropdown-item>
                     <el-dropdown-item @click="handleOAuthCommand('reset_tries_selected')" :disabled="!selectedCount">↺ 重置选中授权次数 ({{ selectedCount }})</el-dropdown-item>
                     <div class="dropdown-group-title divider-title">提链 / 出码</div>
                     <el-dropdown-item @click="openExtractChannel('paypal_pipeline')">🎁 PayPal 提链+代付 (一条龙)</el-dropdown-item>
@@ -6582,6 +6800,14 @@ onUnmounted(() => {
               >
                 <el-icon><Phone /></el-icon>
                 <span>授权接码</span>
+              </button>
+              <button
+                class="action-menu-btn action-reauth-btn"
+                title="粘贴已接码邮箱，重新 Codex 授权并导出 Sub2 / CPA，不再租号"
+                @click="openReauthExport"
+              >
+                <el-icon><Key /></el-icon>
+                <span>重新授权</span>
               </button>
 
               <!-- 4. 运维管理 (Ops ▾) -->
@@ -6966,41 +7192,19 @@ onUnmounted(() => {
                     <button class="octopus-row-btn btn-mail" @click.stop="openMailOtpModal(row)" title="检索邮件验证码">
                       查码
                     </button>
-                    <button class="octopus-row-btn btn-more" title="更多高级操作" @click.stop="openRowMoreMenu(row, $event)">
+                    <button
+                      class="octopus-row-btn btn-more"
+                      title="更多高级操作"
+                      @pointerdown.stop
+                      @mousedown.stop
+                      @click.stop="openRowMoreMenu(row, $event)"
+                    >
                       ···
                     </button>
                   </div>
                 </template>
               </el-table-column>
             </el-table>
-            <Teleport to="body">
-              <div
-                v-if="rowMoreOpen && rowMore"
-                ref="rowMoreMenuRef"
-                class="extract-dropdown-menu row-more-float"
-                :style="{ left: rowMorePos.x + 'px', top: rowMorePos.y + 'px' }"
-                @click.stop
-              >
-                <div class="dropdown-group-title">Token 凭证与自愈</div>
-                <button type="button" class="row-more-item" @click="runRowMore('refresh_token')">🔄 刷新此账号 Token</button>
-                <button type="button" class="row-more-item" @click="runRowMore('recover_oauth')">找回历史授权凭据 (RT自愈)</button>
-                <div class="dropdown-group-title divider-title">数据与凭证导出</div>
-                <button type="button" class="row-more-item" @click="runRowMore('edit')">编辑/补全凭证</button>
-                <button type="button" class="row-more-item" @click="runRowMore('copy_session')">复制 Session JSON</button>
-                <button type="button" class="row-more-item" @click="runRowMore('download_sub2')">导出 Sub2API JSON</button>
-                <button type="button" class="row-more-item" @click="runRowMore('download_cpa')">导出 CPA JSON</button>
-                <div class="dropdown-group-title divider-title">操作与运维</div>
-                <button v-if="rowMore.at_len" type="button" class="row-more-item" @click="runRowMore('copy_at')">复制 Access Token (AT)</button>
-                <button v-if="rowMore.rt_len" type="button" class="row-more-item" @click="runRowMore('copy_rt')">复制 Refresh Token (RT)</button>
-                <button type="button" class="row-more-item" @click="runRowMore('oauth_export')">Codex OAuth 接码授权</button>
-                <button type="button" class="row-more-item" @click="runRowMore('fetch_mail')">检索邮件验证码</button>
-                <button v-if="!rowMore.password" type="button" class="row-more-item" @click="runRowMore('repair_pwd')">补设密码</button>
-                <button v-if="!rowMore.totp_secret" type="button" class="row-more-item" @click="runRowMore('repair_2fa')">补绑 2FA</button>
-                <button v-if="rowMore.password" type="button" class="row-more-item" @click="runRowMore('copy_pwd')">复制密码</button>
-                <button v-if="rowMore.totp_secret" type="button" class="row-more-item" @click="runRowMore('copy_2fa')">复制 2FA Secret</button>
-                <button type="button" class="row-more-item is-danger" @click="runRowMore('delete')">删除账号</button>
-              </div>
-            </Teleport>
           </div>
 
           <!-- 分页底栏 -->
@@ -8125,12 +8329,12 @@ onUnmounted(() => {
       <template #header>
         <div class="oa-header">
           <div class="oa-header-title">
-            <span class="oa-title-badge">CODEX OAUTH</span>
-            <span class="oa-title-text">Codex OAuth 导出与智能接码授权</span>
+            <span class="oa-title-badge" :class="{ 'reauth-badge': oauthReauthMode }">{{ oauthReauthMode ? '重新授权' : 'CODEX OAUTH' }}</span>
+            <span class="oa-title-text">{{ oauthReauthMode ? '已接码账号重新授权并导出 Sub2 / CPA' : 'Codex OAuth 导出与智能接码授权' }}</span>
             <span class="oa-target-pill">
-              {{ oauthPoolSource === 'selected' ? '勾选' : '当前筛选' }}
-              {{ oauthCandidateCount || oauthTargetEmails.length }} 个号池
-              <template v-if="oauthForm.targetCount"> · 目标 {{ oauthForm.targetCount }}</template>
+              {{ oauthReauthMode ? '粘贴名单' : (oauthPoolSource === 'selected' ? '勾选' : '当前筛选') }}
+              {{ oauthCandidateCount || oauthTargetEmails.length }} 个
+              <template v-if="!oauthReauthMode && oauthForm.targetCount"> · 目标 {{ oauthForm.targetCount }}</template>
             </span>
           </div>
           <div class="oa-header-extra">
@@ -8151,12 +8355,12 @@ onUnmounted(() => {
           <div class="oa-mission-cell">
             <span class="oa-mission-k">号池</span>
             <span class="oa-mission-v">{{ oauthCandidateCount || oauthTargetEmails.length || 0 }}</span>
-            <span class="oa-mission-s">{{ oauthPoolSource === 'selected' ? '勾选' : '当前筛选' }}</span>
+            <span class="oa-mission-s">{{ oauthReauthMode ? '粘贴' : (oauthPoolSource === 'selected' ? '勾选' : '当前筛选') }}</span>
           </div>
           <div class="oa-mission-cell">
-            <span class="oa-mission-k">成功目标</span>
-            <span class="oa-mission-v">{{ oauthForm.targetCount || '不限' }}</span>
-            <span class="oa-mission-s">到量停领新号</span>
+            <span class="oa-mission-k">{{ oauthReauthMode ? '可跑' : '成功目标' }}</span>
+            <span class="oa-mission-v">{{ oauthReauthMode ? (oauthPreview?.queued ?? oauthTargetEmails.length) : (oauthForm.targetCount || '不限') }}</span>
+            <span class="oa-mission-s">{{ oauthReauthMode ? '名单全跑' : '到量停领新号' }}</span>
           </div>
           <div class="oa-mission-cell">
             <span class="oa-mission-k">并发</span>
@@ -8165,14 +8369,45 @@ onUnmounted(() => {
           </div>
           <div class="oa-mission-cell">
             <span class="oa-mission-k">接码</span>
-            <span class="oa-mission-v">{{ oauthSmsStrategyLabel }}</span>
-            <span class="oa-mission-s" v-if="oauthSmsMeta?.country_scheme === 'iso2'">{{ oauthEnabledRouteCount }} 条线路</span>
+            <span class="oa-mission-v">{{ oauthReauthMode ? '不接码' : oauthSmsStrategyLabel }}</span>
+            <span class="oa-mission-s" v-if="!oauthReauthMode && oauthSmsMeta?.country_scheme === 'iso2'">{{ oauthEnabledRouteCount }} 条线路</span>
+            <span class="oa-mission-s" v-else-if="oauthReauthMode">已绑过手机</span>
+          </div>
+        </div>
+
+        <div v-if="oauthReauthMode" class="oa-reauth-paste">
+          <div class="oa-reauth-paste-head">
+            <span>先粘贴邮箱，再点识别。号池里有就进表格，不管有没有导出过。</span>
+            <span class="oa-reauth-paste-count">已粘贴 {{ oauthPasteCount }}</span>
+          </div>
+          <el-input
+            v-model="oauthPasteText"
+            type="textarea"
+            :autosize="{ minRows: 6, maxRows: 12 }"
+            :disabled="oauthRunning || oauthIdentifying"
+            placeholder="xxx@xxx.com&#10;xxx@xxx.com&#10;xxx@xxx.com"
+          />
+          <div class="oa-reauth-paste-actions">
+            <button
+              class="oa-identify-btn"
+              :disabled="oauthRunning || oauthIdentifying || oauthPasteCount === 0"
+              @click="identifyReauthEmails"
+            >
+              <el-icon><Search /></el-icon>
+              {{ oauthIdentifying ? '识别中…' : '识别号池' }}
+            </button>
+            <p v-if="oauthIdentified && oauthPreview" class="oa-reauth-preview">
+              号池命中 {{ oauthPreview.found }} · 将重跑 {{ oauthPreview.queued }}（含已导出）
+              <template v-if="oauthPreview.missing?.length"> · 号池没有 {{ oauthPreview.missing.length }}</template>
+              <template v-if="oauthPreview.banned?.length"> · 封号跳过 {{ oauthPreview.banned.length }}</template>
+            </p>
+            <p v-else-if="!oauthIdentifying" class="oa-reauth-preview">粘贴完成后点「识别号池」，对照结果会出现在下面表格。</p>
           </div>
         </div>
 
         <el-collapse-transition>
           <div v-show="!oauthConfigCollapsed" class="oa-config-card oa-setup-stack">
-            <section class="oa-setup-block">
+            <section v-if="!oauthReauthMode" class="oa-setup-block">
               <header class="oa-setup-head">
                 <span class="oa-setup-step">1</span>
                 <div>
@@ -8206,7 +8441,7 @@ onUnmounted(() => {
                 <span class="oa-setup-step">2</span>
                 <div>
                   <div class="oa-setup-title">怎么连</div>
-                  <p class="oa-setup-lead">代理、出口国家和并发。和接码国家是两件事。</p>
+                  <p class="oa-setup-lead">{{ oauthReauthMode ? '代理池轮询，每号新 sid。出口强制跟该号注册国家，复用注册画像和 device_id，不接码。' : '代理、出口国家和并发。和接码国家是两件事。' }}</p>
                 </div>
               </header>
               <el-form label-position="top" :disabled="oauthRunning" size="small" class="oa-setup-form">
@@ -8227,11 +8462,17 @@ onUnmounted(() => {
                     </el-form-item>
                   </el-col>
                   <el-col :xs="24" :sm="12" :md="8">
-                    <el-form-item label="代理出口国家">
+                    <el-form-item :label="oauthReauthMode ? '代理出口国家（跟注册）' : '代理出口国家'">
                       <el-select
                         v-model="oauthForm.proxyCountry" filterable allow-create
                         placeholder="选择目标国家" style="width: 100%"
+                        :disabled="oauthReauthMode"
                       >
+                        <el-option
+                          v-if="oauthReauthMode"
+                          label="跟各号注册出口（画像/时区不换电脑）"
+                          value=""
+                        />
                         <el-option
                           v-for="c in COUNTRY_OPTIONS" :key="c.value"
                           :label="c.label" :value="c.value"
@@ -8253,7 +8494,7 @@ onUnmounted(() => {
               </el-form>
             </section>
 
-            <section class="oa-setup-block">
+            <section v-if="!oauthReauthMode" class="oa-setup-block">
               <header class="oa-setup-head">
                 <span class="oa-setup-step">3</span>
                 <div>
@@ -8614,7 +8855,7 @@ onUnmounted(() => {
             </section>
 
             <div class="oa-config-footer-row">
-              <span class="oa-config-hint">配置只对下一次「开始授权」生效。号池来自当前筛选，不必勾选。</span>
+              <span class="oa-config-hint">{{ oauthReauthMode ? '代理只对这一次重新授权生效。不接码、不租号。' : '配置只对下一次「开始授权」生效。号池来自当前筛选，不必勾选。' }}</span>
               <el-button size="small" class="oa-save-default-btn" @click="saveOAuthFormDefault">
                 <el-icon><Check /></el-icon> 保存为默认
               </el-button>
@@ -8716,6 +8957,18 @@ onUnmounted(() => {
         </div>
 
         <div class="plus-table-wrap oauth-table-wrap">
+          <div v-if="oauthIdentifying" class="oa-identify-overlay">
+            <div class="oa-identify-card">
+              <div class="oa-identify-title">正在识别号池</div>
+              <p class="oa-identify-sub">{{ oauthIdentifyText }}</p>
+              <el-progress
+                :percentage="oauthIdentifyPct"
+                :stroke-width="12"
+                :duration="0"
+                color="#0284c7"
+              />
+            </div>
+          </div>
           <el-table
             ref="oauthTableRef"
             :data="oauthDisplayRows"
@@ -8804,7 +9057,7 @@ onUnmounted(() => {
             </el-table-column>
             <template #empty>
               <div class="oauth-table-empty">
-                {{ oauthStats.total ? '当前筛选没有账号，可切回「全部」或清空搜索' : (oauthRunning ? '工人正在从号池领号，开工后会出现在这里' : '还没有待导出账号') }}
+                {{ oauthStats.total ? '当前筛选没有账号，可切回「全部」或清空搜索' : (oauthRunning ? '工人正在从号池领号，开工后会出现在这里' : (oauthReauthMode ? (oauthIdentified ? '识别结果为空' : '粘贴邮箱后点「识别号池」') : '还没有待导出账号')) }}
               </div>
             </template>
           </el-table>
@@ -8830,20 +9083,30 @@ onUnmounted(() => {
       <template #footer>
         <div class="oa-footer">
           <div class="footer-left">
-            <button
-              class="oa-footer-btn btn-export-cpa"
-              :disabled="oauthStats.success === 0 && !oauthTargetEmails.length"
-              @click="downloadCpaJson"
-            >
-              <el-icon><Download /></el-icon>下载 CPA JSON ({{ oauthStats.success || oauthTargetEmails.length }})
-            </button>
-            <button
-              class="oa-footer-btn btn-export-sub2"
-              :disabled="oauthStats.success === 0 && !oauthTargetEmails.length"
-              @click="downloadSub2Json"
-            >
-              <el-icon><Download /></el-icon>下载 SUB2 JSON ({{ oauthStats.success || oauthTargetEmails.length }})
-            </button>
+            <el-dropdown trigger="click" :disabled="oauthStats.success === 0" @command="downloadCpaJson">
+              <button class="oa-footer-btn btn-export-cpa" :disabled="oauthStats.success === 0">
+                <el-icon><Download /></el-icon>下载 CPA ({{ oauthStats.success }})
+                <el-icon class="arrow-down"><ArrowDown /></el-icon>
+              </button>
+              <template #dropdown>
+                <el-dropdown-menu class="extract-dropdown-menu">
+                  <el-dropdown-item command="bundle">整包 JSON（一个文件装全部）</el-dropdown-item>
+                  <el-dropdown-item command="zip">压缩包（一号一个 json）</el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
+            <el-dropdown trigger="click" :disabled="oauthStats.success === 0" @command="downloadSub2Json">
+              <button class="oa-footer-btn btn-export-sub2" :disabled="oauthStats.success === 0">
+                <el-icon><Download /></el-icon>下载 Sub2 ({{ oauthStats.success }})
+                <el-icon class="arrow-down"><ArrowDown /></el-icon>
+              </button>
+              <template #dropdown>
+                <el-dropdown-menu class="extract-dropdown-menu">
+                  <el-dropdown-item command="bundle">整包 JSON（accounts 数组）</el-dropdown-item>
+                  <el-dropdown-item command="zip">压缩包（一号一个 json）</el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
           </div>
           <div class="footer-right">
             <button
@@ -8866,10 +9129,10 @@ onUnmounted(() => {
             <button
               v-else
               class="oa-footer-btn btn-primary"
-              :disabled="oauthRunning || !oauthTargetEmails.length"
+              :disabled="oauthRunning || oauthIdentifying || !oauthTargetEmails.length || (oauthReauthMode && !oauthIdentified)"
               @click="startOAuthExportTask"
             >
-              <el-icon><VideoPlay /></el-icon>{{ oauthTaskId ? '重新执行' : '开始授权' }}
+              <el-icon><VideoPlay /></el-icon>{{ oauthReauthMode ? (oauthTaskId ? '再跑一遍' : '开始重新授权') : (oauthTaskId ? '重新执行' : '开始授权') }}
             </button>
           </div>
         </div>
@@ -8879,9 +9142,9 @@ onUnmounted(() => {
     <!-- ──────────────── 接码号码台账 ──────────────── -->
     <el-dialog
       v-model="smsLedgerVisible"
-      width="920px"
-      top="6vh"
-      class="oa-custom-dialog plus-dialog oauth-dialog"
+      width="1080px"
+      top="2vh"
+      class="oa-custom-dialog plus-dialog oauth-dialog ledger-dialog"
       append-to-body
       destroy-on-close
       :close-on-click-modal="false"
@@ -8889,9 +9152,9 @@ onUnmounted(() => {
       <template #header>
         <div class="oa-header">
           <div class="oa-header-title">
-            <span class="oa-title-badge">台账</span>
+            <span class="oa-title-badge ledger-badge">台账</span>
             <span class="oa-title-text">接码号码台账</span>
-            <el-tag size="small" type="info" round effect="plain">国家 · 打码号码 · 结果 · 时间</el-tag>
+            <el-tag size="small" type="info" round effect="plain">按国家看拒号 · 点条就筛选</el-tag>
           </div>
         </div>
       </template>
@@ -11061,6 +11324,36 @@ onUnmounted(() => {
       :auto-pay="extractModalAutoPay"
       @finished="load(false)"
     />
+
+    <Teleport to="body">
+      <div
+        v-if="rowMoreOpen && rowMore"
+        ref="rowMoreMenuRef"
+        class="extract-dropdown-menu row-more-float"
+        :style="{ left: rowMorePos.x + 'px', top: rowMorePos.y + 'px' }"
+        @pointerdown.stop
+        @click.stop
+      >
+        <div class="dropdown-group-title">Token 凭证与自愈</div>
+        <button type="button" class="row-more-item" @click="runRowMore('refresh_token')">🔄 刷新此账号 Token</button>
+        <button type="button" class="row-more-item" @click="runRowMore('recover_oauth')">找回历史授权凭据 (RT自愈)</button>
+        <div class="dropdown-group-title divider-title">数据与凭证导出</div>
+        <button type="button" class="row-more-item" @click="runRowMore('edit')">编辑/补全凭证</button>
+        <button type="button" class="row-more-item" @click="runRowMore('copy_session')">复制 Session JSON</button>
+        <button type="button" class="row-more-item" @click="runRowMore('download_sub2')">导出 Sub2API JSON</button>
+        <button type="button" class="row-more-item" @click="runRowMore('download_cpa')">导出 CPA JSON</button>
+        <div class="dropdown-group-title divider-title">操作与运维</div>
+        <button v-if="rowMore.at_len" type="button" class="row-more-item" @click="runRowMore('copy_at')">复制 Access Token (AT)</button>
+        <button v-if="rowMore.rt_len" type="button" class="row-more-item" @click="runRowMore('copy_rt')">复制 Refresh Token (RT)</button>
+        <button type="button" class="row-more-item" @click="runRowMore('oauth_export')">Codex OAuth 接码授权</button>
+        <button type="button" class="row-more-item" @click="runRowMore('fetch_mail')">检索邮件验证码</button>
+        <button v-if="!rowMore.password" type="button" class="row-more-item" @click="runRowMore('repair_pwd')">补设密码</button>
+        <button v-if="!rowMore.totp_secret" type="button" class="row-more-item" @click="runRowMore('repair_2fa')">补绑 2FA</button>
+        <button v-if="rowMore.password" type="button" class="row-more-item" @click="runRowMore('copy_pwd')">复制密码</button>
+        <button v-if="rowMore.totp_secret" type="button" class="row-more-item" @click="runRowMore('copy_2fa')">复制 2FA Secret</button>
+        <button type="button" class="row-more-item is-danger" @click="runRowMore('delete')">删除账号</button>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -11779,6 +12072,106 @@ onUnmounted(() => {
   color: #16555e;
   border-color: #5da4b1;
   background: #ffffff;
+}
+.action-menu-btn.action-reauth-btn {
+  color: #1e3a5f;
+  border-color: rgba(2, 132, 199, 0.45);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96) 0%, rgba(224, 242, 254, 0.92) 100%);
+}
+.action-menu-btn.action-reauth-btn:hover {
+  color: #0369a1;
+  border-color: #0284c7;
+  background: #ffffff;
+}
+.oa-title-badge.reauth-badge {
+  background: linear-gradient(180deg, #38bdf8 0%, #0284c7 100%);
+}
+.oa-reauth-paste {
+  margin: 0 0 10px;
+  padding: 10px 12px 8px;
+  border-radius: 12px;
+  background: rgba(224, 242, 254, 0.45);
+  border: 1px solid rgba(2, 132, 199, 0.18);
+}
+.oa-reauth-paste-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+  font-size: 12px;
+  font-weight: 650;
+  color: #0f4c6a;
+}
+.oa-reauth-paste-count {
+  font-variant-numeric: tabular-nums;
+  color: #0369a1;
+  white-space: nowrap;
+}
+.oa-reauth-preview {
+  margin: 0;
+  font-size: 12px;
+  color: #475569;
+  line-height: 1.4;
+}
+.oa-reauth-paste-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+.oa-identify-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(2, 132, 199, 0.45);
+  background: linear-gradient(180deg, #38bdf8 0%, #0284c7 100%);
+  color: #fff;
+  font-size: 12.5px;
+  font-weight: 750;
+  cursor: pointer;
+  box-shadow: 0 4px 10px rgba(2, 132, 199, 0.28);
+}
+.oa-identify-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+.oauth-table-wrap {
+  position: relative;
+  min-height: 200px;
+}
+.oa-identify-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(248, 250, 252, 0.78);
+  backdrop-filter: blur(6px);
+}
+.oa-identify-card {
+  width: min(420px, 86%);
+  padding: 18px 20px 16px;
+  border-radius: 14px;
+  background: #fff;
+  border: 1px solid rgba(2, 132, 199, 0.2);
+  box-shadow: 0 16px 40px -12px rgba(15, 23, 42, 0.22);
+}
+.oa-identify-title {
+  font-size: 14px;
+  font-weight: 800;
+  color: #0f172a;
+}
+.oa-identify-sub {
+  margin: 6px 0 12px;
+  font-size: 12px;
+  color: #475569;
 }
 
 .linear-chunk-select {
@@ -13778,6 +14171,27 @@ onUnmounted(() => {
 }
 .oa-title-badge.feat-badge {
   background: linear-gradient(180deg, #38bdf8 0%, #0284c7 100%);
+}
+.oa-title-badge.ledger-badge {
+  background: linear-gradient(180deg, #5da4b1 0%, #3d7a86 100%);
+}
+:deep(.ledger-dialog) {
+  width: min(1080px, 96vw) !important;
+  height: 90vh !important;
+  max-height: 92vh !important;
+  display: flex !important;
+  flex-direction: column !important;
+}
+:deep(.ledger-dialog .el-dialog__header) {
+  flex: 0 0 auto;
+}
+:deep(.ledger-dialog .el-dialog__body) {
+  padding: 8px 14px 10px !important;
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+  display: flex !important;
+  flex-direction: column !important;
 }
 .oa-title-text {
   font-size: 14.5px;
@@ -17422,8 +17836,8 @@ onUnmounted(() => {
 
 .row-more-float {
   position: fixed;
-  z-index: 4000;
-  min-width: 240px;
+  z-index: 5100;
+  min-width: 248px;
   max-height: min(70vh, 420px);
   overflow: auto;
   padding: 6px 0;
@@ -17431,6 +17845,7 @@ onUnmounted(() => {
   background: #ffffff;
   border: 1px solid rgba(93, 164, 177, 0.28);
   box-shadow: 0 16px 40px -8px rgba(15, 23, 42, 0.22);
+  pointer-events: auto;
 }
 .row-more-item {
   display: block;
@@ -18450,5 +18865,29 @@ onUnmounted(() => {
   border-top: 1.5px solid rgba(255, 255, 255, 0.85) !important;
   background: rgba(255, 255, 255, 0.55) !important;
   backdrop-filter: blur(16px) !important;
+}
+.ledger-dialog {
+  width: min(1080px, 96vw) !important;
+  height: 90vh !important;
+  max-height: 92vh !important;
+  display: flex !important;
+  flex-direction: column !important;
+}
+.ledger-dialog .el-dialog__header {
+  flex: 0 0 auto;
+  padding: 10px 16px 8px !important;
+}
+.ledger-dialog .el-dialog__body {
+  padding: 8px 14px 10px !important;
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+  display: flex !important;
+  flex-direction: column !important;
+}
+.ledger-dialog .ledger-panel {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
 }
 </style>

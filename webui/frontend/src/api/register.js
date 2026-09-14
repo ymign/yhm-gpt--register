@@ -119,6 +119,9 @@ export const exportToPanel = (email, targets) =>
   http.post('/api/registered/export_to_panel', { email, targets })
 
 // ──────────────── OAuth 导出 / Codex 凭证导出 ────────────────
+export const previewOAuthExport = (payload) =>
+  http.post('/api/registered/oauth_export/preview', payload)
+
 export const startOAuthExport = (payload) =>
   http.post('/api/registered/oauth_export/start', payload)
 
@@ -134,15 +137,15 @@ export const oauthExportStreamUrl = (taskId) =>
 export const getOAuthExportLog = (taskId, email) =>
   http.get(`/api/registered/oauth_export/${encodeURIComponent(taskId)}/log`, { params: { email } })
 
-export const downloadOAuthExportCpa = (taskId, emails = '') =>
+export const downloadOAuthExportCpa = (taskId, emails = '', layout = 'auto') =>
   http.get(`/api/registered/oauth_export/${encodeURIComponent(taskId)}/download_cpa`, {
-    params: { emails },
+    params: { emails, layout },
     responseType: 'blob',
   })
 
-export const downloadOAuthExportSub2 = (taskId, emails = '') =>
+export const downloadOAuthExportSub2 = (taskId, emails = '', layout = 'bundle') =>
   http.get(`/api/registered/oauth_export/${encodeURIComponent(taskId)}/download_sub2`, {
-    params: { emails },
+    params: { emails, layout },
     responseType: 'blob',
   })
 

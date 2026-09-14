@@ -58,6 +58,14 @@ export const COUNTRY_NAME_MAP = {
   PT: { name: '葡萄牙', flag: '🇵🇹' },
   HU: { name: '匈牙利', flag: '🇭🇺' },
   IL: { name: '以色列', flag: '🇮🇱' },
+  LV: { name: '拉脱维亚', flag: '🇱🇻' },
+  SI: { name: '斯洛文尼亚', flag: '🇸🇮' },
+  SK: { name: '斯洛伐克', flag: '🇸🇰' },
+  EE: { name: '爱沙尼亚', flag: '🇪🇪' },
+  KZ: { name: '哈萨克斯坦', flag: '🇰🇿' },
+  KE: { name: '肯尼亚', flag: '🇰🇪' },
+  RS: { name: '塞尔维亚', flag: '🇷🇸' },
+  LT: { name: '立陶宛', flag: '🇱🇹' },
 }
 
 export function formatCountry(code) {

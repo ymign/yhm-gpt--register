@@ -2688,6 +2688,7 @@ class StartOAuthExportReq(BaseModel):
     sms_route_mode: Optional[str] = Field("priority", description="priority=优先清单 / rotate=轮转摊开")
     sms_empty_cooldown_sec: int = Field(45, ge=5, le=600, description="无货或台账连跳后该线路冷却秒数")
     sms_ledger_skip_streak: int = Field(2, ge=1, le=20, description="台账拒号连跳几次后换线")
+    force_reauth: bool = Field(False, description="重新授权：已成功接码的号也进队，且不租号")
 
 
 def _safe_get_oauth_export(q, timeout: float = 2.0):
@@ -2697,6 +2698,43 @@ def _safe_get_oauth_export(q, timeout: float = 2.0):
         if type(e).__name__ == "Empty":
             return "__TIMEOUT__"
         return None
+
+
+class PreviewOAuthExportReq(BaseModel):
+    emails: list[str] = Field(default_factory=list)
+    force_reauth: bool = False
+
+
+@app.post("/api/registered/oauth_export/preview")
+def api_oauth_export_preview(req: PreviewOAuthExportReq):
+    """粘贴邮箱后预览：库内有多少、封号多少、能进重新授权队列多少。不启动任务。"""
+    emails = list(dict.fromkeys(
+        e.strip().lower() for e in (req.emails or []) if e and str(e).strip()
+    ))
+    pick = db.pick_oauth_queue(
+        emails,
+        max_tries=10 if req.force_reauth else db.OAUTH_MAX_TRIES_DEFAULT,
+        force_reauth=bool(req.force_reauth),
+    )
+    skipped = pick.get("skipped") or []
+    by_reason: dict[str, list[str]] = {}
+    for row in skipped:
+        by_reason.setdefault(str(row.get("reason") or "other"), []).append(str(row.get("email") or ""))
+    stats = pick.get("stats") or {}
+    found = int(stats.get("queued") or 0) + int(stats.get("skipped_success") or 0) + int(
+        stats.get("skipped_banned") or 0
+    ) + int(stats.get("skipped_cooldown") or 0) + int(stats.get("skipped_exhausted") or 0)
+    return {
+        "ok": True,
+        "parsed": len(emails),
+        "found": found,
+        "queued": int(stats.get("queued") or 0),
+        "queued_emails": pick.get("emails") or [],
+        "missing": by_reason.get("not_found") or [],
+        "banned": by_reason.get("banned") or [],
+        "skipped_success": by_reason.get("success") or [],
+        "stats": stats,
+    }
 
 
 @app.post("/api/registered/oauth_export/start")
@@ -2796,7 +2834,12 @@ def api_oauth_export_start(req: StartOAuthExportReq):
         "sms_route_mode": sms_config["sms_route_mode"],
         "sms_empty_cooldown_sec": sms_config["sms_empty_cooldown_sec"],
         "sms_ledger_skip_streak": sms_config["sms_ledger_skip_streak"],
+        "force_reauth": bool(req.force_reauth),
     }
+    if config["force_reauth"]:
+        sms_config["sms_enabled"] = False
+        config["sms_config"] = sms_config
+        config["target_count"] = 0
     try:
         task_id = oauth_export.start(emails, config)
     except ValueError as e:
@@ -2942,71 +2985,63 @@ def api_oauth_export_log(task_id: str, email: str = ""):
     return {"ok": True, "email": email, "lines": lines}
 
 
-@app.post("/api/registered/oauth_export/{task_id}/download_cpa")
-@app.get("/api/registered/oauth_export/{task_id}/download_cpa")
-def api_oauth_export_download_cpa(task_id: str, emails: str = ""):
-    """下载任务中成功账号的 CPA JSON 凭证。"""
+def _oauth_cpa_rows_for_download(task_id: str, emails: str = ""):
     from . import oauth_export
     from datetime import datetime, timezone
 
     email_list = [e.strip().lower() for e in emails.split(",") if e.strip()] if emails else None
     cpa_list = oauth_export.export_cpa_bundle(task_id, email_list)
-    if not cpa_list and email_list:
-        cpa_list = []
-        for em in email_list:
-            row = db.get_registered(em)
-            if row and (row.get("access_token") or row.get("refresh_token") or row.get("email")):
-                cpa_list.append({
-                    "type": "codex",
-                    "email": em,
-                    "access_token": row.get("access_token") or "",
-                    "refresh_token": row.get("refresh_token") or "1",
-                    "id_token": row.get("id_token") or "",
-                    "last_refresh": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                })
+    task = oauth_export.get_task(task_id)
+    # 任务还在：只导出本轮成功换到的新凭证，不要把失败号的旧 401 token 混进去。
+    if task or cpa_list:
+        return cpa_list
+    if not email_list:
+        return []
+    rows = []
+    for em in email_list:
+        row = db.get_registered(em)
+        if row and (row.get("access_token") or row.get("refresh_token") or row.get("email")):
+            rows.append({
+                "type": "codex",
+                "email": em,
+                "access_token": row.get("access_token") or "",
+                "refresh_token": row.get("refresh_token") or "1",
+                "id_token": row.get("id_token") or "",
+                "last_refresh": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            })
+    return rows
+
+
+@app.post("/api/registered/oauth_export/{task_id}/download_cpa")
+@app.get("/api/registered/oauth_export/{task_id}/download_cpa")
+def api_oauth_export_download_cpa(task_id: str, emails: str = "", layout: str = "auto"):
+    """下载 CPA。layout=bundle 整包 JSON；zip 压缩包一号一个 json；auto 多号 zip。"""
+    from . import oauth_export
+
+    cpa_list = _oauth_cpa_rows_for_download(task_id, emails)
     if not cpa_list:
         raise HTTPException(404, "没有可供下载的 CPA 凭证数据")
-
-    payload = cpa_list if len(cpa_list) > 1 else cpa_list[0]
-    filename = f"cpa-oauth-{task_id}.json" if len(cpa_list) > 1 else f"codex-{cpa_list[0]['email']}.json"
+    content, filename, mime = oauth_export.pack_cpa_export(cpa_list, layout=layout, task_id=task_id)
     return Response(
-        content=json.dumps(payload, ensure_ascii=False, indent=2),
-        media_type="application/json",
+        content=content,
+        media_type=mime,
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 
 @app.post("/api/registered/oauth_export/{task_id}/download_sub2")
 @app.get("/api/registered/oauth_export/{task_id}/download_sub2")
-def api_oauth_export_download_sub2(task_id: str, emails: str = ""):
-    """下载任务中成功账号的 Sub2API 聚合 JSON 数据。"""
+def api_oauth_export_download_sub2(task_id: str, emails: str = "", layout: str = "bundle"):
+    """下载 Sub2。layout=bundle 整包 JSON；zip 压缩包一号一个 json。"""
     from . import oauth_export
-    from datetime import datetime, timezone
 
-    email_list = [e.strip().lower() for e in emails.split(",") if e.strip()] if emails else None
-    sub2_payload = oauth_export.export_sub2_bundle(task_id, email_list)
-    if not sub2_payload.get("accounts") and email_list:
-        cpa_list = []
-        for em in email_list:
-            row = db.get_registered(em)
-            if row and (row.get("access_token") or row.get("refresh_token") or row.get("email")):
-                cpa_list.append({
-                    "type": "codex",
-                    "email": em,
-                    "access_token": row.get("access_token") or "",
-                    "refresh_token": row.get("refresh_token") or "1",
-                    "id_token": row.get("id_token") or "",
-                    "last_refresh": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                })
-        sub2_payload = oauth_export.build_sub2api_payload(cpa_list)
-
-    if not sub2_payload.get("accounts"):
+    cpa_list = _oauth_cpa_rows_for_download(task_id, emails)
+    if not cpa_list:
         raise HTTPException(404, "没有可供导出的 Sub2API 数据")
-
-    filename = f"sub2api-oauth-{task_id}.json"
+    content, filename, mime = oauth_export.pack_sub2_export(cpa_list, layout=layout, task_id=task_id)
     return Response(
-        content=json.dumps(sub2_payload, ensure_ascii=False, indent=2),
-        media_type="application/json",
+        content=content,
+        media_type=mime,
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
@@ -3015,12 +3050,16 @@ def api_oauth_export_download_sub2(task_id: str, emails: str = ""):
 def api_oauth_sms_phone_ledger(
     outcome: str = "",
     country: str = "",
+    reason: str = "",
+    q: str = "",
+    hours: int = 0,
     limit: int = 100,
     offset: int = 0,
 ):
-    """接码号码台账：国家、打码号码、结果、时间。outcome=rejected|used。"""
+    """接码号码台账：明细 + 国家/原因统计。outcome=rejected|used。"""
     data = db.list_sms_phone_ledger(
-        outcome=outcome, country=country, limit=limit, offset=offset,
+        outcome=outcome, country=country, reason=reason, q=q,
+        hours=hours, limit=limit, offset=offset,
     )
     return {"ok": True, **data}
 

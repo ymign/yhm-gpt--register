@@ -491,6 +491,10 @@ def init_db():
         "CREATE INDEX IF NOT EXISTS idx_sms_phone_ledger_live "
         "ON sms_phone_ledger(outcome, expires_at)"
     )
+    con.execute(
+        "CREATE INDEX IF NOT EXISTS idx_sms_phone_ledger_country "
+        "ON sms_phone_ledger(country, expires_at)"
+    )
 
     # 注册环境特征：一号一指纹一 IP，成功/失败都记，供试用资格与风控分析。
     con.execute("""
@@ -4804,8 +4808,12 @@ def pick_oauth_queue(
     queue_mult: int = 3,
     now: Optional[float] = None,
     salt: str = "",
+    force_reauth: bool = False,
 ) -> dict:
-    """从候选邮箱里排出本次授权队列：排除成功/封号/冷却/耗尽，从未跑过优先。"""
+    """从候选邮箱里排出本次授权队列：排除成功/封号/冷却/耗尽，从未跑过优先。
+
+    force_reauth=True：已接码成功的号也进队（只跳过库里没有、已封号），给对方 401 后重授用。
+    """
     cleaned = []
     seen = set()
     for raw in emails or []:
@@ -4822,6 +4830,7 @@ def pick_oauth_queue(
         "skipped_banned": 0,
         "skipped_cooldown": 0,
         "skipped_exhausted": 0,
+        "skipped_not_found": 0,
         "runnable": 0,
     }
     if not cleaned:
@@ -4843,22 +4852,23 @@ def pick_oauth_queue(
     for em in cleaned:
         row = by_email.get(em)
         if not row:
+            stats["skipped_not_found"] += 1
             skipped.append({"email": em, "reason": "not_found"})
             continue
         st = str(row["oauth_status"] or "").strip().lower()
-        if st in OAUTH_SUCCESS_STATUSES:
-            stats["skipped_success"] += 1
-            skipped.append({"email": em, "reason": "success"})
-            continue
         if st in ("banned", "deactivated") or _oauth_plus_dead(row["extra_json"] or ""):
             stats["skipped_banned"] += 1
             skipped.append({"email": em, "reason": "banned"})
+            continue
+        if not force_reauth and st in OAUTH_SUCCESS_STATUSES:
+            stats["skipped_success"] += 1
+            skipped.append({"email": em, "reason": "success"})
             continue
         try:
             cd_until = float(row["oauth_cooldown_until"] or 0)
         except (TypeError, ValueError):
             cd_until = 0.0
-        if cd_until > now:
+        if not force_reauth and cd_until > now:
             stats["skipped_cooldown"] += 1
             skipped.append({"email": em, "reason": "cooldown"})
             continue
@@ -4867,7 +4877,7 @@ def pick_oauth_queue(
         except (TypeError, ValueError):
             tries = 0
         last_out = str(row["oauth_last_outcome"] or "").strip().lower()
-        if tries >= max_tries and last_out not in OAUTH_SUCCESS_STATUSES:
+        if not force_reauth and tries >= max_tries and last_out not in OAUTH_SUCCESS_STATUSES:
             stats["skipped_exhausted"] += 1
             skipped.append({"email": em, "reason": "exhausted"})
             continue
@@ -4890,10 +4900,10 @@ def pick_oauth_queue(
     return {"emails": queued, "stats": stats, "skipped": skipped}
 
 
-def reset_oauth_tries(emails: list[str]) -> dict:
+def reset_oauth_tries(emails: list[str], include_success: bool = False) -> dict:
     """清零授权累计次数和冷却，让次数用尽的号能再进队列。
 
-    已成功授权的号不改，避免把成功态冲掉。
+    默认已成功授权的号不改。重新授权（对方 401）时 include_success=True，连成功号一起清次数。
     """
     cleaned = list(dict.fromkeys(
         (e or "").strip().lower() for e in (emails or []) if e and str(e).strip()
@@ -4904,6 +4914,19 @@ def reset_oauth_tries(emails: list[str]) -> dict:
     success = ("success", "success_phone", "success_direct")
     with _lock:
         con = _conn()
+        if include_success:
+            rc = con.execute(
+                f"""UPDATE registered SET
+                        oauth_try_count=0,
+                        oauth_cooldown_until=0,
+                        oauth_last_outcome=''
+                    WHERE lower(email) IN ({placeholders})
+                """,
+                cleaned,
+            )
+            con.commit()
+            invalidate_registered_caches()
+            return {"reset": int(rc.rowcount or 0), "skipped_success": 0}
         skipped = con.execute(
             f"SELECT COUNT(*) FROM registered WHERE lower(email) IN ({placeholders}) "
             f"AND oauth_status IN ({','.join('?' * len(success))})",
@@ -5025,14 +5048,28 @@ def mask_phone_e164(phone: str) -> str:
 def list_sms_phone_ledger(
     outcome: str = "",
     country: str = "",
+    reason: str = "",
+    q: str = "",
+    hours: int = 0,
     limit: int = 200,
     offset: int = 0,
 ) -> dict:
     now = time.time()
-    limit = max(1, min(int(limit or 200), 500))
+    limit = max(1, min(int(limit or 200), 2000))
     offset = max(0, int(offset or 0))
-    where = ["expires_at > ?"]
-    args: list = [now]
+    try:
+        hours = int(hours or 0)
+    except (TypeError, ValueError):
+        hours = 0
+    live = ["expires_at > ?"]
+    live_args: list = [now]
+    if hours > 0:
+        live.append("created_at > ?")
+        live_args.append(now - hours * 3600)
+    live_sql = " WHERE " + " AND ".join(live)
+
+    where = list(live)
+    args: list = list(live_args)
     f = str(outcome or "").strip().lower()
     if f in ("rejected", "rejected_openai", "already_in_use"):
         where.append("outcome IN ('rejected_openai','rejected','already_in_use')")
@@ -5042,21 +5079,46 @@ def list_sms_phone_ledger(
     if ctry:
         where.append("lower(country)=?")
         args.append(ctry)
+    why = str(reason or "").strip()
+    if why:
+        where.append("lower(coalesce(reject_reason,''))=?")
+        args.append(why.lower())
+    needle = str(q or "").strip().lower()
+    if needle:
+        where.append(
+            "(lower(coalesce(country,'')) LIKE ? OR lower(coalesce(reject_reason,'')) LIKE ? "
+            "OR lower(coalesce(price_tier,'')) LIKE ? OR lower(coalesce(email,'')) LIKE ?)"
+        )
+        like = f"%{needle}%"
+        args.extend([like, like, like, like])
     sql_where = " WHERE " + " AND ".join(where)
     con = _conn()
     total = con.execute(f"SELECT COUNT(*) FROM sms_phone_ledger{sql_where}", args).fetchone()[0]
     all_cnt = con.execute(
-        "SELECT COUNT(*) FROM sms_phone_ledger WHERE expires_at > ?",
-        (now,),
+        f"SELECT COUNT(*) FROM sms_phone_ledger{live_sql}", live_args,
     ).fetchone()[0]
     rejected_cnt = con.execute(
-        "SELECT COUNT(*) FROM sms_phone_ledger WHERE expires_at > ? AND outcome IN ('rejected_openai','rejected','already_in_use')",
-        (now,),
+        f"SELECT COUNT(*) FROM sms_phone_ledger{live_sql} AND outcome IN ('rejected_openai','rejected','already_in_use')",
+        live_args,
     ).fetchone()[0]
     used_cnt = con.execute(
-        "SELECT COUNT(*) FROM sms_phone_ledger WHERE expires_at > ? AND outcome IN ('used_success','success')",
-        (now,),
+        f"SELECT COUNT(*) FROM sms_phone_ledger{live_sql} AND outcome IN ('used_success','success')",
+        live_args,
     ).fetchone()[0]
+    country_rows = con.execute(
+        f"SELECT lower(coalesce(country,'')) AS country, COUNT(*) AS n, "
+        f"SUM(CASE WHEN outcome IN ('rejected_openai','rejected','already_in_use') THEN 1 ELSE 0 END) AS rejected, "
+        f"SUM(CASE WHEN outcome IN ('used_success','success') THEN 1 ELSE 0 END) AS used "
+        f"FROM sms_phone_ledger{live_sql} "
+        f"GROUP BY lower(coalesce(country,'')) ORDER BY n DESC LIMIT 80",
+        live_args,
+    ).fetchall()
+    reason_rows = con.execute(
+        f"SELECT lower(trim(coalesce(reject_reason,''))) AS reason, COUNT(*) AS n "
+        f"FROM sms_phone_ledger{live_sql} AND outcome IN ('rejected_openai','rejected','already_in_use') "
+        f"GROUP BY lower(trim(coalesce(reject_reason,''))) ORDER BY n DESC LIMIT 16",
+        live_args,
+    ).fetchall()
     rows = con.execute(
         "SELECT phone_e164, country, price_tier, provider, outcome, reject_reason, "
         "submitted_to_openai, email, task_id, created_at, expires_at "
@@ -5069,16 +5131,41 @@ def list_sms_phone_ledger(
         d["phone_masked"] = mask_phone_e164(d.get("phone_e164") or "")
         d.pop("phone_e164", None)
         items.append(d)
+    by_country = []
+    for r in country_rows:
+        n = int(r["n"] or 0)
+        rejected = int(r["rejected"] or 0)
+        used = int(r["used"] or 0)
+        judged = rejected + used
+        by_country.append({
+            "country": str(r["country"] or "").strip(),
+            "n": n,
+            "rejected": rejected,
+            "used": used,
+            "share": round(100.0 * n / int(all_cnt or 0), 1) if all_cnt else 0.0,
+            "reject_rate": round(100.0 * rejected / judged, 1) if judged else 0.0,
+            "used_rate": round(100.0 * used / judged, 1) if judged else 0.0,
+        })
+    by_reason = []
+    for r in reason_rows:
+        key = str(r["reason"] or "").strip()
+        by_reason.append({"reason": key, "n": int(r["n"] or 0)})
+    judged = int(rejected_cnt or 0) + int(used_cnt or 0)
     return {
         "items": items,
         "total": int(total or 0),
         "all": int(all_cnt or 0),
         "rejected": int(rejected_cnt or 0),
         "used": int(used_cnt or 0),
+        "used_rate": round(100.0 * int(used_cnt or 0) / judged, 1) if judged else 0.0,
+        "by_country": by_country,
+        "by_reason": by_reason,
         "limit": limit,
         "offset": offset,
         "outcome": f,
         "country": ctry,
+        "reason": why,
+        "hours": hours,
     }
 
 

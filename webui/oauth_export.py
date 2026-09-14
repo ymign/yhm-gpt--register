@@ -711,6 +711,67 @@ def build_sub2api_payload(cpa_list: list[dict]) -> dict:
     }
 
 
+def _safe_export_name(email: str, prefix: str = "") -> str:
+    em = str(email or "account").strip() or "account"
+    for ch in '<>:"/\\|?*':
+        em = em.replace(ch, "_")
+    return f"{prefix}{em}.json" if prefix else f"{em}.json"
+
+
+def pack_cpa_export(cpa_list: list[dict], layout: str = "auto", task_id: str = "") -> tuple[bytes, str, str]:
+    """CPA：bundle=一个 JSON；zip=压缩包里每号一个 json。auto 时多号走 zip（和账号页导出一致）。"""
+    import io
+    import zipfile
+
+    rows = [c for c in (cpa_list or []) if c]
+    n = len(rows)
+    tid = (task_id or "oauth")[:12]
+    layout = str(layout or "auto").strip().lower()
+    if layout == "auto":
+        layout = "zip" if n > 1 else "bundle"
+    if layout == "zip":
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for c in rows:
+                zf.writestr(_safe_export_name(c.get("email")), json.dumps(c, ensure_ascii=False, indent=2))
+        return buf.getvalue(), f"cpa-oauth-{tid}.zip", "application/zip"
+    if n == 1:
+        em = str(rows[0].get("email") or "account")
+        return (
+            json.dumps(rows[0], ensure_ascii=False, indent=2).encode("utf-8"),
+            f"codex-{em}.json",
+            "application/json",
+        )
+    return (
+        json.dumps(rows, ensure_ascii=False, indent=2).encode("utf-8"),
+        f"cpa-oauth-{tid}.json",
+        "application/json",
+    )
+
+
+def pack_sub2_export(cpa_list: list[dict], layout: str = "bundle", task_id: str = "") -> tuple[bytes, str, str]:
+    """Sub2：bundle=标准 accounts 整包 JSON；zip=压缩包里每号一个 json。"""
+    import io
+    import zipfile
+
+    rows = [c for c in (cpa_list or []) if c]
+    tid = (task_id or "oauth")[:12]
+    layout = str(layout or "bundle").strip().lower()
+    if layout == "zip":
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for c in rows:
+                acc = cpa_credential_to_sub2_account(c)
+                zf.writestr(_safe_export_name(c.get("email"), "sub2-"), json.dumps(acc, ensure_ascii=False, indent=2))
+        return buf.getvalue(), f"sub2api-oauth-{tid}.zip", "application/zip"
+    payload = build_sub2api_payload(rows)
+    return (
+        json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8"),
+        f"sub2api-oauth-{tid}.json",
+        "application/json",
+    )
+
+
 class OAuthExportTask:
     """单个 OAuth 导出与凭证重跑任务。"""
 
@@ -1257,13 +1318,24 @@ def execute_codex_oauth_flow(
             return False
 
     account_info = account_info or {}
-    device_id = str(account_info.get("device_id") or "").strip() or str(uuid.uuid4())
+    extra_info = account_info.get("extra") if isinstance(account_info.get("extra"), dict) else {}
+    bp = extra_info.get("browser_profile") if isinstance(extra_info.get("browser_profile"), dict) else {}
+    device_id = str(
+        account_info.get("device_id")
+        or extra_info.get("device_id")
+        or bp.get("device_id")
+        or ""
+    ).strip()
+    if not device_id:
+        device_id = str(uuid.uuid4())
+        if log_fn:
+            log_fn("[1/6] ⚠️ 库内没有 device_id，本号只能新开设备 ID（可能被当成新电脑）")
     trace = trace if isinstance(trace, dict) else {}
     path_steps: list[str] = []
     phone_verified = False
     verified_phone = ""
 
-    country_code = (target_country or account_info.get("reg_country") or "").strip().upper()
+    country_code = (target_country or account_info.get("reg_country") or extra_info.get("geo_country") or "").strip().upper()
 
     # 后续授权必须复用注册画像。每次 generate_fingerprint 等于同一账号换了一台新电脑。
     fp = fingerprint_from_account(account_info, country_code=country_code or None)
@@ -2383,16 +2455,26 @@ def _run_one_oauth_export(task: OAuthExportTask, email: str) -> None:
     except Exception:
         pass
 
-    # 1. 代理路由：用界面选的代理池/线路，国家也跟界面走
+    # 1. 代理路由：一号一 IP（新 sid）。重新授权跟该号注册国，避免画像时区和出口对不上。
     proxy = task.next_proxy()
     raw_country = (task.config.get("proxy_country") or "").strip().upper()
-    target_country = followup_country(raw_country, cred.get("reg_country") or "")
+    acct_cc = str(cred.get("reg_country") or extra.get("geo_country") or extra.get("target_country") or "").strip().upper()
+    bp = extra.get("browser_profile") if isinstance(extra.get("browser_profile"), dict) else {}
+    if not acct_cc:
+        acct_cc = str((bp or {}).get("geo_country") or "").strip().upper()
+    if not cred.get("device_id"):
+        cred["device_id"] = extra.get("device_id") or (bp or {}).get("device_id") or ""
+    if task.config.get("force_reauth") and acct_cc and not acct_cc.startswith("RANDOM"):
+        target_country = acct_cc
+        country_src = "跟注册"
+    else:
+        target_country = followup_country(raw_country, acct_cc)
+        country_src = "界面选择" if raw_country else "跟注册"
     if proxy and target_country:
         proxy = route_proxy_country(proxy, target_country, new_proxy_session_id())
 
     proxy_label = proxy.split("@")[-1] if "@" in proxy else (proxy or "直连")
-    country_src = "界面选择" if raw_country else "跟注册"
-    country_tip = f" (目标国家: {target_country} · {country_src})" if target_country else ""
+    country_tip = f" (目标国家: {target_country} · {country_src} · 一号一IP)" if target_country else " (一号一IP)"
     task.add_email_log(email, f"使用网络出口: {proxy_label}{country_tip}")
 
     # 2. 邮箱取码准备
@@ -2724,12 +2806,23 @@ def start(emails: list[str], config: dict) -> str:
         raise ValueError("请提供至少一个要导出的账号邮箱")
 
     config = dict(config or {})
+    force_reauth = bool(config.get("force_reauth"))
+    if force_reauth:
+        # 已接过码的号只重跑 Codex 换新凭证，不再租号。
+        sms_cfg = dict(config.get("sms_config") or {})
+        sms_cfg["sms_enabled"] = False
+        config["sms_config"] = sms_cfg
+        try:
+            db.reset_oauth_tries(unique_emails, include_success=True)
+        except Exception as e:
+            logger.warning("[oauth_export] 重新授权清次数失败: %s", e)
     pick = db.pick_oauth_queue(
         unique_emails,
         target_count=int(config.get("target_count") or 0),
         max_tries=int(config.get("oauth_max_tries") or db.OAUTH_MAX_TRIES_DEFAULT),
         queue_mult=int(config.get("queue_mult") or 3),
         salt=str(uuid.uuid4()),
+        force_reauth=force_reauth,
     )
     queued = pick.get("emails") or []
     config["pick_stats"] = pick.get("stats") or {}
