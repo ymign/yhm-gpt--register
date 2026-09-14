@@ -20,6 +20,21 @@ DEFAULT_ROUTE_COUNTRIES = (
 STOCK_CACHE_SEC = 10.0
 EMPTY_COOLDOWN_SEC = 45.0
 LEDGER_SKIP_STREAK = 2
+LEDGER_SKIP_STREAK_MAX = 99
+# 这些台账跳过只换号，不累计「拒号连跳」、不换国家。
+LEDGER_SKIP_NO_ROTATE = frozenset({"used_quota", "in_flight"})
+
+
+def clamp_ledger_skip_streak(raw, default: int = LEDGER_SKIP_STREAK) -> int:
+    """0 = 台账跳过永不换国家；空值回落到 default。"""
+    if raw is None or raw == "":
+        n = default
+    else:
+        try:
+            n = int(raw)
+        except (TypeError, ValueError):
+            n = default
+    return max(0, min(LEDGER_SKIP_STREAK_MAX, n))
 
 
 def default_sms_routes() -> list[dict]:
@@ -84,7 +99,7 @@ class SmsRouteScheduler:
         self.fetch_tiers = fetch_tiers
         self.stock_cache_sec = max(3.0, float(stock_cache_sec or STOCK_CACHE_SEC))
         self.empty_cooldown_sec = max(5.0, min(600.0, float(empty_cooldown_sec or EMPTY_COOLDOWN_SEC)))
-        self.ledger_skip_streak = max(1, min(20, int(ledger_skip_streak or LEDGER_SKIP_STREAK)))
+        self.ledger_skip_streak = clamp_ledger_skip_streak(ledger_skip_streak)
         self.log_fn = log_fn
         self._lock = threading.Lock()
         self._cursor = 0
@@ -115,14 +130,22 @@ class SmsRouteScheduler:
             + (f" ({reason})" if reason else "")
         )
 
-    def note_ledger_skip(self, country: str, price: str) -> bool:
-        """台账命中脏号。同一线路连跳两次则冷却换线，避免上万拒号时死磕同一国家。"""
+    def note_ledger_skip(self, country: str, price: str, reason: str = "") -> bool:
+        """官方拒号连跳达阈值则冷却换线。0=不换线；满次/占用只换号。"""
+        why = str(reason or "").strip().lower()
+        if why in LEDGER_SKIP_NO_ROTATE:
+            return False
+        if self.ledger_skip_streak <= 0:
+            return False
         key = self._route_key(country, price)
         with self._lock:
             n = int(self._skip_streak.get(key) or 0) + 1
             self._skip_streak[key] = n
         if n >= self.ledger_skip_streak:
-            self.mark_empty(country, price, f"台账连跳{n}次")
+            self.mark_empty(
+                country, price,
+                f"官方拒号连跳{n}/{self.ledger_skip_streak}",
+            )
             return True
         return False
 

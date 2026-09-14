@@ -2395,7 +2395,7 @@ const oauthForm = reactive({
     ? Number(savedOAuth.smsEmptyCooldownSec)
     : 45,
   smsLedgerSkipStreak: Number.isFinite(Number(savedOAuth.smsLedgerSkipStreak))
-    ? Number(savedOAuth.smsLedgerSkipStreak)
+    ? Math.max(0, Math.min(99, Number(savedOAuth.smsLedgerSkipStreak)))
     : 2,
   smsRoutes: normalizeSavedSmsRoutes(savedOAuth.smsRoutes),
 })
@@ -3627,7 +3627,9 @@ async function startOAuthExportTask() {
       oauth_max_tries: Number(oauthForm.oauthMaxTries) || 3,
       sms_route_mode: oauthForm.smsRouteMode || 'priority',
       sms_empty_cooldown_sec: Number(oauthForm.smsEmptyCooldownSec) || 45,
-      sms_ledger_skip_streak: Number(oauthForm.smsLedgerSkipStreak) || 2,
+      sms_ledger_skip_streak: Number.isFinite(Number(oauthForm.smsLedgerSkipStreak))
+        ? Math.max(0, Math.min(99, Number(oauthForm.smsLedgerSkipStreak)))
+        : 2,
       sms_routes: (oauthForm.smsRoutes || []).map((r, i) => ({
         country: String(r.country || '').toLowerCase(),
         price: String(r.price || ''),
@@ -8623,11 +8625,14 @@ onUnmounted(() => {
                               <i>秒</i>
                             </span>
                           </el-tooltip>
-                          <el-tooltip content="同一线路台账拒号连跳几次后冷却换线。无货仍是 1 次就换。" placement="top">
+                          <el-tooltip
+                            content="同一国家档位连续抽到官方拒号几次后冷却换国家。满 3 次已用号、占用中的号只换号不换国家。0 = 台账跳过永不换国家（Vak 无货仍会换）。"
+                            placement="top"
+                          >
                             <span class="oa-route-switch-item">
-                              <em>连跳</em>
-                              <el-input-number v-model="oauthForm.smsLedgerSkipStreak" :min="1" :max="20" size="small" controls-position="right" />
-                              <i>次换线</i>
+                              <em>拒号连跳</em>
+                              <el-input-number v-model="oauthForm.smsLedgerSkipStreak" :min="0" :max="99" size="small" controls-position="right" />
+                              <i>{{ Number(oauthForm.smsLedgerSkipStreak) === 0 ? '不换国家' : '次换国家' }}</i>
                             </span>
                           </el-tooltip>
                         </div>
@@ -16440,7 +16445,7 @@ onUnmounted(() => {
   font-size: 11px;
 }
 .oa-route-switch-item :deep(.el-input-number) {
-  width: 88px;
+  width: 96px;
 }
 .oa-route-card {
   background: #fff;

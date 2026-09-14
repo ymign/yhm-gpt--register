@@ -2688,7 +2688,7 @@ class StartOAuthExportReq(BaseModel):
     sms_routes: Optional[list] = Field(None, description="Vak 线路表 [{country, price, enabled, priority}]")
     sms_route_mode: Optional[str] = Field("priority", description="priority=优先清单 / rotate=轮转摊开")
     sms_empty_cooldown_sec: int = Field(45, ge=5, le=600, description="无货或台账连跳后该线路冷却秒数")
-    sms_ledger_skip_streak: int = Field(2, ge=1, le=20, description="台账拒号连跳几次后换线")
+    sms_ledger_skip_streak: int = Field(2, ge=0, le=99, description="官方拒号连跳几次后换国家，0=台账跳过不换线")
     force_reauth: bool = Field(False, description="重新授权：已成功接码的号也进队，且不租号")
 
 
@@ -2814,7 +2814,7 @@ def api_oauth_export_start(req: StartOAuthExportReq):
         "sms_route_mode": (req.sms_route_mode or "priority").strip() or "priority",
         "sms_max_rent_attempts": 12,
         "sms_empty_cooldown_sec": int(req.sms_empty_cooldown_sec if req.sms_empty_cooldown_sec is not None else 45),
-        "sms_ledger_skip_streak": int(req.sms_ledger_skip_streak if req.sms_ledger_skip_streak is not None else 2),
+        "sms_ledger_skip_streak": max(0, min(99, int(req.sms_ledger_skip_streak if req.sms_ledger_skip_streak is not None else 2))),
     }
     if sms_config["sms_routes"]:
         first = next((r for r in sms_config["sms_routes"] if isinstance(r, dict) and r.get("enabled", True) and r.get("country")), None)

@@ -1916,6 +1916,15 @@ def execute_codex_oauth_flow(
         tried_phones = 0
         sms_scheduler = account_info.get("_sms_scheduler")
         use_routes = bool(sms_scheduler) and scheme == "iso2"
+        if use_routes:
+            _streak = int(getattr(sms_scheduler, "ledger_skip_streak", 2) or 0)
+            if _streak <= 0:
+                _log("[sms] 线路调度：拒号连跳=0，台账跳过只换号不换国家（无货仍换）")
+            else:
+                _log(
+                    f"[sms] 线路调度：官方拒号连跳 {_streak} 次换国家"
+                    "（满 3 次已用号、占用中不计入）"
+                )
         max_vak_rents = max(max_attempts, min(12, int(sms_cfg.get("sms_max_rent_attempts") or 12)))
         openai_submits = 0
         vak_rents = 0
@@ -1979,9 +1988,13 @@ def execute_codex_oauth_flow(
                         rotated = sms_scheduler.note_ledger_skip(
                             current_route.get("country") or "",
                             current_route.get("price") or "",
+                            reason=skip_why,
                         )
                         if rotated:
-                            _log("[sms] 当前线路台账连跳，改走下一条")
+                            _log(
+                                f"[sms] 当前线路官方拒号连跳达 "
+                                f"{sms_scheduler.ledger_skip_streak} 次，改走下一条"
+                            )
                     continue
                 used_n = sms_phone_ledger.used_count(phone)
                 if used_n:
@@ -2898,10 +2911,10 @@ def start(emails: list[str], config: dict) -> str:
                     or sms_cfg.get("sms_empty_cooldown_sec")
                     or 45
                 ),
-                ledger_skip_streak=int(
+                ledger_skip_streak=(
                     config.get("sms_ledger_skip_streak")
-                    or sms_cfg.get("sms_ledger_skip_streak")
-                    or 2
+                    if config.get("sms_ledger_skip_streak") is not None
+                    else sms_cfg.get("sms_ledger_skip_streak")
                 ),
             )
         except Exception as e:
