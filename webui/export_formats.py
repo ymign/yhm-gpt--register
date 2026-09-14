@@ -110,9 +110,11 @@ def get_or_build_cpa_token_data(r: dict) -> dict:
     return {
         "type": "codex",
         "email": email,
+        "name": email,
         "expired": expired_str,
         "id_token": it,
         "account_id": account_id,
+        "chatgpt_account_id": account_id,
         "access_token": at,
         "last_refresh": last_refresh,
         "refresh_token": rt or "1",
@@ -146,6 +148,13 @@ def _render_cpa_json_single_line(r: dict) -> str:
     import json
     data = get_or_build_cpa_token_data(r)
     return json.dumps(data, ensure_ascii=False)
+
+
+def _render_cpa_json_array_txt(rows: list[dict]) -> bytes:
+    """GPTSession2CPA 转换页吃的格式：一个 txt 里整段 JSON 数组，100 个号也是这一份文件。"""
+    import json
+    docs = [get_or_build_cpa_token_data(r) for r in (rows or [])]
+    return json.dumps(docs, ensure_ascii=False, indent=2).encode("utf-8")
 
 
 def get_or_build_sub2api_account_data(r: dict) -> dict:
@@ -466,6 +475,15 @@ FORMATS: list[ExportFormat] = [
         mime="application/json; charset=utf-8",
         render=lambda r, d="----": _render_cpa_json_single_line(r),
         note="每行一个独立 JSON 字符串，供程序脚本解析（请勿直接将多行文件上传到 CPAMC 网页）",
+    ),
+    ExportFormat(
+        id="cpa_json_txt",
+        label="📦 CPA JSON 数组 (.txt · 一文件装全部，可粘转换页)",
+        filename="cpa_accounts.txt",
+        mode="download",
+        mime="text/plain; charset=utf-8",
+        render_all=_render_cpa_json_array_txt,
+        note="100 个号也是一个 txt：JSON 数组。可直接拖进 GPTSession2CPA 转换页",
     ),
     ExportFormat(
         id="sub2api_json",

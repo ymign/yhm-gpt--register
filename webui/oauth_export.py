@@ -729,6 +729,23 @@ def pack_cpa_export(cpa_list: list[dict], layout: str = "auto", task_id: str = "
     layout = str(layout or "auto").strip().lower()
     if layout == "auto":
         layout = "zip" if n > 1 else "bundle"
+    if layout in ("txt", "array"):
+        docs = []
+        for c in rows:
+            d = dict(c)
+            d.setdefault("type", "codex")
+            aid = str(d.get("account_id") or d.get("chatgpt_account_id") or "").strip()
+            if aid:
+                d.setdefault("account_id", aid)
+                d.setdefault("chatgpt_account_id", aid)
+            if d.get("email") and not d.get("name"):
+                d["name"] = d.get("email")
+            docs.append(d)
+        return (
+            json.dumps(docs, ensure_ascii=False, indent=2).encode("utf-8"),
+            f"cpa-oauth-{tid}.txt",
+            "text/plain; charset=utf-8",
+        )
     if layout == "zip":
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -2710,11 +2727,14 @@ def _run_one_oauth_export(task: OAuthExportTask, email: str) -> None:
     cpa_data = {
         "type": "codex",
         "email": email,
+        "name": email,
         "access_token": at,
         "refresh_token": rt or "1",
         "id_token": it,
         "account_id": account_id,
+        "chatgpt_account_id": account_id,
         "plan_type": plan_type,
+        "chatgpt_plan_type": plan_type,
         "last_refresh": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "expired": exp_iso,
     }

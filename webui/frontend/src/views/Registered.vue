@@ -3912,11 +3912,16 @@ async function downloadCpaJson(layout = 'auto') {
   }
   try {
     const taskId = oauthTaskId.value || 'current'
-    const kind = layout === 'zip' ? 'zip' : (layout === 'bundle' ? 'bundle' : 'auto')
+    const kind = layout === 'zip' ? 'zip' : (layout === 'txt' || layout === 'array' ? 'txt' : (layout === 'bundle' ? 'bundle' : 'auto'))
     const res = await downloadOAuthExportCpa(taskId, oauthExportEmailsParam(), kind)
-    const filename = kind === 'zip' ? `cpa-oauth-${taskId}.zip` : `cpa-oauth-${taskId}.json`
+    const filename = kind === 'zip'
+      ? `cpa-oauth-${taskId}.zip`
+      : (kind === 'txt' ? `cpa-oauth-${taskId}.txt` : `cpa-oauth-${taskId}.json`)
     saveDownloadBlob(res, filename)
-    ElMessage.success(kind === 'zip' ? 'CPA 压缩包已下载（一号一个 json）' : 'CPA 整包 JSON 已下载')
+    ElMessage.success(
+      kind === 'zip' ? 'CPA 压缩包已下载（一号一个 json）'
+        : (kind === 'txt' ? 'CPA 整包 TXT 已下载（JSON 数组，可粘转换页）' : 'CPA 整包 JSON 已下载'),
+    )
   } catch (e) {
     ElMessage.error('下载 CPA 失败: ' + (e.response?.data?.detail || e.message))
   }
@@ -9090,6 +9095,7 @@ onUnmounted(() => {
               </button>
               <template #dropdown>
                 <el-dropdown-menu class="extract-dropdown-menu">
+                  <el-dropdown-item command="txt">整包 TXT（JSON 数组，100 号一份文件）</el-dropdown-item>
                   <el-dropdown-item command="bundle">整包 JSON（一个文件装全部）</el-dropdown-item>
                   <el-dropdown-item command="zip">压缩包（一号一个 json）</el-dropdown-item>
                 </el-dropdown-menu>
