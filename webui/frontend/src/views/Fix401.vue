@@ -25,7 +25,7 @@ import {
   downloadFix401Cpa,
   downloadFix401Sub2,
 } from '@/api/fix401'
-import { copyText, createSSE } from '@/api/request'
+import { copyText, createSSE, stampExportFilename } from '@/api/request'
 import ElapsedTimer from '@/components/ElapsedTimer.vue'
 
 const FORM_KEY = 'gpt_fix401_form_v1'
@@ -412,9 +412,9 @@ async function downloadCpa(layout) {
   }
   try {
     const res = await downloadFix401Cpa(taskId.value, layout)
-    const name = layout === 'zip'
+    const name = stampExportFilename(layout === 'zip'
       ? `cpa-fix401-${taskId.value}.zip`
-      : (layout === 'bundle' ? `cpa-fix401-${taskId.value}.json` : `cpa-fix401-${taskId.value}.txt`)
+      : (layout === 'bundle' ? `cpa-fix401-${taskId.value}.json` : `cpa-fix401-${taskId.value}.txt`), successCount.value)
     saveBlob(res, name)
     ElMessage.success(layout === 'txt' ? '已下载整包 TXT JSON 数组' : 'CPA 已下载')
   } catch (e) {
@@ -429,7 +429,7 @@ async function downloadSub2(layout) {
   }
   try {
     const res = await downloadFix401Sub2(taskId.value, layout)
-    saveBlob(res, layout === 'zip' ? `sub2-fix401-${taskId.value}.zip` : `sub2-fix401-${taskId.value}.json`)
+    saveBlob(res, stampExportFilename(layout === 'zip' ? `sub2-fix401-${taskId.value}.zip` : `sub2-fix401-${taskId.value}.json`, successCount.value))
     ElMessage.success('Sub2 已下载')
   } catch (e) {
     ElMessage.error(e.message || '下载失败')

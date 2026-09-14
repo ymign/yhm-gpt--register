@@ -741,27 +741,31 @@ def pack_cpa_export(cpa_list: list[dict], layout: str = "auto", task_id: str = "
             if d.get("email") and not d.get("name"):
                 d["name"] = d.get("email")
             docs.append(d)
+        from .export_formats import stamp_export_filename
         return (
             json.dumps(docs, ensure_ascii=False, indent=2).encode("utf-8"),
-            f"cpa-oauth-{tid}.txt",
+            stamp_export_filename(f"cpa-oauth-{tid}.txt", count=n),
             "text/plain; charset=utf-8",
         )
     if layout == "zip":
+        from .export_formats import stamp_export_filename
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
             for c in rows:
                 zf.writestr(_safe_export_name(c.get("email")), json.dumps(c, ensure_ascii=False, indent=2))
-        return buf.getvalue(), f"cpa-oauth-{tid}.zip", "application/zip"
+        return buf.getvalue(), stamp_export_filename(f"cpa-oauth-{tid}.zip", count=n), "application/zip"
     if n == 1:
+        from .export_formats import stamp_export_filename
         em = str(rows[0].get("email") or "account")
         return (
             json.dumps(rows[0], ensure_ascii=False, indent=2).encode("utf-8"),
-            f"codex-{em}.json",
+            stamp_export_filename(f"codex-{em}.json", count=1),
             "application/json",
         )
+    from .export_formats import stamp_export_filename
     return (
         json.dumps(rows, ensure_ascii=False, indent=2).encode("utf-8"),
-        f"cpa-oauth-{tid}.json",
+        stamp_export_filename(f"cpa-oauth-{tid}.json", count=n),
         "application/json",
     )
 
@@ -780,11 +784,13 @@ def pack_sub2_export(cpa_list: list[dict], layout: str = "bundle", task_id: str 
             for c in rows:
                 acc = cpa_credential_to_sub2_account(c)
                 zf.writestr(_safe_export_name(c.get("email"), "sub2-"), json.dumps(acc, ensure_ascii=False, indent=2))
-        return buf.getvalue(), f"sub2api-oauth-{tid}.zip", "application/zip"
+        from .export_formats import stamp_export_filename
+        return buf.getvalue(), stamp_export_filename(f"sub2api-oauth-{tid}.zip", count=len(rows)), "application/zip"
+    from .export_formats import stamp_export_filename
     payload = build_sub2api_payload(rows)
     return (
         json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8"),
-        f"sub2api-oauth-{tid}.json",
+        stamp_export_filename(f"sub2api-oauth-{tid}.json", count=len(rows)),
         "application/json",
     )
 

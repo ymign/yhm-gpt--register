@@ -502,7 +502,7 @@ def export_credential_dump(text: str, fmt_id: str, delimiter: str = "----") -> d
             )
         rows = tokened
     rows, skipped_incomplete = export_formats.filter_rows_for_format(rows, fmt)
-    filename = fmt.filename
+    filename = export_formats.stamp_export_filename(fmt.filename, count=len(rows))
     mime = fmt.mime
     delim = delimiter if delimiter is not None else "----"
     base = {

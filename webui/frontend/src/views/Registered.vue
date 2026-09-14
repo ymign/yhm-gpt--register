@@ -104,7 +104,7 @@ import {
   getProxyHealthSummary,
 } from '@/api/register'
 import { saveSmsConfig, getSmsPriceTiers, getSmsAllCountries, getSmsConfig, getSmsCdkPoolStats, getSmsProviders } from '@/api/settings'
-import { copyText, fmtTime, createSSE } from '@/api/request'
+import { copyText, fmtTime, createSSE, stampExportFilename } from '@/api/request'
 import { useFormStore, proxyText, COUNTRY_OPTIONS, COUNTRY_NAME_MAP, formatCountry } from '@/stores/form'
 import { useProxyStore } from '@/stores/proxy'
 import { useRuntimeStore } from '@/stores/runtime'
@@ -3914,9 +3914,9 @@ async function downloadCpaJson(layout = 'auto') {
     const taskId = oauthTaskId.value || 'current'
     const kind = layout === 'zip' ? 'zip' : (layout === 'txt' || layout === 'array' ? 'txt' : (layout === 'bundle' ? 'bundle' : 'auto'))
     const res = await downloadOAuthExportCpa(taskId, oauthExportEmailsParam(), kind)
-    const filename = kind === 'zip'
+    const filename = stampExportFilename(kind === 'zip'
       ? `cpa-oauth-${taskId}.zip`
-      : (kind === 'txt' ? `cpa-oauth-${taskId}.txt` : `cpa-oauth-${taskId}.json`)
+      : (kind === 'txt' ? `cpa-oauth-${taskId}.txt` : `cpa-oauth-${taskId}.json`), oauthStats.value.success || 0)
     saveDownloadBlob(res, filename)
     ElMessage.success(
       kind === 'zip' ? 'CPA 压缩包已下载（一号一个 json）'
@@ -3936,7 +3936,7 @@ async function downloadSub2Json(layout = 'bundle') {
     const taskId = oauthTaskId.value || 'current'
     const kind = layout === 'zip' ? 'zip' : 'bundle'
     const res = await downloadOAuthExportSub2(taskId, oauthExportEmailsParam(), kind)
-    const filename = kind === 'zip' ? `sub2api-oauth-${taskId}.zip` : `sub2api-oauth-${taskId}.json`
+    const filename = stampExportFilename(kind === 'zip' ? `sub2api-oauth-${taskId}.zip` : `sub2api-oauth-${taskId}.json`, oauthStats.value.success || 0)
     saveDownloadBlob(res, filename)
     ElMessage.success(kind === 'zip' ? 'Sub2 压缩包已下载（一号一个 json）' : 'Sub2 整包 JSON 已下载')
   } catch (e) {
@@ -3958,7 +3958,7 @@ async function downloadSingleOAuthJson(email) {
       const url = window.URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
-      a.download = `codex-${email}.json`
+      a.download = stampExportFilename(`codex-${email}.json`, 1)
       document.body.appendChild(a)
       a.click()
       document.body.removeChild(a)
@@ -3972,7 +3972,7 @@ async function downloadSingleOAuthJson(email) {
     const url = window.URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `codex-${email}.json`
+    a.download = stampExportFilename(`codex-${email}.json`, 1)
     document.body.appendChild(a)
     a.click()
     document.body.removeChild(a)
@@ -4001,7 +4001,7 @@ async function downloadSingleSub2Json(email) {
       const url = window.URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
-      a.download = `sub2api-${email}.json`
+      a.download = stampExportFilename(`sub2api-${email}.json`, 1)
       document.body.appendChild(a)
       a.click()
       document.body.removeChild(a)
@@ -4015,7 +4015,7 @@ async function downloadSingleSub2Json(email) {
     const url = window.URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `sub2api-${email}.json`
+    a.download = stampExportFilename(`sub2api-${email}.json`, 1)
     document.body.appendChild(a)
     a.click()
     document.body.removeChild(a)

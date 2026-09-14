@@ -24,7 +24,7 @@ import {
   getNativeExtractTaskLog,
   submitNativeExtractTaskInput,
 } from '@/api/extract'
-import { copyText, createSSE } from '@/api/request'
+import { copyText, createSSE, stampExportFilename } from '@/api/request'
 import { useProxyStore } from '@/stores/proxy'
 
 const router = useRouter()
@@ -648,7 +648,7 @@ function handleExportTxt() {
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
-  a.download = `${props.channel}_extracted_${taskId.value || 'data'}.txt`
+  a.download = stampExportFilename(`${props.channel}_extracted_${taskId.value || 'data'}.txt`, lines.length)
   a.click()
   URL.revokeObjectURL(url)
   ElMessage.success('TXT 导出成功')
@@ -667,7 +667,7 @@ function handleExportJson() {
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
-  a.download = `${props.channel}_extracted_${taskId.value || 'data'}.json`
+  a.download = stampExportFilename(`${props.channel}_extracted_${taskId.value || 'data'}.json`, records.length)
   a.click()
   URL.revokeObjectURL(url)
   ElMessage.success('JSON 导出成功')

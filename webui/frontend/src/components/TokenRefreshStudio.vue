@@ -24,7 +24,7 @@ import {
   downloadTokenRefreshExport,
 } from '@/api/register'
 import { getSmsAllCountries, getSmsProviders } from '@/api/settings'
-import { copyText, createSSE } from '@/api/request'
+import { copyText, createSSE, stampExportFilename } from '@/api/request'
 import { COUNTRY_OPTIONS } from '@/stores/form'
 import { useProxyStore } from '@/stores/proxy'
 
@@ -528,7 +528,7 @@ async function downloadExport(format = 'txt') {
     const url = window.URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `tokens_${format}_${taskId.value}.${ext}`
+    a.download = stampExportFilename(`tokens_${format}_${taskId.value}.${ext}`, stats.value.success || 0)
     document.body.appendChild(a)
     a.click()
     document.body.removeChild(a)

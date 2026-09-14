@@ -378,7 +378,7 @@ def api_export_pool_accounts(req: ExportPoolReq):
             lines.append(em)
 
     tag = "aadsts70000" if (req.reason_like and "70000" in req.reason_like) else (req.status or ("selected" if req.emails else "all"))
-    filename = f"mailbox_{tag}_{int(time.time())}.txt"
+    filename = export_formats.stamp_export_filename(f"mailbox_{tag}.txt", count=len(lines))
     return {
         "ok": True,
         "count": len(lines),
@@ -801,6 +801,7 @@ def api_export_registered(req: ExportRegisteredReq):
             mime = "application/zip"
     elif req.format == "session_json" and len(rows) == 1 and rows[0].get("email"):
         filename = f"{rows[0]['email']}_session.json"
+    filename = export_formats.stamp_export_filename(filename, count=len(rows))
 
     # 全格式导出留痕：无论导出何种格式（AT、账密2FA、CPA、Sub2API、Session等），均记录导出时间、格式与用户备注
     # 顶栏「导出状态」筛选器及表格徽章据此展示。留痕失败不影响导出本身。
@@ -3210,6 +3211,11 @@ def api_token_refresh_download(task_id: str, format: str = "txt"):
         raise HTTPException(404, "任务未找到")
 
     fmt = format.lower().strip()
+    ok_n = 0
+    try:
+        ok_n = int((task.stats or {}).get("success") or 0)
+    except Exception:
+        ok_n = 0
     if fmt == "txt":
         content = token_refresh_service.export_refreshed_tokens_text(task_id)
         if not content:
@@ -3217,7 +3223,7 @@ def api_token_refresh_download(task_id: str, format: str = "txt"):
         return Response(
             content=content,
             media_type="text/plain; charset=utf-8",
-            headers={"Content-Disposition": f'attachment; filename="refreshed_tokens_{task_id}.txt"'},
+            headers={"Content-Disposition": f'attachment; filename="{export_formats.stamp_export_filename(f"refreshed_tokens_{task_id}.txt", count=ok_n)}"' },
         )
     elif fmt == "cpa":
         data = token_refresh_service.export_refreshed_tokens_cpa_json(task_id)
@@ -3226,7 +3232,7 @@ def api_token_refresh_download(task_id: str, format: str = "txt"):
         return Response(
             content=json.dumps(data, ensure_ascii=False, indent=2),
             media_type="application/json; charset=utf-8",
-            headers={"Content-Disposition": f'attachment; filename="cpa_refreshed_{task_id}.json"'},
+            headers={"Content-Disposition": f'attachment; filename="{export_formats.stamp_export_filename(f"cpa_refreshed_{task_id}.json", count=len(data))}"'},
         )
     elif fmt == "sub2api":
         data = token_refresh_service.export_refreshed_tokens_sub2api_json(task_id)
@@ -3235,14 +3241,14 @@ def api_token_refresh_download(task_id: str, format: str = "txt"):
         return Response(
             content=json.dumps(data, ensure_ascii=False, indent=2),
             media_type="application/json; charset=utf-8",
-            headers={"Content-Disposition": f'attachment; filename="sub2api_refreshed_{task_id}.json"'},
+            headers={"Content-Disposition": f'attachment; filename="{export_formats.stamp_export_filename(f"sub2api_refreshed_{task_id}.json", count=len(data.get("accounts") or []))}"'},
         )
     else:
         items_dict = {email: it.get("result") for email, it in task.items.items() if it.get("result")}
         return Response(
             content=json.dumps(items_dict, ensure_ascii=False, indent=2),
             media_type="application/json; charset=utf-8",
-            headers={"Content-Disposition": f'attachment; filename="refreshed_all_{task_id}.json"'},
+            headers={"Content-Disposition": f'attachment; filename="{export_formats.stamp_export_filename(f"refreshed_all_{task_id}.json", count=len(items_dict))}"'},
         )
 
 

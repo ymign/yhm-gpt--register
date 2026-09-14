@@ -22,9 +22,36 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
+
+
+def export_ts() -> str:
+    """本地时间前缀，形如 20260914190813。"""
+    return datetime.now().strftime("%Y%m%d%H%M%S")
+
+
+def stamp_export_filename(name: str, count: int | None = None, ts: str = "") -> str:
+    """下载名：20260914190813-100-AT.txt。zip 内单号 json 不要走这里。"""
+    prefix = (ts or export_ts()).strip()
+    base = str(name or "export").replace("\\", "/").split("/")[-1].strip() or "export"
+    if not prefix:
+        return base
+    if base.startswith(prefix + "-") or base.startswith(prefix + "_"):
+        return base
+    n = None
+    try:
+        if count is not None:
+            n = int(count)
+    except (TypeError, ValueError):
+        n = None
+    if n is not None and n < 0:
+        n = None
+    if n is None:
+        return f"{prefix}-{base}"
+    return f"{prefix}-{n}-{base}"
 
 
 @dataclass(frozen=True)

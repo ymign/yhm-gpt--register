@@ -84,6 +84,23 @@ export async function copyText(text, msg = '已复制') {
   }
 }
 
+/** 本地导出时间前缀，形如 20260914190813 */
+export function exportTs() {
+  const d = new Date()
+  const p = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`
+}
+
+/** 下载名：20260914190813-100-AT.txt */
+export function stampExportFilename(name, count) {
+  const base = String(name || 'export').replace(/\\/g, '/').split('/').pop() || 'export'
+  const ts = exportTs()
+  if (base.startsWith(`${ts}-`) || base.startsWith(`${ts}_`)) return base
+  const n = Number(count)
+  if (Number.isFinite(n) && n >= 0) return `${ts}-${Math.floor(n)}-${base}`
+  return `${ts}-${base}`
+}
+
 /** 时间戳(秒) -> 本地时间字符串 */
 export function fmtTime(ts) {
   if (!ts) return '-'
