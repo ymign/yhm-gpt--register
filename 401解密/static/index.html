@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>401 解密</title>
+  <style>
+    :root { --bg:#f4f7f8; --card:#fff; --line:#d7e2e6; --text:#1f2d32; --muted:#5b6b72; --brand:#0284c7; --ok:#059669; --bad:#dc2626; --warn:#d97706; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; background:var(--bg); color:var(--text); }
+    .wrap { max-width: 1100px; margin: 0 auto; padding: 24px 16px 48px; }
+    h1 { font-size: 22px; margin: 0 0 6px; }
+    .hint { color: var(--muted); font-size: 13px; line-height: 1.6; margin: 0 0 18px; }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; margin-bottom: 14px; }
+    label { display:block; font-size: 13px; font-weight: 600; margin: 10px 0 6px; }
+    input, textarea { width:100%; border:1px solid var(--line); border-radius: 8px; padding: 8px 10px; font-size: 14px; font-family: ui-monospace, Consolas, monospace; }
+    textarea { min-height: 180px; resize: vertical; }
+    .row { display:flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+    .row > span { display:flex; align-items:center; gap:6px; font-size:13px; color:var(--muted); }
+    .row input[type=number] { width: 72px; }
+    button { border:0; border-radius: 8px; padding: 8px 14px; cursor:pointer; font-size: 14px; }
+    .btn { background: var(--brand); color:#fff; }
+    .btn:disabled { opacity:.55; cursor:not-allowed; }
+    .btn-ghost { background:#e8eef1; color:var(--text); }
+    .btn-bad { background: var(--bad); color:#fff; }
+    .msg { font-size: 13px; margin-top: 6px; }
+    .msg.ok { color: var(--ok); }
+    .msg.bad { color: var(--bad); }
+    .kpis { display:grid; grid-template-columns: repeat(auto-fit, minmax(120px,1fr)); gap:10px; margin: 12px 0; }
+    .kpi { background:#f8fbfc; border:1px solid var(--line); border-radius:10px; padding:10px; }
+    .kpi b { display:block; font-size: 20px; }
+    .kpi span { font-size:12px; color:var(--muted); }
+    table { width:100%; border-collapse: collapse; font-size: 13px; }
+    th, td { text-align:left; padding: 8px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th { color: var(--muted); font-weight: 600; }
+    .st-success { color: var(--ok); }
+    .st-failed, .st-banned { color: var(--bad); }
+    .st-need_phone, .st-rt_expired { color: var(--warn); }
+    .log { max-height: 220px; overflow:auto; background:#0f172a; color:#e2e8f0; border-radius:8px; padding:10px; font-size:12px; white-space:pre-wrap; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>401 解密</h1>
+    <p class="hint">
+      批量导入 <b>邮箱----密码----2FA</b>，填对方主机代理（socks5:// 或 http:// 按你写的走，不改协议、不换 sticky）。
+      默认先刷 RT（第四段可带 refresh_token）；勾选「允许重新登录」才走密码+2FA。不接码。
+    </p>
+    <div class="card">
+      <label>代理</label>
+      <div class="row">
+        <input id="proxy" placeholder="socks5://用户:密码@主机:端口  或  http://用户:密码@主机:端口" style="flex:1" />
+        <button class="btn-ghost" id="btnProxy" type="button">验证代理</button>
+      </div>
+      <div class="msg" id="proxyMsg"></div>
+      <div class="row" style="margin-top:10px">
+        <span>并发 <input id="workers" type="number" min="1" max="5" value="2" /></span>
+        <span>超时秒 <input id="timeout" type="number" min="15" max="120" value="45" /></span>
+        <label style="display:flex;gap:6px;align-items:center;font-weight:500;margin:0">
+          <input id="forceLogin" type="checkbox" checked /> 允许重新登录（RT 失效或没有 RT 时走密码+2FA）
+        </label>
+      </div>
+      <label>账号列表</label>
+      <textarea id="accounts" placeholder="user@mail.com----Password123----JBSWY3DPEHPK3PXP&#10;也可第四段带 RT：email----密码----2FA----refresh_token"></textarea>
+      <div class="row" style="margin-top:12px">
+        <button class="btn" id="btnStart" type="button">开始解密</button>
+        <button class="btn-bad" id="btnStop" type="button" disabled>停止</button>
+        <button class="btn-ghost" id="btnCpa" type="button">下载 CPA</button>
+        <button class="btn-ghost" id="btnSub2" type="button">下载 Sub2</button>
+      </div>
+    </div>
+    <div class="card">
+      <div class="kpis">
+        <div class="kpi"><span>已处理</span><b id="kDone">0 / 0</b></div>
+        <div class="kpi"><span>成功</span><b id="kOk" class="st-success">0</b></div>
+        <div class="kpi"><span>失败</span><b id="kFail" class="st-failed">0</b></div>
+        <div class="kpi"><span>封号</span><b id="kBan">0</b></div>
+        <div class="kpi"><span>需绑手机</span><b id="kPhone">0</b></div>
+      </div>
+      <table>
+        <thead><tr><th>邮箱</th><th>状态</th><th>说明</th></tr></thead>
+        <tbody id="tbody"></tbody>
+      </table>
+      <label>选中账号日志</label>
+      <div class="log" id="log">暂无</div>
+    </div>
+  </div>
+<script>
+let taskId = '';
+let es = null;
+let selected = '';
+const $ = (id) => document.getElementById(id);
+
+$('btnProxy').onclick = async () => {
+  $('proxyMsg').textContent = '探测中…';
+  $('proxyMsg').className = 'msg';
+  try {
+    const r = await fetch('/api/proxy/check', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({proxy: $('proxy').value})}).then(j);
+    $('proxyMsg').textContent = `代理可用，出口 ${r.ip} (${r.loc || '?'})`;
+    $('proxyMsg').className = 'msg ok';
+  } catch (e) {
+    $('proxyMsg').textContent = String(e.message || e);
+    $('proxyMsg').className = 'msg bad';
+  }
+};
+
+$('btnStart').onclick = async () => {
+  $('btnStart').disabled = true;
+  try {
+    const r = await fetch('/api/start', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({
+      accounts: $('accounts').value,
+      proxy: $('proxy').value,
+      workers: Number($('workers').value || 2),
+      timeout: Number($('timeout').value || 45),
+      force_full_login: $('forceLogin').checked,
+    })}).then(j);
+    taskId = r.task_id;
+    $('btnStop').disabled = false;
+    listen();
+    poll();
+  } catch (e) {
+    alert(e.message || e);
+  } finally {
+    $('btnStart').disabled = false;
+  }
+};
+
+$('btnStop').onclick = async () => {
+  if (!taskId) return;
+  await fetch('/api/stop/' + taskId, {method:'POST'});
+};
+
+$('btnCpa').onclick = () => { if (taskId) location.href = '/api/download/cpa/' + taskId; };
+$('btnSub2').onclick = () => { if (taskId) location.href = '/api/download/sub2/' + taskId; };
+
+async function j(res) {
+  const t = await res.text();
+  let d = {};
+  try { d = JSON.parse(t); } catch { d = {detail: t}; }
+  if (!res.ok) throw new Error(d.detail || t || res.status);
+  return d;
+}
+
+function listen() {
+  if (es) es.close();
+  es = new EventSource('/api/stream/' + taskId);
+  es.onmessage = (ev) => {
+    try {
+      const d = JSON.parse(ev.data);
+      if (d.kind === 'end') { es.close(); poll(); }
+    } catch {}
+  };
+}
+
+async function poll() {
+  if (!taskId) return;
+  try {
+    const s = await fetch('/api/snapshot/' + taskId).then(j);
+    $('kDone').textContent = `${s.done_count} / ${s.total}`;
+    $('kOk').textContent = s.stats.success || 0;
+    $('kFail').textContent = s.stats.failed || 0;
+    $('kBan').textContent = s.stats.banned || 0;
+    $('kPhone').textContent = s.stats.need_phone || 0;
+    const rows = Object.values(s.items || {});
+    $('tbody').innerHTML = rows.map(it => {
+      const st = (it.result && it.result.status) || it.status;
+      const label = (it.result && (it.result.label || it.result.error)) || it.step_text || '';
+      return `<tr data-email="${it.email}"><td>${it.email}</td><td class="st-${st}">${st}</td><td>${label}</td></tr>`;
+    }).join('');
+    [...$('tbody').querySelectorAll('tr')].forEach(tr => {
+      tr.onclick = () => { selected = tr.dataset.email; loadLog(); };
+    });
+    if (!s.finished_at) setTimeout(poll, 1200);
+  } catch {}
+}
+
+async function loadLog() {
+  if (!taskId || !selected) return;
+  const r = await fetch('/api/log/' + taskId + '/' + encodeURIComponent(selected)).then(j);
+  $('log').textContent = (r.lines || []).join('\n') || '暂无';
+}
+</script>
+</body>
+</html>

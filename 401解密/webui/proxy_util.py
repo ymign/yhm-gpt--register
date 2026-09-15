@@ -1,0 +1,250 @@
+"""代理 URL 处理与国家/会话动态重写路由工具库。
+
+支持常见动态住宅代理格式的国家改写与会话独立（一号一 IP）：
+  1. 用户名包含 -region-XX- / -country-XX- / _country-XX / -sid-XXX / -session-XXX 等
+  2. 密码包含 prefix-CC-session-ttl
+  3. host:port:user:pass 或 user:pass@host:port 等标准化解析
+"""
+from __future__ import annotations
+
+import random
+import re
+from typing import Any, Optional
+from urllib.parse import quote, unquote, urlsplit, urlunsplit
+
+# 热门国家。协议注册实测 Plus 试用命中整体约 2%，US 略高于 JP，不再把 JP 标成稳高爆。
+HOT_COUNTRIES = ["US", "BR", "JP", "VN", "AR", "ES", "PL", "DE", "GB"]
+ALL_AVAILABLE_COUNTRIES = ["US", "BR", "JP", "VN", "AR", "ES", "PL", "DE", "GB"]
+
+COUNTRY_OPTIONS = [
+    {"code": "", "name": "自动 / 保持原样", "rate": "默认"},
+    {"code": "RANDOM_HOT", "name": "🎲 高爆国家智能轮换 (US/BR/JP/VN/AR/ES 随机)", "rate": "Plus试用推荐 ★★★★"},
+    {"code": "US", "name": "美国 (United States)", "rate": "近期协议试用命中相对更高 ★★★★", "lang": "en-US,en;q=0.9"},
+    {"code": "BR", "name": "巴西 (Brazil)", "rate": "Plus试用推荐 ★★★★", "lang": "pt-BR,pt;q=0.9,en-US;q=0.8"},
+    {"code": "JP", "name": "日本 (Japan)", "rate": "协议命中偏低（约 2%）★★", "lang": "ja-JP,ja;q=0.9,en-US;q=0.8"},
+    {"code": "VN", "name": "越南 (Vietnam)", "rate": "东南亚推荐 ★★★", "lang": "vi-VN,vi;q=0.9,en-US;q=0.8"},
+    {"code": "AR", "name": "阿根廷 (Argentina)", "rate": "拉美推荐 ★★★", "lang": "es-AR,es;q=0.9,en-US;q=0.8"},
+    {"code": "ES", "name": "西班牙 (Spain)", "rate": "欧洲推荐 ★★★", "lang": "es-ES,es;q=0.9,en-US;q=0.8"},
+    {"code": "PL", "name": "波兰 (Poland)", "rate": "欧洲推荐 ★★★", "lang": "pl-PL,pl;q=0.9,en-US;q=0.8"},
+    {"code": "DE", "name": "德国 (Germany)", "rate": "欧洲推荐 ★★★", "lang": "de-DE,de;q=0.9,en-US;q=0.8"},
+    {"code": "GB", "name": "英国 (United Kingdom)", "rate": "欧洲推荐 ★★★", "lang": "en-GB,en;q=0.9,en-US;q=0.8"},
+    {"code": "RANDOM_ALL", "name": "🌍 全球可用国家随机轮换", "rate": "多国家混合 ★★★★"},
+]
+
+COUNTRY_LANG_MAP = {c["code"]: c.get("lang", "en-US,en;q=0.9") for c in COUNTRY_OPTIONS if c["code"]}
+
+
+def followup_country(
+    config_country: str,
+    account_country: str,
+    *,
+    prefer_selected: bool = True,
+) -> str:
+    """后续动作选出口国家。
+
+    住宅代理换不回注册当天那个 IP。界面选了日本就走日本（新 sid）；
+    空着 / 自动才跟该号注册国家。授权、验活、刷 token、保温同一套规则。
+    """
+    raw = str(config_country or "").strip().upper()
+    acct = str(account_country or "").strip().upper()
+    if prefer_selected and raw:
+        return resolve_target_country(raw)
+    if acct and not acct.startswith("RANDOM") and acct not in ("HOT", "ALL"):
+        return acct
+    if raw:
+        return resolve_target_country(raw)
+    return ""
+
+
+def resolve_target_country(country_opt: str) -> str:
+    """解析目标国家配置：支持单一国家代码、RANDOM_HOT 随机高爆、RANDOM_ALL 随机全部，以及逗号分隔的多国列表。"""
+    c = str(country_opt or "").strip().upper()
+    if not c:
+        return ""
+    if c in ("RANDOM_HOT", "HOT", "RANDOM"):
+        return random.choice(HOT_COUNTRIES)
+    if c in ("RANDOM_ALL", "ALL"):
+        return random.choice(ALL_AVAILABLE_COUNTRIES)
+    if "," in c:
+        candidates = [item.strip().upper() for item in c.split(",") if item.strip()]
+        return random.choice(candidates) if candidates else "BR"
+    return c
+
+
+def new_proxy_session_id(length: int = 8) -> str:
+    """生成随机的会话 session ID（保证每个账号一号一 IP，不撞车）。"""
+    chars = "abcdefghijklmnopqrstuvwxyz0123456789"
+    return "".join(random.choices(chars, k=length))
+
+
+def normalize_proxy_url(proxy: str) -> str:
+    """标准化代理 URL：支持 user:pass@host:port, user:pass:host:port, host:port:user:pass, socks5h:// 等。"""
+    proxy = str(proxy or "").strip()
+    if not proxy or proxy.startswith("#"):
+        return ""
+    if "://" in proxy:
+        return proxy
+    if "@" in proxy:
+        return f"http://{proxy}"
+
+    # user:pass:host:port
+    raw_parts = proxy.rsplit(":", 2)
+    if len(raw_parts) == 3 and raw_parts[2].isdigit() and ":" in raw_parts[0]:
+        credentials, host, port = raw_parts
+        username, password = credentials.split(":", 1)
+        if username and password and host:
+            return (
+                f"http://{quote(username, safe='-._~')}:"
+                f"{quote(password, safe='-._~')}@{host}:{port}"
+            )
+
+    # host:port:user:pass
+    parts = proxy.split(":", 3)
+    if len(parts) == 4 and parts[1].isdigit() and "@" not in proxy:
+        host, port, username, password = parts
+        return (
+            f"http://{quote(username, safe='-._~')}:"
+            f"{quote(password, safe='-._~')}@{host}:{port}"
+        )
+    return f"http://{proxy}"
+
+
+def proxy_url_with_credentials(parsed: Any, username: str, password: str) -> str:
+    hostname = parsed.hostname or ""
+    host = f"[{hostname}]" if ":" in hostname and not hostname.startswith("[") else hostname
+    if parsed.port:
+        host = f"{host}:{parsed.port}"
+    netloc = f"{quote(username, safe='-._~')}:{quote(password, safe='-._~')}@{host}"
+    return urlunsplit((parsed.scheme or "http", netloc, parsed.path, parsed.query, parsed.fragment))
+
+
+def normalize_proxy_key(proxy: str) -> str:
+    """归一化代理串为健康度记账键：抹掉 session/sid 随机段，保留网关+账号结构。
+
+    动态住宅代理一号一个 session（route_proxy_country 每号重写），完整串每号
+    都不同 —— 按完整串聚合健康度每行永远只有 1 个号，完全失灵。抹掉 session
+    后得到的「模板」才是稳定聚合维度，配合出口国家组成 (模板, 国家) 键。
+
+      user-country-us-session-abc12345:pass@gw:8000
+        → user-country-us-session-*:pass@gw:8000
+      myprefix-CC-session-ttl 密码形态同样抹掉 session 数字段
+    """
+    proxy = normalize_proxy_url(proxy)
+    if not proxy:
+        return ""
+    parsed = urlsplit(proxy)
+    username = unquote(parsed.username or "")
+    password = unquote(parsed.password or "")
+
+    # 用户名里的 -sid-xxx / -session-xxx / _session-xxx → 段名 + *
+    username = re.sub(
+        r"(?i)(-sid-|-session-|_session-)[a-z0-9]+", r"\g<1>*", username
+    )
+    # cliproxy sticky TTL（-t-10）不是账号身份。不抹掉的话
+    # sid-auto 和 sid-*-t-10 会变成两条模板，拉黑对不上，继续打已死的美国段。
+    username = re.sub(r"(?i)-t-(?:\d+|\*)\b", "", username)
+
+    # 密码 prefix-CC-session-ttl 形态：session 数字段 → *
+    m = re.fullmatch(
+        r"(?P<prefix>.+)-(?P<country>[A-Za-z]{2})-(?P<session>\d+)-(?P<ttl>\d+[A-Za-z]+)",
+        password,
+    )
+    if m:
+        password = f"{m['prefix']}-{m['country']}-*-{m['ttl']}"
+
+    host = parsed.hostname or ""
+    if not host:
+        return ""
+    host = f"[{host}]" if ":" in host and not host.startswith("[") else host
+    if parsed.port:
+        host = f"{host}:{parsed.port}"
+    scheme = parsed.scheme or "http"
+    if username or password:
+        return f"{scheme}://{username}:{password}@{host}"
+    return f"{scheme}://{host}"
+
+
+def proxy_template_country(proxy: str) -> str:
+    """从代理串里抽国家码（用于 (模板, 国家) 键的快速展示，不精确时返回空）。"""
+    m = re.search(
+        r"(?i)(?:-region-|-country-|_country-)([a-z]{2})\b", str(proxy or "")
+    )
+    if m:
+        return m.group(1).upper()
+    m = re.search(r"(?i)-([a-z]{2})-(\d+)-\d+[a-z]+$", str(proxy or ""))
+    return m.group(1).upper() if m else ""
+
+
+def route_proxy_country(proxy: str, country: str = "", session_id: str = "") -> str:
+    """智能重写动态住宅代理的国家与会话 ID。
+
+    支持常见代理商协议：
+      1. 用户名中包含 -region-XX- / -country-XX- / _country-XX / -sid-XXX / -session-XXX / _session-XXX
+      2. 密码中包含 prefix-CC-session-ttl
+    """
+    proxy = normalize_proxy_url(proxy)
+    if not proxy:
+        return proxy
+    parsed = urlsplit(proxy)
+    username = unquote(parsed.username or "")
+    password = unquote(parsed.password or "")
+    if not parsed.hostname:
+        return proxy
+
+    sid = session_id or new_proxy_session_id()
+    cc = (country or "").strip().upper()
+
+    changed_user = False
+    new_username = username
+
+    # 1. 检查 username 是否包含国家或 session 模式
+    if username:
+        if cc:
+            # 替换 -region-XX / -country-XX
+            new_u, n1 = re.subn(r"(?i)(-region-)[a-z]{2}\b", rf"\g<1>{cc}", new_username)
+            if n1 > 0:
+                new_username = new_u
+                changed_user = True
+            new_u, n2 = re.subn(r"(?i)(-country-)[a-z]{2}\b", rf"\g<1>{cc}", new_username)
+            if n2 > 0:
+                new_username = new_u
+                changed_user = True
+            new_u, n3 = re.subn(r"(?i)(_country-)[a-z]{2}\b", rf"\g<1>{cc.lower()}", new_username)
+            if n3 > 0:
+                new_username = new_u
+                changed_user = True
+
+        if sid:
+            new_u, n4 = re.subn(r"(?i)(-sid-)[a-z0-9]+\b", rf"\g<1>{sid}", new_username)
+            if n4 > 0:
+                new_username = new_u
+                changed_user = True
+            new_u, n5 = re.subn(r"(?i)(-session-)[a-z0-9]+\b", rf"\g<1>{sid}", new_username)
+            if n5 > 0:
+                new_username = new_u
+                changed_user = True
+            new_u, n6 = re.subn(r"(?i)(_session-)[a-z0-9]+\b", rf"\g<1>{sid}", new_username)
+            if n6 > 0:
+                new_username = new_u
+                changed_user = True
+
+    # 2. 检查 password 是否符合 prefix-CC-session-ttl
+    changed_pass = False
+    new_password = password
+    if password:
+        match = re.fullmatch(
+            r"(?P<prefix>.+)-(?P<country>[A-Za-z]{2})-(?P<session>\d+)-(?P<ttl>\d+[A-Za-z]+)",
+            password,
+        )
+        if match:
+            routed_country = cc or match.group("country")
+            routed_sid = sid if sid.isdigit() else str(random.randint(10_000_000, 99_999_999))
+            new_password = (
+                f"{match.group('prefix')}-{routed_country.upper()}-"
+                f"{routed_sid}-{match.group('ttl')}"
+            )
+            changed_pass = True
+
+    if changed_user or changed_pass:
+        return proxy_url_with_credentials(parsed, new_username, new_password)
+    return proxy
