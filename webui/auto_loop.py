@@ -88,6 +88,8 @@ class AutoLoopController:
         self._spawn_count: int = 1
         # 目标成功数：0 = 不限量（保持旧行为）；>0 时累计成功达标即自动停止
         self._target_count: int = 0
+        # 目标将满时额外允许的在途路数，避免最后只剩 1 路。0=旧行为。
+        self._overshoot_slack: int = 2
         # 任务流水列表（最新 200 条，用于前端表格展示每一个号的进度与日志）
         self._tasks: list[dict] = []
         self._tasks_map: dict[str, dict] = {}
@@ -125,11 +127,17 @@ class AutoLoopController:
             self._proxy_pool = _parse_proxy_pool(pool_text)
             # 目标成功数（0=不限量）
             self._target_count = max(0, int(self._options.get("target_count") or 0))
-            # 目标=1 却开 15 worker 时，多余线程会立刻「已锁定，退出」，日志刷屏、看起来像没开始。
-            # 实际并发不超过目标数量；同一 worker 失败后会自己重试直到达标。
+            try:
+                self._overshoot_slack = max(0, min(5, int(self._options.get("overshoot_slack"))))
+            except (TypeError, ValueError):
+                self._overshoot_slack = 2
+            # 目标=1 却开 15 worker 时，多余线程会占坑空转。实际并发不超过 目标+余量。
             self._spawn_count = self._concurrency
             if self._target_count:
-                self._spawn_count = max(1, min(self._concurrency, self._target_count))
+                self._spawn_count = max(
+                    1,
+                    min(self._concurrency, self._target_count + self._overshoot_slack),
+                )
             # 连续网络错误自动暂停阈值（0=关闭熔断）
             raw_cbt = self._options.get("circuit_break_threshold")
             if raw_cbt is None:
@@ -141,13 +149,14 @@ class AutoLoopController:
             if self._spawn_count != self._concurrency:
                 logger.info(
                     f"auto-loop 启动: concurrency={self._concurrency} → 实际 {self._spawn_count} "
-                    f"(目标 {self._target_count})，circuit_break_threshold={self._circuit_break_threshold}"
+                    f"(目标 {self._target_count} 余量 {self._overshoot_slack})，"
+                    f"circuit_break_threshold={self._circuit_break_threshold}"
                 )
             else:
                 logger.info(
                     f"auto-loop 启动: concurrency={self._concurrency}, "
                     f"circuit_break_threshold={self._circuit_break_threshold}, "
-                    f"target_count={self._target_count}"
+                    f"target_count={self._target_count}, overshoot_slack={self._overshoot_slack}"
                 )
             if self._spawn_count >= 8 and len(self._proxy_pool) <= 1:
                 logger.warning(
@@ -166,6 +175,7 @@ class AutoLoopController:
             "concurrency": self._concurrency,
             "proxy_pool_size": len(self._proxy_pool),
             "target_count": self._target_count,
+            "overshoot_slack": self._overshoot_slack,
         }
 
     def pause(self) -> dict:
@@ -377,6 +387,7 @@ class AutoLoopController:
                 "registered_ok": self._registered_ok,
                 "registered_fail": self._registered_fail,
                 "target_count": self._target_count,
+                "overshoot_slack": self._overshoot_slack,
                 "remaining": (
                     max(0, self._target_count - self._registered_ok)
                     if self._target_count else None
@@ -432,14 +443,22 @@ class AutoLoopController:
         self._broadcast("state", self._snapshot())
 
     def _try_reserve_slot(self, worker_id: int) -> bool:
-        """占一个在跑名额。已占过的 worker 直接放行；目标已满返回 False。"""
+        """占一个在跑名额。已占过的 worker 直接放行；目标已满返回 False。
+
+        超额余量：还差 1 个成功时仍允许多路在途，避免最后只开 1 路。
+        """
         with self._lock:
             if worker_id in self._worker_status:
                 return True
-            if self._target_count and (
-                self._registered_ok + len(self._worker_status) >= self._target_count
-            ):
-                return False
+            target = int(self._target_count or 0)
+            if target > 0:
+                remaining = target - self._registered_ok
+                if remaining <= 0:
+                    return False
+                slack = int(self._overshoot_slack or 0)
+                cap = max(remaining, min(max(1, self._concurrency), remaining + slack))
+                if len(self._worker_status) >= cap:
+                    return False
             self._worker_status[worker_id] = {
                 "email": "",
                 "run_id": "",

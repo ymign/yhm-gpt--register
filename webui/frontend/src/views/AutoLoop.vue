@@ -444,6 +444,9 @@ async function start() {
       want_refresh_token: form.value.autoWantRefreshToken || false,
       cool_down_seconds: parseFloat(form.value.autoCoolDown) || 0,
       target_count: parseInt(form.value.autoTargetCount, 10) || 0,
+      overshoot_slack: Number.isFinite(Number(form.value.autoOvershootSlack))
+        ? Math.max(0, Math.min(5, Number(form.value.autoOvershootSlack)))
+        : 2,
       circuit_break_threshold: form.value.autoCircuitBreak !== undefined ? parseInt(form.value.autoCircuitBreak, 10) : 3,
       want_2fa: form.value.autoWant2fa,
       want_password: form.value.autoWantPassword,
@@ -851,11 +854,22 @@ onUnmounted(() => {
                 <el-form-item>
                   <template #label>
                     <span>目标数量 (0=不限)</span>
-                    <el-tooltip content="只表示要成功几个号。填 1 时即使并发开 15，也只会真正拉起 1 个 Worker；失败后由同一 Worker 重试，不会再刷「目标已锁定，退出」。" placement="top">
+                    <el-tooltip content="成功几个就停领新号。最后几只靠旁边的超额余量继续多路跑，避免只剩 1 路。" placement="top">
                       <el-icon class="info-ico" style="margin-left: 3px;"><QuestionFilled /></el-icon>
                     </el-tooltip>
                   </template>
                   <el-input-number v-model="form.autoTargetCount" :min="0" :max="100000" class="macos-num-input" />
+                </el-form-item>
+              </el-col>
+              <el-col :xs="12" :sm="6" :md="3">
+                <el-form-item>
+                  <template #label>
+                    <span>超额余量</span>
+                    <el-tooltip content="还差 1 个成功时仍允许多路在途。2 表示最后可以 3 路一起跑，可能多出 1～2 个。0 = 旧行为，最后只开 1 路。" placement="top">
+                      <el-icon class="info-ico" style="margin-left: 3px;"><QuestionFilled /></el-icon>
+                    </el-tooltip>
+                  </template>
+                  <el-input-number v-model="form.autoOvershootSlack" :min="0" :max="5" class="macos-num-input" />
                 </el-form-item>
               </el-col>
               <el-col :xs="12" :sm="6" :md="3">

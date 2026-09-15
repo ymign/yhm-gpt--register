@@ -125,6 +125,7 @@ const defaults = {
   autoConcurrency: 1,
   autoCoolDown: 3,
   autoTargetCount: 0,
+  autoOvershootSlack: 2,
   autoCircuitBreak: 3,            // 连续网络错误自动暂停阈值
   want2fa: true,
   autoWant2fa: true,
@@ -148,6 +149,7 @@ export const useFormStore = defineStore('form', () => {
   try { saved = JSON.parse(localStorage.getItem(KEY) || '{}') } catch (_) { saved = {} }
   const form = reactive({ ...defaults, ...saved })
   if (!form.warmupProfile) form.warmupProfile = defaults.warmupProfile
+  if (!Number.isFinite(Number(form.autoOvershootSlack))) form.autoOvershootSlack = 2
 
   // clearable 清空后 proxy 会变成 undefined 并被持久化进 localStorage，
   // 刷新页面后依然是 undefined。这里watch 回填成 ''，保证存量数据也是干净的。

@@ -4213,6 +4213,7 @@ class AutoLoopStartReq(BaseModel):
     allow_existing_login: bool = True
     cool_down_seconds: float = 3.0  # 每个 worker 跑完后冷却（防风控）
     target_count: int = 0        # 目标成功数（0=不限量，达标自动停止）
+    overshoot_slack: int = Field(2, ge=0, le=5, description="目标将满时额外允许的在途余量")
     circuit_break_threshold: int = 3  # 连续网络错误暂停阈值（0=关闭）
     want_password: bool = True   # 是否自动设置强登录密码（默认开）
     want_2fa: bool = False
