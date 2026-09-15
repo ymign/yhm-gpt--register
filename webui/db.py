@@ -2831,13 +2831,68 @@ def _parse_single_filter_clause(filt: str) -> Optional[str]:
     if f == "team":
         return "extra_json LIKE '%\"team_active\"%'"
     if f == "plus":
-        return "(extra_json LIKE '%\"plus_eligible\"%' OR extra_json LIKE '%\"plus_active\"%')"
+        return "json_extract(extra_json, '$.plus_check.status') IN ('plus_active', 'plus_eligible')"
     if f == "plus_active":
-        return "extra_json LIKE '%\"plus_active\"%'"
+        return "json_extract(extra_json, '$.plus_check.status') = 'plus_active'"
     if f == "plus_eligible":
-        return "extra_json LIKE '%\"plus_eligible\"%'"
+        return "json_extract(extra_json, '$.plus_check.status') = 'plus_eligible'"
+    if f == "plus_free":
+        return (
+            "(json_extract(extra_json, '$.plus_check.status') = 'plus_eligible'"
+            " AND (json_extract(extra_json, '$.plus_check.promo_kind') = 'free'"
+            " OR ((json_extract(extra_json, '$.plus_check.promo') LIKE '%-free%'"
+            " OR json_extract(extra_json, '$.plus_check.promo') LIKE '%_free%'"
+            " OR json_extract(extra_json, '$.plus_check.promo') LIKE '%100-pct%')"
+            " AND json_extract(extra_json, '$.plus_check.promo') NOT LIKE '%50-pct%'"
+            " AND json_extract(extra_json, '$.plus_check.promo') NOT LIKE '%50_pct%'"
+            " AND COALESCE(json_extract(extra_json, '$.plus_check.promo_kind'), '') != 'half')))"
+        )
+    if f == "plus_half":
+        return (
+            "(json_extract(extra_json, '$.plus_check.status') = 'plus_eligible'"
+            " AND (json_extract(extra_json, '$.plus_check.promo_kind') = 'half'"
+            " OR json_extract(extra_json, '$.plus_check.promo') LIKE '%50-pct%'"
+            " OR json_extract(extra_json, '$.plus_check.promo') LIKE '%50_pct%'"
+            " OR json_extract(extra_json, '$.plus_check.promo') LIKE '%half%'))"
+        )
+    _promo_month_map = {
+        "plus_1m_free": (1, "free"),
+        "plus_3m_free": (3, "free"),
+        "plus_6m_free": (6, "free"),
+        "plus_1m_half": (1, "half"),
+        "plus_3m_half": (3, "half"),
+        "plus_6m_half": (6, "half"),
+    }
+    if f in _promo_month_map:
+        months, kind = _promo_month_map[f]
+        month_like = (
+            f"(CAST(json_extract(extra_json, '$.plus_check.promo_months') AS INTEGER) = {months}"
+            f" OR json_extract(extra_json, '$.plus_check.promo') LIKE '%{months}-month%'"
+            f" OR json_extract(extra_json, '$.plus_check.promo') LIKE '%{months}_month%')"
+        )
+        if kind == "half":
+            kind_sql = (
+                "(json_extract(extra_json, '$.plus_check.promo_kind') = 'half'"
+                " OR json_extract(extra_json, '$.plus_check.promo') LIKE '%50-pct%'"
+                " OR json_extract(extra_json, '$.plus_check.promo') LIKE '%50_pct%')"
+            )
+        else:
+            kind_sql = (
+                "(json_extract(extra_json, '$.plus_check.promo_kind') = 'free'"
+                " OR ((json_extract(extra_json, '$.plus_check.promo') LIKE '%-free%'"
+                " OR json_extract(extra_json, '$.plus_check.promo') LIKE '%_free%')"
+                " AND json_extract(extra_json, '$.plus_check.promo') NOT LIKE '%50-pct%'))"
+            )
+        return (
+            "(json_extract(extra_json, '$.plus_check.status') = 'plus_eligible'"
+            f" AND {kind_sql} AND {month_like})"
+        )
     if f == "free":
-        return "(extra_json LIKE '%\"free\"%' AND extra_json NOT LIKE '%\"banned\"%' AND extra_json NOT LIKE '%\"token_invalid\"%' AND extra_json NOT LIKE '%\"account_deactivated\"%')"
+        # 只含验活为 free、或还没验套餐的号。Plus 资格底包虽是 Free，不算基础号。
+        return (
+            "(json_extract(extra_json, '$.plus_check.status') = 'free'"
+            " OR json_extract(extra_json, '$.plus_check.status') IS NULL)"
+        )
     # ── 封号检测与凭证失效精准/健壮筛选 ──
     if f in ("banned", "deactivated", "account_deactivated", "disabled"):
         return (
@@ -2898,13 +2953,13 @@ def _parse_single_filter_clause(filt: str) -> Optional[str]:
             "('success','success_phone','success_direct')))"
         )
     # ── 密码与 2FA 安全状态筛选 ──
-    if f == "no_password":
+    if f in ("no_password", "missing_pwd"):
         return "(password IS NULL OR password = '')"
-    if f == "has_password":
+    if f in ("has_password", "with_pwd"):
         return "(password IS NOT NULL AND password != '')"
-    if f == "no_2fa":
+    if f in ("no_2fa", "missing_2fa"):
         return "(totp_secret IS NULL OR totp_secret = '')"
-    if f == "has_2fa":
+    if f in ("has_2fa", "with_2fa"):
         return "(totp_secret IS NOT NULL AND totp_secret != '')"
     if f == "missing_security":
         return "((password IS NULL OR password = '') OR (totp_secret IS NULL OR totp_secret = ''))"
@@ -2912,7 +2967,10 @@ def _parse_single_filter_clause(filt: str) -> Optional[str]:
         return "(password IS NOT NULL AND password != '' AND totp_secret IS NOT NULL AND totp_secret != '')"
     # ── 提链状态筛选 ──
     if f == "extract_eligible":
-        return "(extra_json LIKE '%\"plus_eligible\"%' AND (extra_json NOT LIKE '%\"extract_link\"%' OR extra_json NOT LIKE '%\"status\":\"success\"%'))"
+        return (
+            "(json_extract(extra_json, '$.plus_check.status') = 'plus_eligible'"
+            " AND COALESCE(json_extract(extra_json, '$.extract_link.status'), '') != 'success')"
+        )
     if f == "extract_success":
         return "(extra_json LIKE '%\"extract_link\"%' AND (extra_json LIKE '%\"status\":\"success\"%' OR extra_json LIKE '%\"status\": \"success\"%'))"
     if f == "extract_failed":

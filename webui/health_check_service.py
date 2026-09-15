@@ -384,7 +384,7 @@ def _plan_fingerprint(cred: dict):
 
 def _check_plan_mode(task: HealthCheckTask, email: str, cred: dict, at: str, proxy: str, target_country: str) -> dict:
     """模式 2：套餐/试用资格深度验活。尽量复用注册时的 UA / 设备 ID / TLS，避免一号两套环境。"""
-    task.add_email_log(email, "【套餐验活】正在向 accounts/check 查询订阅与 0元 试用活动...")
+    task.add_email_log(email, "【套餐验活】正在向 accounts/check 查询订阅与试用/优惠活动...")
 
     extra, fp = _plan_fingerprint(cred)
     auth_claims = _get_auth(_decode_jwt_payload(at))

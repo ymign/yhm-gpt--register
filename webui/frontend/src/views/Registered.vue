@@ -307,15 +307,29 @@ function getSecFilterLabel(val) {
   if (val === 'missing_2fa') return '待补 2FA'
   if (val === 'with_pwd') return '已设密'
   if (val === 'missing_pwd') return '免密未设'
-  if (val === 'missing_security') return '待补安全'
+  if (val === 'missing_security') return '密码或2FA不全'
+  if (val === 'both_secured') return '密码与2FA双全'
   return val
 }
 
 function getPlanFilterLabel(val) {
-  if (val === 'plus') return 'Plus/试用'
-  if (val === 'pro') return 'Pro特权'
-  if (val === 'free') return 'Free正常号'
-  return val
+  const map = {
+    plus: 'Plus（含资格）',
+    plus_active: 'Plus 生效中',
+    plus_eligible: 'Plus 资格（全部）',
+    plus_free: 'Plus 0元（全部）',
+    plus_half: 'Plus 半价（全部）',
+    plus_1m_free: 'Plus 0元·1个月',
+    plus_3m_free: 'Plus 0元·3个月',
+    plus_6m_free: 'Plus 0元·6个月',
+    plus_1m_half: 'Plus 半价·1个月',
+    plus_3m_half: 'Plus 半价·3个月',
+    plus_6m_half: 'Plus 半价·6个月',
+    pro: 'Pro特权',
+    free: 'Free 基础号',
+    extract_eligible: '待提链',
+  }
+  return map[val] || val
 }
 
 function getDomainFilterLabel(val) {
@@ -501,10 +515,12 @@ function getStatusBadges(row) {
   // 2. Plus / Pro 权益
   const p = plusOf(row)
   if (p && p.status && p.status !== 'free' && p.status !== 'unchecked') {
+    const kind = p.promo_kind || classifyPlusPromo(p.promo || '', p).kind
+    const isHalf = p.status === 'plus_eligible' && kind === 'half'
     badges.push({
-      type: PLUS_TYPE[p.status] || 'primary',
+      type: isHalf ? 'warning' : (PLUS_TYPE[p.status] || 'primary'),
       label: p.label || 'Plus',
-      desc: '具备 Plus / Pro 特权订阅',
+      desc: p.reason || p.promo || '具备 Plus / Pro 特权或试用活动',
     })
   }
 
@@ -694,11 +710,31 @@ const PLUS_TYPE = {
   account_deactivated: 'danger',
   error: 'danger',
 }
+function classifyPlusPromo(promo, extra) {
+  const raw = `${promo || ''} ${typeof extra === 'string' ? extra : JSON.stringify(extra || {})}`.toLowerCase()
+  let months = 1
+  if (/(?:^|[^0-9])6\s*[-_]?(month|mo|个月)/.test(raw) || raw.includes('six-month') || raw.includes('6month')) months = 6
+  else if (/(?:^|[^0-9])3\s*[-_]?(month|mo|个月)/.test(raw) || raw.includes('three-month') || raw.includes('3month')) months = 3
+  else if (/(?:^|[^0-9])1\s*[-_]?(month|mo|个月)/.test(raw) || raw.includes('one-month') || raw.includes('1month')) months = 1
+  let kind = 'unknown'
+  if (/(?:50|half)\s*[-_]?(pct|percent|off)|50-pct|50pct|half-off/.test(raw)) kind = 'half'
+  else if (/(?:^|[-_\s])free(?:$|[-_\s])/.test(raw) || /100\s*[-_]?pct/.test(raw)) kind = 'free'
+  else if (/pct-off|percent-off|discount/.test(raw)) kind = 'discount'
+  const kindCn = { free: '0元', half: '半价', discount: '优惠', unknown: '优惠' }[kind]
+  return { kind, months, label: `Plus${kindCn}·${months}个月`, code: `plus_${months}m_${kind}` }
+}
+
 function plusOf(row) {
   if (!row || !row.plus_check) return null
   const p = row.plus_check
   let label = p.label || p.status || ''
-  if (p.status === 'plus_eligible' || label === '可领Plus试用' || label === '🎁 可领Plus试用' || label.includes('试用')) {
+  if (p.status === 'plus_eligible') {
+    const hasSpecific = /0元|半价|个月/.test(String(label))
+    if (!hasSpecific) {
+      const c = classifyPlusPromo(p.promo || p.promo_id || '', p)
+      label = (p.promo_kind || p.promo) ? c.label : 'Plus资格'
+    }
+  } else if (label === '可领Plus试用' || label === '🎁 可领Plus试用') {
     label = 'Plus资格'
   }
   return { ...p, label }
@@ -1303,7 +1339,13 @@ const healthFilteredRows = computed(() => {
     if (f === 'plus_eligible') {
       const st = healthResultStatus(item)
       const label = String(item?.result?.label || '')
-      return st === 'plus_eligible' || st === 'pro_eligible' || label.includes('试用')
+      return st === 'plus_eligible' || st === 'pro_eligible' || label.includes('试用') || /0元|半价/.test(label)
+    }
+    if (f === 'plus_free' || f === 'plus_half') {
+      if (healthResultStatus(item) !== 'plus_eligible') return false
+      const r = item?.result || {}
+      const kind = r.promo_kind || classifyPlusPromo(r.promo || '', r).kind
+      return kind === (f === 'plus_free' ? 'free' : 'half')
     }
     if (f === 'free') return healthResultStatus(item) === 'free'
     if (f === 'token_valid') return healthResultStatus(item) === 'token_valid'
@@ -1400,6 +1442,8 @@ const healthStats = computed(() => {
   let token_valid = 0
   let plus_active = 0
   let plus_eligible = 0
+  let plus_free = 0
+  let plus_half = 0
   let pro_active = 0
   let team_active = 0
   let free = 0
@@ -1415,7 +1459,12 @@ const healthStats = computed(() => {
     const st = i.result && i.result.status
     if (st === 'token_valid') token_valid++
     else if (st === 'plus_active') plus_active++
-    else if (st === 'plus_eligible') plus_eligible++
+    else if (st === 'plus_eligible') {
+      plus_eligible++
+      const kind = i.result?.promo_kind || classifyPlusPromo(i.result?.promo || '', i.result).kind
+      if (kind === 'half') plus_half++
+      else if (kind === 'free') plus_free++
+    }
     else if (st === 'pro_active' || st === 'pro_20x' || st === 'pro_5x' || st === 'pro_eligible') pro_active++
     else if (st === 'team_active') team_active++
     else if (st === 'free') free++
@@ -1427,7 +1476,7 @@ const healthStats = computed(() => {
   }
   return {
     total: tot, done, running, pending, doneOk, dead,
-    token_valid, plus_active, plus_eligible, pro_active, team_active, free, banned, token_invalid, error,
+    token_valid, plus_active, plus_eligible, plus_free, plus_half, pro_active, team_active, free, banned, token_invalid, error,
     percent: tot > 0 ? Math.round((done / tot) * 100) : 0,
   }
 })
@@ -6529,12 +6578,18 @@ onUnmounted(() => {
                 @change="load(true)"
               >
                 <el-option label="全部安全状态" value="all" />
-                <el-option :label="`已绑 2FA (${regSummary.with_2fa})`" value="with_2fa" />
-                <el-option :label="`待补 2FA (${Math.max(0, (regSummary.total || total) - regSummary.with_2fa)})`" value="missing_2fa" />
-                <el-option :label="`已设密码 (${regSummary.with_pwd})`" value="with_pwd" />
-                <el-option :label="`免密未设 (${Math.max(0, (regSummary.total || total) - regSummary.with_pwd)})`" value="missing_pwd" />
-                <el-option label="⚠️ 密码或2FA不全" value="missing_security" />
-                <el-option label="✅ 密码与2FA双全" value="both_secured" />
+                <el-option-group label="组合">
+                  <el-option label="✅ 密码与2FA双全" value="both_secured" />
+                  <el-option label="⚠️ 密码或2FA不全" value="missing_security" />
+                </el-option-group>
+                <el-option-group label="2FA">
+                  <el-option :label="`已绑 2FA (${regSummary.with_2fa})`" value="with_2fa" />
+                  <el-option :label="`待补 2FA (${Math.max(0, (regSummary.total || total) - regSummary.with_2fa)})`" value="missing_2fa" />
+                </el-option-group>
+                <el-option-group label="密码">
+                  <el-option :label="`已设密码 (${regSummary.with_pwd})`" value="with_pwd" />
+                  <el-option :label="`免密未设 (${Math.max(0, (regSummary.total || total) - regSummary.with_pwd)})`" value="missing_pwd" />
+                </el-option-group>
               </el-select>
             </div>
 
@@ -6548,11 +6603,23 @@ onUnmounted(() => {
                 class="acct-select acct-select-plan"
                 @change="load(true)"
               >
-                <el-option label="全部套餐特权" value="all" />
-                <el-option label="💎 Plus / 试用特权" value="plus" />
-                <el-option label="👑 Pro 高级特权" value="pro" />
+                <el-option label="全部套餐" value="all" />
                 <el-option label="⚪ Free 基础号" value="free" />
-                <el-option label="🎁 可领 Plus 免单" value="extract_eligible" />
+                <el-option-group label="Plus 0元试用">
+                  <el-option label="🎁 全部 0元" value="plus_free" />
+                  <el-option label="🎁 0元 · 1个月" value="plus_1m_free" />
+                  <el-option label="🎁 0元 · 3个月" value="plus_3m_free" />
+                  <el-option label="🎁 0元 · 6个月" value="plus_6m_free" />
+                </el-option-group>
+                <el-option-group label="Plus 半价试用">
+                  <el-option label="💲 全部半价" value="plus_half" />
+                  <el-option label="💲 半价 · 1个月" value="plus_1m_half" />
+                  <el-option label="💲 半价 · 3个月" value="plus_3m_half" />
+                  <el-option label="💲 半价 · 6个月" value="plus_6m_half" />
+                </el-option-group>
+                <el-option label="🎁 Plus 资格（全部）" value="plus_eligible" />
+                <el-option label="💎 Plus 生效中" value="plus_active" />
+                <el-option label="👑 Pro 高级特权" value="pro" />
               </el-select>
             </div>
 
@@ -9492,11 +9559,31 @@ onUnmounted(() => {
           <div
             v-if="healthForm.mode === 'plan'"
             class="token-kpi-card hit-promo"
+            :class="{ 'is-filter-active': healthFilter === 'plus_free' }"
+            title="只看 Plus 0元试用"
+            @click="setHealthFilter('plus_free')"
+          >
+            <span class="kpi-label">Plus 0元</span>
+            <span class="kpi-num">{{ healthStats.plus_free }}</span>
+          </div>
+          <div
+            v-if="healthForm.mode === 'plan'"
+            class="token-kpi-card"
+            :class="{ 'is-filter-active': healthFilter === 'plus_half' }"
+            title="只看 Plus 半价试用"
+            @click="setHealthFilter('plus_half')"
+          >
+            <span class="kpi-label">Plus 半价</span>
+            <span class="kpi-num">{{ healthStats.plus_half }}</span>
+          </div>
+          <div
+            v-if="healthForm.mode === 'plan'"
+            class="token-kpi-card hit-promo"
             :class="{ 'is-filter-active': healthFilter === 'plus_eligible' }"
-            title="只看可领 Plus 试用的号"
+            title="全部 Plus 试用资格（0元+半价）"
             @click="setHealthFilter('plus_eligible')"
           >
-            <span class="kpi-label">Plus 试用</span>
+            <span class="kpi-label">Plus 资格</span>
             <span class="kpi-num">{{ healthStats.plus_eligible }}</span>
           </div>
           <div
@@ -9554,8 +9641,14 @@ onUnmounted(() => {
             <el-radio-button value="all">全部 ({{ healthStats.total }})</el-radio-button>
             <el-radio-button value="running">进行中 ({{ healthStats.running }})</el-radio-button>
             <el-radio-button value="done">完成 ({{ healthStats.doneOk }})</el-radio-button>
+            <el-radio-button v-if="healthForm.mode === 'plan'" value="plus_free">
+              <span :class="{ 'text-success': healthStats.plus_free > 0 }">0元 ({{ healthStats.plus_free }})</span>
+            </el-radio-button>
+            <el-radio-button v-if="healthForm.mode === 'plan'" value="plus_half">
+              <span :class="{ 'text-warning': healthStats.plus_half > 0 }">半价 ({{ healthStats.plus_half }})</span>
+            </el-radio-button>
             <el-radio-button v-if="healthForm.mode === 'plan'" value="plus_eligible">
-              <span :class="{ 'text-success': healthStats.plus_eligible > 0 }">试用 ({{ healthStats.plus_eligible }})</span>
+              <span :class="{ 'text-success': healthStats.plus_eligible > 0 }">资格 ({{ healthStats.plus_eligible }})</span>
             </el-radio-button>
             <el-radio-button value="banned">
               <span :class="{ 'text-danger': healthStats.banned > 0 }">封号 ({{ healthStats.banned }})</span>

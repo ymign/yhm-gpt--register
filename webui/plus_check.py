@@ -115,6 +115,104 @@ def get_country_timezone_offset_min(country: str, tz_name: str = "") -> int:
     return -540 if cc == "JP" else -480
 
 
+_PROMO_KIND_CN = {
+    "free": "0元",
+    "half": "半价",
+    "discount": "优惠",
+    "unknown": "优惠",
+}
+
+
+def classify_plus_promo(promo_id: str = "", promo_obj: Any = None) -> dict:
+    """从官方活动 id 解析 Plus 试用：0元/半价，以及 1/3/6 个月。
+
+    例：plus-1-month-50-pct-off → 半价·1个月
+        plus-1-month-free → 0元·1个月
+        plus-3-month-free → 0元·3个月
+    """
+    chunks: list[str] = [str(promo_id or "")]
+    months_from_obj = 0
+    kind_from_obj = ""
+    if isinstance(promo_obj, dict):
+        for k in ("id", "name", "campaign_id", "campaign", "slug", "title"):
+            v = promo_obj.get(k)
+            if v:
+                chunks.append(str(v))
+        for k in ("duration_months", "months", "interval_count"):
+            try:
+                n = int(promo_obj.get(k) or 0)
+            except (TypeError, ValueError):
+                n = 0
+            if n in (1, 3, 6):
+                months_from_obj = n
+        for k in ("discount_percent", "percent_off", "percentOff", "discount"):
+            raw_pct = promo_obj.get(k)
+            if raw_pct is None:
+                continue
+            try:
+                pct = float(str(raw_pct).replace("%", "").strip())
+            except (TypeError, ValueError):
+                continue
+            if pct >= 99:
+                kind_from_obj = "free"
+            elif 45 <= pct <= 55:
+                kind_from_obj = "half"
+            elif pct > 0:
+                kind_from_obj = "discount"
+        try:
+            chunks.append(json.dumps(promo_obj, ensure_ascii=False, default=str))
+        except Exception:
+            pass
+    raw = " ".join(chunks).lower()
+
+    months = months_from_obj or 1
+    if re.search(r"(?:^|[^0-9])6\s*[-_]?(?:month|mo|mon|个月)", raw) or "six-month" in raw or "6month" in raw:
+        months = 6
+    elif re.search(r"(?:^|[^0-9])3\s*[-_]?(?:month|mo|mon|个月)", raw) or "three-month" in raw or "3month" in raw:
+        months = 3
+    elif re.search(r"(?:^|[^0-9])1\s*[-_]?(?:month|mo|mon|个月)", raw) or "one-month" in raw or "1month" in raw:
+        months = 1
+
+    kind = kind_from_obj
+    if not kind:
+        if re.search(r"(?:50|half)\s*[-_]?(?:pct|percent|off)|50-pct|50pct|half-off|half_off", raw):
+            kind = "half"
+        elif re.search(r"100\s*[-_]?(?:pct|percent)|100-pct|100pct", raw) or re.search(
+            r"(?:^|[-_\s])free(?:$|[-_\s])", raw
+        ) or "0-dollar" in raw or "zeroprice" in raw:
+            kind = "free"
+        elif "pct-off" in raw or "percent-off" in raw or "discount" in raw:
+            kind = "discount"
+        else:
+            kind = "unknown"
+
+    kind_cn = _PROMO_KIND_CN.get(kind, "优惠")
+    return {
+        "promo_kind": kind,
+        "promo_months": months,
+        "promo_code": f"plus_{months}m_{kind}",
+        "label": f"Plus{kind_cn}·{months}个月",
+        "kind_label": kind_cn,
+    }
+
+
+def _collect_plus_promos(promo: dict) -> list[tuple[str, dict]]:
+    out: list[tuple[str, dict]] = []
+    if not isinstance(promo, dict):
+        return out
+    for k, v in promo.items():
+        obj = v if isinstance(v, dict) else {}
+        pid = ""
+        if isinstance(v, dict):
+            pid = str(v.get("id") or v.get("campaign_id") or k)
+        else:
+            pid = str(k)
+        blob = f"{k} {pid}".lower()
+        if "plus" in blob or str(k).lower() in ("plus", "chatgpt_plus", "chatgptplus", "trial"):
+            out.append((pid, obj))
+    return out
+
+
 def parse_account_plan(data: dict, body: str = "") -> dict:
     """深度解析 OpenAI accounts/check 返回的账号计划、Pro 倍率 (Pro 20x / Pro 5x / Team / Plus / Free / 试用)。"""
     accts = data.get("accounts", {})
@@ -179,7 +277,7 @@ def parse_account_plan(data: dict, body: str = "") -> dict:
         )
         log_lines.append(f"【活动探测】eligible_promo_campaigns 命中: [{promo_info_str}]")
     else:
-        log_lines.append("【活动探测】eligible_promo_campaigns: 无 0元试用活动")
+        log_lines.append("【活动探测】eligible_promo_campaigns: 无试用/优惠活动")
 
     offer_ids = [str(o.get("id") or "") for o in offers if isinstance(o, dict) and o.get("id")]
     if offer_ids:
@@ -279,28 +377,42 @@ def parse_account_plan(data: dict, body: str = "") -> dict:
             "log_lines": log_lines,
         }
 
-    plus_promo_data = promo.get("plus") or promo.get("chatgpt_plus") or promo.get("chatgptplus")
-    has_plus_promo = False
-    plus_promo_id = ""
-
-    if isinstance(plus_promo_data, dict):
-        has_plus_promo = True
-        plus_promo_id = str(plus_promo_data.get("id") or plus_promo_data.get("campaign_id") or "plus-1-month-free")
-    elif any("plus" in str(k).lower() or "trial" in str(k).lower() for k in promo.keys()):
-        has_plus_promo = True
-        plus_promo_id = "plus-trial"
-    elif any("plus" in str(v.get("id", "")).lower() for v in promo.values() if isinstance(v, dict)):
-        has_plus_promo = True
-        plus_promo_id = "plus-trial"
-
-    if has_plus_promo:
-        reason = f"检测到 Plus 0元试用活动 ({plus_promo_id})，当前账号底包为 Free"
+    plus_candidates = _collect_plus_promos(promo)
+    if plus_candidates:
+        rank_kind = {"free": 0, "half": 1, "discount": 2, "unknown": 3}
+        classified_list = []
+        for pid, obj in plus_candidates:
+            info = classify_plus_promo(pid, obj)
+            info["promo"] = pid
+            classified_list.append(info)
+        classified_list.sort(
+            key=lambda x: (rank_kind.get(x.get("promo_kind"), 9), -int(x.get("promo_months") or 1))
+        )
+        best = classified_list[0]
+        plus_promo_id = str(best.get("promo") or "")
+        reason = (
+            f"检测到 Plus {best.get('kind_label')} {best.get('promo_months')}个月活动"
+            f" ({plus_promo_id})，当前账号底包为 Free"
+        )
         log_lines.append(f"【判定依据】{reason}")
         return {
             "status": "plus_eligible",
-            "label": "Plus试用",
+            "label": best.get("label") or "Plus资格",
             "plan": plan,
             "promo": plus_promo_id,
+            "promo_kind": best.get("promo_kind") or "",
+            "promo_months": int(best.get("promo_months") or 1),
+            "promo_code": best.get("promo_code") or "",
+            "promos": [
+                {
+                    "promo": x.get("promo"),
+                    "promo_kind": x.get("promo_kind"),
+                    "promo_months": x.get("promo_months"),
+                    "promo_code": x.get("promo_code"),
+                    "label": x.get("label"),
+                }
+                for x in classified_list
+            ],
             "reason": reason,
             "log_lines": log_lines,
         }
