@@ -830,11 +830,9 @@ class AutoLoopController:
                     time.sleep(0.1)
 
     def _wait_run_finish(self, run_id: str, timeout: int = 1800) -> tuple[bool, str]:
-        """轮询 runs 表，等 run 跑完。"""
+        """轮询 runs 表，等 run 跑完。点停止也不中途判失败：注册线程还在跑。"""
         deadline = time.time() + timeout
         while time.time() < deadline:
-            if self._stop_event.is_set():
-                return False, ""
             con = db._conn()
             cur = con.execute(
                 "SELECT status, error_category FROM runs WHERE run_id=?", (run_id,)
