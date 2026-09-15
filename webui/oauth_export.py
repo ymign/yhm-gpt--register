@@ -1502,6 +1502,8 @@ def execute_codex_oauth_flow(
                 "OAUTH_CODEX_RT_EXCHANGE": "1",
                 "OAUTH_CODEX_RT_BEFORE_CALLBACK": "1",
             }
+            if pin_proxy:
+                env_overrides["PIN_PROXY"] = "1"
             login_flow = AuthFlow(
                 cfg,
                 env_overrides=env_overrides,

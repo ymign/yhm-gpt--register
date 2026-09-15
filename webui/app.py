@@ -3320,7 +3320,7 @@ def api_fix401_start(req: Fix401StartReq):
     logger.info(
         "[fix401] 任务 %s 启动: 提交 %s 排队 %s workers=%s proxy=%s",
         out.get("task_id"), out.get("total"), out.get("queued"),
-        req.workers, "有" if out.get("has_proxy") else "无",
+        out.get("workers") or req.workers, "有" if out.get("has_proxy") else "无",
     )
     return out
 

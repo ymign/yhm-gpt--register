@@ -34,6 +34,7 @@ def _normalize_user_proxy(raw: str) -> str:
     p = (raw or "").strip()
     if not p or p.startswith("#"):
         return ""
+    # 写了协议就原样用（socks5 不改成 http）。没写协议才补 http://。
     if "://" not in p:
         p = "http://" + p
     return p
@@ -239,9 +240,8 @@ class Fix401Task:
         self.proxies: list[str] = list(self.config.get("proxies") or [])
         self._proxy_idx = 0
         self._idx_lock = threading.Lock()
-        # 单出口上并发 Codex 重登很像批量撞库。RT 刷新可并行，重登串行。
-        same_exit = len(self.proxies) <= 1
-        self.oauth_gate = threading.Semaphore(1 if same_exit else max(1, int(self.config.get("workers") or 2)))
+        # 并发按用户配置。未填代理才在 start() 里压到 1。
+        self.oauth_gate = threading.Semaphore(max(1, int(self.config.get("workers") or 2)))
         self.started_at = time.time()
         self.finished_at = 0.0
         self.cancelled = False
@@ -278,6 +278,9 @@ class Fix401Task:
     def next_proxy(self) -> str:
         if not self.proxies:
             return ""
+        # 只填一条就人人用这一条，不换 sid。多条才在你填的列表里轮。
+        if len(self.proxies) == 1:
+            return self.proxies[0]
         with self._idx_lock:
             p = self.proxies[self._proxy_idx % len(self.proxies)]
             self._proxy_idx += 1
@@ -448,7 +451,7 @@ def preview(emails: list[str]) -> dict:
 def check_user_proxy(proxy: str) -> dict:
     p = _normalize_user_proxy(proxy)
     if not p:
-        raise ValueError("请填写 HTTP 代理")
+        raise ValueError("请填写代理")
     from http_client import create_http_session
 
     session = create_http_session(proxy=p, impersonate="chrome142")
@@ -501,7 +504,16 @@ def _run_one(task: Fix401Task, email: str) -> None:
         extra_tip = f" 实测出口 {egress_ip}" if egress_ip else " 出口未探测到"
         if egress_cc:
             extra_tip += f" {egress_cc}"
-        task.add_email_log(email, f"使用你填的代理: {_proxy_label(proxy)}{extra_tip}（原串，不改 sid）")
+        scheme = ""
+        try:
+            scheme = (urlparse(proxy).scheme or "").lower()
+        except Exception:
+            scheme = ""
+        scheme_tip = f"{scheme} " if scheme else ""
+        task.add_email_log(
+            email,
+            f"使用你填的代理: {scheme_tip}{_proxy_label(proxy)}{extra_tip}（原串钉死，不改协议不换 sid）",
+        )
     else:
         task.add_email_log(email, "未填代理，直连本机出口")
 
@@ -734,8 +746,8 @@ def start(
     if not proxy_list:
         workers_n = 1
         logger.warning("[fix401] 未填代理，并发已压到 1，直连批量登录容易触发风控")
-    elif len(proxy_list) == 1:
-        workers_n = min(workers_n, 3)
+    else:
+        logger.info("[fix401] 并发按配置 workers=%s 代理数=%s", workers_n, len(proxy_list))
     config = {
         "proxies": proxy_list,
         "proxy_country": str(proxy_country or "").strip().upper(),
@@ -787,6 +799,7 @@ def start(
             "taskId": task_id,
             "total": len(unique),
             "queued": 0,
+            "workers": workers_n,
             "has_proxy": bool(proxy_list),
         }
 
@@ -844,6 +857,7 @@ def start(
         "taskId": task_id,
         "total": len(unique),
         "queued": len(queued),
+        "workers": workers_n,
         "has_proxy": bool(proxy_list),
     }
 

@@ -513,15 +513,15 @@ onUnmounted(() => {
       <div class="page-body">
         <div class="form-card">
           <p class="hint">
-            一行一个邮箱。把对方 CPA / Sub 主机的 HTTP 代理填进来；任务启动时会实测出口 IP，写进每条日志。
-            默认只刷 RT，失效不会自动重登。重新登录要单独勾选，机房 IP 走密码+2FA 很容易被官方注销。
+            一行一个邮箱。把对方 CPA / Sub 主机的代理原样填进来（socks5:// 或 http:// 按你写的走，不会改成别的协议，也不会换 sticky 会话）。
+            任务启动时会实测出口 IP，写进每条日志。默认只刷 RT，失效不会自动重登。重新登录要单独勾选，机房 IP 走密码+2FA 很容易被官方注销。
           </p>
 
           <label class="field-label">对方主机代理</label>
           <div class="proxy-row">
             <el-input
               v-model="form.proxy"
-              placeholder="http://用户:密码@主机:端口  或  http://主机:端口"
+              placeholder="socks5://用户:密码@主机:端口  或  http://用户:密码@主机:端口"
               clearable
               spellcheck="false"
               @change="persistForm"

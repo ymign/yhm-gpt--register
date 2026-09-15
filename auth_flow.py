@@ -2141,13 +2141,19 @@ class AuthFlow:
             if attempt:
                 time.sleep(1 + attempt)
                 prev_ip = (getattr(self, "_exit_ip", "") or "").strip()
+                pin_proxy = str(self._env_overrides.get("PIN_PROXY") or "").strip().lower() in (
+                    "1", "true", "yes",
+                )
                 try:
-                    from webui.proxy_util import new_proxy_session_id, proxy_template_country, route_proxy_country
-                    curr_country = (self._country_code or proxy_template_country(self.config.proxy or "") or "").strip().upper()
-                    if curr_country and self.config.proxy:
-                        self.config.proxy = route_proxy_country(
-                            self.config.proxy, country=curr_country, session_id=new_proxy_session_id()
-                        )
+                    if pin_proxy:
+                        logger.info("warmup 重试：用户代理已钉死，不换 IP / sid")
+                    else:
+                        from webui.proxy_util import new_proxy_session_id, proxy_template_country, route_proxy_country
+                        curr_country = (self._country_code or proxy_template_country(self.config.proxy or "") or "").strip().upper()
+                        if curr_country and self.config.proxy:
+                            self.config.proxy = route_proxy_country(
+                                self.config.proxy, country=curr_country, session_id=new_proxy_session_id()
+                            )
                 except Exception as _px_err:
                     logger.debug(f"warmup 代理轮换跳过: {_px_err}")
                 rotated = False
