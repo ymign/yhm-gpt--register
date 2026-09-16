@@ -1659,6 +1659,52 @@ def save_registered(d: dict) -> None:
         )
 
 
+def ensure_registered_identity(
+    email: str,
+    device_id: str = "",
+    browser_profile: Optional[dict] = None,
+) -> None:
+    """授权时若库里没有 device_id / 注册画像，钉死本次生成的，避免下一轮又换新电脑。"""
+    email = (email or "").strip().lower()
+    if not email:
+        return
+    did = str(device_id or "").strip()
+    bp = browser_profile if isinstance(browser_profile, dict) else None
+    with _lock:
+        con = _conn()
+        row = con.execute(
+            "SELECT device_id, extra_json FROM registered WHERE lower(email)=?",
+            (email,),
+        ).fetchone()
+        if not row:
+            return
+        extra = {}
+        if row["extra_json"]:
+            try:
+                extra = json.loads(row["extra_json"]) or {}
+            except Exception:
+                extra = {}
+            if not isinstance(extra, dict):
+                extra = {}
+        old_did = str(row["device_id"] or extra.get("device_id") or "").strip()
+        new_did = old_did or did
+        if new_did:
+            extra["device_id"] = extra.get("device_id") or new_did
+        old_bp = extra.get("browser_profile")
+        if bp and bp.get("user_agent") and not (
+            isinstance(old_bp, dict) and old_bp.get("user_agent")
+        ):
+            saved = dict(bp)
+            if new_did:
+                saved["device_id"] = saved.get("device_id") or new_did
+            extra["browser_profile"] = saved
+        con.execute(
+            "UPDATE registered SET device_id=?, extra_json=? WHERE lower(email)=?",
+            (new_did, json.dumps(extra, ensure_ascii=False), email),
+        )
+        con.commit()
+
+
 def update_registered_oauth(
     email: str,
     access_token: str = "",

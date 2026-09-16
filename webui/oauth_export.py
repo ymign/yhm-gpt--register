@@ -1350,10 +1350,15 @@ def execute_codex_oauth_flow(
         or bp.get("device_id")
         or ""
     ).strip()
+    generated_device = False
     if not device_id:
         device_id = str(uuid.uuid4())
+        generated_device = True
         if log_fn:
             log_fn("[1/6] ⚠️ 库内没有 device_id，本号只能新开设备 ID（可能被当成新电脑）")
+    account_info["device_id"] = account_info.get("device_id") or device_id
+    extra_info["device_id"] = extra_info.get("device_id") or device_id
+    account_info["extra"] = extra_info
     trace = trace if isinstance(trace, dict) else {}
     path_steps: list[str] = []
     phone_verified = False
@@ -1408,10 +1413,23 @@ def execute_codex_oauth_flow(
 
     # ──────────────── 阶段 1: 建立会话与预热 ────────────────
     _step("1", "[1/6] 发起鉴权 (建立会话)")
-    reused = bool((account_info.get("browser_profile") or (account_info.get("extra") or {}).get("browser_profile")))
+    reused = bool(
+        (isinstance(account_info.get("browser_profile"), dict) and account_info["browser_profile"].get("user_agent"))
+        or (isinstance(extra_info.get("browser_profile"), dict) and extra_info["browser_profile"].get("user_agent"))
+    )
+    if not reused and fp.get("user_agent"):
+        extra_info["browser_profile"] = dict(fp)
+        extra_info["browser_profile"]["device_id"] = extra_info["browser_profile"].get("device_id") or device_id
+        account_info["browser_profile"] = extra_info["browser_profile"]
+        account_info["extra"] = extra_info
+    if generated_device or not reused:
+        try:
+            db.ensure_registered_identity(email, device_id, extra_info.get("browser_profile") or fp)
+        except Exception:
+            pass
     _log(
         f"[1/6] 发起 Codex OAuth 鉴权 (模拟 {impersonate}, 国别: {country_code or '未指定'}, "
-        f"画像={'复用注册' if reused else '新建'})..."
+        f"画像={'复用注册' if reused else '新建并已钉死'})..."
     )
 
     warmup_headers = _nav_headers(fp, ua)
@@ -1780,13 +1798,8 @@ def execute_codex_oauth_flow(
             }
 
         add_phone_url = continue_url or "https://auth.openai.com/add-phone"
-        _log("[5/6] 登录后要绑手机。先打开绑手机页，把这次登录会话挂上，再去租号")
-        opened = _enter_auth_page(session, add_phone_url, fp, ua, timeout, _log, "[5/6] 绑手机页")
-        if _page_kind_from_url(opened) in ("登录页", "密码页"):
-            raise RuntimeError(
-                "2FA 后打开绑手机页又回到登录，这次登录会话没有保住。"
-                "账号测活正常不代表这次 OAuth 会话还在，不会去租号浪费钱"
-            )
+        opened = add_phone_url
+        _log("[5/6] 登录后要绑手机。不 GET add-phone（文档导航会把 OAuth 步骤消费掉），租到号直接 POST 发码")
 
         # ── 开启接码：执行 SmsBower 自动租号、发码、收码与验证 ──
         from sms_providers import (
@@ -2083,38 +2096,11 @@ def execute_codex_oauth_flow(
                 )
                 if session_dead:
                     _log(f"[sms] add-phone/send HTTP {send_resp.status_code} 会话失效/步骤过期: {err_msg}")
-                    _log("[sms] 不立刻判账号死。重新打开绑手机页再发一次")
-                    opened = _enter_auth_page(
-                        session,
-                        opened or add_phone_url,
-                        fp,
-                        ua,
-                        timeout,
-                        _log,
-                        "[sms] 绑手机页重开",
-                    )
-                    if _page_kind_from_url(opened) in ("登录页", "密码页"):
-                        sms_phone_ledger.clear_inflight(phone)
-                        ctrl.mark_send_failed("session_expired")
-                        raise RuntimeError(
-                            "绑手机时登录会话已超时失效（打开 add-phone 回到登录页）。"
-                            "通常是因为单个号码等待短信时间过长（超过 OpenAI 会话 TTL），建议将接码超时设为 60~80 秒"
-                        )
-                    send_resp = _send_phone()
-                    err_msg = (send_resp.text or "")[:180]
-                    if is_official_account_dead(send_resp.text or ""):
-                        sms_phone_ledger.clear_inflight(phone)
-                        ctrl.mark_send_failed("account_banned")
-                        _raise_if_official_dead(send_resp.text or "", send_resp.status_code, "add-phone/send")
-                    if is_too_many_phone_attempts(send_resp.text or ""):
-                        sms_phone_ledger.clear_inflight(phone)
-                    _abort_if_too_many_phone(ctrl, send_resp.text or "", "add-phone/send", _log)
-                    err_lc = err_msg.lower()
-                    session_dead = (
-                        send_resp.status_code in (401, 403, 409)
-                        or "no longer valid" in err_lc
-                        or "invalid_state" in err_lc
-                        or "invalid_auth_step" in err_lc
+                    sms_phone_ledger.clear_inflight(phone)
+                    ctrl.mark_send_failed("session_expired")
+                    raise RuntimeError(
+                        f"OpenAI 绑手机发码接口会话失效 (HTTP {send_resp.status_code} invalid_state)。"
+                        "不是等短信超时。同一会话再 GET 绑手机页发一次也不会好，将重新走一遍登录。"
                     )
 
                 send_data = _json_or_empty(send_resp)
@@ -2128,14 +2114,6 @@ def execute_codex_oauth_flow(
                     continue
 
                 if send_resp.status_code != 200:
-                    if session_dead:
-                        _log(f"[sms] 会话已失效 HTTP {send_resp.status_code}: {err_msg}，立即停止租号并释放退款")
-                        sms_phone_ledger.clear_inflight(phone)
-                        ctrl.mark_send_failed("session_expired")
-                        raise RuntimeError(
-                            f"OpenAI 绑手机接口会话已超时失效 (HTTP {send_resp.status_code})。"
-                            "通常是因为上一号码等待时间过长导致 OpenAI 授权会话过期，已自动释放号码退款。"
-                        )
                     last_sms_err = f"OpenAI 拒绝该手机号 HTTP {send_resp.status_code}: {err_msg}"
                     _log(f"[sms] {last_sms_err}，退号换下一个")
                     kind = _openai_phone_reject_kind(err_msg)
@@ -2219,9 +2197,10 @@ def execute_codex_oauth_flow(
                     sms_phone_ledger.clear_inflight(phone)
                     ctrl.mark_send_failed("timeout_no_sms")
                     last_sms_err = "未收到短信"
-                    # 当号码已发送且进入 phone_otp_verification 后，OpenAI 锁死在等待当前号验证码状态。
-                    # 为彻底杜绝 400 invalid_auth_step，单号超时直接退出当前 flow，由外层自动重新建立干净鉴权会话发起绑定新号！
-                    break
+                    # 发码已成功时官方锁在当前号上，同一会话换号会 invalid_auth_step。退出后由外层重新登录再租。
+                    raise RuntimeError(
+                        "绑手机已发码但未收到短信。当前号占用了授权会话，将重新登录再换号。"
+                    )
 
                 _log(f"[5/6] 🌐 [OpenAI REQ] POST /api/accounts/phone-otp/validate (code={sms_code})")
                 val_headers = dict(phone_headers)
@@ -2682,13 +2661,19 @@ def _run_one_oauth_export(task: OAuthExportTask, email: str) -> None:
             err_lc = err_text.lower()
             session_stale = (
                 "会话已超时失效" in err_text
+                or "会话失效" in err_text
                 or "invalid_auth_step" in err_lc
+                or "invalid_state" in err_lc
             )
             can_reauth = (
                 sms_enabled
-                and session_stale
                 and flow_attempt < max_flow_retries
                 and not task.cancelled
+                and (
+                    session_stale
+                    or "未收到短信" in err_text
+                    or "占用了授权会话" in err_text
+                )
             )
             if can_reauth:
                 task.add_email_log(
