@@ -2907,9 +2907,11 @@ def _parse_single_filter_clause(filt: str) -> Optional[str]:
         )
     _promo_month_map = {
         "plus_1m_free": (1, "free"),
+        "plus_2m_free": (2, "free"),
         "plus_3m_free": (3, "free"),
         "plus_6m_free": (6, "free"),
         "plus_1m_half": (1, "half"),
+        "plus_2m_half": (2, "half"),
         "plus_3m_half": (3, "half"),
         "plus_6m_half": (6, "half"),
     }
@@ -2917,8 +2919,9 @@ def _parse_single_filter_clause(filt: str) -> Optional[str]:
         months, kind = _promo_month_map[f]
         month_like = (
             f"(CAST(json_extract(extra_json, '$.plus_check.promo_months') AS INTEGER) = {months}"
-            f" OR json_extract(extra_json, '$.plus_check.promo') LIKE '%{months}-month%'"
-            f" OR json_extract(extra_json, '$.plus_check.promo') LIKE '%{months}_month%')"
+            f" OR json_extract(extra_json, '$.plus_check.promo') LIKE '%-{months}-month%'"
+            f" OR json_extract(extra_json, '$.plus_check.promo') LIKE '{months}-month%'"
+            f" OR json_extract(extra_json, '$.plus_check.promo') LIKE '%-{months}_month%')"
         )
         if kind == "half":
             kind_sql = (

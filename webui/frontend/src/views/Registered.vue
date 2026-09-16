@@ -320,9 +320,11 @@ function getPlanFilterLabel(val) {
     plus_free: 'Plus 0元（全部）',
     plus_half: 'Plus 半价（全部）',
     plus_1m_free: 'Plus 0元·1个月',
+    plus_2m_free: 'Plus 0元·2个月',
     plus_3m_free: 'Plus 0元·3个月',
     plus_6m_free: 'Plus 0元·6个月',
     plus_1m_half: 'Plus 半价·1个月',
+    plus_2m_half: 'Plus 半价·2个月',
     plus_3m_half: 'Plus 半价·3个月',
     plus_6m_half: 'Plus 半价·6个月',
     pro: 'Pro特权',
@@ -722,16 +724,26 @@ const PLUS_TYPE = {
 }
 function classifyPlusPromo(promo, extra) {
   const raw = `${promo || ''} ${typeof extra === 'string' ? extra : JSON.stringify(extra || {})}`.toLowerCase()
-  let months = 1
-  if (/(?:^|[^0-9])6\s*[-_]?(month|mo|个月)/.test(raw) || raw.includes('six-month') || raw.includes('6month')) months = 6
-  else if (/(?:^|[^0-9])3\s*[-_]?(month|mo|个月)/.test(raw) || raw.includes('three-month') || raw.includes('3month')) months = 3
-  else if (/(?:^|[^0-9])1\s*[-_]?(month|mo|个月)/.test(raw) || raw.includes('one-month') || raw.includes('1month')) months = 1
+  let months = 0
+  const mm = raw.match(/(?:^|[^0-9])(\d{1,2})\s*[-_]?(months?|mo|个月)/)
+  if (mm) {
+    const n = Number(mm[1])
+    if (n >= 1 && n <= 12) months = n
+  }
+  if (!months) {
+    if (raw.includes('six-month') || raw.includes('6month')) months = 6
+    else if (raw.includes('three-month') || raw.includes('3month')) months = 3
+    else if (raw.includes('two-month') || raw.includes('2month')) months = 2
+    else if (raw.includes('one-month') || raw.includes('1month')) months = 1
+  }
   let kind = 'unknown'
   if (/(?:50|half)\s*[-_]?(pct|percent|off)|50-pct|50pct|half-off/.test(raw)) kind = 'half'
   else if (/(?:^|[-_\s])free(?:$|[-_\s])/.test(raw) || /100\s*[-_]?pct/.test(raw)) kind = 'free'
   else if (/pct-off|percent-off|discount/.test(raw)) kind = 'discount'
   const kindCn = { free: '0元', half: '半价', discount: '优惠', unknown: '优惠' }[kind]
-  return { kind, months, label: `Plus${kindCn}·${months}个月`, code: `plus_${months}m_${kind}` }
+  const label = months ? `Plus${kindCn}·${months}个月` : `Plus${kindCn}`
+  const code = months ? `plus_${months}m_${kind}` : `plus_${kind}`
+  return { kind, months, label, code }
 }
 
 function plusOf(row) {
@@ -739,11 +751,9 @@ function plusOf(row) {
   const p = row.plus_check
   let label = p.label || p.status || ''
   if (p.status === 'plus_eligible') {
-    const hasSpecific = /0元|半价|个月/.test(String(label))
-    if (!hasSpecific) {
-      const c = classifyPlusPromo(p.promo || p.promo_id || '', p)
-      label = (p.promo_kind || p.promo) ? c.label : 'Plus资格'
-    }
+    const c = classifyPlusPromo(p.promo || p.promo_id || '', p)
+    if (p.promo || p.promo_id) label = c.label
+    else if (!/0元|半价|个月/.test(String(label))) label = 'Plus资格'
   } else if (label === '可领Plus试用' || label === '🎁 可领Plus试用') {
     label = 'Plus资格'
   }
@@ -6619,12 +6629,14 @@ onUnmounted(() => {
                 <el-option-group label="Plus 0元试用">
                   <el-option label="🎁 全部 0元" value="plus_free" />
                   <el-option label="🎁 0元 · 1个月" value="plus_1m_free" />
+                  <el-option label="🎁 0元 · 2个月" value="plus_2m_free" />
                   <el-option label="🎁 0元 · 3个月" value="plus_3m_free" />
                   <el-option label="🎁 0元 · 6个月" value="plus_6m_free" />
                 </el-option-group>
                 <el-option-group label="Plus 半价试用">
                   <el-option label="💲 全部半价" value="plus_half" />
                   <el-option label="💲 半价 · 1个月" value="plus_1m_half" />
+                  <el-option label="💲 半价 · 2个月" value="plus_2m_half" />
                   <el-option label="💲 半价 · 3个月" value="plus_3m_half" />
                   <el-option label="💲 半价 · 6个月" value="plus_6m_half" />
                 </el-option-group>

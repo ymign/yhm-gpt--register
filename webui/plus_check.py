@@ -124,9 +124,10 @@ _PROMO_KIND_CN = {
 
 
 def classify_plus_promo(promo_id: str = "", promo_obj: Any = None) -> dict:
-    """从官方活动 id 解析 Plus 试用：0元/半价，以及 1/3/6 个月。
+    """从官方活动 id 解析 Plus 试用：0元/半价，以及 1/2/3/6 个月。
 
     例：plus-1-month-50-pct-off → 半价·1个月
+        plus-2-months-50-pct-off → 半价·2个月
         plus-1-month-free → 0元·1个月
         plus-3-month-free → 0元·3个月
     """
@@ -143,7 +144,7 @@ def classify_plus_promo(promo_id: str = "", promo_obj: Any = None) -> dict:
                 n = int(promo_obj.get(k) or 0)
             except (TypeError, ValueError):
                 n = 0
-            if n in (1, 3, 6):
+            if 1 <= n <= 12:
                 months_from_obj = n
         for k in ("discount_percent", "percent_off", "percentOff", "discount"):
             raw_pct = promo_obj.get(k)
@@ -165,13 +166,24 @@ def classify_plus_promo(promo_id: str = "", promo_obj: Any = None) -> dict:
             pass
     raw = " ".join(chunks).lower()
 
-    months = months_from_obj or 1
-    if re.search(r"(?:^|[^0-9])6\s*[-_]?(?:month|mo|mon|个月)", raw) or "six-month" in raw or "6month" in raw:
-        months = 6
-    elif re.search(r"(?:^|[^0-9])3\s*[-_]?(?:month|mo|mon|个月)", raw) or "three-month" in raw or "3month" in raw:
-        months = 3
-    elif re.search(r"(?:^|[^0-9])1\s*[-_]?(?:month|mo|mon|个月)", raw) or "one-month" in raw or "1month" in raw:
-        months = 1
+    months = int(months_from_obj or 0)
+    m = re.search(r"(?:^|[^0-9])(\d{1,2})\s*[-_]?(?:months?|mo|mon|个月)", raw)
+    if m:
+        try:
+            n = int(m.group(1))
+        except (TypeError, ValueError):
+            n = 0
+        if 1 <= n <= 12:
+            months = n
+    if not months:
+        if "six-month" in raw or "6month" in raw:
+            months = 6
+        elif "three-month" in raw or "3month" in raw:
+            months = 3
+        elif "two-month" in raw or "2month" in raw:
+            months = 2
+        elif "one-month" in raw or "1month" in raw:
+            months = 1
 
     kind = kind_from_obj
     if not kind:
@@ -187,11 +199,17 @@ def classify_plus_promo(promo_id: str = "", promo_obj: Any = None) -> dict:
             kind = "unknown"
 
     kind_cn = _PROMO_KIND_CN.get(kind, "优惠")
+    if months:
+        label = f"Plus{kind_cn}·{months}个月"
+        code = f"plus_{months}m_{kind}"
+    else:
+        label = f"Plus{kind_cn}"
+        code = f"plus_{kind}"
     return {
         "promo_kind": kind,
         "promo_months": months,
-        "promo_code": f"plus_{months}m_{kind}",
-        "label": f"Plus{kind_cn}·{months}个月",
+        "promo_code": code,
+        "label": label,
         "kind_label": kind_cn,
     }
 
