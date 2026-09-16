@@ -64,6 +64,7 @@ const logOpen = ref(false)
 const logEmail = ref('')
 const logLines = ref([])
 const logLoading = ref(false)
+const formOpen = ref(true)
 let es = null
 
 function persistForm() {
@@ -375,6 +376,7 @@ async function startTask() {
       return
     }
     watchTask(id)
+    formOpen.value = false
   } catch (e) {
     running.value = false
     ElMessage.error(e.message || '启动失败')
@@ -484,6 +486,7 @@ onMounted(async () => {
     taskId.value = id
     applySnapshot(snap)
     if (snap.running) watchTask(id)
+    if (Object.keys(items.value || {}).length) formOpen.value = false
   } catch (_) {
     try { sessionStorage.removeItem(TASK_KEY) } catch (__) {}
   }
@@ -511,72 +514,86 @@ onUnmounted(() => {
       </div>
 
       <div class="page-body">
-        <div class="form-card">
-          <p class="hint">
-            一行一个邮箱。把对方 CPA / Sub 主机的代理原样填进来（socks5:// 或 http:// 按你写的走，不会改成别的协议，也不会换 sticky 会话）。
-            任务启动时会实测出口 IP，写进每条日志。默认只刷 RT，失效不会自动重登。重新登录要单独勾选，机房 IP 走密码+2FA 很容易被官方注销。
-          </p>
+        <div class="form-card" :class="{ compact: !formOpen }">
+          <div v-if="!formOpen" class="form-compact-bar">
+            <span class="compact-meta">
+              邮箱 {{ emailCount }} · 并发 {{ form.workers }} · {{ form.forceFullLogin ? '允许重登' : '只刷 RT' }}
+              <em v-if="proxyMsg" :class="{ ok: proxyOk }">{{ proxyMsg }}</em>
+            </span>
+            <div class="compact-actions">
+              <el-button type="primary" size="small" :loading="starting" :disabled="running" @click="startTask">开始解 401</el-button>
+              <el-button type="danger" size="small" plain :disabled="!running" @click="stopTask">停止</el-button>
+              <el-button size="small" text @click="formOpen = true">展开配置</el-button>
+            </div>
+          </div>
 
-          <label class="field-label">对方主机代理</label>
-          <div class="proxy-row">
+          <template v-else>
+            <p class="hint">
+              一行一个邮箱。代理按你填的协议走，不换 sticky。默认只刷 RT；重登需勾选。
+              <el-button v-if="itemList.length" size="small" text @click="formOpen = false">收起，看结果</el-button>
+            </p>
+
+            <label class="field-label">对方主机代理</label>
+            <div class="proxy-row">
+              <el-input
+                v-model="form.proxy"
+                placeholder="socks5://用户:密码@主机:端口  或  http://用户:密码@主机:端口"
+                clearable
+                spellcheck="false"
+                @change="persistForm"
+                @input="proxyOk = false; proxyCountry = ''; proxyMsg = ''"
+              />
+              <el-button :loading="proxyChecking" @click="checkProxy">
+                <el-icon><Connection /></el-icon>验证代理
+              </el-button>
+            </div>
+            <p class="proxy-msg" :class="{ ok: proxyOk, bad: proxyMsg && !proxyOk }">{{ proxyMsg }}</p>
+
+            <div class="opt-row">
+              <span class="opt-item">
+                并发
+                <el-input-number v-model="form.workers" :min="1" :max="5" size="small" @change="persistForm" />
+              </span>
+              <span class="opt-item">
+                超时秒
+                <el-input-number v-model="form.timeout" :min="15" :max="120" :step="5" size="small" @change="persistForm" />
+              </span>
+              <el-checkbox v-model="form.forceFullLogin" @change="persistForm">
+                允许重新登录（RT 失效才走密码+2FA，机房 IP 容易封号）
+              </el-checkbox>
+            </div>
+
+            <label class="field-label">邮箱列表 · {{ emailCount }} 个</label>
             <el-input
-              v-model="form.proxy"
-              placeholder="socks5://用户:密码@主机:端口  或  http://用户:密码@主机:端口"
-              clearable
+              v-model="form.emails"
+              type="textarea"
+              :autosize="{ minRows: 3, maxRows: 5 }"
+              placeholder="name@outlook.com&#10;也可直接粘贴 Sub2 / CPA JSON，会自动抠邮箱"
               spellcheck="false"
-              @change="persistForm"
-              @input="proxyOk = false; proxyCountry = ''; proxyMsg = ''"
+              @paste="onPasteEmails"
             />
-            <el-button :loading="proxyChecking" @click="checkProxy">
-              <el-icon><Connection /></el-icon>验证代理
-            </el-button>
-          </div>
-          <p class="proxy-msg" :class="{ ok: proxyOk, bad: proxyMsg && !proxyOk }">{{ proxyMsg }}</p>
 
-          <div class="opt-row">
-            <span class="opt-item">
-              并发
-              <el-input-number v-model="form.workers" :min="1" :max="5" size="small" @change="persistForm" />
-            </span>
-            <span class="opt-item">
-              超时秒
-              <el-input-number v-model="form.timeout" :min="15" :max="120" :step="5" size="small" @change="persistForm" />
-            </span>
-            <el-checkbox v-model="form.forceFullLogin" @change="persistForm">
-              允许重新登录（RT 失效才走密码+2FA，机房 IP 容易封号）
-            </el-checkbox>
-          </div>
+            <div v-if="preview" class="preview-chips">
+              <span>识别 {{ preview.parsed }}</span>
+              <span>号池 {{ preview.found }}</span>
+              <span class="ok">可跑 {{ preview.queued }}</span>
+              <span class="warn">凭证失效 {{ (preview.token_invalid || []).length }}</span>
+              <span class="bad">封号跳过 {{ (preview.banned || []).length }}</span>
+              <span>不在号池 {{ (preview.missing || []).length }}</span>
+            </div>
 
-          <label class="field-label">邮箱列表 · {{ emailCount }} 个</label>
-          <el-input
-            v-model="form.emails"
-            type="textarea"
-            :autosize="{ minRows: 7, maxRows: 14 }"
-            placeholder="name@outlook.com&#10;也可直接粘贴 Sub2 / CPA JSON，会自动抠邮箱"
-            spellcheck="false"
-            @paste="onPasteEmails"
-          />
-
-          <div v-if="preview" class="preview-chips">
-            <span>识别 {{ preview.parsed }}</span>
-            <span>号池 {{ preview.found }}</span>
-            <span class="ok">可跑 {{ preview.queued }}</span>
-            <span class="warn">凭证失效 {{ (preview.token_invalid || []).length }}</span>
-            <span class="bad">封号跳过 {{ (preview.banned || []).length }}</span>
-            <span>不在号池 {{ (preview.missing || []).length }}</span>
-          </div>
-
-          <div class="action-row">
-            <el-button :loading="previewing" :disabled="running" @click="doPreview">识别号池</el-button>
-            <el-button @click="$refs.fileInput.click()">导入 JSON</el-button>
-            <input ref="fileInput" type="file" accept=".json,.txt,application/json" hidden @change="onImportFile" />
-            <el-button type="primary" :loading="starting" :disabled="running" @click="startTask">
-              <el-icon><VideoPlay /></el-icon>开始解 401
-            </el-button>
-            <el-button type="danger" plain :disabled="!running" @click="stopTask">
-              <el-icon><SwitchButton /></el-icon>停止
-            </el-button>
-          </div>
+            <div class="action-row">
+              <el-button :loading="previewing" :disabled="running" @click="doPreview">识别号池</el-button>
+              <el-button @click="$refs.fileInput.click()">导入 JSON</el-button>
+              <input ref="fileInput" type="file" accept=".json,.txt,application/json" hidden @change="onImportFile" />
+              <el-button type="primary" :loading="starting" :disabled="running" @click="startTask">
+                <el-icon><VideoPlay /></el-icon>开始解 401
+              </el-button>
+              <el-button type="danger" plain :disabled="!running" @click="stopTask">
+                <el-icon><SwitchButton /></el-icon>停止
+              </el-button>
+            </div>
+          </template>
         </div>
 
         <div class="stat-row">
@@ -753,11 +770,39 @@ onUnmounted(() => {
   border-radius: 10px;
   padding: 12px 14px 10px;
 }
-.hint {
-  margin: 0 0 10px;
+.form-card.compact {
+  padding: 8px 12px;
+}
+.form-compact-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.compact-meta {
   font-size: 12px;
-  line-height: 1.55;
   color: var(--el-text-color-secondary);
+}
+.compact-meta em {
+  font-style: normal;
+  margin-left: 8px;
+}
+.compact-meta em.ok { color: var(--el-color-success); }
+.compact-actions { display: flex; align-items: center; gap: 6px; }
+.form-card :deep(.el-textarea__inner) {
+  max-height: 120px !important;
+  overflow-y: auto !important;
+}
+.hint {
+  margin: 0 0 8px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--el-text-color-secondary);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
 }
 .field-label {
   display: block;
@@ -801,7 +846,7 @@ onUnmounted(() => {
   display: grid;
   grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 8px;
-  margin: 10px 0;
+  margin: 8px 0;
   flex-shrink: 0;
 }
 .stat-card {
@@ -829,7 +874,7 @@ onUnmounted(() => {
 .search-box { width: 200px; }
 .table-wrap {
   flex: 1;
-  min-height: 160px;
+  min-height: 280px;
   overflow: hidden;
 }
 .mono {

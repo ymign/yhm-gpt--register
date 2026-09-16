@@ -3274,7 +3274,7 @@ const oauthBatchHint = computed(() => {
     return `重新授权：号池里有就跑，不管有没有导出过。名单 ${pool}，号池可跑 ${can}${miss ? `，号池没有 ${miss}` : ''}${ban ? `，封号跳过 ${ban}` : ''}。不接码。跑完下载 CPA / Sub2 JSON。`
   }
   if (!oauthRunning.value && !Object.keys(oauthItems.value).length && pool) {
-    return `号池来自${oauthPoolSource.value === 'selected' ? '勾选' : '当前筛选'}，共 ${pool} 个账号。点「开始授权」后会排除已授权 / 封号 / 冷却，目标未满就持续从号池补人，把并发跑满。不必勾选，也不用把分页拉到几千。`
+    return `号池来自${oauthPoolSource.value === 'selected' ? '勾选' : '当前筛选'}，共 ${pool} 个账号。点「开始授权」后会排除已授权 / 封号 / 冷却，目标未满就持续从号池补人，把并发跑满。`
   }
   if (oauthRunning.value && pool) {
     return `号池 ${pool}，剩余排队 ${oauthRunMeta.queue_remaining}。表格只显示已开工账号，关闭弹窗不会中断任务。`
@@ -3524,7 +3524,7 @@ async function openOAuthExport(target = 'filter') {
   if (target === 'selected') {
     emails = selected.value.map((r) => r.email)
     if (!emails.length) {
-      ElMessage.warning('当前没有勾选。主按钮会按筛选号池取号，不必勾选。')
+      ElMessage.warning('请先勾选要授权的账号。需要当前筛选全部时，可先点全选。')
       return
     }
     oauthPoolSource.value = 'selected'
@@ -6826,8 +6826,8 @@ onUnmounted(() => {
                     <el-dropdown-item command="token_unchecked">验活未检账号</el-dropdown-item>
                     <el-dropdown-item command="token_all">全量全库重验</el-dropdown-item>
                     <div class="dropdown-group-title divider-title">OAuth 接码授权</div>
-                    <el-dropdown-item @click="handleOAuthCommand('oauth_filter')">📱 按当前筛选号池授权（无需勾选）</el-dropdown-item>
-                    <el-dropdown-item @click="handleOAuthCommand('oauth_selected')" :disabled="!selectedCount">📱 仅勾选的 {{ selectedCount }} 个</el-dropdown-item>
+                    <el-dropdown-item @click="handleOAuthCommand('oauth_selected')" :disabled="!selectedCount">📱 勾选的 {{ selectedCount }} 个</el-dropdown-item>
+                    <el-dropdown-item @click="handleOAuthCommand('oauth_filter')">📱 当前筛选全部（无需勾选）</el-dropdown-item>
                     <el-dropdown-item @click="handleOAuthCommand('oauth_reauth')">🔁 重新授权（粘贴邮箱，不接码）</el-dropdown-item>
                     <el-dropdown-item @click="handleOAuthCommand('reset_tries_selected')" :disabled="!selectedCount">↺ 重置选中授权次数 ({{ selectedCount }})</el-dropdown-item>
                     <div class="dropdown-group-title divider-title">提链 / 出码</div>
@@ -6892,11 +6892,13 @@ onUnmounted(() => {
 
               <button
                 class="action-menu-btn action-oauth-btn"
-                title="按当前筛选号池授权接码，不必勾选"
-                @click="handleOAuthCommand('oauth_filter')"
+                :class="{ 'has-selected': selectedCount }"
+                :disabled="!selectedCount"
+                title="只跑勾选的账号。需要当前筛选全部时先全选。"
+                @click="handleOAuthCommand('oauth_selected')"
               >
                 <el-icon><Phone /></el-icon>
-                <span>授权接码</span>
+                <span>授权接码{{ selectedCount ? ` (${selectedCount})` : '' }}</span>
               </button>
               <button
                 class="action-menu-btn action-reauth-btn"
@@ -7807,11 +7809,12 @@ onUnmounted(() => {
 
             <button
               class="dock-btn"
-              @click="handleOAuthCommand('oauth_filter')"
-              title="按当前筛选条件从号池取号授权，不必勾选，也不用把分页拉到几千"
+              :disabled="!selectedCount"
+              @click="handleOAuthCommand('oauth_selected')"
+              title="只跑勾选的账号。需要当前筛选全部时先全选。"
             >
               <el-icon class="ico-purple"><Phone /></el-icon>
-              <span>OAuth接码</span>
+              <span>OAuth接码{{ selectedCount ? ` (${selectedCount})` : '' }}</span>
             </button>
 
             <button
