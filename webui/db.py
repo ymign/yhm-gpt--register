@@ -2870,8 +2870,12 @@ def _parse_single_filter_clause(filt: str) -> Optional[str]:
         return "length(refresh_token) > 0"
     if f == "no_rt":
         return "coalesce(length(refresh_token),0) = 0"
-    if f in ("unchecked", "health_unchecked", "unverified"):
-        return "(extra_json IS NULL OR extra_json NOT LIKE '%\"plus_check\"%')"
+    if f in ("unchecked", "health_unchecked", "unverified", "plan_unchecked"):
+        # 没做过套餐验活：没有 plus_check，或只有 token 验活、没有套餐结论。
+        return (
+            "(json_extract(extra_json, '$.plus_check.status') IS NULL"
+            " OR json_extract(extra_json, '$.plus_check.status') IN ('', 'unchecked', 'token_valid'))"
+        )
     if f == "pro":
         return "(extra_json LIKE '%\"pro_20x\"%' OR extra_json LIKE '%\"pro_5x\"%' OR extra_json LIKE '%\"pro_active\"%' OR extra_json LIKE '%\"pro_eligible\"%')"
     if f == "team":
@@ -2934,11 +2938,8 @@ def _parse_single_filter_clause(filt: str) -> Optional[str]:
             f" AND {kind_sql} AND {month_like})"
         )
     if f == "free":
-        # 只含验活为 free、或还没验套餐的号。Plus 资格底包虽是 Free，不算基础号。
-        return (
-            "(json_extract(extra_json, '$.plus_check.status') = 'free'"
-            " OR json_extract(extra_json, '$.plus_check.status') IS NULL)"
-        )
+        # 仅套餐验活结论为 free。没验过的走 unchecked，Plus 资格不算 Free。
+        return "json_extract(extra_json, '$.plus_check.status') = 'free'"
     # ── 封号检测与凭证失效精准/健壮筛选 ──
     if f in ("banned", "deactivated", "account_deactivated", "disabled"):
         return (

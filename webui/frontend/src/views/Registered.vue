@@ -326,7 +326,9 @@ function getPlanFilterLabel(val) {
     plus_3m_half: 'Plus 半价·3个月',
     plus_6m_half: 'Plus 半价·6个月',
     pro: 'Pro特权',
-    free: 'Free 基础号',
+    free: 'Free 基础号（已验）',
+    unchecked: '未验套餐',
+    plan_unchecked: '未验套餐',
     extract_eligible: '待提链',
   }
   return map[val] || val
@@ -620,9 +622,17 @@ function getEmailProviderMeta(email) {
   return meta
 }
 
+function planCheckKind(row) {
+  const st = String(row?.plus_check?.status || row?.plus_check?.plus_type || '').toLowerCase().trim()
+  if (!st || st === 'unchecked' || st === 'token_valid') return 'unchecked'
+  if (st === 'free') return 'free'
+  return st
+}
+
 function prepareRowData(r) {
   if (!r) return r
   r._providerMeta = getEmailProviderMeta(r.email)
+  r._planKind = planCheckKind(r)
   r._badges = getStatusBadges(r) || []
   r._createdTime = fmtTime(r.created_at)
   r._timeAgo = timeAgo(r.created_at)
@@ -6604,7 +6614,8 @@ onUnmounted(() => {
                 @change="load(true)"
               >
                 <el-option label="全部套餐" value="all" />
-                <el-option label="⚪ Free 基础号" value="free" />
+                <el-option label="未验套餐" value="unchecked" />
+                <el-option label="⚪ Free 基础号（已验）" value="free" />
                 <el-option-group label="Plus 0元试用">
                   <el-option label="🎁 全部 0元" value="plus_free" />
                   <el-option label="🎁 0元 · 1个月" value="plus_1m_free" />
@@ -7155,6 +7166,16 @@ onUnmounted(() => {
               <el-table-column v-if="columnVisibility.status" label="套餐与业务特权" min-width="160" align="center" header-align="center">
                 <template #default="{ row }">
                   <div class="cell-entitlements-block">
+                    <span
+                      v-if="row._planKind === 'unchecked'"
+                      class="plan-unchecked-text"
+                      title="还没做过套餐验活，不是官方确认的 Free"
+                    >未验套餐</span>
+                    <span
+                      v-else-if="row._planKind === 'free'"
+                      class="free-plain-text"
+                      title="套餐验活结论：Free 基础号"
+                    ><span class="free-dot"></span>Free</span>
                     <template v-if="row._badges?.length">
                       <span
                         v-for="(b, idx) in row._badges"
@@ -7167,7 +7188,6 @@ onUnmounted(() => {
                         {{ b.label }}
                       </span>
                     </template>
-                    <span v-else class="free-plain-text"><span class="free-dot"></span>Free</span>
                   </div>
                 </template>
               </el-table-column>
@@ -18576,6 +18596,17 @@ onUnmounted(() => {
   border-color: rgba(239, 68, 68, 0.7) !important;
   border-top-color: #ffffff !important;
   box-shadow: 0 3px 8px rgba(239, 68, 68, 0.25), inset 0 1.5px 1.5px #ffffff, inset 0 -1.2px 1.8px rgba(185, 28, 28, 0.15) !important;
+}
+.plan-unchecked-text {
+  font-size: 10.5px;
+  color: #64748b;
+  display: inline-flex;
+  align-items: center;
+  font-weight: 600;
+  padding: 2px 9px;
+  border-radius: 9999px;
+  background: rgba(248, 250, 252, 0.9);
+  border: 1px dashed rgba(148, 163, 184, 0.7);
 }
 .free-plain-text {
   font-size: 10.5px;
