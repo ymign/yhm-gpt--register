@@ -387,6 +387,10 @@ def get_provider_class(kind: str) -> type[MailProvider]:
         "moemail": "moemail",
         "yyds": "yyds",
         "gptmail": "gptmail",
+        "gmail": "gmail_split",
+        "gmail_split": "gmail_split",
+        "google": "gmail_split",
+        "googlemail": "gmail_split",
     }
     key = _ALIASES.get(key, key)
     if key not in _PROVIDERS:
@@ -516,6 +520,16 @@ def parse_import_line(line: str, kind: str = "") -> dict:
             smart.get("error") or f"{seg_count} 段格式无法识别（已知的号池格式是 {known} 段）"
         )
     if len(candidates) > 1:
+        em = line.split("----", 1)[0].strip().lower()
+        domain = em.split("@", 1)[-1] if "@" in em else ""
+        if domain in ("gmail.com", "googlemail.com"):
+            g = next((c for c in candidates if c.kind == "gmail_split"), None)
+            if g:
+                return g.parse_line(line)
+        if domain in ("icloud.com", "me.com", "mac.com"):
+            ic = next((c for c in candidates if c.kind == "icloud_relay"), None)
+            if ic:
+                return ic.parse_line(line)
         names = "/".join(c.display_name for c in candidates)
         raise ValueError(
             f"{seg_count} 段格式有多种可能（{names}），请在页面上指定邮箱来源"
@@ -562,8 +576,13 @@ def parse_import_text(text: str, kind: str = "") -> list[dict]:
         want = get_provider_class(kind).line_segments
         if want != 4 and len(segs) >= 4:
             kind = "outlook"
-        elif want != 2 and len(segs) == 2 and segs[1].lower().startswith(("http://", "https://")):
-            kind = "icloud_relay"
+        elif len(segs) == 2 and segs[1].lower().startswith(("http://", "https://")):
+            em0 = segs[0].lower()
+            domain0 = em0.split("@", 1)[-1] if "@" in em0 else ""
+            if domain0 in ("gmail.com", "googlemail.com"):
+                kind = "gmail_split"
+            elif want != 2:
+                kind = "icloud_relay"
 
     errors: list[dict] = []
     rows: list[dict] = []

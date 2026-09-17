@@ -20,6 +20,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import random
 import sqlite3
 import sys
 import threading
@@ -644,6 +645,30 @@ def init_db():
         "CREATE INDEX IF NOT EXISTS idx_sms_act_open "
         "ON sms_activations(status, rented_at, protect_until);"
     )
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS gmail_split_accounts (
+            email           TEXT PRIMARY KEY,
+            base_email      TEXT NOT NULL,
+            code_url        TEXT NOT NULL,
+            status          TEXT NOT NULL DEFAULT 'available',
+            imported_at     REAL,
+            claimed_at      REAL,
+            finished_at     REAL,
+            fail_reason     TEXT
+        );
+    """)
+    con.execute(
+        "CREATE INDEX IF NOT EXISTS idx_gmail_split_status "
+        "ON gmail_split_accounts(status, imported_at);"
+    )
+    con.execute(
+        "CREATE INDEX IF NOT EXISTS idx_gmail_split_base "
+        "ON gmail_split_accounts(base_email, status);"
+    )
+    try:
+        _backfill_gmail_split_parents(con)
+    except Exception as e:
+        logging.getLogger("db").warning("[gmail_split] 补主号行失败: %s", e)
     con.commit()
 
     # 默认开箱即用设置预置（新电脑 clone 后自动就绪，无需手动配置）
@@ -696,7 +721,15 @@ def parse_lines(text: str, kind: str = "") -> list[dict]:
     return parse_import_text(text or "", kind)
 
 
-def analyze_import_data(text: str, kind: str = "") -> dict:
+def analyze_import_data(text: str, kind: str = "", split_count: Optional[int] = None) -> dict:
+    """导入前多维数据透视与去重分析引擎。"""
+    k = (kind or "").strip().lower()
+    if k in ("gmail_split", "gmail") or _looks_like_gmail_split_text(text):
+        return analyze_gmail_split_import(text, split_count=split_count)
+    return _analyze_import_data_generic(text, kind)
+
+
+def _analyze_import_data_generic(text: str, kind: str = "") -> dict:
     """导入前多维数据透视与去重分析引擎。
 
     1. 逐行智能清理与容错解析（支持任意分隔符、乱序、首尾字符清理）；
@@ -857,7 +890,437 @@ def analyze_import_data(text: str, kind: str = "") -> dict:
     }
 
 
-def import_accounts(text: str, kind: str = "", strategy: str = "smart_merge") -> dict:
+GMAIL_SPLIT_PER_LINE = 5
+GMAIL_SPLIT_COUNT_MIN = 0
+GMAIL_SPLIT_COUNT_MAX = 20
+GMAIL_SPLIT_FAMILY_SIZE = 1 + GMAIL_SPLIT_PER_LINE  # 主号 + 默认 5 个子号
+GMAIL_SPLIT_TAG_LEN = 5
+_GMAIL_SPLIT_TAG_CHARS = "abcdefghijklmnopqrstuvwxyz0123456789"
+
+
+def clamp_gmail_split_count(n, default: int = GMAIL_SPLIT_PER_LINE) -> int:
+    try:
+        v = int(n)
+    except (TypeError, ValueError):
+        v = int(default)
+    return max(GMAIL_SPLIT_COUNT_MIN, min(GMAIL_SPLIT_COUNT_MAX, v))
+
+
+def get_gmail_split_count() -> int:
+    return clamp_gmail_split_count(get_setting("gmail_split_count", str(GMAIL_SPLIT_PER_LINE)))
+
+
+def gmail_split_family_size(alias_count: int) -> int:
+    return 1 + max(0, int(alias_count))
+
+
+def _backfill_gmail_split_parents(con=None) -> int:
+    """把已导入家庭里缺失的主号行补进表，状态默认 available。"""
+    own = con is None
+    if own:
+        con = _conn()
+    cur = con.execute(
+        """
+        INSERT OR IGNORE INTO gmail_split_accounts
+            (email, base_email, code_url, status, imported_at, finished_at, fail_reason)
+        SELECT
+            lower(b.base_email),
+            lower(b.base_email),
+            b.code_url,
+            CASE WHEN EXISTS (
+                SELECT 1 FROM registered r WHERE lower(r.email)=lower(b.base_email)
+            ) THEN 'done' ELSE 'available' END,
+            b.imported_at,
+            CASE WHEN EXISTS (
+                SELECT 1 FROM registered r WHERE lower(r.email)=lower(b.base_email)
+            ) THEN ? ELSE NULL END,
+            CASE WHEN EXISTS (
+                SELECT 1 FROM registered r WHERE lower(r.email)=lower(b.base_email)
+            ) THEN 'already_registered' ELSE NULL END
+        FROM (
+            SELECT base_email, MIN(code_url) AS code_url, MIN(imported_at) AS imported_at
+            FROM gmail_split_accounts
+            GROUP BY lower(base_email)
+        ) b
+        WHERE NOT EXISTS (
+            SELECT 1 FROM gmail_split_accounts x
+            WHERE lower(x.email)=lower(b.base_email)
+        )
+        """,
+        (time.time(),),
+    )
+    n = cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+    if own:
+        con.commit()
+    return n
+
+
+def _gmail_split_aliases(
+    base_email: str,
+    n: int = GMAIL_SPLIT_PER_LINE,
+    occupied: Optional[set[str]] = None,
+) -> list[str]:
+    em = (base_email or "").strip().lower()
+    if "@" not in em:
+        raise ValueError("不是邮箱")
+    local, domain = em.split("@", 1)
+    core = local.split("+", 1)[0]
+    if domain not in ("gmail.com", "googlemail.com"):
+        raise ValueError("只支持 gmail.com / googlemail.com 分裂")
+    taken = {x.lower() for x in (occupied or set())}
+    aliases: list[str] = []
+    attempts = 0
+    while len(aliases) < n and attempts < 2000:
+        attempts += 1
+        tag = "".join(random.choice(_GMAIL_SPLIT_TAG_CHARS) for _ in range(GMAIL_SPLIT_TAG_LEN))
+        alias = f"{core}+{tag}@{domain}"
+        if alias in taken:
+            continue
+        taken.add(alias)
+        aliases.append(alias)
+    if len(aliases) < n:
+        raise ValueError(f"{em} 无法生成 {n} 个不重复别名")
+    return aliases
+
+
+def _looks_like_gmail_split_text(text: str) -> bool:
+    """首条有效行是 gmail----http 取码链接，则走分裂导入。"""
+    for line in (text or "").splitlines():
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        parts = [p.strip() for p in s.replace("|", "----").replace("\t", "----").split("----") if p.strip()]
+        if len(parts) < 2:
+            return False
+        em, url = parts[0].lower(), parts[1]
+        if "@" not in em or not url.lower().startswith("http"):
+            return False
+        return em.split("@", 1)[1] in ("gmail.com", "googlemail.com")
+    return False
+
+
+def _parse_gmail_split_one(s: str) -> dict:
+    parts = [p.strip() for p in (s or "").replace("|", "----").replace("\t", "----").split("----")]
+    parts = [p for p in parts if p]
+    if len(parts) < 2:
+        raise ValueError("需要 邮箱----取码链接")
+    email, url = parts[0].lower(), parts[1]
+    if "@" not in email:
+        raise ValueError("不是邮箱")
+    domain = email.split("@", 1)[1]
+    if domain not in ("gmail.com", "googlemail.com"):
+        raise ValueError("只支持 gmail.com / googlemail.com")
+    if not url.lower().startswith("http"):
+        raise ValueError("取码链接必须以 http 开头")
+    return {"base_email": email, "code_url": url}
+
+
+def parse_gmail_split_lines(text: str) -> list[dict]:
+    """解析 邮箱----取码URL。一行母号，导入时再分裂成 5 个别名。"""
+    errors = []
+    rows = []
+    raw = text or ""
+    for i, line in enumerate(raw.splitlines(), start=1):
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        try:
+            row = _parse_gmail_split_one(s)
+        except ValueError as e:
+            errors.append({"line": i, "error": str(e)})
+            continue
+        rows.append({"line": i, **row})
+    if errors:
+        from mail_providers.base import ImportValidationError
+        raise ImportValidationError(errors)
+    return rows
+
+
+def _insert_gmail_split_row(con, email: str, base: str, code_url: str, now: float, occupied: set[str]) -> str:
+    em = (email or "").strip().lower()
+    if not em:
+        return "skip"
+    if em in occupied:
+        return "skip"
+    if con.execute("SELECT 1 FROM registered WHERE lower(email)=?", (em,)).fetchone():
+        occupied.add(em)
+        return "registered"
+    con.execute(
+        "INSERT INTO gmail_split_accounts "
+        "(email, base_email, code_url, status, imported_at) "
+        "VALUES (?,?,?,?,?)",
+        (em, base, code_url, "available", now),
+    )
+    occupied.add(em)
+    return "inserted"
+
+
+def import_gmail_split(text: str, split_count: Optional[int] = None) -> dict:
+    """一行母号写入主号 + N 个 Gmail+别名。主号本身也可注册，领号时优先主号。
+
+    同一母号已在表里则整行跳过，避免批量粘贴重复导入再造一批。
+    """
+    t0 = time.time()
+    n = clamp_gmail_split_count(
+        split_count if split_count is not None else get_gmail_split_count()
+    )
+    if split_count is not None:
+        set_setting("gmail_split_count", n)
+    family_n = gmail_split_family_size(n)
+    parsed = parse_gmail_split_lines(text)
+    now = time.time()
+    inserted = skipped = skipped_bases = skipped_registered = 0
+    bases = 0
+    with _lock:
+        con = _conn()
+        occupied = {
+            r[0] for r in con.execute("SELECT lower(email) FROM gmail_split_accounts")
+        }
+        occupied.update(
+            r[0] for r in con.execute("SELECT lower(email) FROM registered")
+        )
+        existing_bases = {
+            r[0] for r in con.execute("SELECT lower(base_email) FROM gmail_split_accounts")
+        }
+        seen_bases: set[str] = set()
+        for row in parsed:
+            bases += 1
+            base = row["base_email"]
+            if base in seen_bases or base in existing_bases:
+                skipped_bases += 1
+                skipped += family_n
+                continue
+            seen_bases.add(base)
+            aliases = _gmail_split_aliases(base, n=n, occupied=occupied) if n else []
+            family = [base] + aliases
+            for addr in family:
+                result = _insert_gmail_split_row(
+                    con, addr, base, row["code_url"], now, occupied,
+                )
+                if result == "inserted":
+                    inserted += 1
+                elif result == "registered":
+                    skipped_registered += 1
+                    skipped += 1
+                else:
+                    skipped += 1
+            existing_bases.add(base)
+        con.commit()
+    return {
+        "parsed": len(parsed),
+        "bases": bases,
+        "split": n,
+        "family_size": family_n,
+        "inserted": inserted,
+        "updated": 0,
+        "skipped": skipped,
+        "skipped_bases": skipped_bases,
+        "skipped_registered": skipped_registered,
+        "cost_seconds": round(time.time() - t0, 3),
+    }
+
+
+def analyze_gmail_split_import(text: str, split_count: Optional[int] = None) -> dict:
+    """导入前透视：按母号计，预计入库 = 新母号 × (1 主号 + N 子号)。"""
+    from mail_providers.base import split_import_records
+
+    numbered = split_import_records(text or "")
+    total_lines = len(numbered)
+    n = clamp_gmail_split_count(
+        split_count if split_count is not None else get_gmail_split_count()
+    )
+    family_n = gmail_split_family_size(n)
+    empty = {
+        "ok": True,
+        "mode": "gmail_split",
+        "split": n,
+        "will_insert": 0,
+        "family_size": family_n,
+        "total_lines": total_lines,
+        "valid_count": 0,
+        "invalid_count": 0,
+        "invalid_errors": [],
+        "unique_count": 0,
+        "internal_dup_count": 0,
+        "internal_dup_emails": [],
+        "brand_new_count": 0,
+        "pool_dup_count": 0,
+        "pool_breakdown": {},
+        "registered_dup_count": 0,
+        "dup_rate": 0.0,
+        "preview_rows": [],
+    }
+    if total_lines == 0:
+        return empty
+
+    parsed_rows = []
+    invalid_errors = []
+    email_occurrence: dict[str, list[int]] = {}
+    for line_no, raw_line in numbered:
+        try:
+            row = _parse_gmail_split_one(raw_line)
+        except ValueError as e:
+            invalid_errors.append({
+                "line": line_no,
+                "raw": raw_line[:80],
+                "error": str(e) or "无法识别 邮箱----取码链接",
+            })
+            continue
+        em = row["base_email"]
+        email_occurrence.setdefault(em, []).append(line_no)
+        parsed_rows.append({**row, "_line_no": line_no})
+
+    valid_count = len(parsed_rows)
+    unique_count = len(email_occurrence)
+    internal_dup_count = sum(len(v) - 1 for v in email_occurrence.values() if len(v) > 1)
+    internal_dup_emails = [em for em, lines in email_occurrence.items() if len(lines) > 1]
+
+    with _lock:
+        con = _conn()
+        existing_bases = {
+            r[0] for r in con.execute("SELECT lower(base_email) FROM gmail_split_accounts")
+        }
+
+    brand_new_count = 0
+    pool_dup_count = 0
+    seen_unique = set()
+    for row in parsed_rows:
+        em = row["base_email"]
+        if em in seen_unique:
+            continue
+        seen_unique.add(em)
+        if em in existing_bases:
+            pool_dup_count += 1
+        else:
+            brand_new_count += 1
+
+    dup_lines_total = internal_dup_count + pool_dup_count
+    dup_rate = round((dup_lines_total / total_lines) * 100, 1) if total_lines else 0.0
+
+    preview_rows = []
+    seen_in_preview = set()
+    for row in parsed_rows[:30]:
+        em = row["base_email"]
+        is_internal_dup = em in seen_in_preview
+        seen_in_preview.add(em)
+        if is_internal_dup:
+            db_status, db_label = "internal_dup", "批次内重复"
+        elif em in existing_bases:
+            db_status, db_label = "pool_existing", "母号已分裂入库"
+        else:
+            db_status, db_label = "brand_new", f"将入库主号 + {n} 个子号"
+        preview_rows.append({
+            "line": row["_line_no"],
+            "email": em,
+            "password_masked": "",
+            "has_password": False,
+            "client_id": "",
+            "rt_len": 0,
+            "relay_url": row.get("code_url") or "",
+            "kind": "gmail_split",
+            "detected_format": "Gmail 母号----取码链接",
+            "db_status": db_status,
+            "db_label": db_label,
+            "is_valid": True,
+        })
+
+    return {
+        "ok": True,
+        "mode": "gmail_split",
+        "split": n,
+        "family_size": family_n,
+        "will_insert": brand_new_count * family_n,
+        "total_lines": total_lines,
+        "valid_count": valid_count,
+        "invalid_count": len(invalid_errors),
+        "invalid_errors": invalid_errors[:50],
+        "unique_count": unique_count,
+        "internal_dup_count": internal_dup_count,
+        "internal_dup_emails": internal_dup_emails[:50],
+        "brand_new_count": brand_new_count,
+        "pool_dup_count": pool_dup_count,
+        "pool_breakdown": {"existing_bases": pool_dup_count},
+        "registered_dup_count": 0,
+        "dup_rate": dup_rate,
+        "preview_rows": preview_rows,
+    }
+
+
+def gmail_split_stats() -> dict:
+    con = _conn()
+    cur = con.execute(
+        "SELECT status, COUNT(*) AS n FROM gmail_split_accounts GROUP BY status"
+    )
+    out = {"available": 0, "in_use": 0, "done": 0, "failed": 0, "archived": 0, "total": 0}
+    for r in cur.fetchall():
+        out[r["status"]] = r["n"]
+        out["total"] += r["n"]
+    return out
+
+
+def _row_gmail_to_account(row) -> dict:
+    d = dict(row)
+    d["kind"] = "gmail_split"
+    d["relay_url"] = d.get("code_url") or ""
+    d["password"] = ""
+    d["client_id"] = ""
+    d["refresh_token"] = ""
+    return d
+
+
+def _claim_gmail_split() -> Optional[dict]:
+    """领一个号。同一母号不能两个 worker 同时领，避免共用取码接口串码。
+
+    全池优先领主号（email=base_email），主号用完再领 + 子号。
+    """
+    with _lock:
+        con = _conn()
+        for _ in range(80):
+            cur = con.execute(
+                """
+                SELECT g.* FROM gmail_split_accounts g
+                WHERE g.status='available'
+                  AND NOT EXISTS (
+                    SELECT 1 FROM gmail_split_accounts x
+                    WHERE x.base_email=g.base_email AND x.status='in_use'
+                  )
+                ORDER BY
+                  CASE WHEN lower(g.email)=lower(g.base_email) THEN 0 ELSE 1 END,
+                  g.imported_at ASC
+                LIMIT 1
+                """
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            em = row["email"].lower()
+            if con.execute(
+                "SELECT 1 FROM registered WHERE lower(email)=?", (em,)
+            ).fetchone():
+                con.execute(
+                    "UPDATE gmail_split_accounts SET status='done', finished_at=?, "
+                    "fail_reason='already_registered' WHERE lower(email)=?",
+                    (time.time(), em),
+                )
+                con.commit()
+                continue
+            rc = con.execute(
+                "UPDATE gmail_split_accounts SET status='in_use', claimed_at=? "
+                "WHERE lower(email)=? AND status='available'",
+                (time.time(), em),
+            )
+            con.commit()
+            if rc.rowcount == 1:
+                return _row_gmail_to_account(row)
+        return None
+
+
+def import_accounts(
+    text: str,
+    kind: str = "",
+    strategy: str = "smart_merge",
+    split_count: Optional[int] = None,
+) -> dict:
     """批量入库（万级数据毫秒级极速写入与智能去重策略）。
 
     参数：
@@ -869,6 +1332,9 @@ def import_accounts(text: str, kind: str = "", strategy: str = "smart_merge") ->
             - 'overwrite': 强制重置号池已有账号为 available 状态并覆盖更新凭据。
     """
     t0 = time.time()
+    k = (kind or "").strip().lower()
+    if k in ("gmail_split", "gmail") or _looks_like_gmail_split_text(text):
+        return import_gmail_split(text, split_count=split_count)
     rows = parse_lines(text, kind)
     now = time.time()
     inserted = updated = skipped = skipped_registered = 0
@@ -1026,12 +1492,65 @@ def clean_registered_from_pool(mode: str = "delete") -> dict:
                     "UPDATE outlook_accounts SET status='done', finished_at=?, fail_reason='already_registered' WHERE lower(email)=?",
                     (now, em),
                 )
+        gcur = con.execute("""
+            SELECT g.email FROM gmail_split_accounts g
+            INNER JOIN registered r ON lower(g.email) = lower(r.email)
+            WHERE g.status IN ('available', 'in_use', 'failed')
+        """)
+        grows = gcur.fetchall()
+        for r in grows:
+            em = r["email"].strip().lower()
+            if mode == "delete":
+                con.execute("DELETE FROM gmail_split_accounts WHERE lower(email)=?", (em,))
+            else:
+                con.execute(
+                    "UPDATE gmail_split_accounts SET status='done', finished_at=?, "
+                    "fail_reason='already_registered' WHERE lower(email)=?",
+                    (now, em),
+                )
+        cleaned += len(grows)
         con.commit()
     return {"cleaned": cleaned}
 
 
+def _gmail_pool_select_sql() -> str:
+    return (
+        "SELECT email, '' AS password, '' AS client_id, '' AS refresh_token, "
+        "code_url AS relay_url, 'gmail_split' AS kind, status, imported_at, "
+        "claimed_at, finished_at, fail_reason, base_email, code_url "
+        "FROM gmail_split_accounts"
+    )
+
+
+def _outlook_pool_select_sql() -> str:
+    return (
+        "SELECT email, password, client_id, refresh_token, "
+        "COALESCE(relay_url, '') AS relay_url, kind, status, imported_at, "
+        "claimed_at, finished_at, fail_reason, '' AS base_email, '' AS code_url "
+        "FROM outlook_accounts"
+    )
+
+
 def count_accounts(status: str = "", kind: str = "") -> int:
+    k = (kind or "").strip().lower()
     con = _conn()
+    if k in ("gmail_split", "gmail"):
+        sql = "SELECT COUNT(*) FROM gmail_split_accounts"
+        args = []
+        if status:
+            sql += " WHERE status=?"
+            args.append(status)
+        return con.execute(sql, args).fetchone()[0]
+    if not k:
+        n_out = con.execute(
+            "SELECT COUNT(*) FROM outlook_accounts" + (" WHERE status=?" if status else ""),
+            (status,) if status else (),
+        ).fetchone()[0]
+        n_gs = con.execute(
+            "SELECT COUNT(*) FROM gmail_split_accounts" + (" WHERE status=?" if status else ""),
+            (status,) if status else (),
+        ).fetchone()[0]
+        return n_out + n_gs
     sql = "SELECT COUNT(*) FROM outlook_accounts"
     where, args = [], []
     if status:
@@ -1039,7 +1558,7 @@ def count_accounts(status: str = "", kind: str = "") -> int:
         args.append(status)
     if kind:
         where.append("kind=?")
-        args.append(kind.strip().lower())
+        args.append(k)
     if where:
         sql += " WHERE " + " AND ".join(where)
     return con.execute(sql, args).fetchone()[0]
@@ -1048,7 +1567,28 @@ def count_accounts(status: str = "", kind: str = "") -> int:
 def list_accounts(
     status: str = "", limit: int = 50, offset: int = 0, kind: str = ""
 ) -> list[dict]:
+    k = (kind or "").strip().lower()
     con = _conn()
+    if k in ("gmail_split", "gmail"):
+        sql = "SELECT * FROM gmail_split_accounts"
+        args = []
+        if status:
+            sql += " WHERE status=?"
+            args.append(status)
+        sql += " ORDER BY imported_at DESC LIMIT ? OFFSET ?"
+        args += [limit, offset]
+        return [_row_gmail_to_account(r) for r in con.execute(sql, args).fetchall()]
+    if not k:
+        where_sql = " WHERE status=?" if status else ""
+        args = [status, status] if status else []
+        sql = (
+            f"SELECT * FROM ({_outlook_pool_select_sql()}{where_sql} "
+            f"UNION ALL {_gmail_pool_select_sql()}{where_sql}) t "
+            "ORDER BY imported_at DESC LIMIT ? OFFSET ?"
+        )
+        args += [limit, offset]
+        return [_row_gmail_to_account(r) if (r["kind"] == "gmail_split") else dict(r)
+                for r in con.execute(sql, args).fetchall()]
     sql = "SELECT * FROM outlook_accounts"
     where, args = [], []
     if status:
@@ -1056,7 +1596,7 @@ def list_accounts(
         args.append(status)
     if kind:
         where.append("kind=?")
-        args.append(kind.strip().lower())
+        args.append(k)
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY imported_at DESC LIMIT ? OFFSET ?"
@@ -1078,14 +1618,28 @@ def stats_by_kind() -> dict:
         )
         slot[r["status"]] = r["n"]
         slot["total"] += r["n"]
+    gs = gmail_split_stats()
+    out["gmail_split"] = {
+        "available": gs.get("available") or 0,
+        "in_use": gs.get("in_use") or 0,
+        "done": gs.get("done") or 0,
+        "failed": gs.get("failed") or 0,
+        "archived": gs.get("archived") or 0,
+        "total": gs.get("total") or 0,
+    }
     return out
 
 
 def get_account(email: str) -> Optional[dict]:
+    em = email.lower()
     con = _conn()
-    cur = con.execute("SELECT * FROM outlook_accounts WHERE email=?", (email.lower(),))
+    cur = con.execute("SELECT * FROM outlook_accounts WHERE email=?", (em,))
     row = cur.fetchone()
-    return dict(row) if row else None
+    if row:
+        return dict(row)
+    cur = con.execute("SELECT * FROM gmail_split_accounts WHERE email=?", (em,))
+    row = cur.fetchone()
+    return _row_gmail_to_account(row) if row else None
 
 
 def list_accounts_by_emails(emails: list[str]) -> list[dict]:
@@ -1104,6 +1658,11 @@ def list_accounts_by_emails(emails: list[str]) -> list[dict]:
             part,
         )
         out.extend(dict(row) for row in cur.fetchall())
+        cur2 = con.execute(
+            f"SELECT * FROM gmail_split_accounts WHERE lower(email) IN ({placeholders})",
+            part,
+        )
+        out.extend(_row_gmail_to_account(row) for row in cur2.fetchall())
     return out
 
 
@@ -1124,10 +1683,16 @@ def claim_account(email: str) -> Optional[dict]:
         # 前置校验：若该号已在 registered 表中存在，自动归档为 done 并拦截
         is_reg = con.execute("SELECT 1 FROM registered WHERE lower(email)=?", (email,)).fetchone()
         if is_reg:
+            now = time.time()
             con.execute(
                 "UPDATE outlook_accounts SET status='done', finished_at=?, fail_reason='already_registered' "
                 "WHERE lower(email)=?",
-                (time.time(), email),
+                (now, email),
+            )
+            con.execute(
+                "UPDATE gmail_split_accounts SET status='done', finished_at=?, fail_reason='already_registered' "
+                "WHERE lower(email)=?",
+                (now, email),
             )
             con.commit()
             return None
@@ -1137,17 +1702,39 @@ def claim_account(email: str) -> Optional[dict]:
             (email,),
         )
         row = cur.fetchone()
-        if not row:
+        if row:
+            rc = con.execute(
+                "UPDATE outlook_accounts SET status='in_use', claimed_at=?, fail_reason=NULL "
+                "WHERE lower(email)=? AND status IN ('available', 'failed')",
+                (time.time(), email),
+            )
+            con.commit()
+            if rc.rowcount != 1:
+                return None
+            return dict(row)
+
+        grow = con.execute(
+            "SELECT * FROM gmail_split_accounts WHERE lower(email)=? AND status IN ('available', 'failed')",
+            (email,),
+        ).fetchone()
+        if not grow:
+            return None
+        busy = con.execute(
+            "SELECT 1 FROM gmail_split_accounts WHERE lower(base_email)=? AND status='in_use' "
+            "AND lower(email)!=?",
+            ((grow["base_email"] or "").lower(), email),
+        ).fetchone()
+        if busy:
             return None
         rc = con.execute(
-            "UPDATE outlook_accounts SET status='in_use', claimed_at=?, fail_reason=NULL "
+            "UPDATE gmail_split_accounts SET status='in_use', claimed_at=?, fail_reason=NULL "
             "WHERE lower(email)=? AND status IN ('available', 'failed')",
             (time.time(), email),
         )
         con.commit()
         if rc.rowcount != 1:
             return None
-        return dict(row)
+        return _row_gmail_to_account(grow)
 
 
 def claim_next(kind: str = "") -> Optional[dict]:
@@ -1160,6 +1747,8 @@ def claim_next(kind: str = "") -> Optional[dict]:
     但当前配置选了哪种，就只 claim 哪种，不会串。
     """
     k = (kind or "").strip().lower()
+    if k in ("gmail_split", "gmail"):
+        return _claim_gmail_split()
     with _lock:
         con = _conn()
         for _ in range(50):  # 有限重试，避免并发抢号时无限递归爆栈
@@ -1202,33 +1791,83 @@ def claim_next(kind: str = "") -> Optional[dict]:
 
 
 def mark_done(email: str) -> None:
+    em = email.lower()
+    now = time.time()
     with _lock:
         con = _conn()
         con.execute(
             "UPDATE outlook_accounts SET status='done', finished_at=?, fail_reason=NULL WHERE email=?",
-            (time.time(), email.lower()),
+            (now, em),
+        )
+        con.execute(
+            "UPDATE gmail_split_accounts SET status='done', finished_at=?, fail_reason=NULL WHERE email=?",
+            (now, em),
         )
         con.commit()
 
 
 def mark_failed(email: str, reason: str = "") -> None:
+    em = email.lower()
+    now = time.time()
+    reason = (reason or "")[:500]
     with _lock:
         con = _conn()
         con.execute(
             "UPDATE outlook_accounts SET status='failed', finished_at=?, fail_reason=? WHERE email=?",
-            (time.time(), (reason or "")[:500], email.lower()),
+            (now, reason, em),
+        )
+        con.execute(
+            "UPDATE gmail_split_accounts SET status='failed', finished_at=?, fail_reason=? WHERE email=?",
+            (now, reason, em),
         )
         con.commit()
 
 
+def retire_gmail_family_unused(email: str, reason: str = "") -> int:
+    """同一母号下尚未使用的号全部停用。
+
+    OpenAI 对同一 Gmail 收件箱（含 +别名）会报 user_already_exists，
+    继续拿剩余子号/主号去注册只会反复撞墙。
+    """
+    em = (email or "").strip().lower()
+    if not em:
+        return 0
+    now = time.time()
+    reason = (reason or "OpenAI 判定同邮箱已存在，停止继续分裂注册")[:500]
+    with _lock:
+        con = _conn()
+        row = con.execute(
+            "SELECT base_email FROM gmail_split_accounts WHERE lower(email)=?",
+            (em,),
+        ).fetchone()
+        if not row:
+            return 0
+        base = (row["base_email"] or "").strip().lower()
+        if not base:
+            return 0
+        rc = con.execute(
+            "UPDATE gmail_split_accounts SET status='failed', finished_at=?, fail_reason=? "
+            "WHERE lower(base_email)=? AND status='available' AND lower(email)!=?",
+            (now, reason, base, em),
+        )
+        con.commit()
+        return rc.rowcount
+
+
 def release_unused(email: str) -> None:
     """claim 后没真注册（异常 / 用户取消）→ 还回 available。"""
+    em = email.lower()
     with _lock:
         con = _conn()
         con.execute(
             "UPDATE outlook_accounts SET status='available', claimed_at=NULL "
             "WHERE email=? AND status='in_use'",
-            (email.lower(),),
+            (em,),
+        )
+        con.execute(
+            "UPDATE gmail_split_accounts SET status='available', claimed_at=NULL "
+            "WHERE email=? AND status='in_use'",
+            (em,),
         )
         con.commit()
 
@@ -1246,8 +1885,14 @@ def reset_to_available(email: str) -> bool:
             "WHERE lower(email)=lower(?)",
             (email,),
         )
+        rc2 = con.execute(
+            "UPDATE gmail_split_accounts SET status='available', claimed_at=NULL, "
+            "finished_at=NULL, fail_reason=NULL "
+            "WHERE lower(email)=lower(?)",
+            (email,),
+        )
         con.commit()
-        return rc.rowcount > 0
+        return (rc.rowcount + rc2.rowcount) > 0
 
 
 def bulk_reset_to_available(emails: list[str]) -> int:
@@ -1256,14 +1901,21 @@ def bulk_reset_to_available(emails: list[str]) -> int:
         return 0
     with _lock:
         con = _conn()
+        placeholders = ",".join(["lower(?)"] * len(emails))
         rc = con.execute(
             f"UPDATE outlook_accounts SET status='available', claimed_at=NULL, "
             f"finished_at=NULL, fail_reason=NULL "
-            f"WHERE lower(email) IN ({','.join(['lower(?)'] * len(emails))})",
+            f"WHERE lower(email) IN ({placeholders})",
+            emails,
+        )
+        rc2 = con.execute(
+            f"UPDATE gmail_split_accounts SET status='available', claimed_at=NULL, "
+            f"finished_at=NULL, fail_reason=NULL "
+            f"WHERE lower(email) IN ({placeholders})",
             emails,
         )
         con.commit()
-        return rc.rowcount
+        return rc.rowcount + rc2.rowcount
 
 
 def reset_failed_to_available() -> int:
@@ -1277,8 +1929,12 @@ def reset_failed_to_available() -> int:
             "UPDATE outlook_accounts SET status='available', fail_reason=NULL, "
             "finished_at=NULL WHERE status='failed'"
         )
+        rc2 = con.execute(
+            "UPDATE gmail_split_accounts SET status='available', fail_reason=NULL, "
+            "finished_at=NULL WHERE status='failed'"
+        )
         con.commit()
-        return rc.rowcount
+        return rc.rowcount + rc2.rowcount
 
 
 def release_stale_in_use(stale_seconds: float = 1800) -> int:
@@ -1294,16 +1950,23 @@ def release_stale_in_use(stale_seconds: float = 1800) -> int:
             "WHERE status='in_use' AND (claimed_at IS NULL OR claimed_at < ?)",
             (cutoff,),
         )
+        rc2 = con.execute(
+            "UPDATE gmail_split_accounts SET status='available', claimed_at=NULL "
+            "WHERE status='in_use' AND (claimed_at IS NULL OR claimed_at < ?)",
+            (cutoff,),
+        )
         con.commit()
-        return rc.rowcount
+        return rc.rowcount + rc2.rowcount
 
 
 def delete_account(email: str) -> bool:
     with _lock:
         con = _conn()
-        rc = con.execute("DELETE FROM outlook_accounts WHERE email=?", (email.lower(),))
+        em = email.lower()
+        rc = con.execute("DELETE FROM outlook_accounts WHERE email=?", (em,))
+        rc2 = con.execute("DELETE FROM gmail_split_accounts WHERE email=?", (em,))
         con.commit()
-        return rc.rowcount > 0
+        return (rc.rowcount + rc2.rowcount) > 0
 
 
 def delete_accounts_by_status(status: str) -> int:
@@ -1317,10 +1980,12 @@ def delete_accounts_by_status(status: str) -> int:
         con = _conn()
         if s == "all":
             rc = con.execute("DELETE FROM outlook_accounts")
+            rc2 = con.execute("DELETE FROM gmail_split_accounts")
         else:
             rc = con.execute("DELETE FROM outlook_accounts WHERE status=?", (s,))
+            rc2 = con.execute("DELETE FROM gmail_split_accounts WHERE status=?", (s,))
         con.commit()
-        return rc.rowcount
+        return rc.rowcount + rc2.rowcount
 
 
 def delete_accounts_by_emails(emails: list[str]) -> int:
@@ -1335,19 +2000,15 @@ def delete_accounts_by_emails(emails: list[str]) -> int:
             f"DELETE FROM outlook_accounts WHERE email IN ({placeholders})",
             cleaned,
         )
+        rc2 = con.execute(
+            f"DELETE FROM gmail_split_accounts WHERE email IN ({placeholders})",
+            cleaned,
+        )
         con.commit()
-        return rc.rowcount
+        return rc.rowcount + rc2.rowcount
 
 
-def export_pool_accounts(
-    status: str = "",
-    kind: str = "",
-    emails: Optional[list[str]] = None,
-    reason_like: str = "",
-) -> list[dict]:
-    """查询指定状态、类型、错误原因或邮箱列表的号池账号，供导出。"""
-    con = _conn()
-    sql = "SELECT email, password, client_id, refresh_token, relay_url, kind, status, fail_reason, imported_at FROM outlook_accounts"
+def _export_filter_sql(emails, status, reason_like, extra_kind=""):
     where, args = [], []
     if emails and len(emails) > 0:
         cleaned = [e.strip().lower() for e in emails if e and e.strip()]
@@ -1358,16 +2019,49 @@ def export_pool_accounts(
         if status and status.lower() != "all":
             where.append("status=?")
             args.append(status.lower())
-        if kind and kind.lower() != "all":
+        if extra_kind and extra_kind.lower() not in ("all", "gmail_split", "gmail"):
             where.append("kind=?")
-            args.append(kind.strip().lower())
+            args.append(extra_kind.strip().lower())
         if reason_like:
             where.append("(fail_reason LIKE ? OR fail_reason LIKE ?)")
             args.extend([f"%{reason_like}%", f"%{reason_like.lower()}%"])
-    if where:
-        sql += " WHERE " + " AND ".join(where)
-    sql += " ORDER BY imported_at ASC"
-    return [dict(r) for r in con.execute(sql, args).fetchall()]
+    clause = (" WHERE " + " AND ".join(where)) if where else ""
+    return clause, args
+
+
+def export_pool_accounts(
+    status: str = "",
+    kind: str = "",
+    emails: Optional[list[str]] = None,
+    reason_like: str = "",
+) -> list[dict]:
+    """查询指定状态、类型、错误原因或邮箱列表的号池账号，供导出。"""
+    con = _conn()
+    k = (kind or "").strip().lower()
+    out: list[dict] = []
+    want_gmail = k in ("gmail_split", "gmail") or not k or k == "all"
+    want_outlook = k not in ("gmail_split", "gmail")
+    if want_outlook:
+        clause, args = _export_filter_sql(emails, status, reason_like, extra_kind=k)
+        sql = (
+            "SELECT email, password, client_id, refresh_token, relay_url, kind, "
+            "status, fail_reason, imported_at FROM outlook_accounts"
+            + clause
+            + " ORDER BY imported_at ASC"
+        )
+        out.extend(dict(r) for r in con.execute(sql, args).fetchall())
+    if want_gmail:
+        clause, args = _export_filter_sql(emails, status, reason_like)
+        sql = (
+            "SELECT email, '' AS password, '' AS client_id, '' AS refresh_token, "
+            "code_url AS relay_url, 'gmail_split' AS kind, status, fail_reason, imported_at "
+            "FROM gmail_split_accounts"
+            + clause
+            + " ORDER BY imported_at ASC"
+        )
+        out.extend(dict(r) for r in con.execute(sql, args).fetchall())
+    out.sort(key=lambda r: r.get("imported_at") or 0)
+    return out
 
 
 
@@ -1381,8 +2075,9 @@ def archive_failed_accounts() -> int:
     with _lock:
         con = _conn()
         rc = con.execute("UPDATE outlook_accounts SET status='archived' WHERE status='failed'")
+        rc2 = con.execute("UPDATE gmail_split_accounts SET status='archived' WHERE status='failed'")
         con.commit()
-        return rc.rowcount
+        return rc.rowcount + rc2.rowcount
 
 
 def unarchive_accounts() -> int:
@@ -1390,8 +2085,9 @@ def unarchive_accounts() -> int:
     with _lock:
         con = _conn()
         rc = con.execute("UPDATE outlook_accounts SET status='failed' WHERE status='archived'")
+        rc2 = con.execute("UPDATE gmail_split_accounts SET status='failed' WHERE status='archived'")
         con.commit()
-        return rc.rowcount
+        return rc.rowcount + rc2.rowcount
 
 
 def stats() -> dict:
@@ -1401,8 +2097,12 @@ def stats() -> dict:
     )
     out = {"available": 0, "in_use": 0, "done": 0, "failed": 0, "archived": 0, "total": 0}
     for r in cur.fetchall():
-        out[r["status"]] = r["n"]
+        out[r["status"]] = out.get(r["status"], 0) + r["n"]
         out["total"] += r["n"]
+    gs = gmail_split_stats()
+    for k in ("available", "in_use", "done", "failed", "archived"):
+        out[k] = out.get(k, 0) + (gs.get(k) or 0)
+    out["total"] += gs.get("total") or 0
     return out
 
 

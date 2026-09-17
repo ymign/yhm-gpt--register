@@ -51,22 +51,48 @@ const current = computed(
   () => providers.value.find((p) => p.kind === kind.value) || null,
 )
 
+const isGmailSplit = computed(() => kind.value === 'gmail_split' || kind.value === 'gmail')
+const splitCount = ref(5)
+const familySize = computed(() => 1 + Math.max(0, Number(splitCount.value) || 0))
+
 const recordCount = computed(() => {
   const t = text.value
   if (!t) return 0
   return t.split('\n').filter((l) => l.trim() && !l.trim().startsWith('#')).length
 })
 
-const importCountLabel = computed(() => (recordCount.value ? `待处理 ${recordCount.value.toLocaleString()} 条` : ''))
+const importCountLabel = computed(() => {
+  if (!recordCount.value) return ''
+  if (isGmailSplit.value) {
+    const n = recordCount.value
+    return `待处理 ${n.toLocaleString()} 个母号 → 约 ${(n * familySize.value).toLocaleString()} 个可注册号（1 主号 + ${splitCount.value} 子号）`
+  }
+  return `待处理 ${recordCount.value.toLocaleString()} 条`
+})
+
+const importPlaceholder = computed(() => {
+  if (isGmailSplit.value) {
+    return [
+      '每行一个谷歌母号，格式：邮箱----取码链接',
+      'sumeetkafle71@gmail.com----https://gapi.mailsapi.com/api/get-code?uid=s41c064bfeba634cabd',
+      `导入后每个母号自身也可注册，并再分裂 ${splitCount.value} 个 local+随机@gmail.com，注册优先用主号`,
+    ].join('\n')
+  }
+  return '支持粘贴任意格式，例如：\ntest@hotmail.com----密码----Client_ID----Refresh_Token\ntest@hotmail.com,密码,Client_ID,Refresh_Token\n密码----test@hotmail.com----Refresh_Token----Client_ID (乱序自适应)\n1. "test@hotmail.com" | "密码" | "Client_ID" | "Refresh_Token" (自动去序号与引号)'
+})
 
 async function loadProviders() {
   try {
     const r = await getMailProviders(true)
     providers.value = r.providers || []
+    if (r.gmail_split_count != null && r.gmail_split_count !== '') {
+      const n = Number(r.gmail_split_count)
+      if (Number.isFinite(n)) splitCount.value = n
+    }
     const cur = r.current
     kind.value = providers.value.some((p) => p.kind === cur)
       ? cur
-      : (providers.value[0]?.kind || 'outlook')
+      : (providers.value.find((p) => p.kind === 'outlook')?.kind || providers.value[0]?.kind || 'outlook')
   } catch (e) {
     ElMessage.error(e.message)
   }
@@ -110,9 +136,14 @@ async function runAnalysis() {
   }
   analyzing.value = true
   try {
-    const res = await analyzeImportAccounts(raw, kind.value)
+    const res = await analyzeImportAccounts(raw, kind.value, {
+      split_count: isGmailSplit.value ? Number(splitCount.value) : undefined,
+    })
     if (res && res.ok) {
       analysis.value = res
+      if (res.mode === 'gmail_split' && kind.value !== 'gmail_split') {
+        kind.value = 'gmail_split'
+      }
       if (res.invalid_errors?.length) {
         errors.value = res.invalid_errors
       } else {
@@ -148,6 +179,18 @@ watch(
   () => {
     if (text.value.trim()) {
       runAnalysis()
+    }
+  }
+)
+
+watch(
+  () => splitCount.value,
+  () => {
+    if (isGmailSplit.value && text.value.trim()) {
+      if (autoAnalyzeTimer) clearTimeout(autoAnalyzeTimer)
+      autoAnalyzeTimer = setTimeout(() => {
+        runAnalysis()
+      }, 300)
     }
   }
 )
@@ -194,12 +237,16 @@ async function doImport() {
   }, 100)
 
   try {
-    const r = await importAccounts(text.value.trim(), kind.value, strategy.value)
+    const r = await importAccounts(text.value.trim(), kind.value, strategy.value, {
+      split_count: isGmailSplit.value ? Number(splitCount.value) : undefined,
+    })
     clearInterval(timerId)
     elapsedSeconds.value = +((performance.now() - startTime) / 1000).toFixed(2)
 
     importSummary.value = {
       parsed: r.parsed || 0,
+      bases: r.bases || 0,
+      split: r.split || 0,
       inserted: r.inserted || 0,
       updated: r.updated || 0,
       skipped_registered: r.skipped_registered || 0,
@@ -207,7 +254,13 @@ async function doImport() {
       cost_seconds: r.cost_seconds || elapsedSeconds.value,
     }
 
-    ElMessage.success(`成功完成批量导入！共写入/更新 ${((r.inserted || 0) + (r.updated || 0)).toLocaleString()} 条`)
+    if (isGmailSplit.value) {
+      ElMessage.success(
+        `谷歌邮箱已入库：${(r.bases || r.parsed || 0).toLocaleString()} 个母号 → 新增 ${(r.inserted || 0).toLocaleString()} 条（含主号）`,
+      )
+    } else {
+      ElMessage.success(`成功完成批量导入！共写入/更新 ${((r.inserted || 0) + (r.updated || 0)).toLocaleString()} 条`)
+    }
     statsStore.refresh()
     runtime.bumpData()
     // 导入成功后重新触发分析，展示入库后的最新状态
@@ -268,13 +321,25 @@ function gotoPool() {
                 </el-select>
               </div>
 
-              <div class="field-item">
+              <div v-if="!isGmailSplit" class="field-item">
                 <span class="field-label">导入去重策略：</span>
                 <el-select v-model="strategy" style="width: 260px" placeholder="选择处理策略">
                   <el-option label="🌟 智能合并 (新号入库/老号绑凭证/同号更新)" value="smart_merge" />
                   <el-option label="⏭️ 仅导全新号 (跳过全部库内重复)" value="skip_duplicates" />
                   <el-option label="⚡ 强制覆盖更新 (重置已有号为可用)" value="overwrite" />
                 </el-select>
+              </div>
+              <div v-else class="field-item gmail-split-count-field">
+                <span class="field-label">每个母号分裂几个子号：</span>
+                <el-input-number
+                  v-model="splitCount"
+                  :min="0"
+                  :max="20"
+                  :step="1"
+                  size="small"
+                  controls-position="right"
+                />
+                <el-tag type="success" effect="plain">含主号共 {{ familySize }} 个可注册号</el-tag>
               </div>
             </div>
 
@@ -308,8 +373,11 @@ function gotoPool() {
           <!-- 智能自适应格式说明条 -->
           <div class="hint-banner">
             <div class="hint-title-row">
-              <span class="hint-tag">✨ 智能全格式兼容已就绪</span>
-              <span class="hint-desc">支持 <code>----</code>、<code>---</code>、<code>--</code>、逗号 <code>,</code>、制表符 <code>Tab</code>、竖线 <code>|</code>、冒号 <code>:</code> 或空格分隔；支持<b>任意乱序</b>自适应识别；自动剥离首尾序号与引号。</span>
+              <span class="hint-tag">{{ isGmailSplit ? '🇬 谷歌邮箱加号分裂' : '✨ 智能全格式兼容已就绪' }}</span>
+              <span v-if="isGmailSplit" class="hint-desc">
+                批量粘贴 <code>邮箱----取码链接</code>，每个母号入库自身，并再分裂 <b>{{ splitCount }}</b> 个 +别名。注册优先主号。同一 Gmail 收件箱 OpenAI 往往只让新开约 2 个号，再多会报「账号已存在」，届时会自动停用该母号剩余号。
+              </span>
+              <span v-else class="hint-desc">支持 <code>----</code>、<code>---</code>、<code>--</code>、逗号 <code>,</code>、制表符 <code>Tab</code>、竖线 <code>|</code>、冒号 <code>:</code> 或空格分隔；支持<b>任意乱序</b>自适应识别；自动剥离首尾序号与引号。</span>
             </div>
           </div>
         </div>
@@ -318,7 +386,7 @@ function gotoPool() {
         <div class="editor-section">
           <div class="editor-header">
             <div class="editor-title">
-              <span class="title-text">账号凭证数据录入 (每行一条)</span>
+              <span class="title-text">{{ isGmailSplit ? '谷歌母号批量粘贴 (每行一个 邮箱----取码链接)' : '账号凭证数据录入 (每行一条)' }}</span>
               <span v-if="recordCount" class="count-chip">{{ recordCount.toLocaleString() }} 行待导入</span>
             </div>
             <div class="editor-actions">
@@ -339,7 +407,7 @@ function gotoPool() {
             type="textarea"
             :rows="9"
             class="mono import-textarea"
-            placeholder="支持粘贴任意格式，例如：&#10;test@hotmail.com----密码----Client_ID----Refresh_Token&#10;test@hotmail.com,密码,Client_ID,Refresh_Token&#10;密码----test@hotmail.com----Refresh_Token----Client_ID (乱序自适应)&#10;1. &quot;test@hotmail.com&quot; | &quot;密码&quot; | &quot;Client_ID&quot; | &quot;Refresh_Token&quot; (自动去序号与引号)"
+            :placeholder="importPlaceholder"
           />
         </div>
 
@@ -383,13 +451,13 @@ function gotoPool() {
               <div class="hud-kpi-card highlight-card-brandnew">
                 <div class="kpi-header">
                   <span class="kpi-icon-dot dot-emerald"></span>
-                  <span class="kpi-label">全新待入库 (Brand New)</span>
+                  <span class="kpi-label">{{ isGmailSplit ? `新母号 (主号+${splitCount}子号)` : '全新待入库 (Brand New)' }}</span>
                 </div>
                 <div class="kpi-main-val text-emerald">
-                  +{{ analysis.brand_new_count }}
+                  +{{ isGmailSplit ? (analysis.will_insert || analysis.brand_new_count * familySize) : analysis.brand_new_count }}
                 </div>
                 <div class="kpi-footer-note text-emerald">
-                  未在号池，也未在已注册库
+                  {{ isGmailSplit ? `${analysis.brand_new_count} 个母号 → ${analysis.will_insert || analysis.brand_new_count * familySize} 个可注册号` : '未在号池，也未在已注册库' }}
                 </div>
               </div>
 
@@ -556,13 +624,14 @@ function gotoPool() {
               @click="doImport"
             >
               <el-icon><Upload /></el-icon>
-              {{ loading ? `正在高速事务写入 (${elapsedSeconds}s)...` : '确认写入号池数据库' }}
+              {{ loading ? `正在高速事务写入 (${elapsedSeconds}s)...` : (isGmailSplit ? '确认分裂并写入谷歌邮箱表' : '确认写入号池数据库') }}
             </el-button>
 
             <span v-if="recordCount" class="count-pill">{{ importCountLabel }}</span>
 
             <span class="strategy-badge-tip">
-              当前策略：<b>{{ strategy === 'smart_merge' ? '智能合并' : (strategy === 'skip_duplicates' ? '仅全新号' : '覆盖重置') }}</b>
+              <template v-if="isGmailSplit">规则：<b>1 主号 + {{ splitCount }} 子号</b>，注册优先主号，已有母号自动跳过</template>
+              <template v-else>当前策略：<b>{{ strategy === 'smart_merge' ? '智能合并' : (strategy === 'skip_duplicates' ? '仅全新号' : '覆盖重置') }}</b></template>
             </span>
           </div>
 
@@ -588,11 +657,11 @@ function gotoPool() {
 
             <div class="kpi-grid">
               <div class="kpi-item">
-                <span class="kpi-tag">📥 解析总数</span>
-                <span class="kpi-val">{{ importSummary.parsed.toLocaleString() }}</span>
+                <span class="kpi-tag">{{ isGmailSplit ? '📥 母号行数' : '📥 解析总数' }}</span>
+                <span class="kpi-val">{{ (importSummary.bases || importSummary.parsed || 0).toLocaleString() }}</span>
               </div>
               <div class="kpi-item highlight-insert">
-                <span class="kpi-tag">✨ 全新入库</span>
+                <span class="kpi-tag">{{ isGmailSplit ? '✨ 入库条数(含主号)' : '✨ 全新入库' }}</span>
                 <span class="kpi-val text-success">+{{ importSummary.inserted.toLocaleString() }}</span>
               </div>
               <div class="kpi-item">
@@ -756,6 +825,9 @@ function gotoPool() {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+.gmail-split-count-field :deep(.el-input-number) {
+  width: 110px;
 }
 .field-label {
   font-size: 12.5px;

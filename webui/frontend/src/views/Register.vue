@@ -109,6 +109,9 @@ const emailPlaceholder = computed(() => {
   if (form.value.mailSource === 'icloud_relay') {
     return '留空 = 自动从 iCloud 号池 Claim 可用账号 / 或填入指定 iCloud 邮箱'
   }
+  if (form.value.mailSource === 'gmail_split') {
+    return '留空 = 优先领取谷歌主号，主号用完再领 +别名 / 或填入指定邮箱'
+  }
   return '留空 = 自动从号池挑选可用账号 / 或填入指定邮箱'
 })
 
@@ -193,12 +196,14 @@ async function copyField(email, field) {
                   <el-radio-button value="cf_temp">⚡ CF 临时邮箱</el-radio-button>
                   <el-radio-button value="outlook">📦 微软 Outlook</el-radio-button>
                   <el-radio-button value="icloud_relay">✉️ iCloud 邮箱</el-radio-button>
+                  <el-radio-button value="gmail_split">🇬 谷歌邮箱</el-radio-button>
                 </el-radio-group>
                 <div class="mail-source-hint">
                   <span v-if="form.mailSource === 'remail'" class="hint-remail" style="color: #10b981">🍎 Remail 全自动购号：支持按需购买 Project 2 (ChatGPT专属 30积分 iCloud/15积分 微软邮箱) 及多平台临时邮箱，在「邮箱配置」可随时自定义项目与后缀</span>
                   <span v-else-if="form.mailSource === 'cf_temp'" class="hint-cf">⚡ 无需号池：由 Cloudflare Worker 动态生成临时地址并全自动收信</span>
                   <span v-else-if="form.mailSource === 'outlook'" class="hint-outlook">📦 号池接码：自动从微软号池 Claim 可用账号（需提前导入）</span>
                   <span v-else-if="form.mailSource === 'icloud_relay'" class="hint-ic">✉️ iCloud 中转：自动从 iCloud 号池领取带中转链接的账号</span>
+                  <span v-else-if="form.mailSource === 'gmail_split'" class="hint-gmail">🇬 谷歌加号分裂：优先领取主号，主号用完再领 +别名。同一收件箱 OpenAI 大约只允许新开 2 个，再多会报已存在并自动停用该母号剩余号</span>
                 </div>
               </el-form-item>
 
@@ -490,6 +495,7 @@ async function copyField(email, field) {
 .full-width-radio {
   width: 100%;
   display: flex;
+  flex-wrap: wrap;
 }
 .full-width-radio :deep(.el-radio-button) {
   flex: 1;

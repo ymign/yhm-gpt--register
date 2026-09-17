@@ -73,6 +73,18 @@ function kindLabel(k) {
   return providers.value.find((p) => p.kind === k)?.display_name || k || 'outlook'
 }
 
+function rowBaseEmail(row) {
+  return String(row?.base_email || '').trim()
+}
+
+const showBaseEmail = computed(() => {
+  const k = (kindFilter.value || '').toLowerCase()
+  if (k === 'gmail_split' || k === 'gmail') return true
+  if (k && k !== 'gmail_split' && k !== 'gmail') return false
+  if ((byKind.value.gmail_split?.total || 0) > 0) return true
+  return rows.value.some((r) => !!rowBaseEmail(r))
+})
+
 async function loadProviders() {
   try {
     providers.value = (await getMailProviders()).providers || []
@@ -828,16 +840,53 @@ loadProviders()
         >
           <el-table-column type="selection" width="42" align="center" />
 
-          <el-table-column prop="email" label="邮箱地址" min-width="220" show-overflow-tooltip>
+          <el-table-column prop="email" label="邮箱地址" min-width="260" show-overflow-tooltip>
+            <template #default="{ row }">
+              <div class="email-cell">
+                <button
+                  class="macos-tag-btn copy-btn"
+                  title="点击复制邮箱"
+                  @click="copyText(row.email)"
+                >
+                  <span class="mono">{{ row.email }}</span>
+                  <el-icon class="copy-ico"><CopyDocument /></el-icon>
+                </button>
+                <el-tag
+                  v-if="rowBaseEmail(row) && rowBaseEmail(row) === String(row.email || '').trim().toLowerCase()"
+                  size="small"
+                  type="success"
+                  effect="plain"
+                  class="role-tag"
+                >主号</el-tag>
+                <el-tag
+                  v-else-if="rowBaseEmail(row)"
+                  size="small"
+                  type="info"
+                  effect="plain"
+                  class="role-tag"
+                >子号</el-tag>
+              </div>
+            </template>
+          </el-table-column>
+
+          <el-table-column
+            v-if="showBaseEmail"
+            prop="base_email"
+            label="母号"
+            min-width="200"
+            show-overflow-tooltip
+          >
             <template #default="{ row }">
               <button
-                class="macos-tag-btn copy-btn"
-                title="点击复制邮箱"
-                @click="copyText(row.email)"
+                v-if="rowBaseEmail(row)"
+                class="macos-tag-btn copy-btn base-email-btn"
+                title="点击复制母号"
+                @click="copyText(rowBaseEmail(row), '已复制母号')"
               >
-                <span class="mono">{{ row.email }}</span>
+                <span class="mono">{{ rowBaseEmail(row) }}</span>
                 <el-icon class="copy-ico"><CopyDocument /></el-icon>
               </button>
+              <span v-else class="hint">—</span>
             </template>
           </el-table-column>
 
@@ -1306,6 +1355,18 @@ loadProviders()
   opacity: 0.5;
 }
 .copy-btn:hover .copy-ico { opacity: 1; }
+.base-email-btn {
+  color: var(--app-text-secondary);
+}
+.email-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+}
+.role-tag {
+  flex-shrink: 0;
+}
 
 .row-actions {
   display: flex;

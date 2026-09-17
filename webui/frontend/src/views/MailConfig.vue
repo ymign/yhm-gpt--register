@@ -1,5 +1,6 @@
 <script setup>
 import { computed, onActivated, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import {
   Setting,
@@ -24,6 +25,8 @@ import {
   fetchRemailProjects,
 } from '@/api/settings'
 import FooterToolbar from '@/components/FooterToolbar.vue'
+
+const router = useRouter()
 
 // 统一归一化邮箱后缀（智能兼容 gmail, gamil, gmail变种, icloud 等各种常见写法）
 function typeToDisplaySuffix(ptype) {
@@ -91,6 +94,7 @@ const DEFAULT_PROVIDERS = [
   },
   { kind: 'outlook', display_name: '📦 微软 Outlook 接码池', pooled: true, ephemeral: false, line_segments: 4, config_fields: [] },
   { kind: 'icloud_relay', display_name: '✉️ iCloud 隐藏邮箱 (中转)', pooled: true, ephemeral: false, line_segments: 2, config_fields: [] },
+  { kind: 'gmail_split', display_name: '🇬 谷歌邮箱（加号分裂）', pooled: true, ephemeral: false, line_segments: 2, config_fields: [] },
 ]
 
 function formatRemailStock(num) {
@@ -595,7 +599,25 @@ onActivated(() => load())
               <el-tag v-if="current.line_segments > 0" size="small" type="info" effect="plain">
                 导入格式 {{ current.line_segments }} 段
               </el-tag>
+              <el-tag v-if="current.kind === 'gmail_split'" size="small" type="success" effect="plain">
+                主号可注册 + ×5 子号，优先主号
+              </el-tag>
             </div>
+          </div>
+
+          <div v-if="source === 'gmail_split'" class="card-section">
+            <el-alert
+              type="success"
+              :closable="false"
+              show-icon
+              title="谷歌邮箱加号分裂：到「导入邮箱」批量粘贴 邮箱----取码链接。每个母号自身可注册，并再生成 5 个 local+xxxxx@gmail.com。注册优先用主号。"
+            >
+              <template #default>
+                <div style="margin-top: 8px">
+                  <el-button size="small" type="primary" @click="router.push('/import')">去导入谷歌母号</el-button>
+                </div>
+              </template>
+            </el-alert>
           </div>
 
           <!-- 🍎 Remail 专属高级可视化控制面板 -->

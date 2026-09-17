@@ -42,6 +42,7 @@ from . import outlook        # noqa: F401,E402  kind="outlook"
 from . import cf_temp        # noqa: F401,E402  kind="cf_temp"
 from . import icloud_relay   # noqa: F401,E402  kind="icloud_relay"
 from . import remail_icloud  # noqa: F401,E402  kind="remail"
+from . import gmail_split    # noqa: F401,E402  kind="gmail_split"
 
 __all__ = [
     "MailProvider",

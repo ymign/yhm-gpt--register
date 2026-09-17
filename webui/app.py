@@ -99,11 +99,16 @@ class ImportReq(BaseModel):
         "smart_merge",
         description="导入策略: smart_merge(智能合并/更新凭证) / skip_duplicates(仅导入全新号) / overwrite(覆盖并重置可用)",
     )
+    split_count: Optional[int] = Field(
+        None,
+        description="谷歌邮箱分裂子号数量（不含主号）。不传则用上次保存的设置",
+    )
 
 
 class AnalyzeImportReq(BaseModel):
     text: str = Field(..., description="待分析的文本内容")
     kind: str = Field("", description="指定或默认邮箱来源协议")
+    split_count: Optional[int] = Field(None, description="谷歌邮箱分裂子号数量（不含主号）")
 
 
 class RegisterReq(BaseModel):
@@ -143,7 +148,7 @@ def api_analyze_import(req: AnalyzeImportReq):
     返回重复率、全新号数、库内状态分布与解析错误明细。
     """
     try:
-        res = db.analyze_import_data(req.text, kind=req.kind)
+        res = db.analyze_import_data(req.text, kind=req.kind, split_count=req.split_count)
         return res
     except Exception as e:
         raise HTTPException(400, f"分析失败: {e}")
@@ -159,7 +164,9 @@ def api_import(req: ImportReq):
         - overwrite: 强制重置号池已有账号为 available 状态并覆盖更新凭据。
     """
     try:
-        result = db.import_accounts(req.text, kind=req.kind, strategy=req.strategy)
+        result = db.import_accounts(
+            req.text, kind=req.kind, strategy=req.strategy, split_count=req.split_count
+        )
     except ImportValidationError as e:
         return JSONResponse(
             status_code=422,
@@ -993,6 +1000,7 @@ def api_mail_providers(pooled_only: bool = False):
         "ok": True,
         "providers": list_pooled_providers() if pooled_only else list_providers(),
         "current": db.get_setting("mail_source", "outlook"),
+        "gmail_split_count": db.get_gmail_split_count(),
     }
 
 
@@ -1806,12 +1814,14 @@ def api_fetch_mail_otp(email: str, req: Optional[FetchMailOtpReq] = None):
         or ""
     ).strip().lower()
 
-    if not kind or kind not in ("remail", "outlook", "cf_temp", "icloud_relay"):
+    if not kind or kind not in ("remail", "outlook", "cf_temp", "icloud_relay", "gmail_split", "gmail"):
         if any(dom in email_clean for dom in ("@outlook.", "@hotmail.", "@live.", "@msn.")):
             kind = "outlook"
         elif any(dom in email_clean for dom in ("@icloud.", "@me.", "@mac.")):
             def_source = (db.get_setting("mail_source", "") or "").strip().lower()
             kind = "remail" if def_source == "remail" else "icloud_relay"
+        elif any(dom in email_clean for dom in ("@gmail.", "@googlemail.")):
+            kind = "gmail_split"
         else:
             kind = (db.get_setting("mail_source", "") or "cf_temp").strip().lower()
 
@@ -1830,7 +1840,7 @@ def api_fetch_mail_otp(email: str, req: Optional[FetchMailOtpReq] = None):
     try:
         provider = create_mail_provider(kind, settings, account_row)
     except Exception as e:
-        if kind in ("outlook", "remail"):
+        if kind in ("outlook", "remail", "gmail_split", "icloud_relay"):
             return {
                 "ok": False,
                 "email": email_clean,

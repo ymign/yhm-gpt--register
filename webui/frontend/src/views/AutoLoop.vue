@@ -110,6 +110,7 @@ const configChips = computed(() => {
     cf_temp: 'CF 临时邮箱',
     outlook: '微软 Outlook',
     icloud_relay: 'iCloud 邮箱',
+    gmail_split: '谷歌邮箱',
   }
   const src = srcMap[form.value.autoMailSource] || 'Remail 自动购号'
   const conc = `${form.value.autoConcurrency || 1} Workers`
@@ -781,12 +782,14 @@ onUnmounted(() => {
                       <el-radio-button value="cf_temp">⚡ CF 临时邮箱 (动态造号)</el-radio-button>
                       <el-radio-button value="outlook">📦 微软 Outlook (号池)</el-radio-button>
                       <el-radio-button value="icloud_relay">✉️ iCloud 邮箱 (中转)</el-radio-button>
+                      <el-radio-button value="gmail_split">🇬 谷歌邮箱 (分裂)</el-radio-button>
                     </el-radio-group>
                     <span class="mail-source-badge-tip">
                       <span v-if="form.autoMailSource === 'remail'" class="text-remail" style="color: #28646e; font-weight: 500;">🍎 Remail 自动购号：每次并发注册按需购买全新邮箱，支持微软/iCloud等多后缀</span>
                       <span v-else-if="form.autoMailSource === 'cf_temp'" class="text-cf" style="color: #28646e; font-weight: 500;">⚡ 无需号池：Worker 动态无限生成地址并发注册，推荐</span>
                       <span v-else-if="form.autoMailSource === 'outlook'" class="text-outlook" style="color: #28646e; font-weight: 500;">📦 微软号池并发：自动从号池领取可用账号，池空自动等待</span>
                       <span v-else-if="form.autoMailSource === 'icloud_relay'" class="text-ic" style="color: #28646e; font-weight: 500;">✉️ iCloud 号池并发：自动从号池领取带中转链接的账号</span>
+                      <span v-else-if="form.autoMailSource === 'gmail_split'" class="text-gmail" style="color: #28646e; font-weight: 500;">🇬 谷歌分裂号池：优先主号。同一收件箱大约只能新开 2 个，再多会报已存在并停用剩余号</span>
                     </span>
                   </div>
                 </el-form-item>

@@ -918,6 +918,29 @@ def _do_register(
                 )
             else:
                 db.mark_failed(email, f"[{category}] {err}")
+                if is_user_exists and (
+                    mail_source in ("gmail_split", "gmail")
+                    or getattr(mail, "kind", "") == "gmail_split"
+                ):
+                    stopped = db.retire_gmail_family_unused(
+                        email,
+                        "OpenAI 判定同邮箱已存在，停止继续分裂注册",
+                    )
+                    if stopped:
+                        _run_log(
+                            run_id,
+                            f"[gmail_split] 同母号剩余 {stopped} 个未用号已停用（OpenAI already exists）",
+                        )
+                        try:
+                            from mail_providers.gmail_split import append_otp_temp_log
+                            append_otp_temp_log(
+                                email,
+                                "already_exists",
+                                base_email=getattr(mail, "base_email", "") or "",
+                                note=f"停用同母号剩余{stopped}个",
+                            )
+                        except Exception:
+                            pass
         db.finish_run(run_id, "failed", err, category=category)
         _emit_status(run_id, "error", {"message": err, "category": category})
 
